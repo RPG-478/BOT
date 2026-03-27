@@ -10,6 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from collections import defaultdict
 from matplotlib.font_manager import FontProperties
+from dotenv import load_dotenv
 from constants import *
 font = FontProperties(fname='font.ttf', size=16)
 #from dungeo import setup_dungeon
@@ -17,7 +18,6 @@ from flask import Flask
 import threading
 load_dotenv(env_path)
 threading.Thread(target=run_web).start()
-from dotenv import load_dotenv
 app = Flask(__name__)
 
 @app.route("/")
