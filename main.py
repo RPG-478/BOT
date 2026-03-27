@@ -33,7 +33,6 @@ tok = os.getenv('TOKEN')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
 # ============================================================
 #  Embed カラー定数 
 # ============================================================
@@ -167,7 +166,15 @@ def load_all_assets():
 
 # --- ここに ASSET_CONFIG も必要です ---
 ASSET_CONFIG = {
-    ("洞窟", D_WALL): "rock.png", 
+    ("洞窟", D_WALL): "rock.png",
+    ("洞窟", D_FLOOR): "jimen.png",
+    ("森", D_WALL): "mori_kabe.png",
+    ("森", D_FLOOR): "mori_yuka.png",
+    ("氷雪地帯", D_WALL): "Y_k.png",
+    ("氷雪地帯", D_FLOOR): "Y_y.png",
+    # 砂漠には手持ちアセットがないため、雪タイルを暫定的に流用
+    ("砂漠地帯", D_WALL): "Y_k.png",
+    ("砂漠地帯", D_FLOOR): "Y_y.png",
 }
 _ASSET_CACHE = {}
 
@@ -412,19 +419,19 @@ class MyClient(discord.Client):
                 print(f"レート制限中のためコマンド同期をスキップします")
             else:
                 raise e
-
-
-
 client=MyClient()
-
-
 @tasks.loop(minutes=5)
 async def auto_save():
-    # 1. 既存のユーザーデータ保存
-    await save_all_users()
+    try:
+        # 1. 既存のユーザーデータ保存
+        await save_all_users()
+        # tryの中に成功時のメッセージを入れる
         print("自動保存完了 (探索データ含む)")
+        
     except Exception as e:
+        # エラーが起きた時だけここが実行される
         print(f"探索データの自動保存中にエラー: {e}")
+
 
 @tasks.loop(minutes=1)
 async def update_rate_task(): get_exchange_rate()
@@ -2322,22 +2329,17 @@ async def kill_cmd(i:Interaction):
 
 import io
 
-# rock.png をタイルとして読み込み（なければNone）
-# rock.png をタイルとして読み込み（パス修正・エラーハンドリング強化）
-_ROCK_TILE = None
-_rock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Assets", "rock.png")
-try:
-    if os.path.isfile(_rock_path):
-        _ROCK_TILE = Image.open(_rock_path).convert("RGBA").resize((TILE, TILE))
-        print(f"✓ rock.png を正常に読み込みました: {_rock_path}")
-    else:
-        print(f"⚠ rock.png が見つかりません: {_rock_path}")
-except FileNotFoundError as e:
-    print(f"❌ rock.png ファイル不在: {e}")
-except Exception as e:
-    print(f"❌ rock.png 読み込みエラー: {e}")
+# 追加アセットは load_all_assets() で _ASSET_CACHE に読み込み済み
+# _ROCK_TILE / _rock_path は廃止。ASSET_CONFIGで管理。
 
 def _draw_tile(draw, img, x, y, cell, biome, is_player=False, is_fog=False):
+    # lazily load assets if not loaded yet
+    if '_ASSET_CACHE' not in globals() or not globals().get('_ASSET_CACHE'):
+        try:
+            load_all_assets()
+        except Exception as e:
+            print(f"! load_all_assets fallback error: {e}")
+
     px, py = x * TILE, y * TILE
     if is_fog:
         draw.rectangle([px, py, px+TILE-1, py+TILE-1], fill=(0,0,0))
@@ -2350,9 +2352,14 @@ def _draw_tile(draw, img, x, y, cell, biome, is_player=False, is_fog=False):
         margin = 6
         draw.ellipse([px+margin, py+margin, px+TILE-margin-1, py+TILE-margin-1], fill=col)
         return
-    if cell == D_WALL and biome == "洞窟" and _ROCK_TILE:
-        img.paste(_ROCK_TILE, (px, py), _ROCK_TILE)
+
+    # すべてのセルタイプで、アセットキャッシュに存在するなら優先して貼り付け
+    tile_img = _ASSET_CACHE.get((biome, cell))
+    if tile_img is not None:
+        img.paste(tile_img, (px, py), tile_img)
         return
+
+    # 罠は床と同じ色（見えない）
     if cell == D_TRAP:
         # 罠は床と同じ色
         col_src = TILE_COLORS[D_FLOOR]
@@ -2381,8 +2388,8 @@ def _draw_tile(draw, img, x, y, cell, biome, is_player=False, is_fog=False):
     elif cell == D_BASE:
         draw.text((px+TILE//2-4, py+TILE//2-6), "🏠", fill=(255,255,255))
 
-async def d_render_image(uid, floor, px, py, radius=D_VIEW_R):
-    """マップを画像として生成しDiscordにアップロード、URLを返す"""
+def d_build_map_image(uid, floor, px, py, radius=D_VIEW_R):
+    """マップをPillow Image として生成（d_render_image/d_render_pillow 共通処理）"""
     d_ensure_map(floor)
     bname, *_ = d_get_biome(floor)
     size = radius * 2 + 1
@@ -2398,7 +2405,12 @@ async def d_render_image(uid, floor, px, py, radius=D_VIEW_R):
             cell = dg_maps[floor][vy][vx]
             _draw_tile(draw, img, vx_i, vy_i, cell, bname, is_player=is_player)
 
-    # Discord チャンネルにアップロード
+    return img
+
+async def d_render_image(uid, floor, px, py, radius=D_VIEW_R):
+    """マップを画像として生成しDiscordにアップロード、URLを返す"""
+    img = d_build_map_image(uid, floor, px, py, radius)
+
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
@@ -2564,6 +2576,8 @@ LOBY_GRID, LOBY_START = _parse_layout(LOBY_LAYOUT)
 D_MAX_HP   = 150
 D_BASE_ATK = 10
 D_BASE_DEF = 5
+D_BASE_SPD = 10
+D_BASE_CRIT= 0.05
 
 def d_hpbar(hp, max_hp, n=8):
     f = int((hp / max_hp) * n) if max_hp > 0 else 0
@@ -2575,11 +2589,13 @@ def d_get_player(uid):
             "floor":1, "x":1, "y":1,
             "hp":D_MAX_HP, "max_hp":D_MAX_HP,
             "atk":D_BASE_ATK, "def_":D_BASE_DEF,
+            "spd":D_BASE_SPD, "crit":D_BASE_CRIT,
         }
     p = dg_players[uid]
     lv = get_user_cache(uid).get("level", 1) or 1
     p["atk"]   = D_BASE_ATK + lv * 2
     p["def_"]  = D_BASE_DEF + lv
+    p["spd"]   = D_BASE_SPD + lv * 2
     p["max_hp"]= D_MAX_HP   + lv * 10
     if p["hp"] > p["max_hp"]: p["hp"] = p["max_hp"]
     return p
@@ -2801,67 +2817,102 @@ D_SUPERENEMY_NAMES = {
 }
 D_BOSS_NAMES = {
     "洞窟":     ["ドラゴン"],
-    "森":       ["ヌシ"],
+    "森":       ["ヌシ","ぱすた"],
     "氷雪地帯": ["凍ったコッペパン"],
     "砂漠地帯": ["炎龍"],
 }
+# 敵ごとの個別パラメータマスタ
+# hp_m: HP倍率, atk_m: 攻撃倍率, def_m: 防御倍率, spd: 固定素早さ, crit: クリティカル率, ai: 行動リスト
+# coin_m: コイン倍率, xp_m: 経験値倍率, boxes: 宝箱基本数
+ENEMY_STATS_MASTER = {
+    "コウモリ":       {"hp_m": 0.7, "atk_m": 0.5, "def_m": 0.5, "spd": 10, "crit": 0,    "ai": ["attack","wait"], "coin_m": 0.8, "xp_m": 0.8, "boxes": 0},
+    "ゴブリン":       {"hp_m": 1.0, "atk_m": 1.1, "def_m": 0.8, "spd": 15, "crit": 0.08, "ai": ["attack"], "coin_m": 1.0, "xp_m": 1.0, "boxes": 0},
+    "岩石スライム":   {"hp_m": 1.5, "atk_m": 0.8, "def_m": 1.8, "spd": 5,  "crit": 0.02, "ai": ["attack"], "coin_m": 1.2, "xp_m": 1.1, "boxes": 0},
+    "オオカミ":       {"hp_m": 0.9, "atk_m": 1.2, "def_m": 0.7, "spd": 20, "crit": 0.10, "ai": ["attack"], "coin_m": 1.1, "xp_m": 1.2, "boxes": 0},
+    "毒キノコ":       {"hp_m": 1.2, "atk_m": 0.8, "def_m": 1.0, "spd": 5,  "crit": 0.05, "ai": ["attack"], "coin_m": 1.0, "xp_m": 1.0, "boxes": 0},
+    "トレント":       {"hp_m": 2.0, "atk_m": 1.0, "def_m": 1.5, "spd": 3,  "crit": 0.03, "ai": ["attack","attack","heal"], "coin_m": 1.5, "xp_m": 1.5, "boxes": 0},
+    
+    "セミオートキラーマシン": {"hp_m": 4.5, "atk_m": 2.8, "def_m": 1.5, "spd": 22, "crit": 0.25, "ai": ["attack"], "coin_m": 3.0, "xp_m": 5.0, "boxes": 1},
+    "邪蛇":           {"hp_m": 3.0, "atk_m": 3.4, "def_m": 1.2, "spd": 28, "crit": 0.15, "ai": ["attack"], "coin_m": 2.5, "xp_m": 4.0, "boxes": 1},
+    
+    "ヌシ":           {"hp_m": 20.0, "atk_m": 4.5, "def_m": 2.2, "spd": 12, "crit": 0.10, "ai": ["attack"], "coin_m": 10.0, "xp_m": 10.0, "boxes": 5},
+    "ドラゴン":       {"hp_m": 18.0, "atk_m": 5.0, "def_m": 2.5, "spd": 20, "crit": 0,    "ai": ["attack"], "coin_m": 12.0, "xp_m": 12.0, "boxes": 5},
+    "ぱすた":        {"hp_m": 100, "atk_m": 0, "def_m": 10, "spd": 100, "crit": 0,     "ai": ["wait"], "coin_m": 0.1, "xp_m": 0.1, "boxes": 0},
 
-def d_make_enemy(floor):
+    "ミミック":       {"hp_m": 2.5, "atk_m": 2.0, "def_m": 1.2, "spd": 8,  "crit": 0.25, "ai": ["attack"], "coin_m": 5.0, "xp_m": 3.0, "boxes": 1},
+    "default":        {"hp_m": 1.0, "atk_m": 1.0, "def_m": 1.0, "spd": 10, "crit": 0.05, "ai": ["attack"], "coin_m": 1.0, "xp_m": 1.0, "boxes": 0}
+}
+
+def d_make_enemy(floor, forced_name=None):
+    import random
     base_hp  = 15 + floor * 8
     base_atk = 4  + floor * 2
     base_def = 1  + floor
-    bname,_,_,_,_=d_get_biome(floor)
+    bname, _, _, _, _ = d_get_biome(floor)
 
-    # エンカウントタイプ決定（ここが追加）
-    r = random.random()
-    if r < 0.01:
-        etype = "boss"
-        name = random.choice(D_BOSS_NAMES.get(bname, ["ボス"]))
-    elif r < 0.11:
-        etype = "elite"
-        name = random.choice(D_SUPERENEMY_NAMES.get(bname, ["精鋭"]))
+    # 1. ランクと名前の決定
+    if forced_name:
+        name = forced_name
+        etype = "normal" 
     else:
-        etype = "normal"
-        name = random.choice(D_ENEMY_NAMES.get(bname, ["謎の敵"]))
+        r = random.random()
+        if r < 0.01:
+            etype = "boss"
+            name = random.choice(D_BOSS_NAMES.get(bname, ["ボス"]))
+        elif r < 0.11:
+            etype = "elite"
+            name = random.choice(D_SUPERENEMY_NAMES.get(bname, ["精鋭"]))
+        else:
+            etype = "normal"
+            name = random.choice(D_ENEMY_NAMES.get(bname, ["謎の敵"]))
 
-    # ステータス倍率
+    # 2. マスタから個別パラメータを取得
+    clean_key = name.split()[0].replace("👾", "").strip()
+    m = ENEMY_STATS_MASTER.get(clean_key, ENEMY_STATS_MASTER["default"])
+
+    # ランクによる倍率補正
+    rank_hp_mul  = 4.0 if etype == "elite" else (15.0 if etype == "boss" else 1.0)
+    rank_atk_mul = 2.5 if etype == "elite" else (4.0 if etype == "boss" else 1.0)
+    rank_def_mul = 1.5 if etype == "elite" else (2.0 if etype == "boss" else 1.0)
+
+    # 3. ステータス確定
+    m_hp_m  = m.get("hp_m")
+    hp = int((base_hp + random.randint(-3, 3)) * m_hp_m * rank_hp_mul)
+    atk = int((base_atk + random.randint(-1, 1)) * m.get("atk_m", 1.0) * rank_atk_mul)
+    defe = int(base_def * m.get("def_m", 1.0) * rank_def_mul)
+    
+    # 4. 報酬計算
+    m_coin_m = m.get("coin_m", 1.0)
+    m_xp_m   = m.get("xp_m", 1.0)
+    m_boxes  = m.get("boxes", 0)
+
     if etype == "elite":
-        hp_mul, atk_mul, def_mul = 4.0, 2.5, 1.5
+        reward_coins = int(random.randint(80, 150) * floor * m_coin_m)
+        reward_xp    = int(random.randint(100, 800) * floor * m_xp_m)
+        reward_box   = max(1, m_boxes) # 精鋭は最低1個
     elif etype == "boss":
-        hp_mul, atk_mul, def_mul = 15.0, 4.0, 2.0
+        reward_coins = int(random.randint(2000, 4000) * floor * m_coin_m)
+        reward_xp    = int(random.randint(1000, 2000) * floor * m_xp_m)
+        reward_box   = max(5, m_boxes) # ボスは最低5個
     else:
-        hp_mul, atk_mul, def_mul = 1.0, 1.0, 1.0
-
-    hp = int((base_hp + random.randint(-3,3)) * hp_mul)
-    atk = int((base_atk + random.randint(-1,1)) * atk_mul)
-    defe = int(base_def * def_mul)
-
-    # 報酬
-    if etype == "elite":
-        reward_coins = random.randint(80,150) * floor
-        reward_xp    = random.randint(100,800) * floor
-        reward_box   = 1
-    elif etype == "boss":
-        reward_coins = random.randint(2000,4000) * floor
-        reward_xp    = random.randint(1000,2000) * floor
-        reward_box   = 5
-    else:
-        reward_coins = random.randint(20,80) * floor
-        reward_xp    = random.randint(10,30) * floor
-        reward_box   = 1 if random.random()<0.05 else 0
+        reward_coins = int(random.randint(20, 80) * floor * m_coin_m)
+        reward_xp    = int(random.randint(10, 30) * floor * m_xp_m)
+        # 通常敵: マスタに箱設定があるか、5%の確率でドロップ
+        reward_box   = m_boxes if m_boxes > 0 else (1 if random.random() < 0.05 else 0)
 
     return {
-        "name":        name,
-        "type":        etype,
-        "hp":          hp,
-        "max_hp":      hp,
-        "atk":         atk,
-        "def_":        defe,
-        "reward_coins":reward_coins,
-        "reward_xp":   reward_xp,
-        "reward_box":  reward_box,
+        "name":         name,
+        "type":         etype,
+        "hp":           hp,
+        "max_hp":       hp,
+        "atk":          atk,
+        "def_":         defe,
+        "spd":          m.get("spd", 10),
+        "crit":         m.get("crit", 0.05),
+        "reward_coins": reward_coins,
+        "reward_xp":    reward_xp,
+        "reward_box":   reward_box,
     }
-
 # ================================================================
 #  戦闘View
 # ================================================================
@@ -2880,64 +2931,77 @@ class DungeonCombatView(discord.ui.View):
         type_text = {"normal": "通常", "elite": "精鋭", "boss": "ボス"}[etype]
 
         em = discord.Embed(title=f"⚔️ {e['name']}（{type_text}）が現れた！", color=color)
-        
-        # 将来的に戦闘画面を画像化する際、ここを戦闘画像に差し替え可能
-        if has_image:
-            em.set_image(url="attachment://map.png")
+        if has_image: em.set_image(url="attachment://map.png")
 
+        p_crit_display = int(p.get("crit", 0.05) * 100)
         em.add_field(name="あなた",
-            value=f"`{d_hpbar(p['hp'],p['max_hp'])}`{p['hp']}/{p['max_hp']} ⚔️{p['atk']} 🛡️{p['def_']}",
-            inline=False)
+            value=f"`{d_hpbar(p['hp'],p['max_hp'])}`{p['hp']}/{p['max_hp']}\n⚔️{p['atk']} 🛡️{p['def_']} ⚡{p.get('spd',10)} ✨{p_crit_display}%",
+            inline=True)
 
+        e_crit_display = int(e.get("crit", 0.05) * 100)
         em.add_field(name=e["name"],
-            value=f"`{d_hpbar(e['hp'],e['max_hp'])}`{e['hp']}/{e['max_hp']} ⚔️{e['atk']}",
-            inline=False)
+            value=f"`{d_hpbar(e['hp'],e['max_hp'])}`{e['hp']}/{e['max_hp']}\n⚔️{e['atk']} ⚡{e.get('spd',10)} ✨{e_crit_display}%",
+            inline=True)
 
         if self.log:
             em.add_field(name="ログ", value="\n".join(self.log[-5:]), inline=False)
-
         return em
 
-    def _enemy_turn(self) -> int:
-        p = d_get_player(self.uid)
-        def_ = p["def_"] * (2 if self.defending else 1)
-        dmg = max(0, self.enemy["atk"] - def_ + random.randint(-2, 3))
-        p["hp"] = max(0, p["hp"] - dmg)
+    def _calculate_damage(self, attacker, defender, is_defending=False):
+        import random
+        is_crit = random.random() < attacker.get("crit", 0.05)
+        target_def = defender.get("def_", 0)
+        if is_defending: target_def *= 2
+        dmg = max(1, attacker["atk"] - target_def + random.randint(-2, 3))
+        if is_crit: return int(dmg * 1.5), True
+        return dmg, False
+
+    def _enemy_turn(self) -> str:
+        p = d_get_player(self.uid); e = self.enemy
+        # 敵の名前（Lv.x を除く）でマスタを参照
+        raw_name = e["name"].split()[0].replace("👾", "").strip()
+        master = ENEMY_STATS_MASTER.get(raw_name, ENEMY_STATS_MASTER["default"])
+        action = random.choice(master.get("ai", ["attack"]))
+        
+        log_msg = ""
+        if action == "strong_attack":
+            dmg, crit = self._calculate_damage(e, p, self.defending)
+            dmg = int(dmg * 1.4)
+            p["hp"] = max(0, p["hp"] - dmg); log_msg = f"🔥 **{e['name']}の強攻撃！！** {dmg} ダメージ"
+        elif action == "heal":
+            heal_amt = int(e["max_hp"] * 0.15)
+            e["hp"] = min(e["max_hp"], e["hp"] + heal_amt); log_msg = f"💚 {e['name']}は傷口を舐めて {heal_amt} 回復した"
+        elif action == "wait":
+            log_msg = f"💤 {e['name']}は様子を伺っている..."
+        else:
+            dmg, crit = self._calculate_damage(e, p, self.defending)
+            p["hp"] = max(0, p["hp"] - dmg)
+            c_msg = "⚠️ **CRITICAL!!** " if crit else ""
+            log_msg = f"{c_msg}{e['name']}の攻撃：{dmg} ダメージ"
+
         self.defending = False
-        return dmg
+        return log_msg
 
     async def _win(self, i):
         e = self.enemy; u = get_user_cache(self.uid)
         u["coins"] = u.get("coins", 0) + e["reward_coins"]
-        if e["reward_box"] > 0:
-            u["boxes"] = u.get("boxes", 0) + e["reward_box"]
+        if e["reward_box"] > 0: u["boxes"] = u.get("boxes", 0) + e["reward_box"]
         leveled = add_xp(self.uid, e["reward_xp"])
-
         msg = f"🎉 勝利！ +{e['reward_coins']}コイン +{e['reward_xp']}XP"
         if e["reward_box"] > 0: msg += f" +宝箱{e['reward_box']}個"
         if leveled:
             lv = get_user_cache(self.uid)["level"]
             msg += f"\n⬆️ レベルアップ！ Lv.**{lv}**"
-
-        self.log.append(msg)
-        await save_user(self.uid)
-        await dg_save_player(self.uid)
-        self.stop()
-
-        # 勝利してマップに戻る際の画像生成
+        self.log.append(msg); await save_user(self.uid); await dg_save_player(self.uid); self.stop()
         mv = DungeonMainView(self.uid, self.floor, self.x, self.y)
         map_file = d_render_pillow(self.uid, self.floor, self.x, self.y)
         await i.edit_original_response(embed=mv._embed(msg), view=mv, attachments=[map_file])
 
     async def _lose(self, i):
         p = d_get_player(self.uid)
-        p["hp"] = p["max_hp"]; p["floor"] = 1
-        p["x"], p["y"] = dg_starts.get(1, (1, 1))
+        p["hp"] = p["max_hp"]; p["floor"] = 1; p["x"], p["y"] = dg_starts.get(1, (1, 1))
         self.log.append("敗北… スタート地点へ送還された")
-        await dg_save_player(self.uid)
-        self.stop()
-
-        # スタート地点に戻る際の画像生成
+        await dg_save_player(self.uid); self.stop()
         mv = DungeonMainView(self.uid, 1, p["x"], p["y"])
         map_file = d_render_pillow(self.uid, 1, p["x"], p["y"])
         await i.edit_original_response(embed=mv._embed("敗北して戻された…"), view=mv, attachments=[map_file])
@@ -2946,20 +3010,23 @@ class DungeonCombatView(discord.ui.View):
     async def attack(self, i, b):
         await i.response.defer()
         p = d_get_player(self.uid); e = self.enemy
-        dmg = max(1, p["atk"] - e["def_"] + random.randint(-2, 4))
-        e["hp"] = max(0, e["hp"] - dmg)
-        self.log.append(f"{dmg} ダメージ！")
+        p_first = p.get("spd", 10) >= e.get("spd", 10)
+        
+        if p_first:
+            dmg, crit = self._calculate_damage(p, e)
+            e["hp"] = max(0, e["hp"] - dmg)
+            self.log.append(f"{'💥 **CRIT!!** ' if crit else ''}{dmg} ダメージ！")
+            if e["hp"] <= 0: await self._win(i); return
+            self.log.append(self._enemy_turn())
+        else:
+            self.log.append(self._enemy_turn())
+            if p["hp"] <= 0: await self._lose(i); return
+            dmg, crit = self._calculate_damage(p, e)
+            e["hp"] = max(0, e["hp"] - dmg)
+            self.log.append(f"{'💥 **CRIT!!** ' if crit else ''}{dmg} ダメージ！")
 
-        if e["hp"] <= 0:
-            await self._win(i); return
-
-        edm = self._enemy_turn()
-        self.log.append(f"{e['name']}の攻撃 {edm} ダメージ")
-
-        if p["hp"] <= 0:
-            await self._lose(i); return
-
-        # 戦闘継続：背景マップを維持
+        if e["hp"] <= 0: await self._win(i); return
+        if p["hp"] <= 0: await self._lose(i); return
         map_file = d_render_pillow(self.uid, self.floor, self.x, self.y)
         await i.edit_original_response(embed=self._embed(), view=self, attachments=[map_file])
 
@@ -2967,79 +3034,33 @@ class DungeonCombatView(discord.ui.View):
     async def defend(self, i, b):
         await i.response.defer()
         self.defending = True
-        edm = self._enemy_turn()
-        self.log.append(f"防御！{edm} ダメージ（半減）")
-
-        if d_get_player(self.uid)["hp"] <= 0:
-            await self._lose(i); return
-
+        self.log.append(f"🛡 防御体制！\n{self._enemy_turn()}")
+        if d_get_player(self.uid)["hp"] <= 0: await self._lose(i); return
         map_file = d_render_pillow(self.uid, self.floor, self.x, self.y)
         await i.edit_original_response(embed=self._embed(), view=self, attachments=[map_file])
 
     @discord.ui.button(label="逃げる", style=discord.ButtonStyle.grey, row=0)
     async def run_away(self, i, b):
         await i.response.defer()
-        etype = self.enemy.get("type", "normal")
-        map_file = d_render_pillow(self.uid, self.floor, self.x, self.y)
-
-        if etype == "boss":
-            self.log.append("ボスからは逃げられない！")
-            edm = self._enemy_turn()
-            self.log.append(f"{self.enemy['name']}の攻撃 {edm} ダメージ")
-            if d_get_player(self.uid)["hp"] <= 0:
-                await self._lose(i); return
-            await i.edit_original_response(embed=self._embed(), view=self, attachments=[map_file])
+        if self.enemy.get("type") == "boss":
+            self.log.append("ボスからは逃げられない！\n" + self._enemy_turn())
+            if d_get_player(self.uid)["hp"] <= 0: await self._lose(i); return
+            await i.edit_original_response(embed=self._embed(), view=self, attachments=[d_render_pillow(self.uid, self.floor, self.x, self.y)])
             return
-
-        rate = 0.2 if etype == "elite" else 0.5
-        if random.random() < rate:
-            self.log.append("逃げ切った！")
-            self.stop()
-            mv = DungeonMainView(self.uid, self.floor, self.x, self.y)
-            await i.edit_original_response(embed=mv._embed("逃走成功"), view=mv, attachments=[map_file])
+        if random.random() < (0.2 if self.enemy.get("type") == "elite" else 0.5):
+            self.stop(); mv = DungeonMainView(self.uid, self.floor, self.x, self.y)
+            await i.edit_original_response(embed=mv._embed("逃走成功"), view=mv, attachments=[d_render_pillow(self.uid, self.floor, self.x, self.y)])
         else:
-            edm = self._enemy_turn()
-            self.log.append(f"逃げ失敗！ {edm} ダメージ")
-            if d_get_player(self.uid)["hp"] <= 0:
-                await self._lose(i); return
-            await i.edit_original_response(embed=self._embed(), view=self, attachments=[map_file])
+            self.log.append("逃げ失敗！\n" + self._enemy_turn())
+            if d_get_player(self.uid)["hp"] <= 0: await self._lose(i); return
+            await i.edit_original_response(embed=self._embed(), view=self, attachments=[d_render_pillow(self.uid, self.floor, self.x, self.y)])
+
 
 # ----------------------------------------------------------------
 #  マップ表示
 def d_render_pillow(uid, floor, px, py, radius=D_VIEW_R):
     """メインマップをPillowで生成し、discord.Fileを返す"""
-    d_ensure_map(floor)
-    # 描画範囲の決定
-    size = (radius * 2 + 1) * T_SIZE
-    img = Image.new("RGBA", (size, size), (30, 30, 30, 255))
-    draw = ImageDraw.Draw(img)
-
-    for i, vy in enumerate(range(py - radius, py + radius + 1)):
-        for j, vx in enumerate(range(px - radius, px + radius + 1)):
-            # 相対座標からの描画位置
-            dx, dy = j * T_SIZE, i * T_SIZE
-            
-            # 自尊心の表示（中心）
-            if vx == px and vy == py:
-                draw.rectangle([dx, dy, dx + T_SIZE - 1, dy + T_SIZE - 1], fill=(200, 200, 200, 255))
-                draw.ellipse([dx + 4, dy + 4, dx + T_SIZE - 5, dy + T_SIZE - 5], fill=(255, 50, 50, 255))
-                continue
-
-            # マップ範囲内の描画
-            if 0 <= vx < D_MAP_W and 0 <= vy < D_MAP_H:
-                cell = dg_maps[floor][vy][vx]
-                # セルタイプに応じた色決定
-                if cell == D_WALL: color = (60, 60, 60, 255)
-                elif cell == D_STAIRS: color = (0, 200, 100, 255)
-                elif cell == D_CHEST: color = (255, 215, 0, 255)
-                elif cell == D_SHOP: color = (150, 100, 255, 255)
-                elif cell == D_BASE: color = (100, 150, 255, 255)
-                else: color = (180, 180, 180, 255) # 床
-                
-                draw.rectangle([dx, dy, dx + T_SIZE - 1, dy + T_SIZE - 1], fill=color)
-            else:
-                # 範囲外（霧）
-                draw.rectangle([dx, dy, dx + T_SIZE - 1, dy + T_SIZE - 1], fill=(20, 20, 20, 255))
+    img = d_build_map_image(uid, floor, px, py, radius)
 
     buf = io.BytesIO()
     img.save(buf, format='PNG')
@@ -3665,8 +3686,8 @@ class DungeonMainView(discord.ui.View):
         self.x = x
         self.y = y
 
-    def _embed(self, msg="", has_image=True):
-        """Pillow画像(attachment://map.png)を表示するためのEmbed生成"""
+    def _embed(self, msg="", has_image=True, image_url=None):
+        """Pillow画像(attachment://map.png)またはURL画像を表示するためのEmbed生成"""
         bname, _, _, _, bcolor = d_get_biome(self.floor)
         p = d_get_player(self.uid)
         em = discord.Embed(
@@ -3675,7 +3696,10 @@ class DungeonMainView(discord.ui.View):
         )
         
         if has_image:
-            em.set_image(url="attachment://map.png")
+            if image_url:
+                em.set_image(url=image_url)
+            else:
+                em.set_image(url="attachment://map.png")
         else:
             em.add_field(name="マップ", value=d_render_text(self.uid, self.floor, self.x, self.y), inline=False)
             
@@ -3691,8 +3715,8 @@ class DungeonMainView(discord.ui.View):
 
         # --- 1. 壁判定 ---
         if ct == D_WALL:
-            map_file = d_render_pillow(self.uid, self.floor, self.x, self.y)
-            await i.edit_original_response(embed=self._embed("🔲 壁！進めない"), attachments=[map_file], view=self)
+            map_url = await d_render_image(self.uid, self.floor, self.x, self.y)
+            await i.edit_original_response(embed=self._embed("🔲 壁！進めない", has_image=True, image_url=map_url), view=self)
             return
 
         # 座標更新
@@ -3706,15 +3730,13 @@ class DungeonMainView(discord.ui.View):
         if self.floor not in Dg[self.uid]: Dg[self.uid][self.floor] = set()
         Dg[self.uid][self.floor].add((self.x, self.y))
 
-        # Supabase への保存処理 (非同期)
+        # Supabase への保存処理 (同期)
         explored_list = [list(c) for c in Dg[self.uid][self.floor]]
-        asyncio.create_task(
-            supabase.table("user_exploration").upsert({
-                "uid": self.uid,
-                "floor": self.floor,
-                "explored_coords": explored_list
-            }).execute()
-        )
+        supabase.table("user_exploration").upsert({
+            "uid": self.uid,
+            "floor": self.floor,
+            "explored_coords": explored_list
+        }).execute()
 
         msg = ""
 
@@ -3843,15 +3865,14 @@ async def dungeon_enter(interaction: Interaction):
     # 1. Viewの作成
     mv = DungeonMainView(uid, floor, x, y)
     
-    # 2. 初期表示用のマップ画像を生成
-    map_file = d_render_pillow(uid, floor, x, y)
-    
+    # 2. 初期表示用のマップ画像を生成 (d_render_image を使用)
+    map_url = await d_render_image(uid, floor, x, y)
+
     # 3. Embedの生成（画像ありフラグをTrueに）
-    # ※ _embed 内で attachment://map.png を参照するよう修正済みであること
-    em = mv._embed("ダンジョンへようこそ！", has_image=True)
-    
-    # 4. followup.send で file を指定して送信
-    await interaction.followup.send(embed=em, view=mv, file=map_file)
+    em = mv._embed("ダンジョンへようこそ！", has_image=True, image_url=map_url)
+
+    # 4. followup.send で URL付きEmbedを送信
+    await interaction.followup.send(embed=em, view=mv)
 
 
 # ================================================================
@@ -3897,7 +3918,7 @@ async def dungeon_task():
             d_ensure_map(fl)
             asyncio.create_task(dg_save_map(fl))
         print("ダンジョン月次リセット完了")
-        
+
 from keep_alive import keep_alive
 keep_alive()
 client.run(tok)
