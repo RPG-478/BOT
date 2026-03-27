@@ -16,6 +16,14 @@ font = FontProperties(fname='font.ttf', size=16)
 #from dungeo import setup_dungeon
 from flask import Flask
 import threading
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "I'm alive!"
+
+def run_web():
+    app.run(host='0.0.0.0', port=8080)
 
 # --- 修正後（この通りに書き換えてください） ---
 # 1. まずパスを定義する
@@ -25,17 +33,6 @@ env_path = os.path.join(os.path.dirname(__file__), '.env')
 load_dotenv(env_path)
 
 # 3. その後でスレッドを開始する
-threading.Thread(target=run_web).start()
-
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "alive"
-
-def run_web():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
 threading.Thread(target=run_web).start()
 
 tok = os.getenv('TOKEN')
