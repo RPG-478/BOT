@@ -16,8 +16,17 @@ font = FontProperties(fname='font.ttf', size=16)
 #from dungeo import setup_dungeon
 from flask import Flask
 import threading
+
+# --- 修正後（この通りに書き換えてください） ---
+# 1. まずパスを定義する
+env_path = os.path.join(os.path.dirname(__file__), '.env')
+
+# 2. そのパスを使って読み込む
 load_dotenv(env_path)
+
+# 3. その後でスレッドを開始する
 threading.Thread(target=run_web).start()
+
 app = Flask(__name__)
 
 @app.route("/")
