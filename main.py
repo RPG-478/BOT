@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os, discord, json, random, asyncio, datetime, math, signal, string, io
 from discord.ui import View, Button
 from discord import app_commands, Interaction
@@ -14,7 +15,9 @@ font = FontProperties(fname='font.ttf', size=16)
 #from dungeo import setup_dungeon
 from flask import Flask
 import threading
-
+load_dotenv(env_path)
+threading.Thread(target=run_web).start()
+from dotenv import load_dotenv
 app = Flask(__name__)
 
 @app.route("/")
