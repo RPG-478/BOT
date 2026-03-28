@@ -1358,6 +1358,37 @@ async def item_use(i:Interaction,name:str):
         await save_user(uid)
         await i.response.send_message(embed=embed_success(" 酒を使用",msg))
         return
+
+    # --- コンパスの実装 ---
+    if name == "コンパス":
+        if not await use_item_once(uid, "コンパス"):
+            await i.response.send_message(embed=embed_error("エラー", "**コンパス** を持っていません。"))
+            return
+        
+        # ユーザーデータからダンジョン情報を取得
+        dungeon = u.get("dungeon", {})
+        px, py = dungeon.get("px"), dungeon.get("py")
+        sx, sy = dungeon.get("sx"), dungeon.get("sy")
+        
+        if px is None or sx is None:
+            await i.response.send_message(embed=embed_error("エラー", "現在はダンジョン内にいないため、コンパスが反応しません。"))
+            return
+
+        dx, dy = sx - px, sy - py
+        direction = ""
+        if dy < 0: direction += "北"
+        elif dy > 0: direction += "南"
+        if dx > 0: direction += "東"
+        elif dx < 0: direction += "西"
+        if not direction: direction = "足元"
+
+        embed = embed_success("🧭 コンパスを使用", 
+            f"コンパスの針が激しく回転し、一点を指し示した！\n\n"
+            f"階段は現在地から **【{direction}】** の方向にあるようです。")
+        await save_user(uid)
+        await i.response.send_message(embed=embed)
+        return
+
     if name not in ITEMS:
         await i.response.send_message(embed=embed_error("エラー","そのアイテムは存在しません。"))
         return
@@ -1378,6 +1409,7 @@ async def item_use(i:Interaction,name:str):
         set_prison(uid,12)
         embed.add_field(name="プリズン",value="steal&ギャンブル不可になりました",inline=False)
     await save_user(uid); await i.response.send_message(embed=embed)
+
 
 @item_group.command(name="list",description="所持アイテム一覧を表示します")
 async def item_list(i:Interaction):
