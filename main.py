@@ -1362,36 +1362,47 @@ async def item_use(i:Interaction,name:str):
         await i.response.send_message(embed=embed_success(" 酒を使用",msg))
         return
 
-    # --- 3. 開拓のコンパス（"stairs" 検索） ---
+    # --- 3. 開拓のコンパス（階段探索ロジック） ---
     if name == "開拓のコンパス":
-        if uid not in dg_bases:
-            await i.response.send_message(embed=embed_error("エラー", "ダンジョン探索中のみ使用可能です。"), ephemeral=True)
-            return
-
-        floor, px, py = dg_bases[uid]
-        grid = dg_maps.get(floor)
-
-        if grid is None:
-            await i.response.send_message(embed=embed_error("エラー", "マップデータが読み込めません。"), ephemeral=True)
-            return
-
-        # 階段の文字列 "stairs" をグリッドから探す
-        sx, sy = None, None
-        for y, row in enumerate(grid):
-            # 文字列 "stairs" が含まれているか判定
-            if "stairs" in row:
-                sy = y
-                sx = row.index("stairs")
-                break
-
-        if sx is None:
-            await i.response.send_message(embed=embed_error("エラー", "この階層には階段が見当たりません。"), ephemeral=True)
-            return
-
-        # アイテム消費
-        if not await use_item_once(uid, "開拓のコンパス"):
+        # アイテム所持チェック
+        if not has_item(uid, "開拓のコンパス"):
             await i.response.send_message(embed=embed_error("エラー", "**開拓のコンパス** を持っていません。"), ephemeral=True)
             return
+
+        # 座標データの取得 (dg_bases から取得)
+        floor, px, py = None, None, None
+        if uid in dg_bases:
+            floor, px, py = dg_bases[uid]
+        
+        # 探索中でない（座標が取れない）場合
+        if floor is None or px is None:
+            await i.response.send_message(embed=embed_error("情報", "コンパスは静かに震えているが、今は何も指し示していないようだ。\n（ダンジョン内でのみ階段を検知できます）"), ephemeral=True)
+            return
+
+        # マップ(2次元配列)を取得
+        grid = dg_maps.get(floor)
+        if grid is None:
+            await i.response.send_message(embed=embed_error("エラー", f"{floor}階のマップを読み込めませんでした。"), ephemeral=True)
+            return
+
+        # マップ全体を二重ループで走査して階段(D_STAIRS または "stairs")を探す
+        sx, sy = None, None
+        for y_idx, row in enumerate(grid):
+            for x_idx, cell in enumerate(row):
+                # 階段の識別子に一致するか判定
+                if cell == D_STAIRS or cell == "stairs":
+                    sx, sy = x_idx, y_idx
+                    break
+            if sx is not None: break
+
+        if sx is None:
+            await i.response.send_message(embed=embed_error("エラー", f"{floor}階で階段が見つかりませんでした。"), ephemeral=True)
+            return
+
+        # 階段が見つかったのでアイテムを消費
+        if not await use_item_once(uid, "開拓のコンパス"):
+             await i.response.send_message(embed=embed_error("エラー", "アイテムの使用に失敗しました。"), ephemeral=True)
+             return
 
         # 方角計算
         dx, dy = sx - px, sy - py
@@ -1402,9 +1413,8 @@ async def item_use(i:Interaction,name:str):
         elif dx < 0: dirs.append("西")
         direction = "".join(dirs) if dirs else "足元"
 
-        embed = embed_success("🧭 開拓のコンパスを使用", 
-            f"コンパスの針が「階段」の魔力に反応した！\n\n"
-            f"階段は **{floor}階** の **【{direction}】** 方向にある。")
+        embed = embed_success("🧭 開拓のコンパス", 
+            f"コンパスの針が激しく回転し、一点を指し示した！\n\n階段は **{floor}階** の **【{direction}】** 方向にあるようだ。")
         
         await save_user(uid)
         await i.response.send_message(embed=embed)
@@ -1435,8 +1445,6 @@ async def item_use(i:Interaction,name:str):
         
     await save_user(uid)
     await i.response.send_message(embed=embed)
-
-
 @item_group.command(name="list",description="所持アイテム一覧を表示します")
 async def item_list(i:Interaction):
     uid=str(i.user.id); await load_user(uid); u=get_user_cache(uid)
