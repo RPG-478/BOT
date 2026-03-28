@@ -299,6 +299,10 @@ def load_all_assets():
         path = os.path.join(assets_dir, fname)
         if os.path.isfile(path):
             try:
+                PLAYER_IMAGE = Image.open("AGO.PNG").convert("RGBA")
+            except Exception:
+                PLAYER_IMAGE = None
+            try:
                 # ニアレストネイバー法でリサイズ
                 img = Image.open(path).convert("RGBA").resize((TILE, TILE), Image.Resampling.NEAREST)
                 _ASSET_CACHE[(biome, tid)] = img
@@ -308,10 +312,6 @@ def load_all_assets():
         else:
             print(f"⚠ {fname} が見つかりません: {path}")
 # --- プレイヤー画像（AGO.PNG）の準備 ---
-try:
-    PLAYER_IMAGE = Image.open("AGO.PNG").convert("RGBA")
-except Exception:
-    PLAYER_IMAGE = None
 
 # --- ここに ASSET_CONFIG も必要です ---
 ASSET_CONFIG = {
