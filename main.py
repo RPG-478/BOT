@@ -1362,44 +1362,52 @@ async def item_use(i:Interaction,name:str):
         await i.response.send_message(embed=embed_success(" 酒を使用",msg))
         return
 
-    # --- 3. 開拓のコンパス（階段探索ロジック） ---
+    # --- 3. 開拓のコンパス（デバッグ機能付き） ---
     if name == "開拓のコンパス":
         # アイテム所持チェック
         if not has_item(uid, "開拓のコンパス"):
             await i.response.send_message(embed=embed_error("エラー", "**開拓のコンパス** を持っていません。"), ephemeral=True)
             return
 
-        # 座標データの取得 (dg_bases から取得)
+        # 座標データの取得
         floor, px, py = None, None, None
         if uid in dg_bases:
             floor, px, py = dg_bases[uid]
         
-        # 探索中でない（座標が取れない）場合
         if floor is None or px is None:
-            await i.response.send_message(embed=embed_error("情報", "コンパスは静かに震えているが、今は何も指し示していないようだ。\n（ダンジョン内でのみ階段を検知できます）"), ephemeral=True)
+            await i.response.send_message(embed=embed_error("情報", "コンパスの針が静かに震えている…（ダンジョン内でのみ有効です）"), ephemeral=True)
             return
 
-        # マップ(2次元配列)を取得
+        # マップを取得
         grid = dg_maps.get(floor)
         if grid is None:
-            await i.response.send_message(embed=embed_error("エラー", f"{floor}階のマップを読み込めませんでした。"), ephemeral=True)
+            await i.response.send_message(embed=embed_error("エラー", f"{floor}階のマップが読み込めませんでした。"), ephemeral=True)
             return
 
-        # マップ全体を二重ループで走査して階段(D_STAIRS または "stairs")を探す
+        # マップをスキャン
         sx, sy = None, None
+        found_tiles = set() # 見つからない時のための記録用
+
         for y_idx, row in enumerate(grid):
             for x_idx, cell in enumerate(row):
-                # 階段の識別子に一致するか判定
-                if cell == D_STAIRS or cell == "stairs":
+                found_tiles.add(str(cell)) # 全タイルの種類を文字列で記録
+                
+                # 判定：定数 D_STAIRS または 文字列 "stairs"
+                if cell == D_STAIRS or str(cell).lower() == "stairs":
                     sx, sy = x_idx, y_idx
                     break
             if sx is not None: break
 
+        # 階段が見つからない場合（ここで原因を表示）
         if sx is None:
-            await i.response.send_message(embed=embed_error("エラー", f"{floor}階で階段が見つかりませんでした。"), ephemeral=True)
+            tile_list = ", ".join(list(found_tiles))
+            await i.response.send_message(embed=embed_error("エラー", 
+                f"{floor}階で階段が見つかりませんでした。\n"
+                f"**マップ上のタイル種類:** `{tile_list}`\n"
+                f"**探している値:** `{D_STAIRS}` または `stairs`"), ephemeral=True)
             return
 
-        # 階段が見つかったのでアイテムを消費
+        # 成功したのでアイテムを消費
         if not await use_item_once(uid, "開拓のコンパス"):
              await i.response.send_message(embed=embed_error("エラー", "アイテムの使用に失敗しました。"), ephemeral=True)
              return
@@ -1414,13 +1422,13 @@ async def item_use(i:Interaction,name:str):
         direction = "".join(dirs) if dirs else "足元"
 
         embed = embed_success("🧭 開拓のコンパス", 
-            f"コンパスの針が激しく回転し、一点を指し示した！\n\n階段は **{floor}階** の **【{direction}】** 方向にあるようだ。")
+            f"コンパスの針が「階段」の魔力に反応した！\n\n階段は **{floor}階** の **【{direction}】** 方向にある。")
         
         await save_user(uid)
         await i.response.send_message(embed=embed)
         return
 
-    # --- 4. 既存の汎用アイテム処理 ---
+    # --- 4. 汎用アイテム処理 ---
     if name not in ITEMS:
         await i.response.send_message(embed=embed_error("エラー","そのアイテムは存在しません。"))
         return
@@ -1445,6 +1453,7 @@ async def item_use(i:Interaction,name:str):
         
     await save_user(uid)
     await i.response.send_message(embed=embed)
+
 @item_group.command(name="list",description="所持アイテム一覧を表示します")
 async def item_list(i:Interaction):
     uid=str(i.user.id); await load_user(uid); u=get_user_cache(uid)
