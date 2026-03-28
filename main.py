@@ -71,6 +71,144 @@ recovery_state = {"energy": 0.0}
 daily_stats = {"pan_count":0,"gamble_count":0,"pan_to_coin":0,"coin_to_pan":0,"coins_earned":0,"shop_role_count":0,"shop_item_count":0,"rate_history_daily":[],"pan_word_count":0}
 command_usage = {}
 team_command_usage = {}
+
+# ============================================================
+#  レベルロール定義 (レベル達成時に付与)
+# ============================================================
+LEVEL_ROLES = {
+    1:  1111111,
+    10: 2222222,
+    25: 3333333,
+    40: 555555,
+    50: 6666666,
+}
+
+# ============================================================
+#  デイリーミッション定義
+# ============================================================
+DAILY_MISSIONS_ALL = [
+    {"id": "knead_rare",    "desc": "レアパンを10個こねる",        "key": "knead_rare",    "target": 10},
+    {"id": "slot_play",     "desc": "スロットで10回遊ぶ",          "key": "slot_play",     "target": 10},
+    {"id": "dice_play",     "desc": "ダイスで3回遊ぶ",             "key": "dice_play",     "target": 3},
+    {"id": "item_mix",      "desc": "アイテムを2回錬成する",       "key": "item_mix",      "target": 2},
+    {"id": "double_play",   "desc": "ダブルゲームを2回する",       "key": "double_play",   "target": 2},
+]
+DAILY_MISSION_REWARD = 60  # レアパン60個
+
+# デイリーミッションの進捗 {uid: {"date": date, "missions": [id,...], "progress": {id: count}, "claimed": bool}}
+daily_mission_data = {}
+
+def get_daily_mission(uid):
+    """今日のデイリーミッションを取得。なければ新規生成"""
+    today_str = datetime.datetime.now(JST).date().isoformat()
+    d = daily_mission_data.get(uid)
+    if not d or d.get("date") != today_str:
+        chosen = random.sample([m["id"] for m in DAILY_MISSIONS_ALL], 3)
+        daily_mission_data[uid] = {
+            "date": today_str,
+            "missions": chosen,
+            "progress": {mid: 0 for mid in chosen},
+            "claimed": False,
+        }
+    return daily_mission_data[uid]
+
+def add_daily_progress(uid, key, amount=1):
+    """デイリーミッションの進捗を加算"""
+    d = get_daily_mission(uid)
+    for m in DAILY_MISSIONS_ALL:
+        if m["id"] == key and key in d["missions"]:
+            d["progress"][key] = d["progress"].get(key, 0) + amount
+            break
+
+# ============================================================
+#  プレイヤー統計 (累積)  {uid: {...}}
+# ============================================================
+player_stats = {}
+
+def get_player_stats(uid):
+    if uid not in player_stats:
+        player_stats[uid] = {
+            "total_bread": 0,
+            "total_coins_earned": 0,
+            "total_gamble": 0,
+            "total_steal_success": 0,
+            "total_dungeon_floor": 0,
+            "total_slot": 0,
+            "total_dice": 0,
+            "total_double": 0,
+            "total_item_mix": 0,
+            "max_chips_won_once": 0,
+            "ticket_bought": 0,
+            "trash_bought": 0,
+        }
+    return player_stats[uid]
+
+# ============================================================
+#  実績定義
+# ============================================================
+ACHIEVEMENTS = [
+    {"id": "bread_1000",        "name": "一人前のパン屋",              "desc": "パンを1000個作る",                         "icon": "🍞"},
+    {"id": "ticket_1000",       "name": "ああ、私のガチャチケ",        "desc": "崩壊スターレイルチケットを1000枚買う",     "icon": "🎫"},
+    {"id": "trash_10000",       "name": "ゴミを愛す",                  "desc": "ゴミを10000個買う",                         "icon": "🗑️"},
+    {"id": "iron_grave",        "name": "私がザンダー・ツー・クワバラ","desc": "鉄墓を合成する",                           "icon": "⚔️"},
+    {"id": "coins_10m",         "name": "大富豪",                      "desc": "10,000,000コインをゲットする",              "icon": "💰"},
+    {"id": "aventurine",        "name": "アベンチュリン",              "desc": "一回の賭けで1000チップ勝つ",               "icon": "🎲"},
+    {"id": "steal_30",          "name": "コインは私のもの！",          "desc": "Stealを30回決める",                        "icon": "🦹"},
+    {"id": "dungeon_30",        "name": "こんなの簡単すぎる！",        "desc": "ダンジョンで30階に達する",                  "icon": "🏰"},
+]
+
+# {uid: set of achievement_ids}
+user_achievements = {}
+
+def get_user_achievements(uid):
+    if uid not in user_achievements:
+        user_achievements[uid] = set()
+    return user_achievements[uid]
+
+async def check_and_grant_achievement(uid, achievement_id, interaction_or_channel=None):
+    """実績を解除して通知"""
+    ach = next((a for a in ACHIEVEMENTS if a["id"] == achievement_id), None)
+    if not ach: return
+    achs = get_user_achievements(uid)
+    if achievement_id in achs: return
+    achs.add(achievement_id)
+    # Supabaseに保存
+    try:
+        supabase.table("user_achievements").upsert({"user_id": uid, "achievement_id": achievement_id, "unlocked_at": datetime.datetime.now(JST).isoformat()}).execute()
+    except Exception as e:
+        print(f"実績保存失敗: {e}")
+    # 通知
+    embed = embed_success(f"{ach['icon']} 実績解除！", f"**{ach['name']}**\n{ach['desc']}")
+    try:
+        ch = client.get_channel(LEVEL_UP_CHANNEL_ID) or await client.fetch_channel(LEVEL_UP_CHANNEL_ID)
+        await ch.send(f"<@{uid}>", embed=embed)
+    except Exception as e:
+        print(f"実績通知失敗: {e}")
+
+# ============================================================
+#  コマンドカテゴリ別実行数
+# ============================================================
+category_command_usage = {
+    "パン関係":     0,
+    "経済関係":     0,
+    "ミニゲーム関係": 0,
+    "ショップ関係": 0,
+    "チーム関係":   0,
+    "アイテム関係": 0,
+    "焼きがま関係": 0,
+    "ダンジョン関係": 0,
+}
+
+COMMAND_CATEGORIES = {
+    "パン関係":     ["today","bpd","breads","login","give","eat_bread","bread_change"],
+    "経済関係":     ["wallet","exchange","rate","steal","economy_coin","mining","trade","lottery","lottery_status","random","party_check","ranking","ranking_level","level"],
+    "ミニゲーム関係": ["slot7","dice","double","blackjack","bj_duel","daily"],
+    "ショップ関係": ["shop","team_shop","boost_shop","role_status"],
+    "チーム関係":   ["make_team","team","team_shop"],
+    "アイテム関係": ["item"],
+    "焼きがま関係": ["oven_status"],
+    "ダンジョン関係": ["dungeon","dungeon_reset"],
+}
 dg_session = {}  # {uid: {coins, items, boxes}} ← 入場時の所持数を記録
 dg_boxes   = {}  # {uid: {items, boxes}}        ← アイテムボックス保管内容
 # プログラム上部に追記
@@ -254,6 +392,50 @@ async def load_global():
             rate_state["last_update"] = datetime.datetime.fromisoformat(last["timestamp"])
             print(f"レート履歴復元完了: {len(rate_history)}件")
     except Exception as e: print(f"rate_history復元失敗:{e}")
+    # 実績の読み込み
+    try:
+        res = supabase.table("user_achievements").select("*").execute()
+        for row in res.data:
+            uid = row["user_id"]; aid = row["achievement_id"]
+            if uid not in user_achievements: user_achievements[uid] = set()
+            user_achievements[uid].add(aid)
+        print(f"実績データ読み込み完了: {len(res.data)}件")
+    except Exception as e: print(f"実績読み込み失敗:{e}")
+    # プレイヤー統計の読み込み
+    try:
+        res = supabase.table("player_stats").select("*").execute()
+        for row in res.data:
+            uid = row["user_id"]
+            player_stats[uid] = {
+                "total_bread":          row.get("total_bread", 0),
+                "total_coins_earned":   row.get("total_coins_earned", 0),
+                "total_gamble":         row.get("total_gamble", 0),
+                "total_steal_success":  row.get("total_steal_success", 0),
+                "total_dungeon_floor":  row.get("total_dungeon_floor", 0),
+                "total_slot":           row.get("total_slot", 0),
+                "total_dice":           row.get("total_dice", 0),
+                "total_double":         row.get("total_double", 0),
+                "total_item_mix":       row.get("total_item_mix", 0),
+                "max_chips_won_once":   row.get("max_chips_won_once", 0),
+                "ticket_bought":        row.get("ticket_bought", 0),
+                "trash_bought":         row.get("trash_bought", 0),
+            }
+        print(f"プレイヤー統計読み込み完了: {len(res.data)}件")
+    except Exception as e: print(f"プレイヤー統計読み込み失敗:{e}")
+    # デイリーミッション進捗の読み込み
+    try:
+        today_str = datetime.datetime.now(JST).date().isoformat()
+        res = supabase.table("daily_missions").select("*").eq("date", today_str).execute()
+        for row in res.data:
+            uid = row["user_id"]
+            daily_mission_data[uid] = {
+                "date":     row.get("date", today_str),
+                "missions": json.loads(row.get("missions", "[]")),
+                "progress": json.loads(row.get("progress", "{}")),
+                "claimed":  bool(row.get("claimed", False)),
+            }
+        print(f"デイリーミッション読み込み完了: {len(res.data)}件")
+    except Exception as e: print(f"デイリーミッション読み込み失敗:{e}")
 
 async def save_all_users():
     for uid in list(user_cache.keys()): await save_user(uid)
@@ -263,6 +445,25 @@ async def save_all_users():
         with open("role_timers.txt","w",encoding="utf-8") as f: f.write(json.dumps(role_timers,ensure_ascii=False,indent=2))
         await ch.send(file=discord.File("role_timers.txt"))
     except Exception as e: print(f"role_timers保存失敗:{e}")
+    # プレイヤー統計の保存
+    try:
+        for uid, st in list(player_stats.items()):
+            row = {"user_id": uid, **st}
+            supabase.table("player_stats").upsert(row).execute()
+    except Exception as e: print(f"プレイヤー統計保存失敗:{e}")
+    # デイリーミッション進捗の保存
+    try:
+        today_str = datetime.datetime.now(JST).date().isoformat()
+        for uid, d in list(daily_mission_data.items()):
+            if d.get("date") == today_str:
+                supabase.table("daily_missions").upsert({
+                    "user_id":  uid,
+                    "date":     d["date"],
+                    "missions": json.dumps(d["missions"], ensure_ascii=False),
+                    "progress": json.dumps(d["progress"], ensure_ascii=False),
+                    "claimed":  d.get("claimed", False),
+                }).execute()
+    except Exception as e: print(f"デイリーミッション保存失敗:{e}")
 
 def has_item(uid,name):
     u = get_user_cache(uid); item = u["items"].get(name)
@@ -399,10 +600,17 @@ def get_internal_rate(uid):
     m=internal_mode.get(uid,"NORMAL")
     return 0.75 if m=="FEVER" else 0.60
 
-def add_xp(uid,xp):
-    u=get_user_cache(uid); u["xp"]+=xp; leveled=False
-    while u["xp"]>=xp_needed(u["level"]+1): u["xp"]-=xp_needed(u["level"]+1); u["level"]+=1; leveled=True
-    return leveled
+def add_xp(uid, xp):
+    u = get_user_cache(uid); u["xp"] += xp; leveled = False; levels_gained = []
+    while u["xp"] >= xp_needed(u["level"] + 1):
+        u["xp"] -= xp_needed(u["level"] + 1); u["level"] += 1; leveled = True
+        levels_gained.append(u["level"])
+        # レベルアップごとにレアパン10個
+        u["bread_count"] = u.get("bread_count", 0) + 10
+        st = get_player_stats(uid); st["total_bread"] = st.get("total_bread", 0) + 10
+    # 付与すべきロールIDリスト
+    role_grants = [LEVEL_ROLES[lv] for lv in levels_gained if lv in LEVEL_ROLES]
+    return leveled, role_grants
 
 def add_chips(uid,amt): get_user_cache(uid)["chips"]+=amt
 def subtract_chips(uid,amt): get_user_cache(uid)["chips"]-=amt
@@ -451,10 +659,12 @@ async def bread_bake():
 async def vc_xp_loop():
     for uid in list(vc_members.keys()):
         await load_user(str(uid))
-        if add_xp(str(uid),random.randint(VC_XP_MIN,VC_XP_MAX)):
+        result = add_xp(str(uid), random.randint(VC_XP_MIN, VC_XP_MAX))
+        leveled, role_grants = result if isinstance(result, tuple) else (result, [])
+        if leveled:
             for g in client.guilds:
-                m=g.get_member(uid)
-                if m: await send_level_up_message(m,get_user_cache(str(uid))["level"])
+                m = g.get_member(uid)
+                if m: await send_level_up_message(m, get_user_cache(str(uid))["level"], role_grants)
 
 @tasks.loop(hours=1)
 async def check_role_expiry():
@@ -537,6 +747,8 @@ async def send_daily_report():
                 if m: team_user_lines_list.append(f"  {m.display_name}: {cnt}回"); break
             else: team_user_lines_list.append(f"  ID:{tuid}: {cnt}回")
         team_user_lines="\n".join(team_user_lines_list) if team_user_lines_list else "  なし"
+        # カテゴリ別コマンド使用数
+        cat_lines="\n".join([f"  {cat}: {cnt}回" for cat,cnt in category_command_usage.items()])
         report=(f" **本日の日報**\n\n パン: **{daily_stats['pan_count']}個**\n ギャンブル: **{daily_stats['gamble_count']}回**\n"
                 f" パンと言われた回数: **{daily_stats['pan_word_count']}回**\n\n"
                 f" パン→コイン: **{daily_stats['pan_to_coin']}回** / コイン→パン: **{daily_stats['coin_to_pan']}回**\n"
@@ -544,9 +756,34 @@ async def send_daily_report():
                 f" コイン1位: **{tcn}** — {tcv:,}コイン\n パン1位: **{tbn}** — {tbv:,}個 / {tbc:,}コイン\n\n"
                 f" チーム数: **{team_count}**\n ロール購入: **{daily_stats['shop_role_count']}回** / アイテム購入: **{daily_stats['shop_item_count']}回**\n\n"
                 f" **コマンド使用回数（本日上位10）:**\n{cmd_lines}\n\n"
+                f" **カテゴリ別コマンド使用回数:**\n{cat_lines}\n\n"
                 f" **チームコマンド使用者（本日上位5）:**\n{team_user_lines}")
         if buf: await user.send(content=report,file=discord.File(buf,"daily_rate.png"))
         else: await user.send(content=report)
+        # Supabaseにも日報を保存
+        try:
+            today_str = datetime.datetime.now(JST).date().isoformat()
+            report_data = {
+                "date": today_str,
+                "pan_count": daily_stats["pan_count"],
+                "gamble_count": daily_stats["gamble_count"],
+                "pan_word_count": daily_stats["pan_word_count"],
+                "pan_to_coin": daily_stats["pan_to_coin"],
+                "coin_to_pan": daily_stats["coin_to_pan"],
+                "coins_earned": daily_stats["coins_earned"],
+                "shop_role_count": daily_stats["shop_role_count"],
+                "shop_item_count": daily_stats["shop_item_count"],
+                "top_coin_user": tcn,
+                "top_coin_value": tcv,
+                "top_bread_user": tbn,
+                "top_bread_value": tbv,
+                "command_usage": json.dumps(dict(sorted_cmds), ensure_ascii=False),
+                "category_usage": json.dumps(dict(category_command_usage), ensure_ascii=False),
+            }
+            supabase.table("daily_reports").upsert(report_data).execute()
+            print("日報をSupabaseに保存しました")
+        except Exception as e:
+            print(f"日報Supabase保存失敗:{e}")
     except Exception as e: print(f"日報送信失敗:{e}")
 
 def reset_daily_stats():
@@ -554,6 +791,7 @@ def reset_daily_stats():
     daily_stats={"pan_count":0,"gamble_count":0,"pan_to_coin":0,"coin_to_pan":0,"coins_earned":0,"shop_role_count":0,"shop_item_count":0,"rate_history_daily":[],"pan_word_count":0}
     command_usage={}
     team_command_usage={}
+    for k in category_command_usage: category_command_usage[k] = 0
 
 async def monthly_team_ranking_role():
     try:
@@ -576,13 +814,29 @@ async def monthly_team_ranking_role():
                     except: pass
     except Exception as e: print(f"月次チームロール失敗:{e}")
 
-async def send_level_up_message(member,new_level):
+async def send_level_up_message(member, new_level, role_grants=None):
     try:
-        ch=client.get_channel(LEVEL_UP_CHANNEL_ID) or await client.fetch_channel(LEVEL_UP_CHANNEL_ID)
-        embed=embed_info()
-        embed.description=f"**{member.display_name}** がレベルアップしました！\nLv. **{new_level}** \n次のレベルまで: **{xp_needed(new_level+1)} XP**"
-        await ch.send(content=member.mention,embed=embed)
-    except Exception as e: print(f"レベルアップ通知失敗:{e}")
+        ch = client.get_channel(LEVEL_UP_CHANNEL_ID) or await client.fetch_channel(LEVEL_UP_CHANNEL_ID)
+        embed = embed_info()
+        embed.description = (f"**{member.display_name}** がレベルアップしました！\n"
+                             f"Lv. **{new_level}** \n次のレベルまで: **{xp_needed(new_level+1)} XP**\n"
+                             f"🍞 レアパン **+10個** ゲット！")
+        await ch.send(content=member.mention, embed=embed)
+        # ロール付与
+        if role_grants:
+            for g in client.guilds:
+                m = g.get_member(member.id)
+                if m:
+                    for role_id in role_grants:
+                        r = g.get_role(role_id)
+                        if r:
+                            try:
+                                await m.add_roles(r)
+                                await ch.send(embed=embed_success(f"🎉 ロール付与", f"{member.mention} にロール **{r.name}** を付与しました！"))
+                            except Exception as e:
+                                print(f"ロール付与失敗 {role_id}: {e}")
+    except Exception as e:
+        print(f"レベルアップ通知失敗:{e}")
 
 @client.event
 async def on_ready():
@@ -620,6 +874,11 @@ async def on_interaction(interaction: discord.Interaction):
         if cmd_name.startswith("team"):
             uid = str(interaction.user.id)
             team_command_usage[uid] = team_command_usage.get(uid, 0) + 1
+        # カテゴリ別集計
+        for cat, cmds in COMMAND_CATEGORIES.items():
+            if any(cmd_name == c or cmd_name.startswith(c + " ") for c in cmds):
+                category_command_usage[cat] = category_command_usage.get(cat, 0) + 1
+                break
 
 @client.event
 async def on_voice_state_update(member,before,after):
@@ -682,7 +941,9 @@ async def on_message(message):
         now=datetime.datetime.now(); last=msg_cooldowns.get(uid)
         if last is None or (now-last).total_seconds()>=MSG_COOLDOWN:
             msg_cooldowns[uid]=now
-            if add_xp(uid,random.randint(MSG_XP_MIN,MSG_XP_MAX)): await send_level_up_message(message.author,u["level"])
+            result = add_xp(uid, random.randint(MSG_XP_MIN, MSG_XP_MAX))
+            leveled, role_grants = result if isinstance(result, tuple) else (result, [])
+            if leveled: await send_level_up_message(message.author, u["level"], role_grants)
     if isinstance(message.channel, discord.DMChannel) and str(message.author.id)==DELETE_ALLOWED:
         if message.content.startswith("/delete "):
             target=message.content[len("/delete "):].strip()
@@ -1114,61 +1375,147 @@ client.tree.add_command(item_group)
 
 class HelpView(discord.ui.View):
     def __init__(self): super().__init__(timeout=60)
-    def get_embed(self,cat):
-        if cat=="bread":
-            e=embed_info(" パン系コマンド")
-            e.description="`/breads [@メンバー]`…パン所持数確認\n`/today`…今日のパン総数\n`/bpd`…1日平均パン数\n`/eat_bread`…レアパンを食べる\n`/give [個数] [@相手]`…レアパン譲渡（手数料10%）\n`/login`…ログインボーナス（20〜50個）\n`/item use 焼き釜_[種類]`…焼き釜でパンこね"
-        elif cat=="economy":
-            e=embed_info(" 経済系コマンド")
-            e.description="`/wallet [@メンバー]`…残高確認\n`/exchange [方向] [数量]`…レアパン⇔コイン⇔チップ交換\n`/rate`…為替レートとグラフ（過去5時間）\n`/steal`…コインを盗む\n`/economy_coin`…国庫&プール残高\n`/mining`…プールからコイン採掘\n`/trade [数量]`…レアパン取引"
-        elif cat=="gambling":
-            e=embed_info(" ミニゲーム系コマンド")
-            e.description="`/slot7 [回数]`…7リールスロット（1000チップ固定）\n`/dice [max] [number] [bet]`…数字当てゲーム\n`/double [bet]`…ダブルゲーム（コイン）\n`/blackjack [bet]`…ブラックジャック（コイン）\n`/bj_duel [bet]`…プレイヤー対戦BJ（チップ・最低500）"
-        elif cat=="shop":
-            e=embed_info(" ショップ系コマンド")
-            e.description="`/shop`…ロール(1,000,000コイン)・焼き釜・アイテム購入\n`/item shop`…特殊アイテムショップ一覧\n`/item buy [名前]`…特殊アイテム購入\n`/item use [名前]`…アイテム使用\n`/item list`…所持アイテム確認\n`/open`…宝箱を全部開ける\n`/role_status`…ロール残り期間確認\n`/team_shop`…チームランキング1位限定(100,000コイン)\n`/boost_shop`…ブースター限定(1,000,000コイン・90日)"
-        elif cat=="team":
-            e=embed_info(" チーム系コマンド")
-            e.description="`/make_team [名前]`…チーム作成(100,000コイン)\n`/team join`…招待コード発行（オーナーのみ）\n`/team join [code]`…チームに参加\n`/team name [新名前]`…チーム名変更(10,000コイン・オーナーのみ)\n`/team status`…チーム状態確認\n`/team bonus`…チームボーナス宝箱(1日1回)\n`/team leave`…チーム脱退(5日間参加不可)\n`/team member_delete [@member]`…メンバー削除（オーナーのみ）\n`/team disband`…チーム解散（オーナーのみ）\n`/team break [チームID]`…チーム強制解散（モデレーターのみ）"
-        elif cat=="items_list":
-            e=embed_info(" 特殊アイテム一覧")
-            lines=""
-            for name,info in ITEMS.items():
+    def get_embed(self, cat):
+        def _usage(cmd):
+            cnt = command_usage.get(cmd, 0)
+            return f" `({cnt}回)`" if cnt > 0 else ""
+        if cat == "bread":
+            e = embed_info("🍞 パン関係コマンド")
+            e.description = (
+                f"`/breads [@メンバー]`…パン所持数確認{_usage('breads')}\n"
+                f"`/today`…今日のパン総数{_usage('today')}\n"
+                f"`/bpd`…1日平均パン数{_usage('bpd')}\n"
+                f"`/eat_bread`…レアパンを食べる{_usage('eat_bread')}\n"
+                f"`/give [個数] [@相手]`…レアパン譲渡（手数料10%）{_usage('give')}\n"
+                f"`/login`…ログインボーナス（20〜50個）{_usage('login')}\n"
+                f"`/item use 焼き釜_[種類]`…焼き釜でパンこね\n"
+                f"\n📊 **本日のカテゴリ使用数: {category_command_usage.get('パン関係',0)}回**"
+            )
+        elif cat == "economy":
+            e = embed_info("💰 経済関係コマンド")
+            e.description = (
+                f"`/wallet [@メンバー]`…残高確認{_usage('wallet')}\n"
+                f"`/exchange [方向] [数量]`…レアパン⇔コイン⇔チップ交換{_usage('exchange')}\n"
+                f"`/rate`…為替レートとグラフ（過去5時間）{_usage('rate')}\n"
+                f"`/steal`…コインを盗む{_usage('steal')}\n"
+                f"`/economy_coin`…国庫&プール残高{_usage('economy_coin')}\n"
+                f"`/mining`…プールからコイン採掘{_usage('mining')}\n"
+                f"`/trade [数量]`…レアパン取引{_usage('trade')}\n"
+                f"`/lottery`…宝くじ購入{_usage('lottery')}\n"
+                f"\n📊 **本日のカテゴリ使用数: {category_command_usage.get('経済関係',0)}回**"
+            )
+        elif cat == "gambling":
+            e = embed_info("🎲 ミニゲーム関係コマンド")
+            e.description = (
+                f"`/slot7 [回数]`…7リールスロット（1000チップ固定）{_usage('slot7')}\n"
+                f"`/dice [max] [number] [bet]`…数字当てゲーム{_usage('dice')}\n"
+                f"`/double [bet]`…ダブルゲーム（コイン）{_usage('double')}\n"
+                f"`/blackjack [bet]`…ブラックジャック（コイン）{_usage('blackjack')}\n"
+                f"`/bj_duel [bet]`…プレイヤー対戦BJ（チップ・最低500）{_usage('bj_duel')}\n"
+                f"`/daily`…デイリーミッション確認・報酬受け取り{_usage('daily')}\n"
+                f"\n📊 **本日のカテゴリ使用数: {category_command_usage.get('ミニゲーム関係',0)}回**"
+            )
+        elif cat == "shop":
+            e = embed_info("🛒 ショップ関係コマンド")
+            e.description = (
+                f"`/shop`…ロール(1,000,000コイン)・焼き釜・アイテム購入{_usage('shop')}\n"
+                f"`/item shop`…特殊アイテムショップ一覧\n"
+                f"`/item buy [名前]`…特殊アイテム購入\n"
+                f"`/item use [名前]`…アイテム使用\n"
+                f"`/item list`…所持アイテム確認\n"
+                f"`/open`…宝箱を全部開ける{_usage('open')}\n"
+                f"`/role_status`…ロール残り期間確認{_usage('role_status')}\n"
+                f"`/team_shop`…チームランキング1位限定(100,000コイン){_usage('team_shop')}\n"
+                f"`/boost_shop`…ブースター限定(1,000,000コイン・90日){_usage('boost_shop')}\n"
+                f"\n📊 **本日のカテゴリ使用数: {category_command_usage.get('ショップ関係',0)}回**"
+            )
+        elif cat == "team":
+            e = embed_info("👥 チーム関係コマンド")
+            e.description = (
+                f"`/make_team [名前]`…チーム作成(100,000コイン){_usage('make_team')}\n"
+                f"`/team join`…招待コード発行（オーナーのみ）\n"
+                f"`/team join [code]`…チームに参加\n"
+                f"`/team name [新名前]`…チーム名変更(10,000コイン・オーナーのみ)\n"
+                f"`/team status`…チーム状態確認\n"
+                f"`/team bonus`…チームボーナス宝箱(1日1回)\n"
+                f"`/team leave`…チーム脱退(5日間参加不可)\n"
+                f"`/team member_delete [@member]`…メンバー削除（オーナーのみ）\n"
+                f"`/team disband`…チーム解散（オーナーのみ）\n"
+                f"`/team break [チームID]`…チーム強制解散（モデレーターのみ）\n"
+                f"\n📊 **本日のカテゴリ使用数: {category_command_usage.get('チーム関係',0)}回**"
+            )
+        elif cat == "items_list":
+            e = embed_info("🎒 アイテム関係コマンド")
+            lines = ""
+            for name, info in ITEMS.items():
                 if name in UNCRAFTABLE_ITEMS:
-                    dur=f"（{info['duration']}時間）" if info["duration"] else "（消耗品）"
-                    lines+=f"**{name}** {dur} — 非売品\n{info['desc']}\n\n"
+                    dur = f"（{info['duration']}時間）" if info["duration"] else "（消耗品）"
+                    lines += f"**{name}** {dur} — 非売品\n{info['desc']}\n\n"
                 else:
-                    dur=f"（{info['duration']}時間）" if info["duration"] else "（消耗品）"
-                    lines+=f"**{name}** {dur} — {info['price']:,}コイン\n{info['desc']}\n\n"
-            e.description=lines[:4000]
-        elif cat=="oven":
-            e=embed_info(" 焼き釜一覧")
-            e.description=("**ブロンズ焼き釜** 500コイン — 5分、レアパン1/分\n"
-                           "**シルバー焼き釜** 2000コイン — 15分、レアパン2/分\n"
-                           "**ゴールド焼き釜** 5000コイン — 30分、レアパン5/分\n"
-                           "**プリズム焼き釜** 20000コイン — 60分、レアパン20/分\n"
-                           "**レインボー焼き釜** 50000コイン — 60分、レアパン1〜50/分+宝箱1/分\n\n"
-                           "`/shop category:アイテム` で購入後\n`/item use 焼き釜_[種類]` で使用")
-        elif cat=="other":
-            e=embed_info("️ その他コマンド")
-            e.description="`/level [@メンバー]`…レベルとXP確認\n`/ranking_level`…レベルランキングTOP10\n`/ranking [type]`…各種ランキング（bread/coin/wallet/team）\n`/random`…ランダム編成を生成\n`/party_check`…編成確率確認\n`/reset`…管理者用リセット\n`/kill`…モデレーター用BOT停止\n️管理者以外さわらないでください全てが壊れます"
+                    dur = f"（{info['duration']}時間）" if info["duration"] else "（消耗品）"
+                    lines += f"**{name}** {dur} — {info['price']:,}コイン\n{info['desc']}\n\n"
+            lines += f"\n📊 **本日のカテゴリ使用数: {category_command_usage.get('アイテム関係',0)}回**"
+            e.description = lines[:4000]
+        elif cat == "oven":
+            e = embed_info("🔥 焼きがま関係コマンド")
+            e.description = (
+                "**ブロンズ焼き釜** 500コイン — 5分、レアパン1/分\n"
+                "**シルバー焼き釜** 2000コイン — 15分、レアパン2/分\n"
+                "**ゴールド焼き釜** 5000コイン — 30分、レアパン5/分\n"
+                "**プリズム焼き釜** 20000コイン — 60分、レアパン20/分\n"
+                "**レインボー焼き釜** 50000コイン — 60分、レアパン1〜50/分+宝箱1/分\n\n"
+                f"`/shop category:アイテム` で購入後\n`/item use 焼き釜_[種類]` で使用\n"
+                f"`/oven_status` … 稼働中の焼き釜の状態確認{_usage('oven_status')}\n"
+                f"\n📊 **本日のカテゴリ使用数: {category_command_usage.get('焼きがま関係',0)}回**"
+            )
+        elif cat == "dungeon":
+            e = embed_info("🏰 ダンジョン関係コマンド")
+            e.description = (
+                f"`/dungeon`…ダンジョンに入る{_usage('dungeon')}\n"
+                f"`/dungeon_reset`…マップリセット（モデレーターのみ）{_usage('dungeon_reset')}\n\n"
+                "🗺️ **バイオーム**\n"
+                "1〜9階: 洞窟 / 10〜19階: 森 / 20〜29階: 氷雪地帯 / 30〜40階: 砂漠地帯\n\n"
+                "⚔️ **ゲームプレイ**\n"
+                "移動・宝箱・罠・ショップ・拠点・鉱山・エネミーエンカウントあり\n"
+                f"\n📊 **本日のカテゴリ使用数: {category_command_usage.get('ダンジョン関係',0)}回**"
+            )
+        elif cat == "other":
+            e = embed_info("⚙️ その他コマンド")
+            e.description = (
+                f"`/level [@メンバー]`…レベルとXP確認{_usage('level')}\n"
+                f"`/ranking_level`…レベルランキングTOP10{_usage('ranking_level')}\n"
+                f"`/ranking [type]`…各種ランキング（bread/coin/wallet/team）{_usage('ranking')}\n"
+                f"`/my_stats`…自分のプレイ統計{_usage('my_stats')}\n"
+                f"`/achievement`…実績一覧と解除条件{_usage('achievement')}\n"
+                f"`/my_achievement`…自分が解除した実績{_usage('my_achievement')}\n"
+                f"`/random`…ランダム編成を生成{_usage('random')}\n"
+                f"`/party_check`…編成確率確認{_usage('party_check')}\n"
+                "`/reset`…管理者用リセット\n"
+                "`/kill`…モデレーター用BOT停止\n"
+                "⚠️ 管理者以外さわらないでください全てが壊れます"
+            )
+        else:
+            e = embed_info("ヘルプ")
         return e
-    @discord.ui.button(label="パン",style=discord.ButtonStyle.secondary)
-    async def bread_btn(self,i,b): await i.response.edit_message(embed=self.get_embed("bread"),view=self)
-    @discord.ui.button(label="経済",style=discord.ButtonStyle.secondary)
-    async def economy_btn(self,i,b): await i.response.edit_message(embed=self.get_embed("economy"),view=self)
+
+    @discord.ui.button(label="パン",     style=discord.ButtonStyle.secondary)
+    async def bread_btn(self,   i, b): await i.response.edit_message(embed=self.get_embed("bread"),     view=self)
+    @discord.ui.button(label="経済",     style=discord.ButtonStyle.secondary)
+    async def economy_btn(self, i, b): await i.response.edit_message(embed=self.get_embed("economy"),   view=self)
     @discord.ui.button(label="ミニゲーム",style=discord.ButtonStyle.secondary)
-    async def gambling_btn(self,i,b): await i.response.edit_message(embed=self.get_embed("gambling"),view=self)
-    @discord.ui.button(label="ショップ",style=discord.ButtonStyle.secondary)
-    async def shop_btn(self,i,b): await i.response.edit_message(embed=self.get_embed("shop"),view=self)
-    @discord.ui.button(label="チーム",style=discord.ButtonStyle.secondary)
-    async def team_btn(self,i,b): await i.response.edit_message(embed=self.get_embed("team"),view=self)
-    @discord.ui.button(label="アイテム",style=discord.ButtonStyle.secondary)
-    async def items_btn(self,i,b): await i.response.edit_message(embed=self.get_embed("items_list"),view=self)
-    @discord.ui.button(label="焼き釜",style=discord.ButtonStyle.secondary)
-    async def oven_btn(self,i,b): await i.response.edit_message(embed=self.get_embed("oven"),view=self)
-    @discord.ui.button(label="その他",style=discord.ButtonStyle.secondary)
-    async def other_btn(self,i,b): await i.response.edit_message(embed=self.get_embed("other"),view=self)
+    async def gambling_btn(self,i, b): await i.response.edit_message(embed=self.get_embed("gambling"),  view=self)
+    @discord.ui.button(label="ショップ", style=discord.ButtonStyle.secondary)
+    async def shop_btn(self,    i, b): await i.response.edit_message(embed=self.get_embed("shop"),      view=self)
+    @discord.ui.button(label="チーム",   style=discord.ButtonStyle.secondary)
+    async def team_btn(self,    i, b): await i.response.edit_message(embed=self.get_embed("team"),      view=self)
+    @discord.ui.button(label="アイテム", style=discord.ButtonStyle.secondary)
+    async def items_btn(self,   i, b): await i.response.edit_message(embed=self.get_embed("items_list"),view=self)
+    @discord.ui.button(label="焼き釜",   style=discord.ButtonStyle.secondary)
+    async def oven_btn(self,    i, b): await i.response.edit_message(embed=self.get_embed("oven"),      view=self)
+    @discord.ui.button(label="ダンジョン",style=discord.ButtonStyle.secondary)
+    async def dungeon_btn(self, i, b): await i.response.edit_message(embed=self.get_embed("dungeon"),   view=self)
+    @discord.ui.button(label="その他",   style=discord.ButtonStyle.secondary)
+    async def other_btn(self,   i, b): await i.response.edit_message(embed=self.get_embed("other"),     view=self)
 
 @client.tree.command(name="help",description="コマンド一覧")
 async def help_cmd(i:Interaction):
@@ -1193,6 +1540,9 @@ class Slot7View(View):
             return
         await i.response.defer(); self.remaining-=1; uid=self.user_id; u=get_user_cache(uid)
         kakuhen=kakuhen_data.get(uid,0)>0; streak=lose_streak.get(uid,0); daily_stats["gamble_count"]+=1
+        # デイリーミッション & 統計
+        add_daily_progress(uid, "slot_play")
+        st = get_player_stats(uid); st["total_gamble"] = st.get("total_gamble", 0) + 1; st["total_slot"] = st.get("total_slot", 0) + 1
         if kakuhen: six_counter[uid]=six_counter.get(uid,0)+1
         force_six=False
         if not kakuhen:
@@ -1278,7 +1628,8 @@ async def dice(i:Interaction,max:int,number:int,bet:int=10):
         await i.response.send_message(embed=embed_error("チップ不足",f"所持: **{u['chips']:,}チップ**"))
         return
     u["chips"]-=bet; daily_stats["gamble_count"]+=1
-    rm=random.randint(1,max)
+    add_daily_progress(uid, "dice_play")
+    st = get_player_stats(uid); st["total_gamble"] = st.get("total_gamble",0)+1; st["total_dice"] = st.get("total_dice",0)+1
     if number==rm:
         prize=bet*max; u["chips"]+=prize
         embed=embed_success(" ダイス — 当たり！")
@@ -1403,6 +1754,10 @@ async def steal(i:Interaction):
         await save_user(uid); await save_user(tid)
         desc = f"**{tn}** から **{gain:,}コイン** 盗みました！"
         if bonus_lines: desc += "\n" + "\n".join(bonus_lines)
+        # 統計・実績
+        st = get_player_stats(uid); st["total_steal_success"] = st.get("total_steal_success",0)+1
+        if st["total_steal_success"] >= 30:
+            asyncio.create_task(check_and_grant_achievement(uid, "steal_30"))
         await i.response.send_message(embed=embed_success("steal成功", desc))
     else:
         # 失敗処理
@@ -1441,6 +1796,9 @@ async def exchange_cmd(i:Interaction,direction:discord.app_commands.Choice[str],
             return
         cg=round(amount*rate); u["bread_count"]-=amount; u["coins"]+=cg
         daily_stats["pan_to_coin"]+=1; daily_stats["coins_earned"]+=cg; await save_user(uid)
+        # 大富豪実績チェック
+        st = get_player_stats(uid); st["total_coins_earned"] = st.get("total_coins_earned",0)+cg
+        if u["coins"] >= 10000000: asyncio.create_task(check_and_grant_achievement(uid, "coins_10m"))
         embed=embed_success(" 交換完了")
         embed.add_field(name="交換",value=f" **{amount}個** →  **{cg:,}枚**",inline=False)
         embed.add_field(name="レート",value=f"1レアパン = {rate}コイン",inline=True)
@@ -1551,6 +1909,8 @@ class DoubleView(discord.ui.View):
             await i.response.edit_message(embed=self.make_status_embed("ゲーム終了",COLOR_ERROR),view=None)
             return
         g=double_game[uid]; u=get_user_cache(uid); win=random.random()<get_internal_rate(uid); daily_stats["gamble_count"]+=1
+        add_daily_progress(uid, "double_play")
+        st = get_player_stats(uid); st["total_gamble"] = st.get("total_gamble",0)+1; st["total_double"] = st.get("total_double",0)+1
         if win:
             g["streak"]+=1; g["multiplier"]*=1.9; win_streak[uid]=win_streak.get(uid,0)+1; lose_streak[uid]=0
             if internal_mode.get(uid)=="CHARGE": internal_mode[uid]="FEVER"
@@ -1802,6 +2162,13 @@ async def knead_with_oven_task(user,channel,minutes,progress_interval=5,oven_nam
         while elapsed<total_seconds:
             await asyncio.sleep(interval); elapsed+=interval; bcount+=1; daily_stats["pan_count"]+=1
             gain=random.randint(1,50) if bpm is None else bpm; u["bread_count"]+=gain
+            # デイリーミッション進捗（1分ごとにパンこね）
+            add_daily_progress(uid, "knead_rare", gain)
+            # 統計
+            st = get_player_stats(uid); st["total_bread"] = st.get("total_bread",0)+gain
+            # パン1000個実績チェック
+            if st["total_bread"] >= 1000:
+                asyncio.create_task(check_and_grant_achievement(uid, "bread_1000"))
             if box_pm>0: u["boxes"]+=box_pm
             scale=random.randint(1,10); global_pool+=scale; economy_coin-=scale; cumulative_pool+=scale
             if elapsed>=next_progress or elapsed>=total_seconds:
@@ -2202,7 +2569,11 @@ async def item_mix(i: Interaction, item1: str, item2: str):
         if r <= total: result_item = name; break
     if result_item is None: result_item = results[-1][0]
     give_item(uid, result_item, 1)
-    if result_item == "ゴミ":
+    add_daily_progress(uid, "item_mix")
+    st = get_player_stats(uid); st["total_item_mix"] = st.get("total_item_mix",0)+1
+    # 鉄墓合成実績
+    if result_item == "鉄墓":
+        asyncio.create_task(check_and_grant_achievement(uid, "iron_grave"))
         embed = embed_error(" 合成失敗",f"**{item1}** + **{item2}**\n️ ゴミができた…")
     else:
         embed = embed_success(" 合成成功",f"**{item1}** + **{item2}**\n️ **{result_item}** を獲得！")
@@ -2316,8 +2687,152 @@ async def kill_cmd(i:Interaction):
         return
     await i.response.send_message(embed=embed_info(" BOT停止","BOTを停止します..."))
     await save_all_users(); await client.close()
+
 # ================================================================
-#  ダンジョンシステム v5 — main.py 末尾に追記
+#  /oven_status — プリズム焼き釜残り時間確認
+# ================================================================
+@client.tree.command(name="oven_status", description="稼働中の焼き釜の残り時間を確認します")
+async def oven_status(i: Interaction):
+    uid = str(i.user.id)
+    if uid not in active_kneads:
+        await i.response.send_message(embed=embed_info("🔥 焼き釜", "現在稼働中の焼き釜はありません。"), ephemeral=True)
+        return
+    task = active_kneads[uid]
+    if task.done():
+        active_kneads.pop(uid, None)
+        await i.response.send_message(embed=embed_info("🔥 焼き釜", "焼き釜はすでに終了しています。"), ephemeral=True)
+        return
+    # タスク内の残り時間はタスクオブジェクトから直接は取れないため、開始時刻管理が必要
+    # ここでは「稼働中」の表示のみ行い、詳細は item list で確認案内
+    embed = embed_info("🔥 焼き釜 稼働中", "現在焼き釜が稼働中です。\n`/item list` でアイテム状態を確認できます。")
+    await i.response.send_message(embed=embed, ephemeral=True)
+
+# ================================================================
+#  /daily — デイリーミッション確認・報酬受け取り
+# ================================================================
+@client.tree.command(name="daily", description="デイリーミッションを確認します")
+async def daily_cmd(i: Interaction):
+    uid = str(i.user.id)
+    await load_user(uid)
+    d = get_daily_mission(uid)
+    missions_info = {m["id"]: m for m in DAILY_MISSIONS_ALL}
+
+    all_clear = all(
+        d["progress"].get(mid, 0) >= missions_info[mid]["target"]
+        for mid in d["missions"]
+    )
+
+    if all_clear and not d.get("claimed", False):
+        # 報酬受け取り
+        u = get_user_cache(uid)
+        u["bread_count"] = u.get("bread_count", 0) + DAILY_MISSION_REWARD
+        d["claimed"] = True
+        # Supabase保存
+        try:
+            supabase.table("daily_missions").upsert({
+                "user_id":  uid,
+                "date":     d["date"],
+                "missions": json.dumps(d["missions"], ensure_ascii=False),
+                "progress": json.dumps(d["progress"], ensure_ascii=False),
+                "claimed":  True,
+            }).execute()
+        except Exception as e:
+            print(f"デイリーミッション保存失敗:{e}")
+        await save_user(uid)
+
+    lines = []
+    for mid in d["missions"]:
+        m_info = missions_info.get(mid)
+        if not m_info:
+            continue
+        prog  = d["progress"].get(mid, 0)
+        target = m_info["target"]
+        done  = prog >= target
+        mark  = "⭕" if done else "❌"
+        lines.append(f"{mark} {m_info['desc']} ({min(prog, target)}/{target})")
+
+    if all_clear and d.get("claimed", False):
+        status_text = "✅ 今日のデイリーはクリアしています！\n（報酬受取済み）"
+        embed = embed_success("📋 デイリーミッション", "\n".join(lines) + f"\n\n{status_text}")
+    elif all_clear:
+        status_text = f"🎉 全クリア！ レアパン **{DAILY_MISSION_REWARD}個** を獲得しました！"
+        embed = embed_success("📋 デイリーミッション", "\n".join(lines) + f"\n\n{status_text}")
+    else:
+        embed = embed_info("📋 デイリーミッション", "\n".join(lines) + f"\n\n全クリアで レアパン **{DAILY_MISSION_REWARD}個** ゲット！")
+
+    await i.response.send_message(embed=embed)
+
+# ================================================================
+#  /my_stats — 自分のプレイ統計
+# ================================================================
+@client.tree.command(name="my_stats", description="自分のプレイ統計を確認します")
+async def my_stats(i: Interaction):
+    uid = str(i.user.id)
+    await load_user(uid)
+    u   = get_user_cache(uid)
+    st  = get_player_stats(uid)
+    d   = get_daily_mission(uid)
+    missions_info = {m["id"]: m for m in DAILY_MISSIONS_ALL}
+
+    daily_lines = []
+    for mid in d["missions"]:
+        m_info = missions_info.get(mid)
+        if not m_info: continue
+        prog   = d["progress"].get(mid, 0)
+        target = m_info["target"]
+        mark   = "⭕" if prog >= target else "❌"
+        daily_lines.append(f"{mark} {m_info['desc']} ({min(prog,target)}/{target})")
+
+    embed = embed_info(f"📊 {i.user.display_name} のプレイ統計")
+    embed.add_field(name="🍞 レアパン所持",     value=f"{u.get('bread_count',0):,}個",           inline=True)
+    embed.add_field(name="💰 コイン所持",       value=f"{u.get('coins',0):,}枚",                 inline=True)
+    embed.add_field(name="🎰 チップ所持",       value=f"{u.get('chips',0):,}チップ",             inline=True)
+    embed.add_field(name="⭐ レベル",           value=f"Lv.**{u.get('level',0)}** ({u.get('xp',0)} XP)",inline=True)
+    embed.add_field(name="🍞 総パン獲得",       value=f"{st.get('total_bread',0):,}個",          inline=True)
+    embed.add_field(name="💸 総コイン獲得",     value=f"{st.get('total_coins_earned',0):,}枚",   inline=True)
+    embed.add_field(name="🎲 総ギャンブル回数", value=f"{st.get('total_gamble',0):,}回",         inline=True)
+    embed.add_field(name="🃏 スロット",         value=f"{st.get('total_slot',0):,}回",           inline=True)
+    embed.add_field(name="🎯 ダイス",           value=f"{st.get('total_dice',0):,}回",           inline=True)
+    embed.add_field(name="📈 ダブルゲーム",     value=f"{st.get('total_double',0):,}回",         inline=True)
+    embed.add_field(name="🦹 steal成功",        value=f"{st.get('total_steal_success',0):,}回", inline=True)
+    embed.add_field(name="⚗️ 錬成回数",         value=f"{st.get('total_item_mix',0):,}回",      inline=True)
+    embed.add_field(name="🏰 ダンジョン最深階", value=f"{st.get('total_dungeon_floor',0)}階",    inline=True)
+    embed.add_field(name="📋 今日のデイリー",   value="\n".join(daily_lines) if daily_lines else "未取得", inline=False)
+    embed.set_thumbnail(url=i.user.display_avatar.url)
+    await i.response.send_message(embed=embed)
+
+# ================================================================
+#  /achievement — 実績一覧表示
+# ================================================================
+@client.tree.command(name="achievement", description="実績一覧と解除条件を確認します")
+async def achievement_cmd(i: Interaction):
+    embed = embed_info("🏆 実績一覧")
+    lines = ""
+    for a in ACHIEVEMENTS:
+        lines += f"{a['icon']} **{a['name']}**\n　{a['desc']}\n\n"
+    embed.description = lines[:4000]
+    await i.response.send_message(embed=embed)
+
+# ================================================================
+#  /my_achievement — 自分が解除した実績
+# ================================================================
+@client.tree.command(name="my_achievement", description="自分が解除した実績を確認します")
+async def my_achievement_cmd(i: Interaction):
+    uid  = str(i.user.id)
+    achs = get_user_achievements(uid)
+    if not achs:
+        await i.response.send_message(embed=embed_info("🏆 解除済み実績", "まだ実績を解除していません。\n`/achievement` で実績一覧を確認しましょう！"))
+        return
+    lines = ""
+    for a in ACHIEVEMENTS:
+        if a["id"] in achs:
+            lines += f"✅ {a['icon']} **{a['name']}** — {a['desc']}\n"
+    locked_count = len(ACHIEVEMENTS) - len(achs)
+    embed = embed_success(f"🏆 解除済み実績 ({len(achs)}/{len(ACHIEVEMENTS)})", lines)
+    if locked_count > 0:
+        embed.set_footer(text=f"残り {locked_count} 個の実績が未解除です。/achievement で確認！")
+    await i.response.send_message(embed=embed)
+
 #  変更点:
 #   - XPリセットバグ修正（dungeon_enterでload_user）
 #   - 拠点内で動けないバグ修正（BaseInteriorView._move）
@@ -3653,6 +4168,13 @@ class DungeonStairsView(discord.ui.View):
         self.x, self.y = sx, sy
         p["floor"] = self.floor
         p["x"], p["y"] = self.x, self.y
+        
+        # ダンジョン最深階統計・実績
+        st = get_player_stats(self.uid)
+        if self.floor > st.get("total_dungeon_floor", 0):
+            st["total_dungeon_floor"] = self.floor
+        if self.floor >= 30:
+            asyncio.create_task(check_and_grant_achievement(self.uid, "dungeon_30"))
         
         asyncio.create_task(dg_save_player(self.uid))
         
