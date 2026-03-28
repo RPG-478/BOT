@@ -172,13 +172,12 @@ def load_all_assets():
 
 # --- ここに ASSET_CONFIG も必要です ---
 ASSET_CONFIG = {
-    ("洞窟", D_WALL): "rock.png",
+    ("洞窟", D_WALL): "rock.PNG",
     ("洞窟", D_FLOOR): "jimen.png",
     ("森", D_WALL): "mori_kabe.png",
     ("森", D_FLOOR): "mori_yuka.png",
     ("氷雪地帯", D_WALL): "Y_k.png",
     ("氷雪地帯", D_FLOOR): "Y_y.png",
-    # 砂漠には手持ちアセットがないため、雪タイルを暫定的に流用
     ("砂漠地帯", D_WALL): "Y_k.png",
     ("砂漠地帯", D_FLOOR): "Y_y.png",
 }
@@ -2941,12 +2940,12 @@ class DungeonCombatView(discord.ui.View):
 
         p_crit_display = int(p.get("crit", 0.05) * 100)
         em.add_field(name="あなた",
-            value=f"`{d_hpbar(p['hp'],p['max_hp'])}`{p['hp']}/{p['max_hp']}\n⚔️{p['atk']} 🛡️{p['def_']} ⚡{p.get('spd',10)} ✨{p_crit_display}%",
+            value=f"`{d_hpbar(p['hp'],p['max_hp'])}`{p['hp']}/{p['max_hp']}\n⚔️{p['atk']} 🛡️{p['def_']}",
             inline=True)
 
         e_crit_display = int(e.get("crit", 0.05) * 100)
         em.add_field(name=e["name"],
-            value=f"`{d_hpbar(e['hp'],e['max_hp'])}`{e['hp']}/{e['max_hp']}\n⚔️{e['atk']} ⚡{e.get('spd',10)} ✨{e_crit_display}%",
+            value=f"`{d_hpbar(e['hp'],e['max_hp'])}`{e['hp']}/{e['max_hp']}\n",
             inline=True)
 
         if self.log:
