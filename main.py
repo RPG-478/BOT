@@ -307,6 +307,11 @@ def load_all_assets():
                 print(f"❌ {fname} ロード失敗: {e}")
         else:
             print(f"⚠ {fname} が見つかりません: {path}")
+# --- プレイヤー画像（AGO.PNG）の準備 ---
+try:
+    PLAYER_IMAGE = Image.open("AGO.PNG").convert("RGBA")
+except Exception:
+    PLAYER_IMAGE = None
 
 # --- ここに ASSET_CONFIG も必要です ---
 ASSET_CONFIG = {
@@ -2784,20 +2789,20 @@ async def my_stats(i: Interaction):
         daily_lines.append(f"{mark} {m_info['desc']} ({min(prog,target)}/{target})")
 
     embed = embed_info(f"📊 {i.user.display_name} のプレイ統計")
-    embed.add_field(name="🍞 レアパン所持",     value=f"{u.get('bread_count',0):,}個",           inline=True)
-    embed.add_field(name="💰 コイン所持",       value=f"{u.get('coins',0):,}枚",                 inline=True)
-    embed.add_field(name="🎰 チップ所持",       value=f"{u.get('chips',0):,}チップ",             inline=True)
-    embed.add_field(name="⭐ レベル",           value=f"Lv.**{u.get('level',0)}** ({u.get('xp',0)} XP)",inline=True)
-    embed.add_field(name="🍞 総パン獲得",       value=f"{st.get('total_bread',0):,}個",          inline=True)
-    embed.add_field(name="💸 総コイン獲得",     value=f"{st.get('total_coins_earned',0):,}枚",   inline=True)
-    embed.add_field(name="🎲 総ギャンブル回数", value=f"{st.get('total_gamble',0):,}回",         inline=True)
-    embed.add_field(name="🃏 スロット",         value=f"{st.get('total_slot',0):,}回",           inline=True)
-    embed.add_field(name="🎯 ダイス",           value=f"{st.get('total_dice',0):,}回",           inline=True)
-    embed.add_field(name="📈 ダブルゲーム",     value=f"{st.get('total_double',0):,}回",         inline=True)
-    embed.add_field(name="🦹 steal成功",        value=f"{st.get('total_steal_success',0):,}回", inline=True)
-    embed.add_field(name="⚗️ 錬成回数",         value=f"{st.get('total_item_mix',0):,}回",      inline=True)
-    embed.add_field(name="🏰 ダンジョン最深階", value=f"{st.get('total_dungeon_floor',0)}階",    inline=True)
-    embed.add_field(name="📋 今日のデイリー",   value="\n".join(daily_lines) if daily_lines else "未取得", inline=False)
+    embed.add_field(name="レアパン所持",     value=f"{u.get('bread_count',0):,}個",           inline=True)
+    embed.add_field(name="コイン所持",       value=f"{u.get('coins',0):,}枚",                 inline=True)
+    embed.add_field(name="チップ所持",       value=f"{u.get('chips',0):,}チップ",             inline=True)
+    embed.add_field(name="レベル",           value=f"Lv.**{u.get('level',0)}** ({u.get('xp',0)} XP)",inline=True)
+    embed.add_field(name="総パン獲得",       value=f"{st.get('total_bread',0):,}個",          inline=True)
+    embed.add_field(name="総コイン獲得",     value=f"{st.get('total_coins_earned',0):,}枚",   inline=True)
+    embed.add_field(name="総ギャンブル回数", value=f"{st.get('total_gamble',0):,}回",         inline=True)
+    embed.add_field(name="スロット",         value=f"{st.get('total_slot',0):,}回",           inline=True)
+    embed.add_field(name="ダイス",           value=f"{st.get('total_dice',0):,}回",           inline=True)
+    embed.add_field(name="ダブルゲーム",     value=f"{st.get('total_double',0):,}回",         inline=True)
+    embed.add_field(name="steal成功",        value=f"{st.get('total_steal_success',0):,}回", inline=True)
+    embed.add_field(name="錬成回数",         value=f"{st.get('total_item_mix',0):,}回",      inline=True)
+    embed.add_field(name="ダンジョン最深階", value=f"{st.get('total_dungeon_floor',0)}階",    inline=True)
+    embed.add_field(name="今日のデイリー",   value="\n".join(daily_lines) if daily_lines else "未取得", inline=False)
     embed.set_thumbnail(url=i.user.display_avatar.url)
     await i.response.send_message(embed=embed)
 
@@ -2976,15 +2981,18 @@ def generate_pillow_file(grid, pw, ph, is_main=False):
         
         draw.rectangle([x * T_SIZE, y * T_SIZE, (x + 1) * T_SIZE - 1, (y + 1) * T_SIZE - 1], fill=color)
 
-    # プレイヤーの描画
+    # --- プレイヤーの描画 (AGO.PNGに差し替え) ---
     px, py = pw * T_SIZE, ph * T_SIZE
-    draw.ellipse([px + 4, py + 4, px + T_SIZE - 5, py + T_SIZE - 5], fill=(255, 50, 50, 255))
+    if PLAYER_IMAGE:
+        # 画像サイズが32px固定のため、そのまま貼り付け
+        img.paste(PLAYER_IMAGE, (px, py), PLAYER_IMAGE)
+    else:
+        draw.ellipse([px + 4, py + 4, px + T_SIZE - 5, py + T_SIZE - 5], fill=(255, 50, 50, 255))
 
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     buf.seek(0)
     return discord.File(fp=buf, filename="map.png")
-dg_explored = {}
 
 async def d_render_status_map(uid, floor, px, py):
     """広域マップを生成してURLを返す"""
@@ -3011,7 +3019,17 @@ async def d_render_status_map(uid, floor, px, py):
             if not is_player and (vx, vy) not in user_dg: continue
             
             cell = dg_maps[floor][vy][vx]
-            _draw_tile(draw, img, vx_i, vy_i, cell, bname, is_player=is_player)
+            # --- プレイヤー描画を分離して差し替え ---
+            # まずタイルのみを描画
+            _draw_tile(draw, img, vx_i, vy_i, cell, bname, is_player=False)
+            
+            # プレイヤーの位置ならAGO.PNGを上書き
+            if is_player:
+                dx, dy = vx_i * TILE, vy_i * TILE
+                if PLAYER_IMAGE:
+                    img.paste(PLAYER_IMAGE, (dx, dy), PLAYER_IMAGE)
+                else:
+                    draw.ellipse([dx + 2, dy + 2, dx + TILE - 3, dy + TILE - 3], fill=(255, 50, 50))
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
@@ -3025,7 +3043,6 @@ async def d_render_status_map(uid, floor, px, py):
     except Exception as e:
         print(f"❌ マップ生成失敗: {e}")
         return None # 失敗時は None を返す
-
 
 # ----------------------------------------------------------------
 #  施設内部レイアウト（9x9 / 7x7固定）
