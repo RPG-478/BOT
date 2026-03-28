@@ -1326,8 +1326,7 @@ async def item_buy(i: Interaction, name: str, amount: int = 1):
 @item_group.command(name="use", description="アイテムを使用します")
 @app_commands.describe(name="使用するアイテム名")
 async def item_use(i: Interaction, name: str):
-    # 1. 応答遅延対策（3秒ルールを回避）
-    # これ以降は必ず i.followup.send を使用してください
+    # 1. 応答遅延対策
     await i.response.defer(ephemeral=True)
     
     uid = str(i.user.id)
@@ -1344,14 +1343,11 @@ async def item_use(i: Interaction, name: str):
             await i.followup.send(embed=embed_error("エラー", "すでに焼き釜が稼働中です！"))
             return
         
-        # アイテムを1つ消費
         await use_item_once(uid, name)
         await save_user(uid)
-        
         minutes = OVEN_TYPES.get(on, [30])[0]
         embed = embed_success(f" {on}焼き釜 稼働開始", f"{i.user.mention} の{on}焼き釜が稼働開始！\n**{minutes}分間**、自動でパンをこねます")
         await i.followup.send(embed=embed)
-        
         active_kneads[uid] = asyncio.create_task(knead_with_oven_task(i.user, i.channel, minutes, oven_name=on))
         return
 
@@ -1360,7 +1356,6 @@ async def item_use(i: Interaction, name: str):
         if u.get("sake", 0) <= 0:
             await i.followup.send(embed=embed_error("エラー", " 酒を持っていません。"))
             return
-        
         u["sake"] -= 1
         effects = [
             ("bread_prob", 0.05, " 酒を飲んだ！レアパン確率が5%上昇した！"),
@@ -1377,18 +1372,17 @@ async def item_use(i: Interaction, name: str):
         else:
             u["chips"] += ef[1]
             msg = ef[2] + f"（+{ef[1]}チップ）"
-            
         await save_user(uid)
         await i.followup.send(embed=embed_success(" 酒を使用", msg))
         return
 
-    # --- 3. 開拓のコンパス (Supabase完全同期版) ---
+    # --- 3. 開拓のコンパス (Supabase同期強化版) ---
     if name == "開拓のコンパス":
         if not has_item(uid, "開拓のコンパス"):
             await i.followup.send(embed=embed_error("エラー", "**開拓のコンパス** を持っていません。"))
             return
 
-        # ユーザーデータの特定
+        # ユーザー情報の特定
         floor, px, py = None, None, None
         if uid in dg_bases:
             floor, px, py = dg_bases[uid]
@@ -1398,46 +1392,55 @@ async def item_use(i: Interaction, name: str):
             px, py = p_data.get("x"), p_data.get("y")
 
         if floor is None:
-            await i.followup.send(embed=embed_error("情報", "コンパスは静かに震えている…（一度も探索したことがないようです）"))
+            await i.followup.send(embed=embed_error("情報", "コンパスは静かに震えている…（探索中ではありません）"))
             return
 
-        # 階段座標の特定（キャッシュ -> なければDB）
+        # 階段座標の特定
         stair_pos = dg_stairs.get(floor)
+        
+        # キャッシュにない場合、DBから取得を試みる
         if not stair_pos:
             try:
-                # 画像の構造に合わせ、floorを整数でフィルタリング
-                res = supabase.table("dungeon_stairs").select("x, y").eq("floor", int(floor)).execute()
+                # 明示的に int にキャストして問い合わせ
+                target_f = int(floor)
+                print(f"DEBUG: Searching DB for floor {target_f}")
+                res = supabase.table("dungeon_stairs").select("x, y").eq("floor", target_f).execute()
+                
                 if res.data and len(res.data) > 0:
-                    stair_pos = (res.data[0]['x'], res.data[0]['y'])
+                    # 画像のカラム構造 x, y から取得
+                    stair_pos = (int(res.data[0]['x']), int(res.data[0]['y']))
                     dg_stairs[floor] = stair_pos
-                else:
-                    # DBになければマップから直接スキャンしてDBに保存
-                    d_ensure_map(floor)
-                    grid = dg_maps.get(floor)
-                    if grid:
-                        for y_idx, row in enumerate(grid):
-                            if D_STAIRS in row:
-                                stair_pos = (row.index(D_STAIRS), y_idx)
-                                dg_stairs[floor] = stair_pos
-                                # 見つけた座標をDBへ保存
-                                supabase.table("dungeon_stairs").upsert({
-                                    "floor": int(floor), "x": stair_pos[0], "y": stair_pos[1]
-                                }).execute()
-                                break
+                    print(f"DEBUG: Found in DB: {stair_pos}")
             except Exception as e:
-                print(f"❌ Compass DB Error: {e}")
+                print(f"❌ Compass DB Read Error: {e}")
+
+        # DBにもない場合の最終手段（マップ走査）
+        if not stair_pos:
+            print("DEBUG: DB not found, scanning map...")
+            d_ensure_map(floor)
+            grid = dg_maps.get(floor)
+            if grid:
+                for y_idx, row in enumerate(grid):
+                    if D_STAIRS in row:
+                        stair_pos = (row.index(D_STAIRS), y_idx)
+                        dg_stairs[floor] = stair_pos
+                        # 次回のためにDB保存
+                        try:
+                            supabase.table("dungeon_stairs").upsert({"floor": int(floor), "x": stair_pos[0], "y": stair_pos[1]}).execute()
+                        except: pass
+                        break
 
         if not stair_pos:
-            await i.followup.send(embed=embed_error("エラー", f"{floor}階の階段を検知できませんでした。"))
+            await i.followup.send(embed=embed_error("エラー", f"{floor}階で階段を検知できませんでした。"))
             return
 
-        # アイテムを消費
+        # アイテム消費
         if not await use_item_once(uid, "開拓のコンパス"):
              await i.followup.send(embed=embed_error("エラー", "アイテム消費に失敗しました。"))
              return
 
+        # 方向計算
         sx, sy = stair_pos
-        # 方向の計算
         if px is not None and py is not None:
             dx, dy = sx - px, sy - py
             dirs = []
@@ -1455,11 +1458,8 @@ async def item_use(i: Interaction, name: str):
         return
 
     # --- 4. 汎用アイテム処理 ---
-    if name not in ITEMS:
-        await i.followup.send(embed=embed_error("エラー", "そのアイテムは存在しません。"))
-        return
-    if not has_item(uid, name):
-        await i.followup.send(embed=embed_error("エラー", f"**{name}** を持っていません。"))
+    if name not in ITEMS or not has_item(uid, name):
+        await i.followup.send(embed=embed_error("エラー", "そのアイテムは使用できません。"))
         return
 
     info = ITEMS[name]
