@@ -1360,7 +1360,7 @@ async def item_use(i:Interaction,name:str):
         return
 
     # --- コンパスの実装 ---
-    if name == "コンパス":
+    if name == "開拓のコンパス":
         if not await use_item_once(uid, "コンパス"):
             await i.response.send_message(embed=embed_error("エラー", "**コンパス** を持っていません。"))
             return
