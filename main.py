@@ -2981,6 +2981,7 @@ def generate_pillow_file(grid, pw, ph, is_main=False):
     gridデータからPillow画像を生成しdiscord.Fileを返す
     is_main: メインマップ用の描画設定にする場合はTrue
     """
+    global PLAYER_IMAGE
     if not grid:
         img = Image.new("RGBA", (T_SIZE, T_SIZE), (0, 0, 0, 255))
     else:
@@ -3020,6 +3021,7 @@ def generate_pillow_file(grid, pw, ph, is_main=False):
 async def d_render_status_map(uid, floor, px, py):
     """広域マップを生成してURLを返す"""
     import io
+    global PLAYER_IMAGE
     d_ensure_map(floor)
     bname, *_ = d_get_biome(floor)
     
