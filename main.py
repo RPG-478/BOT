@@ -284,33 +284,56 @@ TILE_COLORS = {
     "player": (30,220,120),
     "fog":    (0,0,0),
 }
-# --- アセット読み込み用の関数（これを on_ready より上に配置） ---
+# --- アセット・プレイヤー画像のキャッシュ用（関数の外に配置） ---
+_ASSET_CACHE = {}
+PLAYER_IMAGE = None  # グローバルで初期化
+
+# --- ASSET_CONFIG ---
+ASSET_CONFIG = {
+    ("洞窟", D_WALL): "rock.PNG",
+    ("洞窟", D_FLOOR): "jimen.png",
+    ("森", D_WALL): "mori_kabe.png",
+    ("森", D_FLOOR): "mori_yuka.png",
+    ("氷雪地帯", D_WALL): "Y_k.png",
+    ("氷雪地帯", D_FLOOR): "Y_y.png",
+    ("砂漠地帯", D_WALL): "Y_k.png",
+    ("砂漠地帯", D_FLOOR): "Y_y.png",
+}
+
 def load_all_assets():
     """Assetsフォルダから画像を読み込みキャッシュする"""
-    global _ASSET_CACHE
+    global _ASSET_CACHE, PLAYER_IMAGE  # PLAYER_IMAGEもグローバルとして扱う
+    
     base_dir = os.path.dirname(os.path.abspath(__file__))
     assets_dir = os.path.join(base_dir, "Assets")
     
-    # キャッシュ初期化
-    if '_ASSET_CACHE' not in globals():
-        globals()['_ASSET_CACHE'] = {}
+    # 1. プレイヤー画像の読み込み（ループの外で1度だけ行う）
+    try:
+        # AGO.PNG が Assets フォルダ内にある場合は assets_dir を結合してください
+        # 実行ファイルと同じ階層にある場合はそのまま
+        p_path = "AGO.PNG" 
+        PLAYER_IMAGE = Image.open(p_path).convert("RGBA")
+        print(f"✓ プレイヤー画像を読み込みました: {p_path}")
+    except Exception as e:
+        print(f"❌ プレイヤー画像(AGO.PNG)ロード失敗: {e}")
+        PLAYER_IMAGE = None
 
+    # 2. タイルアセットの読み込み
     for (biome, tid), fname in ASSET_CONFIG.items():
         path = os.path.join(assets_dir, fname)
         if os.path.isfile(path):
             try:
-                PLAYER_IMAGE = Image.open("AGO.PNG").convert("RGBA")
-            except Exception:
-                PLAYER_IMAGE = None
-            try:
                 # ニアレストネイバー法でリサイズ
                 img = Image.open(path).convert("RGBA").resize((TILE, TILE), Image.Resampling.NEAREST)
                 _ASSET_CACHE[(biome, tid)] = img
-                print(f"✓ {fname} を正常に読み込みました: {path}")
+                print(f"✓ {fname} を正常に読み込みました")
             except Exception as e:
                 print(f"❌ {fname} ロード失敗: {e}")
         else:
             print(f"⚠ {fname} が見つかりません: {path}")
+
+# --- 実行 ---
+# 忘れずに load_all_assets() を呼び出してください（on_ready内など）
 # --- プレイヤー画像（AGO.PNG）の準備 ---
 
 # --- ここに ASSET_CONFIG も必要です ---
