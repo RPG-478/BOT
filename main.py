@@ -1323,54 +1323,69 @@ async def item_buy(i: Interaction, name: str, amount: int = 1):
     embed=embed_success(" 購入完了",f"**{name} ×{amount}** を購入しました！（{total_price:,}コイン）")
     embed.add_field(name="効果",value=info['desc'],inline=False)
     await i.followup.send(embed=embed)
-@item_group.command(name="use",description="アイテムを使用します")
+@item_group.command(name="use", description="アイテムを使用します")
 @app_commands.describe(name="使用するアイテム名")
-async def item_use(i:Interaction,name:str):
-    await i.response.defer(ephemeral=True) # 応答なしエラー回避
-    uid=str(i.user.id); await load_user(uid); u=get_user_cache(uid)
+async def item_use(i: Interaction, name: str):
+    # 応答遅延対策（3秒ルール回避）
+    await i.response.defer(ephemeral=True)
+    
+    uid = str(i.user.id)
+    await load_user(uid)
+    u = get_user_cache(uid)
     
     # --- 1. 焼き釜の処理 ---
     if name.startswith("焼き釜_"):
-        on=name.replace("焼き釜_","")
-        if not has_item(uid,name):
-            await i.followup.send(embed=embed_error("エラー",f"**{name}** を持っていません。"))
+        on = name.replace("焼き釜_", "")
+        if not has_item(uid, name):
+            await i.followup.send(embed=embed_error("エラー", f"**{name}** を持っていません。"))
             return
         if uid in active_kneads:
-            await i.followup.send(embed=embed_error("エラー","すでに焼き釜が稼働中です！"))
+            await i.followup.send(embed=embed_error("エラー", "すでに焼き釜が稼働中です！"))
             return
-        use_item_once(uid,name); await save_user(uid)
-        minutes=OVEN_TYPES[on][0]
-        embed=embed_success(f" {on}焼き釜 稼働開始",f"{i.user.mention} の{on}焼き釜が稼働開始！\n**{minutes}分間**、自動でパンをこねます")
+        
+        use_item_once(uid, name)
+        await save_user(uid)
+        minutes = OVEN_TYPES.get(on, [30])[0]
+        
+        embed = embed_success(f" {on}焼き釜 稼働開始", f"{i.user.mention} の{on}焼き釜が稼働開始！\n**{minutes}分間**、自動でパンをこねます")
         await i.followup.send(embed=embed)
-        active_kneads[uid]=asyncio.create_task(knead_with_oven_task(i.user,i.channel,minutes,oven_name=on))
+        active_kneads[uid] = asyncio.create_task(knead_with_oven_task(i.user, i.channel, minutes, oven_name=on))
         return
 
     # --- 2. 酒の処理 ---
-    if name=="酒":
-        if u.get("sake",0)<=0:
-            await i.followup.send(embed=embed_error("エラー"," 酒を持っていません。"))
+    if name == "酒":
+        if u.get("sake", 0) <= 0:
+            await i.followup.send(embed=embed_error("エラー", " 酒を持っていません。"))
             return
-        u["sake"]-=1
-        effects=[
-            ("bread_prob",0.05," 酒を飲んだ！レアパン確率が5%上昇した！"),
-            ("coins",random.randint(100,500)," 酒を飲んだ！気分がよくなってコインを拾った！"),
-            ("chips",random.randint(50,200)," 酒を飲んだ！賭け事が楽しくなってチップを獲得！"),
+        
+        u["sake"] -= 1
+        effects = [
+            ("bread_prob", 0.05, " 酒を飲んだ！レアパン確率が5%上昇した！"),
+            ("coins", random.randint(100, 500), " 酒を飲んだ！気分がよくなってコインを拾った！"),
+            ("chips", random.randint(50, 200), " 酒を飲んだ！賭け事が楽しくなってチップを獲得！"),
         ]
-        ef=random.choice(effects)
-        if ef[0]=="bread_prob": u["bread_prob"]=min(0.9,u.get("bread_prob",0.1)+ef[1]); msg=ef[2]
-        elif ef[0]=="coins": u["coins"]+=ef[1]; msg=ef[2]+f"（+{ef[1]}コイン）"
-        else: u["chips"]+=ef[1]; msg=ef[2]+f"（+{ef[1]}チップ）"
+        ef = random.choice(effects)
+        if ef[0] == "bread_prob":
+            u["bread_prob"] = min(0.9, u.get("bread_prob", 0.1) + ef[1])
+            msg = ef[2]
+        elif ef[0] == "coins":
+            u["coins"] += ef[1]
+            msg = ef[2] + f"（+{ef[1]}コイン）"
+        else:
+            u["chips"] += ef[1]
+            msg = ef[2] + f"（+{ef[1]}チップ）"
+            
         await save_user(uid)
-        await i.followup.send(embed=embed_success(" 酒を使用",msg))
+        await i.followup.send(embed=embed_success(" 酒を使用", msg))
         return
 
-    # --- 3. 開拓のコンパス（DB連携・非探索時対応版） ---
+    # --- 3. 開拓のコンパス (Supabase連携・非探索時対応版) ---
     if name == "開拓のコンパス":
         if not has_item(uid, "開拓のコンパス"):
             await i.followup.send(embed=embed_error("エラー", "**開拓のコンパス** を持っていません。"))
             return
 
-        # 座標データの取得（探索中 or DBロード済みデータ）
+        # ユーザーデータの特定（dg_bases=現在探索中 / dg_players=保存データ）
         floor, px, py = None, None, None
         if uid in dg_bases:
             floor, px, py = dg_bases[uid]
@@ -1383,7 +1398,7 @@ async def item_use(i:Interaction,name:str):
             await i.followup.send(embed=embed_error("情報", "コンパスは静かに震えている…（一度も探索したことがないようです）"))
             return
 
-        # 階段座標の特定（メモリ -> DB -> 強制生成）
+        # 階段座標の特定（キャッシュ -> なければDB）
         stair_pos = dg_stairs.get(floor)
         if not stair_pos:
             try:
@@ -1392,20 +1407,23 @@ async def item_use(i:Interaction,name:str):
                     stair_pos = (res.data[0]['x'], res.data[0]['y'])
                     dg_stairs[floor] = stair_pos
                 else:
-                    d_ensure_map(floor) # 生成させてDBに書かせる
+                    # DBにもない場合は、マップを読み込ませて(生成させて)DBに書かせる
+                    d_ensure_map(floor)
                     stair_pos = dg_stairs.get(floor)
-            except: pass
+            except Exception as e:
+                print(f"Compass DB Error: {e}")
 
         if not stair_pos:
-            await i.followup.send(embed=embed_error("エラー", f"{floor}階で階段を検知できませんでした。"))
+            await i.followup.send(embed=embed_error("エラー", f"{floor}階の階段を検知できませんでした。"))
             return
 
-        # 条件が揃ったのでアイテムを消費
+        # ここでアイテムを消費
         if not await use_item_once(uid, "開拓のコンパス"):
              await i.followup.send(embed=embed_error("エラー", "アイテム消費に失敗しました。"))
              return
 
         sx, sy = stair_pos
+        # 方向の計算
         if px is not None and py is not None:
             dx, dy = sx - px, sy - py
             dirs = []
@@ -1416,6 +1434,7 @@ async def item_use(i:Interaction,name:str):
             direction = "".join(dirs) if dirs else "足元"
             res_msg = f"コンパスが激しく反応した！\n\n階段は **{floor}階** の **【{direction}】** 方向にあるようだ。"
         else:
+            # 座標が不明（一度も移動していない等）な場合は階層だけ表示
             res_msg = f"コンパスが微かに光った。\n\nどうやら **{floor}階** のどこかに階段が存在するようだ。"
 
         await save_user(uid)
@@ -1424,26 +1443,28 @@ async def item_use(i:Interaction,name:str):
 
     # --- 4. 汎用アイテム処理 ---
     if name not in ITEMS:
-        await i.followup.send(embed=embed_error("エラー","そのアイテムは存在しません。"))
+        await i.followup.send(embed=embed_error("エラー", "そのアイテムは存在しません。"))
         return
-    if not has_item(uid,name):
-        await i.followup.send(embed=embed_error("エラー",f"**{name}** を持っていません。"))
+    if not has_item(uid, name):
+        await i.followup.send(embed=embed_error("エラー", f"**{name}** を持っていません。"))
         return
 
-    info=ITEMS[name]; duration=info.get("duration")
-    embed=embed_success(f"{name} を使用")
-    embed.add_field(name="効果",value=info['desc'],inline=False)
+    info = ITEMS[name]
+    duration = info.get("duration")
+    embed = embed_success(f"{name} を使用")
+    embed.add_field(name="効果", value=info['desc'], inline=False)
     
     if duration:
-        item_data = u["items"][name]
+        # get_user_cacheから直接アイテムデータを取得
+        item_data = u.get("items", {}).get(name, {})
         count = item_data.get("count", 1)
         total_hours = duration * count
-        item_data["expires"] = (datetime.datetime.now(JST)+datetime.timedelta(hours=total_hours)).isoformat()
-        embed.add_field(name="効果時間",value=f"**{total_hours}時間**（{count}個分累積）",inline=True)
+        item_data["expires"] = (datetime.datetime.now(JST) + datetime.timedelta(hours=total_hours)).isoformat()
+        embed.add_field(name="効果時間", value=f"**{total_hours}時間**（{count}個分累積）", inline=True)
         
-    if name=="プリズンマイナー":
-        set_prison(uid,12)
-        embed.add_field(name="プリズン",value="steal&ギャンブル不可になりました",inline=False)
+    if name == "プリズンマイナー":
+        set_prison(uid, 12)
+        embed.add_field(name="プリズン", value="steal&ギャンブル不可になりました", inline=False)
         
     await save_user(uid)
     await i.followup.send(embed=embed)
@@ -3309,7 +3330,7 @@ async def dg_save_base(uid):
         print(f"dg_save_base失敗 {uid}: {e}")
 
 # ----------------------------------------------------------------
-#  セルオートマトン法 (階段座標保存対応版)
+#  セルオートマトン法 (階段座標保存対応)
 # ----------------------------------------------------------------
 def d_gen_floor(floor):
     grid=[[D_WALL if (x==0 or y==0 or x==D_MAP_W-1 or y==D_MAP_H-1)
@@ -3346,7 +3367,7 @@ def d_gen_floor(floor):
         for x in range(D_MAP_W):
             if grid[y][x]==D_FLOOR and (x,y) not in best:
                 grid[y][x]=D_WALL
-                
+
     # --- 階段・スタートの設置 ---
     candidates=list(best); random.shuffle(candidates)
     sx,sy=candidates[0]
@@ -3363,7 +3384,7 @@ def d_gen_floor(floor):
             stair_x, stair_y = candidates[1][0], candidates[1][1]
             grid[stair_y][stair_x]=D_STAIRS
 
-    # ★階段座標をDBとメモリに永続化
+    # ★階段座標をDBとメモリに永続化 (ここが肝です)
     if stair_x is not None:
         dg_stairs[floor] = (stair_x, stair_y)
         try:
@@ -3373,6 +3394,7 @@ def d_gen_floor(floor):
         except Exception as e:
             print(f"⚠️ 階段保存エラー: {e}")
 
+    # --- 以降、アイテム・罠の配置 (変更なし) ---
     floor_cells=[p for p in best if grid[p[1]][p[0]]==D_FLOOR]
     random.shuffle(floor_cells)
     placed_chest=0; placed_trap=0; placed_shop=0; placed_mine=0
