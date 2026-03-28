@@ -1326,6 +1326,8 @@ async def item_buy(i: Interaction, name: str, amount: int = 1):
 @app_commands.describe(name="使用するアイテム名")
 async def item_use(i:Interaction,name:str):
     uid=str(i.user.id); await load_user(uid); u=get_user_cache(uid)
+    
+    # 1. 焼き釜の処理
     if name.startswith("焼き釜_"):
         on=name.replace("焼き釜_","")
         if not has_item(uid,name):
@@ -1340,6 +1342,8 @@ async def item_use(i:Interaction,name:str):
         await i.response.send_message(embed=embed)
         active_kneads[uid]=asyncio.create_task(knead_with_oven_task(i.user,i.channel,minutes,oven_name=on))
         return
+
+    # 2. 酒の処理
     if name=="酒":
         if u.get("sake",0)<=0:
             await i.response.send_message(embed=embed_error("エラー"," 酒を持っていません。"))
@@ -1358,17 +1362,21 @@ async def item_use(i:Interaction,name:str):
         await i.response.send_message(embed=embed_success(" 酒を使用",msg))
         return
 
-    # --- 開拓のコンパスの実装 ---
-    if name == "開拓のコンパス":
-        dungeon = u.get("dungeon", {})
-        grid = dungeon.get("grid")
-        px, py = dungeon.get("px"), dungeon.get("py")
-
-        if grid is None or px is None:
-            await i.response.send_message(embed=embed_error("エラー", "ダンジョンデータが見つかりません。探索中のみ使用可能です。"), ephemeral=True)
+    # 3. 開拓のコンパス（ダンジョン専用ロジック）
+    if name == "開拓 of コンパス" or name == "開拓のコンパス":
+        # dg_bases から現在地 (階層, x, y) を取得
+        if uid not in dg_bases:
+            await i.response.send_message(embed=embed_error("エラー", "現在はダンジョンを探索していないため、コンパスが反応しません。"), ephemeral=True)
             return
 
-        # マップから階段(D_STAIRS)の座標を直接スキャン
+        floor, px, py = dg_bases[uid]
+        grid = dg_maps.get(floor)
+
+        if grid is None:
+            await i.response.send_message(embed=embed_error("エラー", "マップデータが見つかりません。"), ephemeral=True)
+            return
+
+        # マップ内から階段 (D_STAIRS) を探す
         sx, sy = None, None
         for y, row in enumerate(grid):
             if D_STAIRS in row:
@@ -1377,12 +1385,12 @@ async def item_use(i:Interaction,name:str):
                 break
 
         if sx is None:
-            await i.response.send_message(embed=embed_error("エラー", "この階層には階段が存在しないようです。"), ephemeral=True)
+            await i.response.send_message(embed=embed_error("エラー", "この階層には階段が見当たりません。"), ephemeral=True)
             return
 
-        # アイテムを消費
-        if not await use_item_once(uid, "開拓のコンパス"):
-            await i.response.send_message(embed=embed_error("エラー", "**開拓のコンパス** を持っていません。"), ephemeral=True)
+        # アイテム消費
+        if not await use_item_once(uid, name):
+            await i.response.send_message(embed=embed_error("エラー", f"**{name}** を持っていません。"), ephemeral=True)
             return
 
         # 方角計算
@@ -1394,33 +1402,40 @@ async def item_use(i:Interaction,name:str):
         elif dx < 0: dirs.append("西")
         direction = "".join(dirs) if dirs else "足元"
 
-        embed = embed_success("🧭 開拓のコンパスを使用", 
+        embed = embed_success("🧭 コンパスを使用", 
             f"コンパスの針が激しく回転し、一点を指し示した！\n\n"
-            f"階段は現在地から **【{direction}】** の方向にあるようです。")
+            f"階段は現在地から **【{direction}】** の方向（{floor}階）にあるようです。")
+        
         await save_user(uid)
         await i.response.send_message(embed=embed)
         return
 
+    # 4. 汎用アイテムのバリデーション
     if name not in ITEMS:
         await i.response.send_message(embed=embed_error("エラー","そのアイテムは存在しません。"))
         return
     if not has_item(uid,name):
         await i.response.send_message(embed=embed_error("エラー",f"**{name}** を持っていません。"))
         return
+
+    # 5. 効果時間・特殊アイテムの処理
     info=ITEMS[name]; duration=info.get("duration")
     embed=embed_success(f"{name} を使用")
     embed.add_field(name="効果",value=info['desc'],inline=False)
+    
     if duration:
         item_data = get_user_cache(uid)["items"][name]
         count = item_data.get("count", 1)
-        # 複数所持分を累積（count × duration時間）
         total_hours = duration * count
         item_data["expires"] = (datetime.datetime.now(JST)+datetime.timedelta(hours=total_hours)).isoformat()
         embed.add_field(name="効果時間",value=f"**{total_hours}時間**（{count}個分累積）",inline=True)
+        
     if name=="プリズンマイナー":
         set_prison(uid,12)
         embed.add_field(name="プリズン",value="steal&ギャンブル不可になりました",inline=False)
-    await save_user(uid); await i.response.send_message(embed=embed)
+        
+    await save_user(uid)
+    await i.response.send_message(embed=embed)
 
 @item_group.command(name="list",description="所持アイテム一覧を表示します")
 async def item_list(i:Interaction):
