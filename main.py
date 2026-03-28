@@ -250,10 +250,10 @@ dg_bases   = {}
 #  バイオーム定義
 # ----------------------------------------------------------------
 D_BIOMES = [
-    (range(1,  10),  "洞窟",     "⬜", "⬛", "🌫️", 0x5C4033),
-    (range(10,  20),  "森",       "🟫", "🟩", "🌫️", 0x2D5A1B),
-    (range(20,  30),  "氷雪地帯", "⬜", "🔹", "🌫️", 0x5B9BD5),
-    (range(30, 40),  "砂漠地帯", "🟧", "🟨", "🌫️", 0xC8600A),
+    (range(1,  3),  "洞窟",     "⬜", "⬛", "🌫️", 0x5C4033),
+    (range(3,  4),  "森",       "🟫", "🟩", "🌫️", 0x2D5A1B),
+    (range(4,  5),  "氷雪地帯", "⬜", "🔹", "🌫️", 0x5B9BD5),
+    (range(5, 40),  "砂漠地帯", "🟧", "🟨", "🌫️", 0xC8600A),
 ]
 
 def d_get_biome(floor):
@@ -1326,7 +1326,8 @@ async def item_buy(i: Interaction, name: str, amount: int = 1):
 @item_group.command(name="use", description="アイテムを使用します")
 @app_commands.describe(name="使用するアイテム名")
 async def item_use(i: Interaction, name: str):
-    # 応答遅延対策（3秒ルール回避）
+    # 1. 応答遅延対策（3秒ルールを回避）
+    # これ以降は必ず i.followup.send を使用してください
     await i.response.defer(ephemeral=True)
     
     uid = str(i.user.id)
@@ -1343,12 +1344,14 @@ async def item_use(i: Interaction, name: str):
             await i.followup.send(embed=embed_error("エラー", "すでに焼き釜が稼働中です！"))
             return
         
-        use_item_once(uid, name)
+        # アイテムを1つ消費
+        await use_item_once(uid, name)
         await save_user(uid)
-        minutes = OVEN_TYPES.get(on, [30])[0]
         
+        minutes = OVEN_TYPES.get(on, [30])[0]
         embed = embed_success(f" {on}焼き釜 稼働開始", f"{i.user.mention} の{on}焼き釜が稼働開始！\n**{minutes}分間**、自動でパンをこねます")
         await i.followup.send(embed=embed)
+        
         active_kneads[uid] = asyncio.create_task(knead_with_oven_task(i.user, i.channel, minutes, oven_name=on))
         return
 
@@ -1379,13 +1382,13 @@ async def item_use(i: Interaction, name: str):
         await i.followup.send(embed=embed_success(" 酒を使用", msg))
         return
 
-    # --- 3. 開拓のコンパス (Supabase連携・非探索時対応版) ---
+    # --- 3. 開拓のコンパス (Supabase完全同期版) ---
     if name == "開拓のコンパス":
         if not has_item(uid, "開拓のコンパス"):
             await i.followup.send(embed=embed_error("エラー", "**開拓のコンパス** を持っていません。"))
             return
 
-        # ユーザーデータの特定（dg_bases=現在探索中 / dg_players=保存データ）
+        # ユーザーデータの特定
         floor, px, py = None, None, None
         if uid in dg_bases:
             floor, px, py = dg_bases[uid]
@@ -1402,22 +1405,33 @@ async def item_use(i: Interaction, name: str):
         stair_pos = dg_stairs.get(floor)
         if not stair_pos:
             try:
-                res = supabase.table("dungeon_stairs").select("x, y").eq("floor", floor).execute()
-                if res.data:
+                # 画像の構造に合わせ、floorを整数でフィルタリング
+                res = supabase.table("dungeon_stairs").select("x, y").eq("floor", int(floor)).execute()
+                if res.data and len(res.data) > 0:
                     stair_pos = (res.data[0]['x'], res.data[0]['y'])
                     dg_stairs[floor] = stair_pos
                 else:
-                    # DBにもない場合は、マップを読み込ませて(生成させて)DBに書かせる
+                    # DBになければマップから直接スキャンしてDBに保存
                     d_ensure_map(floor)
-                    stair_pos = dg_stairs.get(floor)
+                    grid = dg_maps.get(floor)
+                    if grid:
+                        for y_idx, row in enumerate(grid):
+                            if D_STAIRS in row:
+                                stair_pos = (row.index(D_STAIRS), y_idx)
+                                dg_stairs[floor] = stair_pos
+                                # 見つけた座標をDBへ保存
+                                supabase.table("dungeon_stairs").upsert({
+                                    "floor": int(floor), "x": stair_pos[0], "y": stair_pos[1]
+                                }).execute()
+                                break
             except Exception as e:
-                print(f"Compass DB Error: {e}")
+                print(f"❌ Compass DB Error: {e}")
 
         if not stair_pos:
             await i.followup.send(embed=embed_error("エラー", f"{floor}階の階段を検知できませんでした。"))
             return
 
-        # ここでアイテムを消費
+        # アイテムを消費
         if not await use_item_once(uid, "開拓のコンパス"):
              await i.followup.send(embed=embed_error("エラー", "アイテム消費に失敗しました。"))
              return
@@ -1434,8 +1448,7 @@ async def item_use(i: Interaction, name: str):
             direction = "".join(dirs) if dirs else "足元"
             res_msg = f"コンパスが激しく反応した！\n\n階段は **{floor}階** の **【{direction}】** 方向にあるようだ。"
         else:
-            # 座標が不明（一度も移動していない等）な場合は階層だけ表示
-            res_msg = f"コンパスが微かに光った。\n\nどうやら **{floor}階** のどこかに階段が存在するようだ。"
+            res_msg = f"コンパスが光を放った！\n\n**{floor}階** のどこかに階段が存在するようだ。"
 
         await save_user(uid)
         await i.followup.send(embed=embed_success("🧭 開拓のコンパス", res_msg))
@@ -1455,7 +1468,6 @@ async def item_use(i: Interaction, name: str):
     embed.add_field(name="効果", value=info['desc'], inline=False)
     
     if duration:
-        # get_user_cacheから直接アイテムデータを取得
         item_data = u.get("items", {}).get(name, {})
         count = item_data.get("count", 1)
         total_hours = duration * count
@@ -1468,6 +1480,7 @@ async def item_use(i: Interaction, name: str):
         
     await save_user(uid)
     await i.followup.send(embed=embed)
+
 @item_group.command(name="list",description="所持アイテム一覧を表示します")
 async def item_list(i:Interaction):
     uid=str(i.user.id); await load_user(uid); u=get_user_cache(uid)
