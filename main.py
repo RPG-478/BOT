@@ -1322,7 +1322,6 @@ async def item_buy(i: Interaction, name: str, amount: int = 1):
     embed=embed_success(" 購入完了",f"**{name} ×{amount}** を購入しました！（{total_price:,}コイン）")
     embed.add_field(name="効果",value=info['desc'],inline=False)
     await i.followup.send(embed=embed)
-
 @item_group.command(name="use",description="アイテムを使用します")
 @app_commands.describe(name="使用するアイテム名")
 async def item_use(i:Interaction,name:str):
@@ -1359,30 +1358,43 @@ async def item_use(i:Interaction,name:str):
         await i.response.send_message(embed=embed_success(" 酒を使用",msg))
         return
 
-    # --- コンパスの実装 ---
+    # --- 開拓のコンパスの実装 ---
     if name == "開拓のコンパス":
-        if not await use_item_once(uid, "コンパス"):
-            await i.response.send_message(embed=embed_error("エラー", "**コンパス** を持っていません。"))
-            return
-        
-        # ユーザーデータからダンジョン情報を取得
         dungeon = u.get("dungeon", {})
+        grid = dungeon.get("grid")
         px, py = dungeon.get("px"), dungeon.get("py")
-        sx, sy = dungeon.get("sx"), dungeon.get("sy")
-        
-        if px is None or sx is None:
-            await i.response.send_message(embed=embed_error("エラー", "現在はダンジョン内にいないため、コンパスが反応しません。"))
+
+        if grid is None or px is None:
+            await i.response.send_message(embed=embed_error("エラー", "ダンジョンデータが見つかりません。探索中のみ使用可能です。"), ephemeral=True)
             return
 
-        dx, dy = sx - px, sy - py
-        direction = ""
-        if dy < 0: direction += "北"
-        elif dy > 0: direction += "南"
-        if dx > 0: direction += "東"
-        elif dx < 0: direction += "西"
-        if not direction: direction = "足元"
+        # マップから階段(D_STAIRS)の座標を直接スキャン
+        sx, sy = None, None
+        for y, row in enumerate(grid):
+            if D_STAIRS in row:
+                sy = y
+                sx = row.index(D_STAIRS)
+                break
 
-        embed = embed_success("🧭 コンパスを使用", 
+        if sx is None:
+            await i.response.send_message(embed=embed_error("エラー", "この階層には階段が存在しないようです。"), ephemeral=True)
+            return
+
+        # アイテムを消費
+        if not await use_item_once(uid, "開拓のコンパス"):
+            await i.response.send_message(embed=embed_error("エラー", "**開拓のコンパス** を持っていません。"), ephemeral=True)
+            return
+
+        # 方角計算
+        dx, dy = sx - px, sy - py
+        dirs = []
+        if dy < 0: dirs.append("北")
+        elif dy > 0: dirs.append("南")
+        if dx > 0: dirs.append("東")
+        elif dx < 0: dirs.append("西")
+        direction = "".join(dirs) if dirs else "足元"
+
+        embed = embed_success("🧭 開拓のコンパスを使用", 
             f"コンパスの針が激しく回転し、一点を指し示した！\n\n"
             f"階段は現在地から **【{direction}】** の方向にあるようです。")
         await save_user(uid)
@@ -1409,7 +1421,6 @@ async def item_use(i:Interaction,name:str):
         set_prison(uid,12)
         embed.add_field(name="プリズン",value="steal&ギャンブル不可になりました",inline=False)
     await save_user(uid); await i.response.send_message(embed=embed)
-
 
 @item_group.command(name="list",description="所持アイテム一覧を表示します")
 async def item_list(i:Interaction):
