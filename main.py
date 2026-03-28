@@ -71,6 +71,7 @@ recovery_state = {"energy": 0.0}
 daily_stats = {"pan_count":0,"gamble_count":0,"pan_to_coin":0,"coin_to_pan":0,"coins_earned":0,"shop_role_count":0,"shop_item_count":0,"rate_history_daily":[],"pan_word_count":0}
 command_usage = {}
 team_command_usage = {}
+dg_stairs = {}
 
 # ============================================================
 #  レベルロール定義 (レベル達成時に付与)
