@@ -709,31 +709,25 @@ async def send_level_up_message(member, new_level, role_grants=None):
 @client.event
 async def on_ready():
     global bcount, epsilon
-    print("--- 起動シーケンス開始 ---")
+    print("--- 起動プロセス開始 ---")
     
-    # 1. まず Cog (pault.pyなど) を読み込む (これがないと同期対象がない)
+    # 1. 【最優先】まず Cog を読み込んで同期する
+    # DBのロードを待たずに実行するため、コマンドが即座に有効になります
     try:
         await load_extensions()
-        print("Cogsの読み込みが完了しました。")
-    except Exception as e:
-        print(f"Cogs読み込み失敗: {e}")
-
-    # 2. スラッシュコマンドの同期を実行
-    try:
-        print("Discordとコマンドを同期中...")
         synced = await client.tree.sync()
         print(f"同期成功: {len(synced)} 個のコマンドを登録しました。")
     except Exception as e:
-        print(f"同期エラー: {e}")
+        print(f"同期失敗: {e}")
 
-    # 3. 既存の初期化処理
-    print("Ready")
-    await load_global()
+    print(f"Logged in as {client.user}")
+
+    # 2. 【バックグラウンド実行】重い処理は別タスクで回す
+    # これにより、DBロードが詰まってもボットの基本機能は死にません
+    asyncio.create_task(load_global())
+    asyncio.create_task(dg_load_all())
     
-    # 4. 既存のループ開始など
-    load_all_assets() 
-    print(f'Logged in as {client.user}')
-
+    # 3. ループタスクの開始
     if not auto_save.is_running(): auto_save.start()
     if not update_rate_task.is_running(): update_rate_task.start()
     if not bread_bake.is_running(): bread_bake.start()
@@ -743,14 +737,12 @@ async def on_ready():
     if not midnight_tasks.is_running(): midnight_tasks.start()
     if not lottery_loop.is_running(): lottery_loop.start()
     
-    await dg_load_all()
+    # ダンジョンタスクもDBロード完了を待たずにスケジュールだけしておく
     if not dungeon_task.is_running(): dungeon_task.start()
     
     client.loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(shutdown()))
-    print("--- 起動完了 ---")
+    print("--- 起動シーケンス（コマンド同期）完了 ---")
 
-async def shutdown():
-    await save_all_users(); await client.close()
 
 @client.event
 async def on_interaction(interaction: discord.Interaction):
