@@ -33,18 +33,22 @@ env_path = os.path.join(os.path.dirname(__file__), '.env')
 # 2. そのパスを使って読み込む
 load_dotenv(env_path)
 
-# 3. その後でスレッドを開始する
-threading.Thread(target=run_web).start()
+# 2. 次に bot を定義 (ここで名前が確定する)
+bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+
+# 3. その後に load_extensions を定義
 async def load_extensions():
     for filename in os.listdir("./cogs"):
         if filename.endswith(".py"):
             await bot.load_extension(f"cogs.{filename[:-3]}")
 
+# 4. その後にイベントや起動処理
 @bot.event
 async def on_ready():
     await load_extensions()
     await bot.tree.sync()
     print(f'Logged in as {bot.user}')
+
 
 
 def embed_success(title: str = None, description: str = None) -> discord.Embed:
