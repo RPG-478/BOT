@@ -1151,7 +1151,6 @@ async def item_buy(i: Interaction, name: str, amount: int = 1):
     embed.add_field(name="効果",value=info['desc'],inline=False)
     await i.followup.send(embed=embed)
 @item_group.command(name="use", description="アイテムを使用します")
-@item_group.command(name="use", description="アイテムを使用します")
 @app_commands.describe(name="使用するアイテム名")
 async def item_use(i: Interaction, name: str):
     # 1. 応答遅延対策
