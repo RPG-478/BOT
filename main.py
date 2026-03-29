@@ -4487,6 +4487,6 @@ if __name__ == "__main__":
 
     # 2. メインスレッドで Bot を起動（ここが動かないと setup_hook も動かない）
     try:
-        client.run(TOKEN)
+        client.run(tok)
     except Exception as e:
         print(f"Bot runtime error: {e}")
