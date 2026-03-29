@@ -52,18 +52,7 @@ LEVEL_ROLES = {
     40: 555555,
     50: 6666666,
 }
-# ============================================================
-#  デイリーミッション定義
-# ============================================================
-DAILY_MISSIONS_ALL = [
-    {"id": "knead_rare",    "desc": "レアパンを10個こねる",        "key": "knead_rare",    "target": 10},
-    {"id": "slot_play",     "desc": "スロットで10回遊ぶ",          "key": "slot_play",     "target": 10},
-    {"id": "dice_play",     "desc": "ダイスで3回遊ぶ",             "key": "dice_play",     "target": 3},
-    {"id": "item_mix",      "desc": "アイテムを2回錬成する",       "key": "item_mix",      "target": 2},
-    {"id": "double_play",   "desc": "ダブルゲームを2回する",       "key": "double_play",   "target": 2},
-]
 DAILY_MISSION_REWARD = 60  # レアパン60個
-
 # デイリーミッションの進捗 {uid: {"date": date, "missions": [id,...], "progress": {id: count}, "claimed": bool}}
 daily_mission_data = {}
 # ============================================================
