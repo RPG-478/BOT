@@ -45,19 +45,6 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 COLOR_SUCCESS = 0x00ff88   #  成功・完了
 COLOR_ERROR   = 0xff4444   #  失敗・エラー・権限なし
 COLOR_INFO    = 0x8B4513   # ℹ️ 情報・確認
-
-def embed_success(title: str = None, description: str = None) -> discord.Embed:
-    """成功・完了用 Embed"""
-    return discord.Embed(title=title, description=description, color=COLOR_SUCCESS)
-
-def embed_error(title: str = None, description: str = None) -> discord.Embed:
-    """失敗・エラー用 Embed"""
-    return discord.Embed(title=title, description=description, color=COLOR_ERROR)
-
-def embed_info(title: str = None, description: str = None) -> discord.Embed:
-    """情報表示用 Embed"""
-    return discord.Embed(title=title, description=description, color=COLOR_INFO)
-
 # ============================================================
 
 stop = False; breads_day = []; user_cache = {}; role_timers = {}; vc_members = {}; msg_cooldowns = {}
@@ -99,6 +86,17 @@ DAILY_MISSION_REWARD = 60  # レアパン60個
 # デイリーミッションの進捗 {uid: {"date": date, "missions": [id,...], "progress": {id: count}, "claimed": bool}}
 daily_mission_data = {}
 
+def embed_success(title: str = None, description: str = None) -> discord.Embed:
+    """成功・完了用 Embed"""
+    return discord.Embed(title=title, description=description, color=COLOR_SUCCESS)
+
+def embed_error(title: str = None, description: str = None) -> discord.Embed:
+    """失敗・エラー用 Embed"""
+    return discord.Embed(title=title, description=description, color=COLOR_ERROR)
+
+def embed_info(title: str = None, description: str = None) -> discord.Embed:
+    """情報表示用 Embed"""
+    return discord.Embed(title=title, description=description, color=COLOR_INFO)
 def get_daily_mission(uid):
     """今日のデイリーミッションを取得。なければ新規生成"""
     today_str = datetime.datetime.now(JST).date().isoformat()
