@@ -2,7 +2,8 @@ import os
 import datetime
 from flask import Flask
 from supabase import create_client, Client
-from dotenv import load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 app = Flask('')
 tok = os.getenv('TOKEN')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
