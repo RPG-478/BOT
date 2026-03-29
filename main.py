@@ -706,28 +706,50 @@ async def send_level_up_message(member, new_level, role_grants=None):
     except Exception as e:
         print(f"レベルアップ通知失敗:{e}")
 
+# --- 既存のインポートなどの下、bot定義から差し替え ---
+
+class MyBot(commands.Bot):
+    def __init__(self):
+        super().__init__(
+            command_prefix="!",
+            intents=discord.Intents.all(),
+            help_command=None
+        )
+
+    # 起動時に一度だけ確実に実行されるフック
+    async def setup_hook(self):
+        print("--- setup_hook: 初期化開始 ---")
+        
+        # 1. Cogsの読み込み (pault.pyなど)
+        # load_extensions() 関数が定義されている前提
+        try:
+            await load_extensions()
+            print("Cogsの読み込みが完了しました。")
+        except Exception as e:
+            print(f"Cogs読み込みエラー: {e}")
+
+        # 2. スラッシュコマンドの同期
+        # ここで同期することで、起動直後にコマンドが有効になります
+        try:
+            synced = await self.tree.sync()
+            print(f"同期成功: {len(synced)} 個のコマンドを登録しました。")
+        except Exception as e:
+            print(f"同期エラー: {e}")
+
+# Botインスタンスの作成
+client = MyBot()
+
 @client.event
 async def on_ready():
-    global bcount, epsilon
-    print("--- 起動プロセス開始 ---")
+    # setup_hookが終わった後に呼ばれる
+    print(f"Logged in as {client.user} (ID: {client.user.id})")
     
-    # 1. 【最優先】まず Cog を読み込んで同期する
-    # DBのロードを待たずに実行するため、コマンドが即座に有効になります
-    try:
-        await load_extensions()
-        synced = await client.tree.sync()
-        print(f"同期成功: {len(synced)} 個のコマンドを登録しました。")
-    except Exception as e:
-        print(f"同期失敗: {e}")
-
-    print(f"Logged in as {client.user}")
-
-    # 2. 【バックグラウンド実行】重い処理は別タスクで回す
-    # これにより、DBロードが詰まってもボットの基本機能は死にません
+    # 重いDB処理などはバックグラウンドで実行（on_readyをブロックしない）
+    print("バックグラウンドタスクを開始します...")
     asyncio.create_task(load_global())
     asyncio.create_task(dg_load_all())
-    
-    # 3. ループタスクの開始
+
+    # 各種ループの開始
     if not auto_save.is_running(): auto_save.start()
     if not update_rate_task.is_running(): update_rate_task.start()
     if not bread_bake.is_running(): bread_bake.start()
@@ -737,12 +759,12 @@ async def on_ready():
     if not midnight_tasks.is_running(): midnight_tasks.start()
     if not lottery_loop.is_running(): lottery_loop.start()
     
-    # ダンジョンタスクもDBロード完了を待たずにスケジュールだけしておく
+    # ダンジョンタスク
     if not dungeon_task.is_running(): dungeon_task.start()
     
-    client.loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(shutdown()))
-    print("--- 起動シーケンス（コマンド同期）完了 ---")
+    print("--- 全ての起動プロセスが完了しました ---")
 
+# --- この下に bot.run(TOKEN) など ---
 
 @client.event
 async def on_interaction(interaction: discord.Interaction):
