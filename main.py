@@ -488,19 +488,6 @@ def check_count(uid): return get_user_cache(uid)["bread_count"]
 
 intents=discord.Intents.default(); intents.message_content=True; intents.members=True; intents.voice_states=True
 
-class MyClient(discord.Client):
-    def __init__(self):
-        super().__init__(intents=intents); self.tree=CommandTree(self)
-    async def setup_hook(self):
-        try:
-            await self.tree.sync()
-            print("コマンド同期完了")
-        except discord.errors.HTTPException as e:
-            if e.status == 429:
-                print(f"レート制限中のためコマンド同期をスキップします")
-            else:
-                raise e
-client=MyClient()
 @tasks.loop(minutes=5)
 async def auto_save():
     try:
