@@ -26,7 +26,7 @@ def run_web():
     app.run(host='0.0.0.0', port=8080)
 
 # --- 修正後（この通りに書き換えてください） ---
-# 1. まずパスを定義する
+# 1. まずパスを定義するるるるる
 env_path = os.path.join(os.path.dirname(__file__), '.env')
 
 # 2. そのパスを使って読み込む
