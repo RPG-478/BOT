@@ -196,6 +196,71 @@ ACHIEVEMENTS = [
     {"id": "steal_30",          "name": "コインは私のもの！",          "desc": "Stealを30回決める",                        "icon": "🦹"},
     {"id": "dungeon_30",        "name": "こんなの簡単すぎる！",        "desc": "ダンジョンで30階に達する",                  "icon": "🏰"},
 ]
-
-# {uid: set of achievement_ids}
 user_achievements = {}
+# ============================================================
+#  コマンドカテゴリ別実行数
+# ============================================================
+category_command_usage = {
+    "パン関係":     0,
+    "経済関係":     0,
+    "ミニゲーム関係": 0,
+    "ショップ関係": 0,
+    "チーム関係":   0,
+    "アイテム関係": 0,
+    "焼きがま関係": 0,
+    "ダンジョン関係": 0,
+}
+
+COMMAND_CATEGORIES = {
+    "パン関係":     ["today","bpd","breads","login","give","eat_bread","bread_change"],
+    "経済関係":     ["wallet","exchange","rate","steal","economy_coin","mining","trade","lottery","lottery_status","random","party_check","ranking","ranking_level","level"],
+    "ミニゲーム関係": ["slot7","dice","double","blackjack","bj_duel","daily"],
+    "ショップ関係": ["shop","team_shop","boost_shop","role_status"],
+    "チーム関係":   ["make_team","team","team_shop"],
+    "アイテム関係": ["item"],
+    "焼きがま関係": ["oven_status"],
+    "ダンジョン関係": ["dungeon","dungeon_reset"],
+}
+dg_session = {}  # {uid: {coins, items, boxes}} ← 入場時の所持数を記録
+dg_boxes   = {}  # {uid: {items, boxes}}        ← アイテムボックス保管内容
+# プログラム上部に追記
+Dg = {} 
+#
+
+D_WALL="wall"; D_FLOOR="floor"; D_START="start"; D_STAIRS="stairs"
+D_CHEST="chest"; D_TRAP="trap"; D_SHOP="shop"; D_BASE="base"; D_LOBY="loby";
+D_MINE="mine"
+
+I_WALL="i_wall"; I_FLOOR="i_floor"; I_EXIT="i_exit"
+I_COUNTER="i_counter"; I_REST="i_rest"; I_STORAGE="i_storage"; I_BAKERY="i_bakery"; I_DOUBLE="i_double"; I_SLOT="i_slot";
+
+D_MAP_W=101; D_MAP_H=101; D_FLOORS=40
+D_VIEW_R=5 # 視野半径3 = 7×7表示
+TILE=32     # 1マスのピクセル数
+
+# 画像投稿チャンネルID
+DUNGEON_IMG_CHANNEL_ID = int(os.environ.get("DUNGEON_IMG_CHANNEL_ID", 0))
+
+# バイオームごとのエンカウント率
+D_ENCOUNTER_RATES = {
+    "洞窟":     0.05,
+    "森":       0.20,
+    "氷雪地帯": 0.07,
+    "砂漠地帯": 0.13,
+}
+
+dg_maps    = {}
+dg_players = {}
+dg_starts  = {}
+dg_used    = {}
+dg_bases   = {}
+
+# ----------------------------------------------------------------
+#  バイオーム定義
+# ----------------------------------------------------------------
+D_BIOMES = [
+    (range(1,  3),  "洞窟",     "⬜", "⬛", "🌫️", 0x5C4033),
+    (range(3,  4),  "森",       "🟫", "🟩", "🌫️", 0x2D5A1B),
+    (range(4,  5),  "氷雪地帯", "⬜", "🔹", "🌫️", 0x5B9BD5),
+    (range(5, 40),  "砂漠地帯", "🟧", "🟨", "🌫️", 0xC8600A),
+]
