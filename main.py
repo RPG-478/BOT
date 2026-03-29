@@ -85,6 +85,26 @@ DAILY_MISSION_REWARD = 60  # レアパン60個
 
 # デイリーミッションの進捗 {uid: {"date": date, "missions": [id,...], "progress": {id: count}, "claimed": bool}}
 daily_mission_data = {}
+# ============================================================
+#  プレイヤー統計 (累積)  {uid: {...}}
+# ============================================================
+player_stats = {}
+# ============================================================
+#  実績定義
+# ============================================================
+ACHIEVEMENTS = [
+    {"id": "bread_1000",        "name": "一人前のパン屋",              "desc": "パンを1000個作る",                         "icon": "🍞"},
+    {"id": "ticket_1000",       "name": "ああ、私のガチャチケ",        "desc": "崩壊スターレイルチケットを1000枚買う",     "icon": "🎫"},
+    {"id": "trash_10000",       "name": "ゴミを愛す",                  "desc": "ゴミを10000個買う",                         "icon": "🗑️"},
+    {"id": "iron_grave",        "name": "私がザンダー・ツー・クワバラ","desc": "鉄墓を合成する",                           "icon": "⚔️"},
+    {"id": "coins_10m",         "name": "大富豪",                      "desc": "10,000,000コインをゲットする",              "icon": "💰"},
+    {"id": "aventurine",        "name": "アベンチュリン",              "desc": "一回の賭けで1000チップ勝つ",               "icon": "🎲"},
+    {"id": "steal_30",          "name": "コインは私のもの！",          "desc": "Stealを30回決める",                        "icon": "🦹"},
+    {"id": "dungeon_30",        "name": "こんなの簡単すぎる！",        "desc": "ダンジョンで30階に達する",                  "icon": "🏰"},
+]
+
+# {uid: set of achievement_ids}
+user_achievements = {}
 
 def embed_success(title: str = None, description: str = None) -> discord.Embed:
     """成功・完了用 Embed"""
@@ -119,11 +139,6 @@ def add_daily_progress(uid, key, amount=1):
             d["progress"][key] = d["progress"].get(key, 0) + amount
             break
 
-# ============================================================
-#  プレイヤー統計 (累積)  {uid: {...}}
-# ============================================================
-player_stats = {}
-
 def get_player_stats(uid):
     if uid not in player_stats:
         player_stats[uid] = {
@@ -141,23 +156,6 @@ def get_player_stats(uid):
             "trash_bought": 0,
         }
     return player_stats[uid]
-
-# ============================================================
-#  実績定義
-# ============================================================
-ACHIEVEMENTS = [
-    {"id": "bread_1000",        "name": "一人前のパン屋",              "desc": "パンを1000個作る",                         "icon": "🍞"},
-    {"id": "ticket_1000",       "name": "ああ、私のガチャチケ",        "desc": "崩壊スターレイルチケットを1000枚買う",     "icon": "🎫"},
-    {"id": "trash_10000",       "name": "ゴミを愛す",                  "desc": "ゴミを10000個買う",                         "icon": "🗑️"},
-    {"id": "iron_grave",        "name": "私がザンダー・ツー・クワバラ","desc": "鉄墓を合成する",                           "icon": "⚔️"},
-    {"id": "coins_10m",         "name": "大富豪",                      "desc": "10,000,000コインをゲットする",              "icon": "💰"},
-    {"id": "aventurine",        "name": "アベンチュリン",              "desc": "一回の賭けで1000チップ勝つ",               "icon": "🎲"},
-    {"id": "steal_30",          "name": "コインは私のもの！",          "desc": "Stealを30回決める",                        "icon": "🦹"},
-    {"id": "dungeon_30",        "name": "こんなの簡単すぎる！",        "desc": "ダンジョンで30階に達する",                  "icon": "🏰"},
-]
-
-# {uid: set of achievement_ids}
-user_achievements = {}
 
 def get_user_achievements(uid):
     if uid not in user_achievements:
