@@ -17,4 +17,13 @@ font = FontProperties(fname='font.ttf', size=16)
 from flask import Flask
 import threading
 app = Flask('')
-
+tok = os.getenv('TOKEN')
+SUPABASE_URL = os.getenv('SUPABASE_URL')
+SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# ============================================================
+#  Embed カラー定数 
+# ============================================================
+COLOR_SUCCESS = 0x00ff88   #  成功・完了
+COLOR_ERROR   = 0xff4444   #  失敗・エラー・権限なし
+COLOR_INFO    = 0x8B4513   # ℹ️ 情報・確認
