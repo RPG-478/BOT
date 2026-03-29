@@ -17,6 +17,7 @@ from flask import Flask
 import threading
 from PIL import Image, ImageDraw
 app = Flask('')
+from discord.ext import commands
 from config import *
 
 @app.route('/')
