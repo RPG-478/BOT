@@ -4470,17 +4470,23 @@ async def dungeon_task():
         print("ダンジョン月次リセット完了")
 
 from keep_alive import keep_alive
+# main.py の一番最後（client.run(TOKEN) の周辺）
+
 if __name__ == "__main__":
-    # 1. 先に Flask をバックグラウンドで動かす
     from threading import Thread
-    def run_keep_alive():
-        # ここに Flask の app.run(...) が入っている関数を指定
-        keep_alive() 
 
-    # スレッドとして実行することで、下の client.run を邪魔しない
-    t = Thread(target=run_keep_alive)
-    t.start()
+    # 1. Flaskサーバーを別スレッド（バックグラウンド）で動かす
+    def run_flask():
+        # keep_alive関数の中で app.run() を呼んでいる前提です
+        keep_alive()
 
-    # 2. その後に Bot を起動
-    # これが実行されて初めて setup_hook や on_ready が呼ばれます
-    client.run(tok)
+    flask_thread = Thread(target=run_flask)
+    flask_thread.daemon = True # メインが終了したら一緒に終了するように
+    flask_thread.start()
+    print("DEBUG: Flask server started in background thread.")
+
+    # 2. メインスレッドで Bot を起動（ここが動かないと setup_hook も動かない）
+    try:
+        client.run(TOKEN)
+    except Exception as e:
+        print(f"Bot runtime error: {e}")
