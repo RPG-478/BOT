@@ -36,14 +36,18 @@ load_dotenv(env_path)
 # 3. その後でスレッドを開始する
 threading.Thread(target=run_web).start()
 
-# --- 起動時の処理 ---
+import os
+
 async def load_extensions():
     for filename in os.listdir("./cogs"):
         if filename.endswith(".py"):
             await bot.load_extension(f"cogs.{filename[:-3]}")
 
-# 既存の起動シーケンスの中で load_extensions() を実行するようにします
-# 例: 
+@bot.event
+async def on_ready():
+    await load_extensions()
+    await bot.tree.sync()
+    print(f'Logged in as {bot.user}')
 
 
 def embed_success(title: str = None, description: str = None) -> discord.Embed:
@@ -711,8 +715,6 @@ async def on_ready():
     
     # --- ここにアセット読み込みを追加 ---
     load_all_assets() 
-    await load_extensions() # これを追加
-    await bot.tree.sync()   # スラッシュコマンドの同期
     print(f'Logged in as {bot.user}')
     # -------------------------------
 
