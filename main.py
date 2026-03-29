@@ -46,9 +46,18 @@ async def load_extensions():
 # 4. その後にイベントや起動処理
 @bot.event
 async def on_ready():
-    await load_extensions()
-    await bot.tree.sync()
     print(f'Logged in as {bot.user}')
+    
+    # 順序を入れ替え：まず同期を試みる
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} commands.")
+    except Exception as e:
+        print(f"Failed to sync commands: {e}")
+        
+    await load_extensions()
+    print("Extensions loaded.")
+
 
 @bot.command()
 @commands.is_owner() # 管理者（あなた）だけが実行可能
