@@ -50,7 +50,11 @@ async def on_ready():
     await bot.tree.sync()
     print(f'Logged in as {bot.user}')
 
-
+@bot.command()
+@commands.is_owner() # 管理者（あなた）だけが実行可能
+async def sync(ctx):
+    await bot.tree.sync()
+    await ctx.send("スコープ内の全コマンドを同期しました！")
 
 def embed_success(title: str = None, description: str = None) -> discord.Embed:
     """成功・完了用 Embed"""
