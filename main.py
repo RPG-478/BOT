@@ -43,7 +43,6 @@ async def load_extensions():
         if filename.endswith(".py"):
             await bot.load_extension(f"cogs.{filename[:-3]}")
 
-# 4. その後にイベントや起動処理
 @bot.event
 async def on_ready():
     # 1. ログイン確認
@@ -63,7 +62,6 @@ async def on_ready():
         print("Extensions loaded.")
     except Exception as e:
         print(f"Extension load failed: {e}")
-
 
 
 @bot.command()
