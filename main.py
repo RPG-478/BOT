@@ -35,9 +35,6 @@ load_dotenv(env_path)
 
 # 3. その後でスレッドを開始する
 threading.Thread(target=run_web).start()
-
-import os
-
 async def load_extensions():
     for filename in os.listdir("./cogs"):
         if filename.endswith(".py"):
