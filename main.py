@@ -42,28 +42,6 @@ async def load_extensions():
     for filename in os.listdir("./cogs"):
         if filename.endswith(".py"):
             await bot.load_extension(f"cogs.{filename[:-3]}")
-
-@bot.event
-async def on_ready():
-    # 1. ログイン確認
-    print(f'Logged in as {bot.user} (ID: {bot.user.id})')
-    
-    # 2. 【最優先】スラッシュコマンドの強制同期
-    try:
-        print("Starting sync...")
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} commands successfully!")
-    except Exception as e:
-        print(f"Sync failed: {e}")
-
-    # 3. Cogの読み込み
-    try:
-        await load_extensions()
-        print("Extensions loaded.")
-    except Exception as e:
-        print(f"Extension load failed: {e}")
-
-
 @bot.command()
 @commands.is_owner() # 管理者（あなた）だけが実行可能
 async def sync(ctx):
@@ -733,29 +711,29 @@ async def on_ready():
     global bcount, epsilon
     print("--- 起動シーケンス開始 ---")
     
-    # 1. 【最優先】スラッシュコマンドの同期
-    # これを一番上に持ってくることで、30秒待機中もDiscord側でコマンドが使えるようになります
+    # 1. まず Cog (pault.pyなど) を読み込む (これがないと同期対象がない)
     try:
-        print("コマンド同期中...")
-        # 変数名が bot か client かに合わせて調整してください
+        await load_extensions()
+        print("Cogsの読み込みが完了しました。")
+    except Exception as e:
+        print(f"Cogs読み込み失敗: {e}")
+
+    # 2. スラッシュコマンドの同期を実行
+    try:
+        print("Discordとコマンドを同期中...")
         synced = await client.tree.sync()
         print(f"同期成功: {len(synced)} 個のコマンドを登録しました。")
     except Exception as e:
         print(f"同期エラー: {e}")
 
-    # 2. 既存のグローバル読み込み
+    # 3. 既存の初期化処理
     print("Ready")
     await load_global()
     
-    # 3. 既存の待機処理 (アセット読み込み前のバッファ)
-    print("アセット読み込みまで30秒待機します...")
-    await asyncio.sleep(30)
-    
-    # 4. アセット読み込み
+    # 4. 既存のループ開始など
     load_all_assets() 
     print(f'Logged in as {client.user}')
 
-    # 5. 各種ループタスクの開始
     if not auto_save.is_running(): auto_save.start()
     if not update_rate_task.is_running(): update_rate_task.start()
     if not bread_bake.is_running(): bread_bake.start()
@@ -765,16 +743,11 @@ async def on_ready():
     if not midnight_tasks.is_running(): midnight_tasks.start()
     if not lottery_loop.is_running(): lottery_loop.start()
     
-    # 6. ダンジョン関連
     await dg_load_all()
     if not dungeon_task.is_running(): dungeon_task.start()
     
-    # 7. 終了ハンドラ
     client.loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(shutdown()))
-    
-    print("--- 全ての起動処理が完了しました ---")
-
-
+    print("--- 起動完了 ---")
 
 async def shutdown():
     await save_all_users(); await client.close()
