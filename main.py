@@ -731,13 +731,31 @@ async def send_level_up_message(member, new_level, role_grants=None):
 @client.event
 async def on_ready():
     global bcount, epsilon
-    print("Ready"); await load_global(); await asyncio.sleep(30)
+    print("--- 起動シーケンス開始 ---")
     
-    # --- ここにアセット読み込みを追加 ---
-    load_all_assets() 
-    print(f'Logged in as {bot.user}')
-    # -------------------------------
+    # 1. 【最優先】スラッシュコマンドの同期
+    # これを一番上に持ってくることで、30秒待機中もDiscord側でコマンドが使えるようになります
+    try:
+        print("コマンド同期中...")
+        # 変数名が bot か client かに合わせて調整してください
+        synced = await client.tree.sync()
+        print(f"同期成功: {len(synced)} 個のコマンドを登録しました。")
+    except Exception as e:
+        print(f"同期エラー: {e}")
 
+    # 2. 既存のグローバル読み込み
+    print("Ready")
+    await load_global()
+    
+    # 3. 既存の待機処理 (アセット読み込み前のバッファ)
+    print("アセット読み込みまで30秒待機します...")
+    await asyncio.sleep(30)
+    
+    # 4. アセット読み込み
+    load_all_assets() 
+    print(f'Logged in as {client.user}')
+
+    # 5. 各種ループタスクの開始
     if not auto_save.is_running(): auto_save.start()
     if not update_rate_task.is_running(): update_rate_task.start()
     if not bread_bake.is_running(): bread_bake.start()
@@ -747,11 +765,15 @@ async def on_ready():
     if not midnight_tasks.is_running(): midnight_tasks.start()
     if not lottery_loop.is_running(): lottery_loop.start()
     
+    # 6. ダンジョン関連
     await dg_load_all()
     if not dungeon_task.is_running(): dungeon_task.start()
     
+    # 7. 終了ハンドラ
     client.loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(shutdown()))
-    print("起動完了")
+    
+    print("--- 全ての起動処理が完了しました ---")
+
 
 
 async def shutdown():
