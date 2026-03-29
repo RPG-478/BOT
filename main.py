@@ -46,17 +46,24 @@ async def load_extensions():
 # 4. その後にイベントや起動処理
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user}')
+    # 1. ログイン確認
+    print(f'Logged in as {bot.user} (ID: {bot.user.id})')
     
-    # 順序を入れ替え：まず同期を試みる
+    # 2. 【最優先】スラッシュコマンドの強制同期
     try:
+        print("Starting sync...")
         synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} commands.")
+        print(f"Synced {len(synced)} commands successfully!")
     except Exception as e:
-        print(f"Failed to sync commands: {e}")
-        
-    await load_extensions()
-    print("Extensions loaded.")
+        print(f"Sync failed: {e}")
+
+    # 3. Cogの読み込み
+    try:
+        await load_extensions()
+        print("Extensions loaded.")
+    except Exception as e:
+        print(f"Extension load failed: {e}")
+
 
 
 @bot.command()
