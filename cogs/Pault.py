@@ -1,10 +1,10 @@
-import discord
+import discord  # 小文字に修正
 from discord.ext import commands
 from discord import app_commands
 import random
 import asyncio
 
-# --- 定数・スタッツ定義 (提供通り) ---
+# --- 定数・スタッツ定義 ---
 BATTLE_STATS = {
     "ソルジャー": [1, 0], "アサシン": [3, 0], "ナイト": [2, 1],
     "シールド": [1, 2], "ランナー": [1, 0], "イーター": [2, 0],
@@ -37,7 +37,7 @@ class PaultGame:
         if self.players["p1"]["main"] is None: return "cpu"
         return None
 
-# --- 提供されたロジック関数 (そのまま) ---
+# --- ロジック関数 ---
 def execute_attack(attacker_card, defender_card):
     atk = BATTLE_STATS.get(attacker_card["name"], [0, 0])[0]
     dfn = BATTLE_STATS.get(defender_card["name"], [0, 0])[1]
@@ -62,7 +62,7 @@ def make_embed(game):
     embed.add_field(name="あなたの城", value=get_name(p["main"]), inline=True)
     return embed
 
-# --- 提供されたUIクラス (そのまま) ---
+# --- UIクラス ---
 class AttackView(discord.ui.View):
     def __init__(self, game):
         super().__init__()
@@ -79,6 +79,7 @@ class AttackView(discord.ui.View):
     async def process_atk(self, i, my_pos, target_pos):
         p = self.game.players["p1"]
         c = self.game.players["cpu"]
+        # リストの中身があるかチェック
         if not p[my_pos]:
             return await i.response.send_message("その位置に攻撃可能なカードがありません。", ephemeral=True)
         
@@ -110,7 +111,7 @@ class ActionCategoryView(discord.ui.View):
     async def deploy(self, i: discord.Interaction, b: discord.ui.Button):
         await i.response.send_message("配置機能は準備中です。", ephemeral=True)
 
-# --- CPUロジック (そのまま) ---
+# --- CPUロジック ---
 async def cpu_logic(i, game):
     cpu = game.players["cpu"]
     p1 = game.players["p1"]
@@ -120,10 +121,12 @@ async def cpu_logic(i, game):
             cpu["main"] = card
         else:
             cpu["hand"].append(card)
+            
     for idx, c in enumerate(cpu["hand"]):
         if c["type"] == "戦闘":
             if len(cpu["left"]) < 2: cpu["left"].append(cpu["hand"].pop(idx)); break
             if len(cpu["right"]) < 2: cpu["right"].append(cpu["hand"].pop(idx)); break
+            
     cpu_log = "CPUはカードを整理した。"
     if game.turn > 2:
         if cpu["left"] and p1["main"]:
@@ -134,6 +137,7 @@ async def cpu_logic(i, game):
                 cpu_log = f"CPUの攻撃！あなたの城が破壊された！"
             else:
                 cpu_log = f"CPUの攻撃！{res}"
+                
     game.turn += 1
     vic = game.check_victory()
     if vic:
@@ -150,7 +154,7 @@ class Pault(commands.Cog):
     @app_commands.command(name="pault", description="Pault対戦を開始します")
     async def pault(self, interaction: discord.Interaction):
         game = PaultGame(interaction.channel_id, interaction.user.id, interaction.user.display_name)
-        # 初期配置
+        # 初期配置（山札から5枚引く）
         for _ in range(5):
             if game.deck:
                 c = game.deck.pop()
