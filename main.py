@@ -817,7 +817,8 @@ async def on_message(message):
                     u["bread_prob"]=max(0.01,u["bread_prob"]-0.01); choice=random.choice(hazure)
                     if choice in ["確変","<:opanchu:1419129639439171686><:opanchu:1419129639439171686><:opanchu:1419129639439171686>"]:
                         u["bread_prob"]+=0.03; choice+="\nレアパンの出る確率が上がりました"
-                    await message.reply(choice)
+                    if not choice:
+                        await message.reply(choice)
                 else:
                     u["bread_prob"]=min(0.9,u["bread_prob"]+0.01)
                     cg=random.randint(20,30) if has_item(uid,"積立主義") else (2 if has_item(uid,"プレーン型") else 1)
