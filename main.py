@@ -741,7 +741,6 @@ client = MyBot()
 
 @client.event
 async def on_ready():
-    await client.setup_hook()
     # setup_hookが終わった後に呼ばれる
     print(f"Logged in as {client.user} (ID: {client.user.id})")
     
