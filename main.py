@@ -16,6 +16,7 @@ font = FontProperties(fname='font.ttf', size=16)
 #from dungeo import setup_dungeon
 from flask import Flask
 import threading
+from PIL import Image, ImageDraw
 app = Flask('')
 
 @app.route('/')
@@ -111,105 +112,6 @@ async def check_and_grant_achievement(uid, achievement_id, interaction_or_channe
     except Exception as e:
         print(f"実績通知失敗: {e}")
 
-# ============================================================
-#  コマンドカテゴリ別実行数
-# ============================================================
-category_command_usage = {
-    "パン関係":     0,
-    "経済関係":     0,
-    "ミニゲーム関係": 0,
-    "ショップ関係": 0,
-    "チーム関係":   0,
-    "アイテム関係": 0,
-    "焼きがま関係": 0,
-    "ダンジョン関係": 0,
-}
-
-COMMAND_CATEGORIES = {
-    "パン関係":     ["today","bpd","breads","login","give","eat_bread","bread_change"],
-    "経済関係":     ["wallet","exchange","rate","steal","economy_coin","mining","trade","lottery","lottery_status","random","party_check","ranking","ranking_level","level"],
-    "ミニゲーム関係": ["slot7","dice","double","blackjack","bj_duel","daily"],
-    "ショップ関係": ["shop","team_shop","boost_shop","role_status"],
-    "チーム関係":   ["make_team","team","team_shop"],
-    "アイテム関係": ["item"],
-    "焼きがま関係": ["oven_status"],
-    "ダンジョン関係": ["dungeon","dungeon_reset"],
-}
-dg_session = {}  # {uid: {coins, items, boxes}} ← 入場時の所持数を記録
-dg_boxes   = {}  # {uid: {items, boxes}}        ← アイテムボックス保管内容
-# プログラム上部に追記
-Dg = {} 
-#
-
-from PIL import Image, ImageDraw
-
-D_WALL="wall"; D_FLOOR="floor"; D_START="start"; D_STAIRS="stairs"
-D_CHEST="chest"; D_TRAP="trap"; D_SHOP="shop"; D_BASE="base"; D_LOBY="loby";
-D_MINE="mine"
-
-I_WALL="i_wall"; I_FLOOR="i_floor"; I_EXIT="i_exit"
-I_COUNTER="i_counter"; I_REST="i_rest"; I_STORAGE="i_storage"; I_BAKERY="i_bakery"; I_DOUBLE="i_double"; I_SLOT="i_slot";
-
-D_MAP_W=101; D_MAP_H=101; D_FLOORS=40
-D_VIEW_R=5 # 視野半径3 = 7×7表示
-TILE=32     # 1マスのピクセル数
-
-# 画像投稿チャンネルID
-DUNGEON_IMG_CHANNEL_ID = int(os.environ.get("DUNGEON_IMG_CHANNEL_ID", 0))
-
-# バイオームごとのエンカウント率
-D_ENCOUNTER_RATES = {
-    "洞窟":     0.05,
-    "森":       0.20,
-    "氷雪地帯": 0.07,
-    "砂漠地帯": 0.13,
-}
-
-dg_maps    = {}
-dg_players = {}
-dg_starts  = {}
-dg_used    = {}
-dg_bases   = {}
-
-# ----------------------------------------------------------------
-#  バイオーム定義
-# ----------------------------------------------------------------
-D_BIOMES = [
-    (range(1,  3),  "洞窟",     "⬜", "⬛", "🌫️", 0x5C4033),
-    (range(3,  4),  "森",       "🟫", "🟩", "🌫️", 0x2D5A1B),
-    (range(4,  5),  "氷雪地帯", "⬜", "🔹", "🌫️", 0x5B9BD5),
-    (range(5, 40),  "砂漠地帯", "🟧", "🟨", "🌫️", 0xC8600A),
-]
-
-def d_get_biome(floor):
-    for r, name, wall_e, floor_e, fog_e, color in D_BIOMES:
-        if floor in r:
-            return name, wall_e, floor_e, fog_e, color
-    return "洞窟", "⬜", "⬛", "🌫️", 0x5C4033
-
-# ----------------------------------------------------------------
-#  タイル色定義（画像マップ用）
-# ----------------------------------------------------------------
-import os
-import io
-from PIL import Image, ImageDraw
-import discord
-
-# --- 1. 定数・色定義 (既存のものを維持) ---
-TILE_COLORS = {
-    # (通常色, アウトライン色)
-    D_WALL:   {"洞窟": (80,60,50),    "森": (40,60,20),   "氷雪地帯": (200,220,240), "砂漠地帯": (120,80,30)},
-    D_FLOOR:  {"洞窟": (40,30,25),    "森": (60,100,30),  "氷雪地帯": (100,160,200), "砂漠地帯": (200,160,60)},
-    D_START:  (30,100,220),
-    D_STAIRS: (220,60,60),
-    D_CHEST:  (220,200,30),
-    D_TRAP:   None,   # 床と同じ色（見えない）
-    D_SHOP:   (180,80,200),
-    D_BASE:   (80,120,220),
-    D_MINE:   (255,0,120),
-    "player": (30,220,120),
-    "fog":    (0,0,0),
-}
 # --- アセット・プレイヤー画像のキャッシュ用（関数の外に配置） ---
 _ASSET_CACHE = {}
 PLAYER_IMAGE = None  # グローバルで初期化
