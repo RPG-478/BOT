@@ -43,7 +43,7 @@ def get_options_from_list(items, filter_type=None):
         if filter_type is None or card.get("type") == filter_type:
             # 戦闘カードならスタッツを表示、そうでなければ種別を表示
             if card.get("type") == "戦闘":
-                from pault_game import BATTLE_STATS # 循環参照に注意（必要に応じて関数内でインポート）
+                from Pault import BATTLE_STATS # 循環参照に注意（必要に応じて関数内でインポート）
                 s = BATTLE_STATS.get(card["name"], [0, 0])
                 label = f"{card['name']} (ATK:{s[0]}/DFN:{s[1]})"
             else:
