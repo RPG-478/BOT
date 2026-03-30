@@ -731,6 +731,16 @@ async def on_ready():
     # setup_hookが終わった後に呼ばれる
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     
+    # --- 追加: スラッシュコマンドの同期 ---
+    try:
+        # Cogsのロード（必要であればここで呼び出し）
+        # await load_extensions() 
+        synced = await bot.tree.sync()
+        print(f"スラッシュコマンド同期成功: {len(synced)}個のコマンドを登録しました")
+    except Exception as e:
+        print(f"同期エラー: {e}")
+    # -----------------------------------
+
     # 重いDB処理などはバックグラウンドで実行（on_readyをブロックしない）
     print("バックグラウンドタスクを開始します...")
     asyncio.create_task(load_global())
@@ -750,6 +760,9 @@ async def on_ready():
     if not dungeon_task.is_running(): dungeon_task.start()
     
     print("--- 全ての起動プロセスが完了しました ---")
+
+
+
 
 # --- この下に bot.run(TOKEN) など ---
 
