@@ -11,8 +11,7 @@ from keep_alive import keep_alive
 # Botクラス定義
 class MyBot(commands.Bot):
     def __init__(self):
-        # --- 修正ポイント1: インテンツの追加 ---
-        # スラッシュコマンドやメンバー情報の取得に必要な権限を網羅します
+        # 全権限を有効化
         intents = discord.Intents.all() 
         super().__init__(command_prefix=config.PREFIX, intents=intents)
 
@@ -30,8 +29,7 @@ class MyBot(commands.Bot):
         else:
             print(df.format_log("Warning: 'cogs' directory not found."))
 
-        # --- 修正ポイント2: 同期をsetup_hookに移動 ---
-        # on_readyは何度も呼ばれる可能性があるため、起動時に1回だけ確実に実行されるここで行います
+        # スラッシュコマンドを同期
         await self.tree.sync()
         print(df.format_log("Slash commands synced successfully."))
 
