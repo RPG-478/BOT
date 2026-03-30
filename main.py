@@ -35,6 +35,7 @@ class MyBot(commands.Bot):
             print(df.format_log("Warning: 'cogs' directory not found."))
 
     async def on_ready(self):
+        await self.tree.sync()
         print(df.format_log(f"Logged in as {self.user} (ID: {self.user.id})"))
         print(f"Supabase Status: {'Connected' if config.supabase else 'Disconnected'}")
 
