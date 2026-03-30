@@ -1,3 +1,4 @@
+# ~/BOT/defining.py
 # -*- coding: utf-8 -*-
 import os
 import discord
@@ -7,15 +8,18 @@ def format_log(message: str) -> str:
     """
     JST（日本時間）を付与した標準的なログフォーマットを返します。
     """
+    # config.get_now() を使うことで、JST（日本時間）に統一されます
     now = config.get_now().strftime('%Y-%m-%d %H:%M:%S')
     return f"[{now}] {message}"
 
 def get_asset_path(filename: str) -> str:
     """
     Assets フォルダ内のファイルパスを安全に取得します。
+    画像などのリソース管理用です。
     """
     path = os.path.join("Assets", filename)
     if not os.path.exists(path):
+        # 警告ログを出す（開発時に役立ちます）
         print(format_log(f"Warning: Asset not found at {path}"))
     return path
 
@@ -32,15 +36,13 @@ async def send_error_embed(ctx, error_message: str):
 
 def get_options_from_list(items, battle_stats, filter_type=None):
     """
-    items: カードデータのリスト
-    battle_stats: Pault.pyから渡されるスタッツ辞書
-    filter_type: "戦闘" や "サポート" など
+    カードリストからセレクトメニューの選択肢を生成します。
+    battle_statsを引数に取ることで、循環参照を回避しています。
     """
     options = []
     for i, card in enumerate(items):
         if filter_type is None or card.get("type") == filter_type:
             if card.get("type") == "戦闘":
-                # 引数で受け取った辞書からスタッツを取得
                 s = battle_stats.get(card["name"], [0, 0])
                 label = f"{card['name']} (ATK:{s[0]}/DFN:{s[1]})"
             else:
@@ -50,6 +52,7 @@ def get_options_from_list(items, battle_stats, filter_type=None):
     return options
 
 class GenericPickerView(discord.ui.View):
+    """汎用的なカード選択用Viewクラスです。"""
     def __init__(self, options, min_v, max_v, placeholder, callback_func):
         super().__init__(timeout=None)
         select = discord.ui.Select(
