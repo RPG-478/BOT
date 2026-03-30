@@ -153,7 +153,7 @@ class DeployPosButton(discord.ui.Button):
         if not options: return await i.response.send_message("戦闘カードがありません", ephemeral=True)
 
         async def deploy_logic(interaction, indices):
-            for idx in indices:
+            for idx in sorted(indices, reverse=True):
                 card = hand.pop(idx)
                 if self.side == "main": self.game.players["p1"]["main"] = card
                 else: self.game.players["p1"][self.side].append(card)
@@ -214,18 +214,23 @@ class Pault(commands.Cog):
         hand = game.players["p1"]["hand"]
 
         async def step3_right(i3, idx3):
-            for idx in idx3: game.players["p1"]["right"].append(hand.pop(idx))
+            # 後ろからpopしてズレを防止
+            for idx in sorted(idx3, reverse=True): 
+                game.players["p1"]["right"].append(hand.pop(idx))
             await i3.response.edit_message(content="準備完了！", embed=make_embed(game), view=MainMenuView(game))
 
         async def step2_left(i2, idx2):
-            for idx in idx2: game.players["p1"]["left"].append(hand.pop(idx))
+            for idx in sorted(idx2, reverse=True): 
+                game.players["p1"]["left"].append(hand.pop(idx))
+            # 第2引数に BATTLE_STATS を追加
             opt_r = df.get_options_from_list(hand, BATTLE_STATS, "戦闘")
-            await i2.response.edit_message(content="ライトスポーンを選択", view=df.GenericPickerView(opt_r, 1, 3, "ライト配置", step3_right))
+            await i2.response.edit_message(content="ライトスポーンを選択してください（最大3枚）", view=df.GenericPickerView(opt_r, 1, 3, "ライト配置", step3_right))
 
         async def step1_main(i1, idx1):
             game.players["p1"]["main"] = hand.pop(idx1[0])
+            # 第2引数に BATTLE_STATS を追加
             opt_l = df.get_options_from_list(hand, BATTLE_STATS, "戦闘")
-            await i1.response.edit_message(content="レフトスポーンを選択", view=df.GenericPickerView(opt_l, 1, 3, "レフト配置", step2_left))
+            await i1.response.edit_message(content="レフトスポーンを選択してください（最大3枚）", view=df.GenericPickerView(opt_l, 1, 3, "レフト配置", step2_left))
 
         opt_m = df.get_options_from_list(hand, BATTLE_STATS, "戦闘")
         await interaction.response.send_message("🏰 **Pault 準備フェーズ**\n城を選んでください。", view=df.GenericPickerView(opt_m, 1, 1, "城選択", step1_main))
