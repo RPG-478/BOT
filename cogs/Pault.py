@@ -1,8 +1,13 @@
-import discord  # 小文字に修正
+# -*- coding: utf-8 -*-
+import discord
 from discord.ext import commands
 from discord import app_commands
 import random
 import asyncio
+
+# 自作モジュールのインポート（必要に応じて）
+import config
+import defining as df
 
 # --- 定数・スタッツ定義 ---
 BATTLE_STATS = {
@@ -79,7 +84,6 @@ class AttackView(discord.ui.View):
     async def process_atk(self, i, my_pos, target_pos):
         p = self.game.players["p1"]
         c = self.game.players["cpu"]
-        # リストの中身があるかチェック
         if not p[my_pos]:
             return await i.response.send_message("その位置に攻撃可能なカードがありません。", ephemeral=True)
         
@@ -153,6 +157,9 @@ class Pault(commands.Cog):
 
     @app_commands.command(name="pault", description="Pault対戦を開始します")
     async def pault(self, interaction: discord.Interaction):
+        # ログ出力（defining.pyを利用）
+        print(df.format_log(f"Game started by {interaction.user.display_name}"))
+        
         game = PaultGame(interaction.channel_id, interaction.user.id, interaction.user.display_name)
         # 初期配置（山札から5枚引く）
         for _ in range(5):
@@ -166,5 +173,6 @@ class Pault(commands.Cog):
         self.games[interaction.user.id] = game
         await interaction.response.send_message(embed=make_embed(game), view=ActionCategoryView(game))
 
+# Main.pyから読み込むためのセットアップ関数
 async def setup(bot):
     await bot.add_cog(Pault(bot))
