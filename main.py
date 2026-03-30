@@ -119,7 +119,7 @@ async def check_and_grant_achievement(uid, achievement_id, interaction_or_channe
     # 通知
     embed = embed_success(f"{ach['icon']} 実績解除！", f"**{ach['name']}**\n{ach['desc']}")
     try:
-        ch = client.get_channel(LEVEL_UP_CHANNEL_ID) or await client.fetch_channel(LEVEL_UP_CHANNEL_ID)
+        ch = bot.get_channel(LEVEL_UP_CHANNEL_ID) or await bot.fetch_channel(LEVEL_UP_CHANNEL_ID)
         await ch.send(f"<@{uid}>", embed=embed)
     except Exception as e:
         print(f"実績通知失敗: {e}")
@@ -240,7 +240,7 @@ async def load_global():
         print("グローバルデータ読み込み完了")
     except Exception as e: print(f"load_global失敗:{e}")
     try:
-        ch = client.get_channel(SAVE_ID) or await client.fetch_channel(SAVE_ID)
+        ch = bot.get_channel(SAVE_ID) or await bot.fetch_channel(SAVE_ID)
         async for msg in ch.history(limit=40):
             for att in msg.attachments:
                 if att.filename=="role_timers.txt" and not role_timers:
@@ -309,7 +309,7 @@ async def save_all_users():
     for uid in list(user_cache.keys()): await save_user(uid)
     await save_global()
     try:
-        ch = client.get_channel(SAVE_ID) or await client.fetch_channel(SAVE_ID)
+        ch = bot.get_channel(SAVE_ID) or await bot.fetch_channel(SAVE_ID)
         with open("role_timers.txt","w",encoding="utf-8") as f: f.write(json.dumps(role_timers,ensure_ascii=False,indent=2))
         await ch.send(file=discord.File("role_timers.txt"))
     except Exception as e: print(f"role_timers保存失敗:{e}")
@@ -507,7 +507,7 @@ async def update_rate_task(): get_exchange_rate()
 @tasks.loop(minutes=1)
 async def bread_bake():
     global global_pool; global_pool+=10
-    ch=client.get_channel(random.choice(bread_ids))
+    ch=bot.get_channel(random.choice(bread_ids))
     if ch: await ch.send("パン")
 
 @tasks.loop(minutes=5)
@@ -517,7 +517,7 @@ async def vc_xp_loop():
         result = add_xp(str(uid), random.randint(VC_XP_MIN, VC_XP_MAX))
         leveled, role_grants = result if isinstance(result, tuple) else (result, [])
         if leveled:
-            for g in client.guilds:
+            for g in bot.guilds:
                 m = g.get_member(uid)
                 if m: await send_level_up_message(m, get_user_cache(str(uid))["level"], role_grants)
 
@@ -528,7 +528,7 @@ async def check_role_expiry():
         if info.get("boost"): continue
         if now>=datetime.datetime.fromisoformat(info["expires"]):
             expired.append(uid)
-            for g in client.guilds:
+            for g in bot.guilds:
                 m=g.get_member(int(uid))
                 if m:
                     r=g.get_role(info["role_id"])
@@ -542,7 +542,7 @@ async def check_role_expiry():
         if now>=datetime.datetime.fromisoformat(info["expires"]):
             boost_expired.append(key)
             uid=key.replace("boost_","")
-            for g in client.guilds:
+            for g in bot.guilds:
                 m=g.get_member(int(uid))
                 if m:
                     r=g.get_role(info["role_id"])
@@ -568,7 +568,7 @@ async def midnight_tasks():
 
 async def send_daily_report():
     try:
-        user=await client.fetch_user(DAILY_REPORT_USER_ID)
+        user=await bot.fetch_user(DAILY_REPORT_USER_ID)
         buf=None; daily_rate=daily_stats["rate_history_daily"]
         if len(daily_rate)>=2:
             fig,ax=plt.subplots(figsize=(8,3),facecolor="#2b2d31"); ax.set_facecolor("#2b2d31")
@@ -584,7 +584,7 @@ async def send_daily_report():
             if res.data:
                 tc=max(res.data,key=lambda x:x.get("coins",0)); tb=max(res.data,key=lambda x:x.get("bread_count",0))
                 tcv=tc.get("coins",0); tbv=tb.get("bread_count",0); tbc=tb.get("coins",0)
-                for g in client.guilds:
+                for g in bot.guilds:
                     m=g.get_member(int(tc["user_id"]))
                     if m: tcn=m.display_name
                     m2=g.get_member(int(tb["user_id"]))
@@ -597,7 +597,7 @@ async def send_daily_report():
         sorted_team_users=sorted(team_command_usage.items(),key=lambda x:x[1],reverse=True)[:5]
         team_user_lines_list=[]
         for tuid,cnt in sorted_team_users:
-            for g in client.guilds:
+            for g in bot.guilds:
                 m=g.get_member(int(tuid))
                 if m: team_user_lines_list.append(f"  {m.display_name}: {cnt}回"); break
             else: team_user_lines_list.append(f"  ID:{tuid}: {cnt}回")
@@ -656,7 +656,7 @@ async def monthly_team_ranking_role():
         for t in all_teams:
             tc=await get_team_total_coins(t["team_id"]); members=await get_team_members(t["team_id"]); ranked.append((t,tc,members))
         ranked.sort(key=lambda x:x[1],reverse=True); top_team,_,top_members=ranked[0]
-        for g in client.guilds:
+        for g in bot.guilds:
             rr=g.get_role(TEAM_RANK_ROLE_ID)
             if not rr: continue
             for m in rr.members:
@@ -671,7 +671,7 @@ async def monthly_team_ranking_role():
 
 async def send_level_up_message(member, new_level, role_grants=None):
     try:
-        ch = client.get_channel(LEVEL_UP_CHANNEL_ID) or await client.fetch_channel(LEVEL_UP_CHANNEL_ID)
+        ch = bot.get_channel(LEVEL_UP_CHANNEL_ID) or await bot.fetch_channel(LEVEL_UP_CHANNEL_ID)
         embed = embed_info()
         embed.description = (f"**{member.display_name}** がレベルアップしました！\n"
                              f"Lv. **{new_level}** \n次のレベルまで: **{xp_needed(new_level+1)} XP**\n"
@@ -679,7 +679,7 @@ async def send_level_up_message(member, new_level, role_grants=None):
         await ch.send(content=member.mention, embed=embed)
         # ロール付与
         if role_grants:
-            for g in client.guilds:
+            for g in bot.guilds:
                 m = g.get_member(member.id)
                 if m:
                     for role_id in role_grants:
@@ -726,10 +726,10 @@ class MyBot(commands.Bot):
 # Botインスタンスの作成
 client = MyBot()
 
-@client.event
+@bot.event
 async def on_ready():
     # setup_hookが終わった後に呼ばれる
-    print(f"Logged in as {client.user} (ID: {client.user.id})")
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     
     # 重いDB処理などはバックグラウンドで実行（on_readyをブロックしない）
     print("バックグラウンドタスクを開始します...")
@@ -753,7 +753,7 @@ async def on_ready():
 
 # --- この下に bot.run(TOKEN) など ---
 
-@client.event
+@bot.event
 async def on_interaction(interaction: discord.Interaction):
     if interaction.type == discord.InteractionType.application_command:
         cmd_name = interaction.command.qualified_name if interaction.command else "unknown"
@@ -767,13 +767,13 @@ async def on_interaction(interaction: discord.Interaction):
                 category_command_usage[cat] = category_command_usage.get(cat, 0) + 1
                 break
 
-@client.event
+@bot.event
 async def on_voice_state_update(member,before,after):
     uid=member.id
     if before.channel is None and after.channel is not None: vc_members[uid]=datetime.datetime.now()
     elif before.channel is not None and after.channel is None: vc_members.pop(uid,None)
 
-@client.event
+@bot.event
 async def on_message(message):
     global bcount,today,breads_day,global_pool,economy_coin
     current_date=datetime.datetime.now(JST).date()
@@ -785,7 +785,7 @@ async def on_message(message):
     await load_user(uid); u=get_user_cache(uid)
     if 'パン' in message.content and message.channel.id in bread_ids:
         if stop: return
-        if (not message.author.bot) or (message.content=='パン' and message.author.id==client.user.id):
+        if (not message.author.bot) or (message.content=='パン' and message.author.id==bot.user.id):
             bcount+=1; daily_stats["pan_count"]+=1; r=random.random()
             bp=u["bread_prob"]
             if has_item(uid,"積立主義"): bp=max(0.01,bp-0.20)
@@ -853,11 +853,11 @@ async def on_message(message):
 # ============================================================
 #  コマンド（全レスポンスをEmbed統一）
 # ============================================================
-@client.tree.command(name="today",description="今日作ったパンの数")
+@bot.tree.command(name="today",description="今日作ったパンの数")
 async def today_cmd(i:Interaction):
     await i.response.send_message(embed=embed_info(" 今日のパン",f"本日のパン生産数: **{bcount}個**"))
 
-@client.tree.command(name="bpd",description="breads per day")
+@bot.tree.command(name="bpd",description="breads per day")
 async def bpd(i:Interaction):
     if not breads_day:
         await i.response.send_message(embed=embed_error("エラー","まだパンが作られていません。"))
@@ -865,14 +865,14 @@ async def bpd(i:Interaction):
     avg=sum(breads_day)/len(breads_day)
     await i.response.send_message(embed=embed_info(" 1日平均パン数",f"**{avg:.2f}個 / 日**"))
 
-@client.tree.command(name="economy_coin",description="グローバルプール残高を表示")
+@bot.tree.command(name="economy_coin",description="グローバルプール残高を表示")
 async def pool(i:discord.Interaction):
     embed=embed_info(" 経済情報")
     embed.add_field(name=" 国庫",value=f"**{economy_coin:,} コイン**",inline=True)
     embed.add_field(name=" グローバルプール",value=f"**{global_pool:,} コイン**",inline=True)
     await i.response.send_message(embed=embed)
 
-@client.tree.command(name="random",description="ランダムな編成を作成します")
+@bot.tree.command(name="random",description="ランダムな編成を作成します")
 async def random_team(i:Interaction):
     global epsilon
     with open('characters.json',"r",encoding="utf-8") as f: chars=json.load(f)
@@ -890,11 +890,11 @@ async def random_team(i:Interaction):
     embed.add_field(name="編成",value=f"`{', '.join(member)}`",inline=False)
     await i.response.send_message(embed=embed)
 
-@client.tree.command(name="party_check",description="パーティーが出る確率の調整をチェックします")
+@bot.tree.command(name="party_check",description="パーティーが出る確率の調整をチェックします")
 async def epsilon_check(i:Interaction):
     await i.response.send_message(embed=embed_info(" 確率チェック",f"基礎確率 +**{(100*epsilon):.5f}%**"))
 
-@client.tree.command(name='give',description="レアパンを譲渡します（手数料10%）")
+@bot.tree.command(name='give',description="レアパンを譲渡します（手数料10%）")
 async def give(i:Interaction,count:int,member:discord.Member):
     if count<10:
         await i.response.send_message(embed=embed_error("エラー","最低でも10個のパンを指定してください"))
@@ -912,7 +912,7 @@ async def give(i:Interaction,count:int,member:discord.Member):
     else:
         await i.response.send_message(embed=embed_error("エラー",f"パンが足りません。\n所持: **{u['bread_count']}個** / 必要: **{lose}個**"))
 
-@client.tree.command(name="login",description="ログインボーナスをゲットします")
+@bot.tree.command(name="login",description="ログインボーナスをゲットします")
 async def login(i:Interaction):
     uid=str(i.user.id); await load_user(uid); u=get_user_cache(uid)
     if u["login_available"]:
@@ -926,7 +926,7 @@ async def login(i:Interaction):
     else:
         await i.response.send_message(embed=embed_error("ログインボーナス","すでにログインボーナスを獲得しています。明日また来てください！"))
 
-@client.tree.command(name="bread_change",description="一部の管理者用です")
+@bot.tree.command(name="bread_change",description="一部の管理者用です")
 async def bread_change(i:Interaction,type:str,userid:str,number:str):
     if str(i.user.id) not in moderators:
         await i.response.send_message(embed=embed_error("権限エラー","このコマンドを実行する権限がありません。"))
@@ -948,7 +948,7 @@ async def bread_change(i:Interaction,type:str,userid:str,number:str):
     await save_user(userid)
     await i.response.send_message(embed=embed_success(" 実行完了",f"`{type}` を `{userid}` に適用しました。"))
 
-@client.tree.command(name="level",description="自分または指定したユーザーのレベルを確認します")
+@bot.tree.command(name="level",description="自分または指定したユーザーのレベルを確認します")
 async def level_cmd(i:Interaction,member:discord.Member=None):
     if not member: member=i.user
     await load_user(str(member.id)); u=get_user_cache(str(member.id)); lv=u["level"]; xp=u["xp"]; needed=xp_needed(lv+1)
@@ -960,7 +960,7 @@ async def level_cmd(i:Interaction,member:discord.Member=None):
     embed.set_thumbnail(url=member.display_avatar.url)
     await i.response.send_message(embed=embed)
 
-@client.tree.command(name="ranking_level",description="レベルランキングを表示します")
+@bot.tree.command(name="ranking_level",description="レベルランキングを表示します")
 async def ranking_level(i:Interaction):
     await i.response.defer()
     try: res=supabase.table("user_data").select("user_id,level,xp").order("level",desc=True).limit(10).execute(); data=res.data
@@ -973,7 +973,7 @@ async def ranking_level(i:Interaction):
         text+=f"{medals[idx] if idx<3 else f'`{idx+1}.`'} **{name}** — Lv.{row['level']} ({row['xp']} XP)\n"
     await i.followup.send(embed=embed_info(" レベルランキング TOP10",text))
 
-@client.tree.command(name="wallet",description="レアパン・コイン・チップの残高を確認します")
+@bot.tree.command(name="wallet",description="レアパン・コイン・チップの残高を確認します")
 async def wallet_cmd(i:Interaction,member:discord.Member=None):
     if not member: member=i.user
     uid=str(member.id); await load_user(uid); u=get_user_cache(uid); rate,_=get_exchange_rate()
@@ -995,7 +995,7 @@ class RateView(discord.ui.View):
         embed.set_image(url="attachment://chart.png")
         await i.edit_original_response(embed=embed,attachments=[discord.File(chart,"chart.png")],view=self)
 
-@client.tree.command(name="rate",description="現在レートとグラフを確認します（過去5時間）")
+@bot.tree.command(name="rate",description="現在レートとグラフを確認します（過去5時間）")
 async def rate_cmd(i:discord.Interaction):
     await i.response.defer(); rate,event=get_exchange_rate(); chart=generate_chart()
     embed=embed_info(" コッペパン為替",f"現在レート **{rate} coin**")
@@ -1003,7 +1003,7 @@ async def rate_cmd(i:discord.Interaction):
     embed.set_image(url="attachment://chart.png")
     await i.followup.send(embed=embed,file=discord.File(chart,"chart.png"),view=RateView())
 
-@client.tree.command(name="shop",description="ショップ：ロール(1,000,000コイン)またはアイテムを購入します")
+@bot.tree.command(name="shop",description="ショップ：ロール(1,000,000コイン)またはアイテムを購入します")
 @discord.app_commands.choices(category=[discord.app_commands.Choice(name="ロール（1,000,000コイン）",value="role"),discord.app_commands.Choice(name="アイテム（焼き釜など）",value="item")])
 @discord.app_commands.choices(item_name=[discord.app_commands.Choice(name=" 酒 300コイン",value="sake"),discord.app_commands.Choice(name=" へそくり 800コイン",value="hesokuri"),discord.app_commands.Choice(name="ブロンズ焼き釜 500コイン",value="oven_ブロンズ"),discord.app_commands.Choice(name="シルバー焼き釜 2000コイン",value="oven_シルバー"),discord.app_commands.Choice(name="ゴールド焼き釜 5000コイン",value="oven_ゴールド"),discord.app_commands.Choice(name="プリズム焼き釜 500000コイン",value="oven_プリズム")])
 async def shop(i:Interaction,category:discord.app_commands.Choice[str],role:discord.Role=None,item_name:discord.app_commands.Choice[str]=None):
@@ -1086,7 +1086,7 @@ async def shop(i:Interaction,category:discord.app_commands.Choice[str],role:disc
     embed=embed_success(" ロール購入完了",f"ロール `{rname}` を購入しました！（{ROLE_PRICE:,}コイン）\n有効期限: **{expires.strftime('%Y/%m/%d')}**")
     await i.response.send_message(embed=embed)
 
-@client.tree.command(name="team_shop",description="チームランキング1位限定ショップ（100,000コイン）")
+@bot.tree.command(name="team_shop",description="チームランキング1位限定ショップ（100,000コイン）")
 async def team_shop(i:Interaction):
     uid=str(i.user.id); m=i.guild.get_member(int(uid)); rr=i.guild.get_role(TEAM_RANK_ROLE_ID)
     if not rr or rr not in m.roles:
@@ -1104,7 +1104,7 @@ async def team_shop(i:Interaction):
     embed=embed_success(" 特別ロール購入完了",f"特別ロールを購入しました！（{TEAM_SHOP_ROLE_PRICE:,}コイン）\nこのロールはキャラロールを買っても外れません。")
     await i.response.send_message(embed=embed)
 
-@client.tree.command(name="boost_shop",description="ブースター限定特別ロール（1,000,000コイン・90日）")
+@bot.tree.command(name="boost_shop",description="ブースター限定特別ロール（1,000,000コイン・90日）")
 async def boost_shop(i:Interaction):
     uid=str(i.user.id); m=i.guild.get_member(int(uid)); br=i.guild.get_role(BOOST_ROLE_ID)
     if not br or br not in m.roles:
@@ -1122,7 +1122,7 @@ async def boost_shop(i:Interaction):
     embed=embed_success(" ブーストロール購入完了",f"ブースト特別ロールを購入しました！（{BOOST_SHOP_ROLE_PRICE:,}コイン）\n有効期限: **{ne.strftime('%Y/%m/%d')}**\nこのロールはキャラロールを買っても外れません。")
     await i.response.send_message(embed=embed)
 
-@client.tree.command(name="role_status",description="現在つけているショップロールと残り期間を確認します")
+@bot.tree.command(name="role_status",description="現在つけているショップロールと残り期間を確認します")
 async def role_status(i:Interaction):
     uid=str(i.user.id)
     embed=embed_info(" ロール状況")
@@ -1349,7 +1349,7 @@ async def item_list(i:Interaction):
     embed.description=lines
     await i.response.send_message(embed=embed)
 
-client.tree.add_command(item_group)
+bot.tree.add_command(item_group)
 
 class HelpView(discord.ui.View):
     def __init__(self): super().__init__(timeout=60)
@@ -1495,7 +1495,7 @@ class HelpView(discord.ui.View):
     @discord.ui.button(label="その他",   style=discord.ButtonStyle.secondary)
     async def other_btn(self,   i, b): await i.response.edit_message(embed=self.get_embed("other"),     view=self)
 
-@client.tree.command(name="help",description="コマンド一覧")
+@bot.tree.command(name="help",description="コマンド一覧")
 async def help_cmd(i:Interaction):
     view=HelpView(); await i.response.send_message(embed=view.get_embed("bread"),view=view)
 
@@ -1571,7 +1571,7 @@ class Slot7View(View):
         embed.add_field(name="現在所持",value=f"{u['chips']:,}チップ",inline=True)
         await i.edit_original_response(content=None,embed=embed,view=self)
 
-@client.tree.command(name="slot7",description="超中毒7スロット（10〜1000回指定）")
+@bot.tree.command(name="slot7",description="超中毒7スロット（10〜1000回指定）")
 @app_commands.describe(times="回数（10〜1000）")
 async def slot7(i:Interaction,times:int):
     uid=str(i.user.id)
@@ -1589,7 +1589,7 @@ async def slot7(i:Interaction,times:int):
     embed=embed_info(f" {times}回スロット開始",f"先払い: **{total_cost:,}チップ**\n現在所持: **{u['chips']:,}チップ**")
     await i.response.send_message(embed=embed,view=view)
 
-@client.tree.command(name="dice",description="アンパンチップを賭けて数字当てゲームをします（最低10チップ）")
+@bot.tree.command(name="dice",description="アンパンチップを賭けて数字当てゲームをします（最低10チップ）")
 async def dice(i:Interaction,max:int,number:int,bet:int=10):
     global global_pool; uid=str(i.user.id)
     if is_in_prison(uid):
@@ -1622,7 +1622,7 @@ async def dice(i:Interaction,max:int,number:int,bet:int=10):
         embed.add_field(name="損失",value=f"**-{bet:,}チップ**",inline=False)
     await save_user(uid); await i.response.send_message(embed=embed)
 
-@client.tree.command(name="steal",description="コインを持っているランダムなユーザーからコインを盗みます。")
+@bot.tree.command(name="steal",description="コインを持っているランダムなユーザーからコインを盗みます。")
 async def steal(i:Interaction):
     uid=str(i.user.id)
     if is_in_prison(uid):
@@ -1760,7 +1760,7 @@ async def steal(i:Interaction):
         if bonus_lines: desc += "\n" + "\n".join(bonus_lines)
         await i.response.send_message(embed=embed_error("steal失敗", desc))
 
-@client.tree.command(name="exchange",description="レアパン・コイン・アンパンチップを交換します")
+@bot.tree.command(name="exchange",description="レアパン・コイン・アンパンチップを交換します")
 @discord.app_commands.choices(direction=[discord.app_commands.Choice(name="レアパン→コイン",value="to_coin"),discord.app_commands.Choice(name="コイン→レアパン",value="to_bread"),discord.app_commands.Choice(name="コイン→チップ（1コイン=9チップ）",value="coin_to_chip"),discord.app_commands.Choice(name="チップ→コイン（11チップ=1コイン）",value="chip_to_coin")])
 async def exchange_cmd(i:Interaction,direction:discord.app_commands.Choice[str],amount:int):
     global global_pool,economy_coin
@@ -1813,7 +1813,7 @@ async def exchange_cmd(i:Interaction,direction:discord.app_commands.Choice[str],
         embed.add_field(name="交換",value=f" **{cu:,}チップ** →  **{cg:,}枚**",inline=False)
         await i.response.send_message(embed=embed)
 
-@client.tree.command(name="open",description="所持している宝箱を全部開けます")
+@bot.tree.command(name="open",description="所持している宝箱を全部開けます")
 async def open_treasure(i:Interaction):
     global economy_coin; await i.response.defer(); uid=str(i.user.id); await load_user(uid); u=get_user_cache(uid)
     if u["boxes"]<=0:
@@ -1920,7 +1920,7 @@ class DoubleView(discord.ui.View):
         embed=self.make_status_embed(f" 確定！{payout:,}コイン獲得！",COLOR_SUCCESS)
         await i.response.edit_message(embed=embed,view=None)
 
-@client.tree.command(name="double",description="ダブルゲーム開始")
+@bot.tree.command(name="double",description="ダブルゲーム開始")
 async def double(i:discord.Interaction,bet:int):
     uid=str(i.user.id)
     if is_in_prison(uid):
@@ -1982,7 +1982,7 @@ class BlackjackView(discord.ui.View):
         embed.add_field(name="結果",value=result,inline=False)
         await i.response.edit_message(embed=embed,view=None)
 
-@client.tree.command(name="blackjack",description="ブラックジャックで遊ぶ")
+@bot.tree.command(name="blackjack",description="ブラックジャックで遊ぶ")
 @app_commands.describe(bet="賭けるコイン枚数")
 async def blackjack(i:discord.Interaction,bet:int):
     uid=str(i.user.id)
@@ -2062,7 +2062,7 @@ class DuelView(discord.ui.View):
         embed.add_field(name="獲得",value=f"**+{payout:,}チップ**",inline=False)
         await i.response.edit_message(embed=embed,view=None); del active_duels[self.duel_id]
 
-@client.tree.command(name="bj_duel",description="プレイヤー対戦ブラックジャック（チップ使用・最低500チップ）")
+@bot.tree.command(name="bj_duel",description="プレイヤー対戦ブラックジャック（チップ使用・最低500チップ）")
 async def bj_duel(i:Interaction,bet:int):
     uid=str(i.user.id)
     if is_in_prison(uid):
@@ -2119,7 +2119,7 @@ class MiningView(View):
             for c in self.children: c.disabled=True
             await self.message.edit(view=self)
 
-@client.tree.command(name="mining",description="コインを採掘します")
+@bot.tree.command(name="mining",description="コインを採掘します")
 async def mining_cmd(i:Interaction):
     uid=str(i.user.id); now=asyncio.get_event_loop().time()
     if uid in mining_ct and now-mining_ct[uid]<MINING_COOLDOWN:
@@ -2192,7 +2192,7 @@ async def is_banned(uid):
         except: pass
     return False,None
 
-@client.tree.command(name="make_team",description="チームを作成します（10万コイン消費）")
+@bot.tree.command(name="make_team",description="チームを作成します（10万コイン消費）")
 @app_commands.describe(name="チーム名")
 async def make_team(i:Interaction,name:str):
     uid=str(i.user.id); await load_user(uid); u=get_user_cache(uid); existing=await get_member_team(uid)
@@ -2404,9 +2404,9 @@ async def team_break(i:Interaction,team_id:str):
     embed=embed_error(" チーム強制解散",f"チーム **{tname}** (`{team_id}`) を強制解散しました。")
     await i.response.send_message(embed=embed)
 
-client.tree.add_command(team_group)
+bot.tree.add_command(team_group)
 
-@client.tree.command(name="ranking",description="各種ランキングを表示します")
+@bot.tree.command(name="ranking",description="各種ランキングを表示します")
 @app_commands.describe(ranking_type="ランキングの種類",start="開始順位（デフォルト1）",end="終了順位（デフォルト10）")
 @app_commands.choices(ranking_type=[
     app_commands.Choice(name=" パンランキング",value="bread"),
@@ -2564,7 +2564,7 @@ async def item_mix(i: Interaction, item1: str, item2: str):
 lottery_data={"tickets":{},"last_draw":None}
 LOTTERY_PRICE=100
 
-@client.tree.command(name="lottery",description="宝くじ購入")
+@bot.tree.command(name="lottery",description="宝くじ購入")
 @app_commands.describe(amount="購入枚数")
 async def lottery_buy(interaction:discord.Interaction,amount:int):
     uid=str(interaction.user.id); await load_user(uid); user=get_user_cache(uid)
@@ -2580,7 +2580,7 @@ async def lottery_buy(interaction:discord.Interaction,amount:int):
     embed=embed_success(" 宝くじ購入完了",f"**{amount}枚** 購入しました！\n合計所持: **{lottery_data['tickets'][uid]}枚**")
     await interaction.response.send_message(embed=embed,ephemeral=True)
 
-@client.tree.command(name="lottery_status",description="所持枚数確認")
+@bot.tree.command(name="lottery_status",description="所持枚数確認")
 async def lottery_status(interaction:discord.Interaction):
     uid=str(interaction.user.id)
     my=lottery_data["tickets"].get(uid,0)
@@ -2602,13 +2602,13 @@ async def lottery_loop():
     pool=[]
     for uid,amount in lottery_data["tickets"].items(): pool.extend([uid]*amount)
     winner=random.choice(pool)
-    bot_uid=str(client.user.id); await load_user(bot_uid); bot=get_user_cache(bot_uid)
+    bot_uid=str(bot.user.id); await load_user(bot_uid); bot=get_user_cache(bot_uid)
     total_coins=bot.get("coins",0); total_bread=bot.get("bread_count",0); total_boxes=bot.get("boxes",0)
     bot["coins"]=0; bot["bread_count"]=0; bot["boxes"]=0
     await load_user(winner); user=get_user_cache(winner)
     user["coins"]+=total_coins; user["bread_count"]+=total_bread; user["boxes"]+=total_boxes
     lottery_data["tickets"]={}
-    channel=client.get_channel(LEVEL_UP_CHANNEL_ID)
+    channel=bot.get_channel(LEVEL_UP_CHANNEL_ID)
     if channel:
         embed=embed_success(" 宝くじ当選！",f"<@{winner}>")
         embed.add_field(name=" コイン",value=f"**{total_coins:,}枚**",inline=True)
@@ -2616,12 +2616,12 @@ async def lottery_loop():
         embed.add_field(name=" 宝箱",value=f"**{total_boxes}個**",inline=True)
         await channel.send(embed=embed)
 
-@client.tree.command(name="trade",description="レアパン取引")
+@bot.tree.command(name="trade",description="レアパン取引")
 async def trade(i:Interaction,stock:int):
     uid=str(i.user.id); await load_user(uid); view=TradeView(uid,stock)
     await i.response.send_message(embed=view.make_embed(),view=view)
 
-@client.tree.command(name="reset",description="️管理者以外さわらないでください全てが壊れます（国庫/プール/レートリセット）")
+@bot.tree.command(name="reset",description="️管理者以外さわらないでください全てが壊れます（国庫/プール/レートリセット）")
 @app_commands.describe(target="リセット対象",amount="設定するコイン数（rateの場合は不要）")
 @app_commands.choices(target=[app_commands.Choice(name="国庫 (economy_coin)",value="economy_coin"),app_commands.Choice(name="グローバルプール (global_pool)",value="global_pool"),app_commands.Choice(name="レート (rate)",value="rate")])
 async def reset_cmd(i:Interaction,target:app_commands.Choice[str],amount:int=0):
@@ -2639,7 +2639,7 @@ async def reset_cmd(i:Interaction,target:app_commands.Choice[str],amount:int=0):
         rate_state["rate"]=BASE_RATE; rate_state["last_update"]=None; rate_history.clear()
         await i.response.send_message(embed=embed_success(" リセット完了",f"レートを **{BASE_RATE}コイン** にリセットしました。"))
 
-@client.tree.command(name="would_break",description="️管理者以外さわらないでください全てが壊れます（データ削除）")
+@bot.tree.command(name="would_break",description="️管理者以外さわらないでください全てが壊れます（データ削除）")
 @app_commands.describe(target="削除対象のユーザーID。ALLで全員")
 async def would_break(i:Interaction,target:str):
     if str(i.user.id) not in WOULD_BREAK_ALLOWED:
@@ -2658,18 +2658,18 @@ async def would_break(i:Interaction,target:str):
         except Exception as e:
             await i.response.send_message(embed=embed_error("エラー",f"削除失敗: {e}"))
 
-@client.tree.command(name="kill",description="BOTを停止します（モデレーターのみ）️管理者以外さわらないでください")
+@bot.tree.command(name="kill",description="BOTを停止します（モデレーターのみ）️管理者以外さわらないでください")
 async def kill_cmd(i:Interaction):
     if str(i.user.id) not in moderators:
         await i.response.send_message(embed=embed_error("権限エラー","権限がありません。"),ephemeral=True)
         return
     await i.response.send_message(embed=embed_info(" BOT停止","BOTを停止します..."))
-    await save_all_users(); await client.close()
+    await save_all_users(); await bot.close()
 
 # ================================================================
 #  /oven_status — プリズム焼き釜残り時間確認
 # ================================================================
-@client.tree.command(name="oven_status", description="稼働中の焼き釜の残り時間を確認します")
+@bot.tree.command(name="oven_status", description="稼働中の焼き釜の残り時間を確認します")
 async def oven_status(i: Interaction):
     uid = str(i.user.id)
     if uid not in active_kneads:
@@ -2688,7 +2688,7 @@ async def oven_status(i: Interaction):
 # ================================================================
 #  /daily — デイリーミッション確認・報酬受け取り
 # ================================================================
-@client.tree.command(name="daily", description="デイリーミッションを確認します")
+@bot.tree.command(name="daily", description="デイリーミッションを確認します")
 async def daily_cmd(i: Interaction):
     uid = str(i.user.id)
     await load_user(uid)
@@ -2743,7 +2743,7 @@ async def daily_cmd(i: Interaction):
 # ================================================================
 #  /my_stats — 自分のプレイ統計
 # ================================================================
-@client.tree.command(name="my_stats", description="自分のプレイ統計を確認します")
+@bot.tree.command(name="my_stats", description="自分のプレイ統計を確認します")
 async def my_stats(i: Interaction):
     uid = str(i.user.id)
     await load_user(uid)
@@ -2782,7 +2782,7 @@ async def my_stats(i: Interaction):
 # ================================================================
 #  /achievement — 実績一覧表示
 # ================================================================
-@client.tree.command(name="achievement", description="実績一覧と解除条件を確認します")
+@bot.tree.command(name="achievement", description="実績一覧と解除条件を確認します")
 async def achievement_cmd(i: Interaction):
     embed = embed_info("🏆 実績一覧")
     lines = ""
@@ -2794,7 +2794,7 @@ async def achievement_cmd(i: Interaction):
 # ================================================================
 #  /my_achievement — 自分が解除した実績
 # ================================================================
-@client.tree.command(name="my_achievement", description="自分が解除した実績を確認します")
+@bot.tree.command(name="my_achievement", description="自分が解除した実績を確認します")
 async def my_achievement_cmd(i: Interaction):
     uid  = str(i.user.id)
     achs = get_user_achievements(uid)
@@ -2913,8 +2913,8 @@ async def d_render_image(uid, floor, px, py, radius=D_VIEW_R):
     img.save(buf, format="PNG")
     buf.seek(0)
     try:
-        ch = client.get_channel(DUNGEON_IMG_CHANNEL_ID) or \
-             await client.fetch_channel(DUNGEON_IMG_CHANNEL_ID)
+        ch = bot.get_channel(DUNGEON_IMG_CHANNEL_ID) or \
+             await bot.fetch_channel(DUNGEON_IMG_CHANNEL_ID)
         msg = await ch.send(file=discord.File(buf, filename="map.png"))
         return msg.attachments[0].url
     except Exception as e:
@@ -3012,7 +3012,7 @@ async def d_render_status_map(uid, floor, px, py):
     
     try:
         target_id = int(DUNGEON_IMG_CHANNEL_ID)
-        ch = client.get_channel(target_id) or await client.fetch_channel(target_id)
+        ch = bot.get_channel(target_id) or await bot.fetch_channel(target_id)
         msg = await ch.send(file=discord.File(buf, filename="status_map.png"))
         return msg.attachments[0].url
     except Exception as e:
@@ -4375,7 +4375,7 @@ class DungeonMainView(discord.ui.View):
 # ================================================================
 #  /dungeon コマンド  ← XPリセットバグ修正済み
 # ================================================================
-@client.tree.command(name="dungeon", description="ダンジョンに入ります")
+@bot.tree.command(name="dungeon", description="ダンジョンに入ります")
 async def dungeon_enter(interaction: Interaction):
     # 既存の defer はそのまま
     await interaction.response.defer()
@@ -4416,7 +4416,7 @@ async def dungeon_enter(interaction: Interaction):
 # ================================================================
 #  /dungeon_reset（モデレーターのみ）
 # ================================================================
-@client.tree.command(name="dungeon_reset", description="ダンジョンマップをリセットします（モデレーターのみ）")
+@bot.tree.command(name="dungeon_reset", description="ダンジョンマップをリセットします（モデレーターのみ）")
 async def dungeon_reset(interaction: Interaction):
     if str(interaction.user.id) not in moderators:
         await interaction.response.send_message(
@@ -4458,7 +4458,7 @@ async def dungeon_task():
         print("ダンジョン月次リセット完了")
 
 from keep_alive import keep_alive
-# main.py の一番最後（client.run(TOKEN) の周辺）
+# main.py の一番最後（bot.run(TOKEN) の周辺）
 
 if __name__ == "__main__":
     from threading import Thread
@@ -4475,6 +4475,6 @@ if __name__ == "__main__":
 
     # 2. メインスレッドで Bot を起動（ここが動かないと setup_hook も動かない）
     try:
-        client.run(tok)
+        bot.run(tok)
     except Exception as e:
         print(f"Bot runtime error: {e}")
