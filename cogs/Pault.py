@@ -7,7 +7,7 @@ import asyncio
 
 # 自作モジュールのインポート
 import config
-import df_module as df 
+import defining as df 
 
 # --- 定数・スタッツ定義 ---
 BATTLE_STATS = {
