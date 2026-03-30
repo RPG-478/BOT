@@ -30,24 +30,36 @@ async def send_error_embed(ctx, error_message: str):
     )
     await ctx.send(embed=embed)
 
-# --- 汎用セレクトシステム ---
-
-def get_options_from_list(items, filter_type=None):
+def get_options_from_list(items, battle_stats, filter_type=None):
     """
-    リスト（手札や盤面）をスキャンして、SelectOptionのリストを返す。
     items: カードデータのリスト
-    filter_type: "戦闘" や "サポート" など。Noneなら全表示。
+    battle_stats: Pault.pyから渡されるスタッツ辞書
+    filter_type: "戦闘" や "サポート" など
     """
     options = []
     for i, card in enumerate(items):
         if filter_type is None or card.get("type") == filter_type:
-            # 戦闘カードならスタッツを表示、そうでなければ種別を表示
             if card.get("type") == "戦闘":
-                from Pault import BATTLE_STATS # 循環参照に注意（必要に応じて関数内でインポート）
-                s = BATTLE_STATS.get(card["name"], [0, 0])
+                # 引数で受け取った辞書からスタッツを取得
+                s = battle_stats.get(card["name"], [0, 0])
                 label = f"{card['name']} (ATK:{s[0]}/DFN:{s[1]})"
             else:
                 label = f"{card['name']} [{card.get('type', '不明')}]"
                 
             options.append(discord.SelectOption(label=label, value=str(i)))
     return options
+
+class GenericPickerView(discord.ui.View):
+    def __init__(self, options, min_v, max_v, placeholder, callback_func):
+        super().__init__(timeout=None)
+        select = discord.ui.Select(
+            placeholder=placeholder,
+            min_values=min_v,
+            max_values=max_v,
+            options=options
+        )
+        async def internal_callback(interaction):
+            indices = [int(v) for v in select.values]
+            await callback_func(interaction, indices)
+        select.callback = internal_callback
+        self.add_item(select)
