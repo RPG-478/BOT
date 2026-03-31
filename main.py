@@ -6,6 +6,13 @@ import asyncio
 import config
 import defining as df    
 from keep_alive import keep_alive
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# 他の設定...
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
 
 NOTIFY_CHANNEL_ID = 1476170098673717414
 
