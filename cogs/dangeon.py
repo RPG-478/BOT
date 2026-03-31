@@ -81,7 +81,7 @@ ASSET_CONFIG = {
 
 def load_all_assets():
 global _ASSET_CACHE, PLAYER_IMAGE
-base_dir   = os.path.dirname(os.path.abspath(**file**))
+base_dir   = os.path.dirname(os.path.abspath(__file__))
 assets_dir = os.path.join(base_dir, "Assets")
 
 ```
