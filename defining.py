@@ -33,36 +33,3 @@ async def send_error_embed(ctx, error_message: str):
         color=discord.Color.red()
     )
     await ctx.send(embed=embed)
-
-def get_options_from_list(items, battle_stats, filter_type=None):
-    """
-    カードリストからセレクトメニューの選択肢を生成します。
-    battle_statsを引数に取ることで、循環参照を回避しています。
-    """
-    options = []
-    for i, card in enumerate(items):
-        if filter_type is None or card.get("type") == filter_type:
-            if card.get("type") == "戦闘":
-                s = battle_stats.get(card["name"], [0, 0])
-                label = f"{card['name']} (ATK:{s[0]}/DFN:{s[1]})"
-            else:
-                label = f"{card['name']} [{card.get('type', '不明')}]"
-                
-            options.append(discord.SelectOption(label=label, value=str(i)))
-    return options
-
-class GenericPickerView(discord.ui.View):
-    """汎用的なカード選択用Viewクラスです。"""
-    def __init__(self, options, min_v, max_v, placeholder, callback_func):
-        super().__init__(timeout=None)
-        select = discord.ui.Select(
-            placeholder=placeholder,
-            min_values=min_v,
-            max_values=max_v,
-            options=options
-        )
-        async def internal_callback(interaction):
-            indices = [int(v) for v in select.values]
-            await callback_func(interaction, indices)
-        select.callback = internal_callback
-        self.add_item(select)
