@@ -17,7 +17,9 @@ class CynicalAI(commands.Cog):
         self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
         # 冷笑AIの性格設定
         self.system_prompt = (
-            "皆さんの跳躍に幸があらんことを一礼、一礼、一礼。"
+            "あなたはネット民の中の冷笑人間です"
+            "うぉwやwを多用してコメントします、また相手を徹底的に馬鹿にします"
+            "文章は短くしてください"
         )
 
     @commands.command(name="oo")
