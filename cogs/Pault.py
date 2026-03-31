@@ -98,7 +98,7 @@ async def cpu_turn_logic(i, game):
     if vic:
         await i.followup.send(f"🏁 **ゲーム終了！ 勝者: {vic}**")
     else:
-        await i.followup.send(content=f"あなたの番です。\n【CPU】: {cpu_log}", embed=make_embed(game), view=MainMenuView(game))
+        await i.edit_original_response(content=f"あなたの番です。\n【CPU】: {cpu_log}", embed=make_embed(game), view=MainMenuView(game))
 
 class MainMenuView(discord.ui.View):
     def __init__(self, game):
@@ -134,10 +134,10 @@ class MainMenuView(discord.ui.View):
         if not options: return await i.response.send_message("使用可能なサポートがありません", ephemeral=True)
         
         async def support_logic(interaction, indices):
-            await interaction.response.defer() # 追加
+            await interaction.response.defer()
             card = hand.pop(indices[0])
             self.game.logs = f"サポート【{card['name']}】発動！"
-            await interaction.followup.edit_message(message_id=interaction.message.id, content=self.game.logs, embed=make_embed(self.game), view=MainMenuView(self.game))
+            await interaction.edit_original_response(content=self.game.logs, embed=make_embed(self.game), view=MainMenuView(self.game))
 
         await i.response.edit_message(content="サポートカードを選択：", view=df.GenericPickerView(options, 1, 1, "発動するカード", support_logic))
 
@@ -152,12 +152,12 @@ class DeployPosButton(discord.ui.Button):
         if not options: return await i.response.send_message("戦闘カードがありません", ephemeral=True)
 
         async def deploy_logic(interaction, indices):
-            await interaction.response.defer() # 追加
+            await interaction.response.defer()
             for idx in sorted(indices, reverse=True):
                 card = hand.pop(idx)
                 if self.side == "main": self.game.players["p1"]["main"] = card
                 else: self.game.players["p1"][self.side].append(card)
-            await interaction.followup.edit_message(message_id=interaction.message.id, content="配置しました", embed=make_embed(self.game), view=MainMenuView(self.game))
+            await interaction.edit_original_response(content="配置しました", embed=make_embed(self.game), view=MainMenuView(self.game))
 
         await i.response.edit_message(content="カードを選んでください", view=df.GenericPickerView(options, 1, 1, "選択", deploy_logic))
 
@@ -167,7 +167,7 @@ class AtkPosButton(discord.ui.Button):
         self.game, self.side = game, side
 
     async def callback(self, i: discord.Interaction):
-        await i.response.defer() # 追加
+        await i.response.defer()
         p1, cpu = self.game.players["p1"], self.game.players["cpu"]
         if not p1[self.side]: return await i.followup.send("カードがいません", ephemeral=True)
         atk_card = p1[self.side].pop()
@@ -179,7 +179,7 @@ class AtkPosButton(discord.ui.Button):
         else:
             success, res = execute_attack(atk_card, cpu["main"])
             if success: cpu["main"] = None
-        await i.followup.edit_message(message_id=i.message.id, content="CPUのターン...", view=None)
+        await i.edit_original_response(content="CPUのターン...", view=None)
         await cpu_turn_logic(i, self.game)
 
 class DrawResultView(discord.ui.View):
@@ -193,7 +193,7 @@ class DrawResultView(discord.ui.View):
         for s in ["main", "left", "right"]:
             btn = discord.ui.Button(label=s.upper())
             async def q_dep(it, side=s):
-                await it.response.defer() # 追加
+                await it.response.defer()
                 if side == "main": self.game.players["p1"]["main"] = self.card
                 else: self.game.players["p1"][side].append(self.card)
                 await cpu_turn_logic(it, self.game)
@@ -203,7 +203,7 @@ class DrawResultView(discord.ui.View):
 
     @discord.ui.button(label="手札保持", style=discord.ButtonStyle.secondary)
     async def keep(self, i: discord.Interaction, b: discord.ui.Button):
-        await i.response.defer() # 追加
+        await i.response.defer()
         self.game.players["p1"]["hand"].append(self.card)
         await cpu_turn_logic(i, self.game)
 
@@ -212,28 +212,28 @@ class Pault(commands.Cog):
 
     @app_commands.command(name="pault", description="Pault対戦を開始")
     async def pault(self, interaction: discord.Interaction):
-        await interaction.response.defer() # コマンド開始時に追加
+        await interaction.response.defer()
         game = PaultGame(interaction.channel_id, interaction.user.id, interaction.user.display_name)
         hand = game.players["p1"]["hand"]
 
         async def step3_right(i3, idx3):
-            await i3.response.defer() # 追加
+            await i3.response.defer()
             for idx in sorted(idx3, reverse=True): 
                 game.players["p1"]["right"].append(hand.pop(idx))
-            await i3.followup.edit_message(message_id=i3.message.id, content="準備完了！", embed=make_embed(game), view=MainMenuView(game))
+            await i3.edit_original_response(content="準備完了！", embed=make_embed(game), view=MainMenuView(game))
 
         async def step2_left(i2, idx2):
-            await i2.response.defer() # 追加
+            await i2.response.defer()
             for idx in sorted(idx2, reverse=True): 
                 game.players["p1"]["left"].append(hand.pop(idx))
             opt_r = df.get_options_from_list(hand, BATTLE_STATS, "戦闘")
-            await i2.followup.edit_message(message_id=i2.message.id, content="ライトスポーンを選択してください（最大3枚）", view=df.GenericPickerView(opt_r, 1, 3, "ライト配置", step3_right))
+            await i2.edit_original_response(content="ライトスポーンを選択してください（最大3枚）", view=df.GenericPickerView(opt_r, 1, 3, "ライト配置", step3_right))
 
         async def step1_main(i1, idx1):
-            await i1.response.defer() # 追加
+            await i1.response.defer()
             game.players["p1"]["main"] = hand.pop(idx1[0])
             opt_l = df.get_options_from_list(hand, BATTLE_STATS, "戦闘")
-            await i1.followup.edit_message(message_id=i1.message.id, content="レフトスポーンを選択してください（最大3枚）", view=df.GenericPickerView(opt_l, 1, 3, "レフト配置", step2_left))
+            await i1.edit_original_response(content="レフトスポーンを選択してください（最大3枚）", view=df.GenericPickerView(opt_l, 1, 3, "レフト配置", step2_left))
 
         opt_m = df.get_options_from_list(hand, BATTLE_STATS, "戦闘")
         await interaction.followup.send("🏰 **Pault 準備フェーズ**\n城を選んでください。", view=df.GenericPickerView(opt_m, 1, 1, "城選択", step1_main))
