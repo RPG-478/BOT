@@ -35,25 +35,22 @@ def make_online_embed(game):
     def get_top(cards):
         return format_card(cards[-1]) if cards else "[ --- ]"
 
-    # P2 (上側) - R C L の順で表示（対面視点）
+    # P2 (上側)
     p2_board = f"{get_top(p2['right'])} {format_card(p2['main'])} {get_top(p2['left'])}"
     embed.add_field(name=f"▼ {p2['name']} (R | C | L)", value=f"```\n{p2_board}\n```", inline=False)
-
     embed.add_field(name="VS", value="-----------", inline=False)
-
-    # P1 (下側) - L C R の順で表示
+    # P1 (下側)
     p1_board = f"{get_top(p1['left'])} {format_card(p1['main'])} {get_top(p1['right'])}"
     embed.add_field(name=f"▲ {p1['name']} (L | C | R)", value=f"```\n{p1_board}\n```", inline=False)
     
-    # 閲覧中のユーザーに合わせて手札枚数を表示
-    footer_text = f"山札: {len(game.deck)}枚 | 手札枚数: {p1['name']}={len(p1['hand'])}枚, {p2['name']}={len(p2['hand'])}枚"
-    embed.set_footer(text=footer_text)
+    embed.set_footer(text=f"山札: {len(game.deck)}枚 | P1手札:{len(p1['hand'])}枚 / P2手札:{len(p2['hand'])}枚")
     return embed
 
 class OnlinePaultGame:
     def __init__(self, p1_user, p2_user):
         self.turn_count = 1
         self.deck = self.create_deck()
+        # 初期状態
         self.p1 = {"id": p1_user.id, "name": p1_user.display_name, "main": None, "left": [], "right": [], "hand": [], "ready": False}
         self.p2 = {"id": p2_user.id, "name": p2_user.display_name, "main": None, "left": [], "right": [], "hand": [], "ready": False}
         self.current_player = self.p1
@@ -130,8 +127,7 @@ def execute_online_attack(attacker_card, defender_list, attacker_hand, is_main=F
             defender_list.pop(); logs.append("貫通:撃破")
     return any_destroyed, logs
 
-# --- View クラス群 ---
-
+# --- メイン対戦 View ---
 class OnlineMainView(discord.ui.View):
     def __init__(self, game):
         super().__init__(timeout=None)
@@ -166,15 +162,12 @@ class OnlineMainView(discord.ui.View):
                     self.game.switch_turn(); await self.update_board(it)
                 return _cb
             btn.callback = await mk_cb(s); v.add_item(btn)
-        v.add_item(OnlineCancelButton(self.game))
-        await i.response.edit_message(content="攻撃列選択", view=v)
+        v.add_item(OnlineCancelButton(self.game)); await i.response.edit_message(content="攻撃列選択", view=v)
 
     @discord.ui.button(label="ドロー", style=discord.ButtonStyle.primary)
     async def draw(self, i, b):
         if not self.game.deck: return await i.response.send_message("空です", ephemeral=True)
-        c = self.game.deck.pop(0)
-        # 本来のPault同様、ドロー後の即配置/手札へ選択
-        await i.response.edit_message(content=f"【{c['name']}】入手", view=OnlineDrawResultView(self.game, c))
+        c = self.game.deck.pop(0); await i.response.edit_message(content=f"【{c['name']}】入手", view=OnlineDrawResultView(self.game, c))
 
     @discord.ui.button(label="配置", style=discord.ButtonStyle.secondary)
     async def deploy(self, i, b):
@@ -195,8 +188,7 @@ class OnlineMainView(discord.ui.View):
                     await it.response.edit_message(content="配置カード選択", view=sv)
                 return _cb
             btn.callback = await mk_cb(s); v.add_item(btn)
-        v.add_item(OnlineCancelButton(self.game))
-        await i.response.edit_message(content="配置場所選択", view=v)
+        v.add_item(OnlineCancelButton(self.game)); await i.response.edit_message(content="配置場所選択", view=v)
 
     @discord.ui.button(label="サポート", style=discord.ButtonStyle.success)
     async def support(self, i, b):
@@ -204,15 +196,71 @@ class OnlineMainView(discord.ui.View):
         if not opts: return await i.response.send_message("なし", ephemeral=True)
         v = discord.ui.View(); sel = discord.ui.Select(options=opts, placeholder="サポート選択")
         async def cb(it): await process_online_support(it, self.game, p["hand"].pop(int(it.data['values'][0])))
-        sel.callback = cb; v.add_item(sel); v.add_item(OnlineCancelButton(self.game))
-        await i.response.edit_message(content="サポート選択", view=v)
+        sel.callback = cb; v.add_item(sel); v.add_item(OnlineCancelButton(self.game)); await i.response.edit_message(content="サポート選択", view=v)
 
     async def update_board(self, i):
         vic = self.game.check_victory()
         if vic: await i.response.edit_message(content=f"勝者: {vic}", embed=make_online_embed(self.game), view=None)
         else: await i.response.edit_message(content=None, embed=make_online_embed(self.game), view=OnlineMainView(self.game))
 
-# --- サポート処理 ---
+# --- 初期布陣フェーズ View ---
+class OnlineInitialSetupView(discord.ui.View):
+    def __init__(self, game, message):
+        super().__init__(timeout=None)
+        self.game = game
+        self.message = message # 盤面を更新するためのメッセージオブジェクト
+
+    @discord.ui.button(label="自分の布陣を設定する", style=discord.ButtonStyle.primary)
+    async def setup(self, i, b):
+        p = self.game.p1 if i.user.id == self.game.p1["id"] else self.game.p2 if i.user.id == self.game.p2["id"] else None
+        if not p: return await i.response.send_message("対戦者以外不可", ephemeral=True)
+        if p["ready"]: return await i.response.send_message("設定済み", ephemeral=True)
+        
+        # 城(Main)の設定から開始
+        await self.start_setup_flow(i, p)
+
+    async def start_setup_flow(self, interaction, p):
+        opts = get_options_from_list(p["hand"], "戦闘")
+        v = discord.ui.View(); sel = discord.ui.Select(placeholder="【城】を選択(1枚)", options=opts)
+        async def main_cb(it):
+            c = self.game.apply_passive(p["hand"].pop(int(it.data['values'][0])))
+            p["main"] = c; await self.setup_sub(it, p, "left")
+        sel.callback = main_cb; v.add_item(sel)
+        await interaction.response.send_message("【城】を選択してください", view=v, ephemeral=True)
+
+    async def setup_sub(self, interaction, p, side):
+        opts = get_options_from_list(p["hand"], "戦闘")
+        if not opts: # 戦闘カードが尽きた場合
+            p["ready"] = True; await self.check_game_start(interaction)
+            return
+
+        # 複数枚選択 (最大3枚、または手札にあるだけ)
+        max_val = min(3, len(opts))
+        v = discord.ui.View(); sel = discord.ui.Select(placeholder=f"【{side.upper()}】を選択(1~{max_val}枚)", min_values=1, max_values=max_val, options=opts)
+        
+        async def sub_cb(it):
+            # 選択されたインデックスを降順で処理（popによるズレ防止）
+            idxs = sorted([int(v) for v in it.data['values']], reverse=True)
+            for x in idxs:
+                p[side].append(self.game.apply_passive(p["hand"].pop(x)))
+            
+            if side == "left":
+                await self.setup_sub(it, p, "right")
+            else:
+                p["ready"] = True
+                await it.response.edit_message(content="布陣完了！相手の準備を待っています...", view=None)
+                await self.check_game_start(it)
+        
+        sel.callback = sub_cb; v.add_item(sel)
+        await interaction.response.edit_message(content=f"【{side.upper()}列】に配置するカードを選択してください", view=v)
+
+    async def check_game_start(self, interaction):
+        if self.game.p1["ready"] and self.game.p2["ready"]:
+            self.game.logs = "両者の準備が完了しました！対戦開始！"
+            # 募集メッセージを対戦盤面に更新する
+            await self.message.edit(content=None, embed=make_online_embed(self.game), view=OnlineMainView(self.game))
+
+# --- (以下、前述のサポート・補助クラスを継承) ---
 async def process_online_support(interaction, game, card):
     p = game.current_player
     if card["name"] == "ドロー":
@@ -227,7 +275,7 @@ async def process_online_support(interaction, game, card):
             async def mk_cb(side):
                 async def _cb(it):
                     if opp[side]: target = opp[side].pop(); game.logs = f"{p['name']}: 相手の{target['name']}を破壊"
-                    else: game.logs = f"{p['name']}: 破壊対象なし"
+                    else: game.logs = "不発"
                     game.switch_turn(); await it.response.edit_message(content=None, embed=make_online_embed(game), view=OnlineMainView(game))
                 return _cb
             btn.callback = await mk_cb(s); v.add_item(btn)
@@ -235,15 +283,15 @@ async def process_online_support(interaction, game, card):
     elif card["name"] == "裏返し":
         v = discord.ui.View()
         targets = [("自分L", game.current_player, "left"), ("自分R", game.current_player, "right"), ("相手L", game.opponent_player, "left"), ("相手R", game.opponent_player, "right")]
-        for label, target_p, sk in targets:
+        for label, tp, sk in targets:
             btn = discord.ui.Button(label=label, style=discord.ButtonStyle.primary)
-            async def mk_flip(tp, s_key):
+            async def mk_flip(target_p, s_key):
                 async def _cb(it):
-                    if tp[s_key]: tp[s_key][-1]["face_down"] = True; game.logs = f"{p['name']}: {label}を(防)にした"
+                    if target_p[s_key]: target_p[s_key][-1]["face_down"] = True; game.logs = f"{p['name']}: {label}を(防)にした"
                     else: game.logs = "不発"
                     game.switch_turn(); await it.response.edit_message(content=None, embed=make_online_embed(game), view=OnlineMainView(game))
                 return _cb
-            btn.callback = await mk_flip(target_p, sk); v.add_item(btn)
+            btn.callback = await mk_flip(tp, sk); v.add_item(btn)
         await interaction.response.edit_message(content="対象選択", view=v)
 
 class OnlineDrawResultView(discord.ui.View):
@@ -257,7 +305,8 @@ class OnlineDrawResultView(discord.ui.View):
             btn = discord.ui.Button(label=s.upper())
             async def mk_cb(side):
                 async def _cb(it):
-                    c = self.game.apply_passive(self.card); p = self.game.current_player
+                    p = self.game.current_player
+                    c = self.game.apply_passive(self.card)
                     if side == "main": p["main"] = c
                     else: p[side].append(c)
                     self.game.logs = f"ドロー即配置({side.upper()})"; self.game.switch_turn(); await it.response.edit_message(content=None, embed=make_online_embed(self.game), view=OnlineMainView(self.game))
@@ -269,40 +318,6 @@ class OnlineDrawResultView(discord.ui.View):
         self.game.current_player["hand"].append(self.card); self.game.logs = "ドローを手札へ"; self.game.switch_turn()
         await i.response.edit_message(content=None, embed=make_online_embed(self.game), view=OnlineMainView(self.game))
 
-# --- 初期布陣 View ---
-class OnlineInitialSetupView(discord.ui.View):
-    def __init__(self, game):
-        super().__init__(timeout=None); self.game = game
-    @discord.ui.button(label="布陣を設定する", style=discord.ButtonStyle.primary)
-    async def setup(self, i, b):
-        p = self.game.p1 if i.user.id == self.game.p1["id"] else self.game.p2 if i.user.id == self.game.p2["id"] else None
-        if not p: return await i.response.send_message("対戦者以外不可", ephemeral=True)
-        if p["ready"]: return await i.response.send_message("設定済み", ephemeral=True)
-        await self.start_setup_flow(i, p)
-
-    async def start_setup_flow(self, interaction, p):
-        # Step 1: Main (城)
-        opts = get_options_from_list(p["hand"], "戦闘")
-        v = discord.ui.View(); sel = discord.ui.Select(placeholder="城を選択", options=opts)
-        async def main_cb(it):
-            c = self.game.apply_passive(p["hand"].pop(int(it.data['values'][0])))
-            p["main"] = c; await self.setup_sub(it, p, "left")
-        sel.callback = main_cb; v.add_item(sel); await interaction.response.send_message("【城】を選択してください", view=v, ephemeral=True)
-
-    async def setup_sub(self, interaction, p, side):
-        opts = get_options_from_list(p["hand"], "戦闘")
-        v = discord.ui.View(); sel = discord.ui.Select(placeholder=f"{side.upper()}列(1枚)を選択", options=opts)
-        async def sub_cb(it):
-            c = self.game.apply_passive(p["hand"].pop(int(it.data['values'][0])))
-            p[side].append(c)
-            if side == "left": await self.setup_sub(it, p, "right")
-            else:
-                p["ready"] = True; await it.response.edit_message(content="布陣完了！相手を待っています...", view=None)
-                if self.game.p1["ready"] and self.game.p2["ready"]:
-                    self.game.logs = "対戦開始！ P1の番です"
-                    await interaction.message.edit(content=None, embed=make_online_embed(self.game), view=OnlineMainView(self.game))
-        sel.callback = sub_cb; v.add_item(sel); await interaction.response.edit_message(content=f"【{side.upper()}列】を選択してください", view=v)
-
 class OnlineCancelButton(discord.ui.Button):
     def __init__(self, game): super().__init__(label="戻る", style=discord.ButtonStyle.gray); self.game = game
     async def callback(self, i): await i.response.edit_message(content=None, embed=make_online_embed(self.game), view=OnlineMainView(self.game))
@@ -313,7 +328,8 @@ class OnlineEntryView(discord.ui.View):
     async def join(self, i, b):
         if i.user.id == self.host.id: return await i.response.send_message("不可", ephemeral=True)
         game = OnlinePaultGame(self.host, i.user)
-        await i.response.edit_message(content="対戦成立。両者、布陣を設定してください。", view=OnlineInitialSetupView(game))
+        # i.message は募集メッセージ
+        await i.response.edit_message(content="対戦成立。両者、布陣を設定してください。", view=OnlineInitialSetupView(game, i.message))
 
 class OnlinePault(commands.Cog):
     def __init__(self, bot): self.bot = bot
