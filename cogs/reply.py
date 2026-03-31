@@ -61,7 +61,10 @@ class CynicalAI(commands.Cog):
                 # 外部API呼び出しをブロッキングしないように実行
                 loop = asyncio.get_event_loop()
                 response = await loop.run_in_executor(None, self._get_groq_response, content)
-                await message.reply(response)
+                await message.reply(
+                    response,
+                    allowed_mentions=discord.AllowedMentions.none() #←これでメンション不可ニダ
+                )
             except Exception as e:
                 print(f"Groq Error: {e}")
                 # エラー時は静かにしておくか、短い皮肉を返す
