@@ -7,10 +7,13 @@ import config
 import defining as df    
 from keep_alive import keep_alive
 
+NOTIFY_CHANNEL_ID = 1476170098673717414
+
 class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.all() 
         super().__init__(command_prefix=config.PREFIX, intents=intents)
+        self.updated_notified = False
 
     async def setup_hook(self):
         if os.path.exists('./cogs'):
@@ -29,9 +32,21 @@ class MyBot(commands.Bot):
 
     async def on_ready(self):
         print(df.format_log(f"Logged in as {self.user} (ID: {self.user.id})"))
-        # config.supabaseが存在しない場合のエラーを避けるため、getattrを使用
         sb_exists = getattr(config, 'supabase', None)
         print(f"Supabase Status: {'Connected' if sb_exists else 'Disconnected'}")
+
+        if not self.updated_notified:
+            channel = self.get_channel(NOTIFY_CHANNEL_ID)
+            if channel:
+                try:
+                    await channel.send("システムを更新しました。")
+                    print(df.format_log(f"Update notification sent to {channel.name}"))
+                except Exception as e:
+                    print(df.format_log(f"Failed to send update message: {e}"))
+            else:
+                print(df.format_log("Warning: Notification channel not found."))
+            
+            self.updated_notified = True 
 
 bot = MyBot()
 
@@ -41,7 +56,6 @@ if __name__ == "__main__":
     try:
         bot.run(config.TOKEN)
     except Exception as e:
-        # df.format_log が万が一エラーになっても表示できるよう標準出力も併用
         error_msg = f"Bot runtime error: {e}"
         try:
             print(df.format_log(error_msg))
