@@ -62,6 +62,10 @@ class AutoReply(commands.Cog):
             print(df.format_log(f"Reply to 'そうだったのか' from {message.author} in {message.channel}"))
             await message.channel.send("そうなんだよ")
             return
+        if content == "これはおおだな":
+            print(df.format_log(f"Reply to 'これはおおだな' from {message.author} in {message.channel}"))
+            await message.channel.send("おおじゃないよ！")
+            return
 
         if content == "これはおおだろ":
             print(df.format_log(f"Reply to 'これはおおだろ' from {message.author} in {message.channel}"))
