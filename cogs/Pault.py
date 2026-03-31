@@ -5,8 +5,6 @@ from discord.ext import commands
 from discord import app_commands
 import random
 import asyncio
-import config
-import defining as df 
 
 # --- 定数・スタッツ定義 ---
 BATTLE_STATS = {
@@ -14,11 +12,9 @@ BATTLE_STATS = {
     "シールド": [1, 2], "ランナー": [1, 0], "イーター": [2, 0],
     "アーチャー": [1, 0], "バーサーカー": [1, 1], "盾士": [1, 0]
 }
+
 def get_options_from_list(items, battle_stats, filter_type=None):
-    """
-    カードリストからセレクトメニューの選択肢を生成します。
-    battle_statsを引数に取ることで、循環参照を回避しています。
-    """
+    """カードリストからセレクトメニューの選択肢を生成"""
     options = []
     for i, card in enumerate(items):
         if filter_type is None or card.get("type") == filter_type:
@@ -27,25 +23,77 @@ def get_options_from_list(items, battle_stats, filter_type=None):
                 label = f"{card['name']} (ATK:{s[0]}/DFN:{s[1]})"
             else:
                 label = f"{card['name']} [{card.get('type', '不明')}]"
-                
+            # インデックスをvalueとして保持
             options.append(discord.SelectOption(label=label, value=str(i)))
     return options
 
-class GenericPickerView(discord.ui.View):
-    """汎用的なカード選択用Viewクラスです。"""
-    def __init__(self, options, min_v, max_v, placeholder, callback_func):
-        super().__init__(timeout=None)
+# --- 準備フェーズ用View ---
+class InitialSetupView(discord.ui.View):
+    def __init__(self, game):
+        super().__init__(timeout=180)
+        self.game = game
+        self.step = "main"  # main -> left -> right
+        self.update_select()
+
+    def update_select(self):
+        """現在のステップに合わせてセレクトメニューを更新"""
+        self.clear_items()
+        hand = self.game.players["p1"]["hand"]
+        options = get_options_from_list(hand, BATTLE_STATS, filter_type="戦闘")
+
+        if not options:
+            # 万が一戦闘カードが足りない場合のフォールバック
+            return
+
+        if self.step == "main":
+            placeholder, min_v, max_v = "城（メイン）を選択してください", 1, 1
+        elif self.step == "left":
+            placeholder, min_v, max_v = "レフトに配置するカード（最大3枚）", 1, min(3, len(options))
+        else: # right
+            placeholder, min_v, max_v = "ライトに配置するカード（最大3枚）", 1, min(3, len(options))
+
         select = discord.ui.Select(
             placeholder=placeholder,
             min_values=min_v,
             max_values=max_v,
             options=options
         )
-        async def internal_callback(interaction):
-            indices = [int(v) for v in select.values]
-            await callback_func(interaction, indices)
-        select.callback = internal_callback
+        select.callback = self.handle_selection
         self.add_item(select)
+
+    async def handle_selection(self, interaction: discord.Interaction):
+        # 選択されたインデックスを数値リストに変換
+        indices = sorted([int(v) for v in interaction.data['values']], reverse=True)
+        hand = self.game.players["p1"]["hand"]
+        
+        # 選択されたカードを抽出
+        selected_cards = []
+        for idx in indices:
+            selected_cards.append(hand.pop(idx))
+
+        # ステップごとの反映処理
+        if self.step == "main":
+            self.game.players["p1"]["main"] = selected_cards[0]
+            self.step = "left"
+            self.update_select()
+            await interaction.response.edit_message(content="🏰 **レフトスポーン**を選択してください（最大3枚）", view=self)
+        
+        elif self.step == "left":
+            self.game.players["p1"]["left"].extend(selected_cards)
+            self.step = "right"
+            self.update_select()
+            await interaction.response.edit_message(content="🏰 **ライトスポーン**を選択してください（最大3枚）", view=self)
+        
+        elif self.step == "right":
+            self.game.players["p1"]["right"].extend(selected_cards)
+            # 準備完了、メインメニューへ
+            await interaction.response.edit_message(
+                content="準備完了！対戦開始です。", 
+                embed=make_embed(self.game), 
+                view=MainMenuView(self.game)
+            )
+
+# --- ゲームロジック・盤面 ---
 class PaultGame:
     def __init__(self, channel_id, user_id, user_name):
         self.channel_id = channel_id
@@ -69,6 +117,7 @@ class PaultGame:
 
     def initial_draw(self):
         p1 = self.players["p1"]
+        # 最初は戦闘カードを3枚、その他を2枚
         battles = [c for c in self.deck if c["type"] == "戦闘"]
         for _ in range(3):
             if battles:
@@ -96,8 +145,8 @@ def make_embed(game):
     embed.add_field(name="ターン", value=game.turn, inline=True)
     embed.add_field(name="ログ", value=game.logs, inline=False)
     
-    def get_n(card): return f"🛡️ {card['name']}" if card else "❌ 空"
-    def get_l(cards): return " | ".join([c["name"] for c in cards]) if cards else "空野"
+    def get_n(card): return f"🛡️ {card['name']}" if card else "❌ 陥落"
+    def get_l(cards): return " | ".join([c["name"] for c in cards]) if cards else "なし"
     
     embed.add_field(name="相手(CPU)の城", value=get_n(c["main"]), inline=True)
     embed.add_field(name="あなたの城", value=get_n(p["main"]), inline=True)
@@ -121,7 +170,9 @@ async def cpu_turn_logic(i, game):
             if cpu[side] and p1["main"]:
                 atk_card = cpu[side].pop()
                 success, _ = execute_attack(atk_card, p1["main"])
-                if success: p1["main"] = None; cpu_log = f"CPUの攻撃で城が破壊された！"
+                if success: 
+                    p1["main"] = None
+                    cpu_log = f"CPUの攻撃であなたの城が破壊された！"
                 break
 
     game.turn += 1
@@ -129,8 +180,10 @@ async def cpu_turn_logic(i, game):
     if vic:
         await i.followup.send(f"🏁 **ゲーム終了！ 勝者: {vic}**")
     else:
+        # CPUターンの結果を表示し、ユーザーのターンへ
         await i.edit_original_response(content=f"あなたの番です。\n【CPU】: {cpu_log}", embed=make_embed(game), view=MainMenuView(game))
 
+# --- メインメニュー用View ---
 class MainMenuView(discord.ui.View):
     def __init__(self, game):
         super().__init__(timeout=None)
@@ -139,7 +192,7 @@ class MainMenuView(discord.ui.View):
     @discord.ui.button(label="攻撃", style=discord.ButtonStyle.danger)
     async def attack(self, i: discord.Interaction, b: discord.ui.Button):
         if self.game.turn <= 2: 
-            return await i.response.send_message("準備期間は攻撃禁止です", ephemeral=True)
+            return await i.response.send_message("準備期間（2ターン目まで）は攻撃禁止です", ephemeral=True)
         view = discord.ui.View()
         view.add_item(AtkPosButton(self.game, "left"))
         view.add_item(AtkPosButton(self.game, "right"))
@@ -158,20 +211,6 @@ class MainMenuView(discord.ui.View):
             view.add_item(DeployPosButton(self.game, side))
         await i.response.edit_message(content="配置先を選んでください：", view=view)
 
-    @discord.ui.button(label="サポート", style=discord.ButtonStyle.success)
-    async def support(self, i: discord.Interaction, b: discord.ui.Button):
-        hand = self.game.players["p1"]["hand"]
-        options = df.get_options_from_list(hand, BATTLE_STATS, filter_type="サポート")
-        if not options: return await i.response.send_message("使用可能なサポートがありません", ephemeral=True)
-        
-        async def support_logic(interaction, indices):
-            await interaction.response.defer()
-            card = hand.pop(indices[0])
-            self.game.logs = f"サポート【{card['name']}】発動！"
-            await interaction.edit_original_response(content=self.game.logs, embed=make_embed(self.game), view=MainMenuView(self.game))
-
-        await i.response.edit_message(content="サポートカードを選択：", view=df.GenericPickerView(options, 1, 1, "発動するカード", support_logic))
-
 class DeployPosButton(discord.ui.Button):
     def __init__(self, game, side):
         super().__init__(label=f"{side.upper()}に配置", style=discord.ButtonStyle.secondary)
@@ -179,18 +218,22 @@ class DeployPosButton(discord.ui.Button):
 
     async def callback(self, i: discord.Interaction):
         hand = self.game.players["p1"]["hand"]
-        options = df.get_options_from_list(hand, BATTLE_STATS, filter_type="戦闘")
-        if not options: return await i.response.send_message("戦闘カードがありません", ephemeral=True)
+        options = get_options_from_list(hand, BATTLE_STATS, filter_type="戦闘")
+        if not options: return await i.response.send_message("配置できる戦闘カードがありません", ephemeral=True)
 
-        async def deploy_logic(interaction, indices):
-            await interaction.response.defer()
-            for idx in sorted(indices, reverse=True):
-                card = hand.pop(idx)
-                if self.side == "main": self.game.players["p1"]["main"] = card
-                else: self.game.players["p1"][self.side].append(card)
-            await interaction.edit_original_response(content="配置しました", embed=make_embed(self.game), view=MainMenuView(self.game))
-
-        await i.response.edit_message(content="カードを選んでください", view=df.GenericPickerView(options, 1, 1, "選択", deploy_logic))
+        # 選択用セレクトメニューを表示（ここでは簡易的に1枚選択）
+        select = discord.ui.Select(options=options, placeholder="配置するカードを選択")
+        
+        async def deploy_callback(it: discord.Interaction):
+            idx = int(it.data['values'][0])
+            card = hand.pop(idx)
+            if self.side == "main": self.game.players["p1"]["main"] = card
+            else: self.game.players["p1"][self.side].append(card)
+            await it.response.edit_message(content="配置しました", embed=make_embed(self.game), view=MainMenuView(self.game))
+        
+        select.callback = deploy_callback
+        view = discord.ui.View(); view.add_item(select)
+        await i.response.edit_message(content="カードを選んでください", view=view)
 
 class AtkPosButton(discord.ui.Button):
     def __init__(self, game, side):
@@ -198,11 +241,13 @@ class AtkPosButton(discord.ui.Button):
         self.game, self.side = game, side
 
     async def callback(self, i: discord.Interaction):
-        await i.response.defer()
         p1, cpu = self.game.players["p1"], self.game.players["cpu"]
-        if not p1[self.side]: return await i.followup.send("カードがいません", ephemeral=True)
+        if not p1[self.side]: return await i.response.send_message("その列にカードがいません", ephemeral=True)
+        
+        await i.response.defer()
         atk_card = p1[self.side].pop()
         target_side = "right" if self.side == "left" else "left"
+        
         if cpu[target_side]:
             target_card = cpu[target_side][-1]
             success, res = execute_attack(atk_card, target_card)
@@ -210,7 +255,9 @@ class AtkPosButton(discord.ui.Button):
         else:
             success, res = execute_attack(atk_card, cpu["main"])
             if success: cpu["main"] = None
+        
         await i.edit_original_response(content="CPUのターン...", view=None)
+        await asyncio.sleep(1)
         await cpu_turn_logic(i, self.game)
 
 class DrawResultView(discord.ui.View):
@@ -223,12 +270,14 @@ class DrawResultView(discord.ui.View):
         v = discord.ui.View()
         for s in ["main", "left", "right"]:
             btn = discord.ui.Button(label=s.upper())
-            async def q_dep(it, side=s):
-                await it.response.defer()
-                if side == "main": self.game.players["p1"]["main"] = self.card
-                else: self.game.players["p1"][side].append(self.card)
-                await cpu_turn_logic(it, self.game)
-            btn.callback = q_dep
+            async def make_callback(side):
+                async def q_dep(it: discord.Interaction):
+                    await it.response.defer()
+                    if side == "main": self.game.players["p1"]["main"] = self.card
+                    else: self.game.players["p1"][side].append(self.card)
+                    await cpu_turn_logic(it, self.game)
+                return q_dep
+            btn.callback = await make_callback(s)
             v.add_item(btn)
         await i.response.edit_message(content="どこに配置しますか？", view=v)
 
@@ -238,35 +287,20 @@ class DrawResultView(discord.ui.View):
         self.game.players["p1"]["hand"].append(self.card)
         await cpu_turn_logic(i, self.game)
 
+# --- Cog定義 ---
 class Pault(commands.Cog):
-    def __init__(self, bot): self.bot = bot
+    def __init__(self, bot):
+        self.bot = bot
 
     @app_commands.command(name="pault", description="Pault対戦を開始")
     async def pault(self, interaction: discord.Interaction):
-        await interaction.response.defer()
         game = PaultGame(interaction.channel_id, interaction.user.id, interaction.user.display_name)
-        hand = game.players["p1"]["hand"]
+        # 修正された準備用Viewを呼び出し
+        view = InitialSetupView(game)
+        await interaction.response.send_message(
+            "🏰 **Pault 準備フェーズ**\nまずは**城（メイン）**を選んでください。", 
+            view=view
+        )
 
-        async def step3_right(i3, idx3):
-            await i3.response.defer()
-            for idx in sorted(idx3, reverse=True): 
-                game.players["p1"]["right"].append(hand.pop(idx))
-            await i3.edit_original_response(content="準備完了！", embed=make_embed(game), view=MainMenuView(game))
-
-        async def step2_left(i2, idx2):
-            await i2.response.defer()
-            for idx in sorted(idx2, reverse=True): 
-                game.players["p1"]["left"].append(hand.pop(idx))
-            opt_r = df.get_options_from_list(hand, BATTLE_STATS, "戦闘")
-            await i2.edit_original_response(content="ライトスポーンを選択してください（最大3枚）", view=df.GenericPickerView(opt_r, 1, 3, "ライト配置", step3_right))
-
-        async def step1_main(i1, idx1):
-            await i1.response.defer()
-            game.players["p1"]["main"] = hand.pop(idx1[0])
-            opt_l = df.get_options_from_list(hand, BATTLE_STATS, "戦闘")
-            await i1.edit_original_response(content="レフトスポーンを選択してください（最大3枚）", view=df.GenericPickerView(opt_l, 1, 3, "レフト配置", step2_left))
-
-        opt_m = df.get_options_from_list(hand, BATTLE_STATS, "戦闘")
-        await interaction.followup.send("🏰 **Pault 準備フェーズ**\n城を選んでください。", view=df.GenericPickerView(opt_m, 1, 1, "城選択", step1_main))
-
-async def setup(bot): await bot.add_cog(Pault(bot))
+async def setup(bot):
+    await bot.add_cog(Pault(bot))
