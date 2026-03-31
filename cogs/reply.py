@@ -75,7 +75,7 @@ class CynicalAI(commands.Cog):
             return
 
         # --- 10%の確率判定 ---
-        if random.random() >= 0.1:
+        if random.random() >= 0.4:
             return
 
         # --- 記憶の管理 ---
