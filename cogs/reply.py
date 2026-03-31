@@ -2,6 +2,7 @@
 import discord
 from discord.ext import commands
 import os
+import random  # ← 追加：確率計算用
 from groq import Groq
 from dotenv import load_dotenv
 import asyncio
@@ -30,18 +31,22 @@ class CynicalAI(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
+        # Bot自身の発言や他のBotには反応しない
         if message.author == self.bot.user or message.author.bot:
             return
 
+        # チャンネルで有効化されているかチェック
         if not self.enabled_channels.get(message.channel.id, False):
             return
 
+        # コマンドには反応しない
         if message.content.startswith(self.bot.command_prefix):
             return
 
         content = message.content
 
         # --- 既存の固定フレーズ（優先処理） ---
+        # 固定フレーズは「10%」に関わらず即座に返信したい場合はこのまま
         fixed_replies = {
             "うぉw": "冷笑しててうぉw",
             "うおw": "Dr.冷笑「愚鈍うおw」",
@@ -53,20 +58,23 @@ class CynicalAI(commands.Cog):
             await message.channel.send(fixed_replies[content])
             return
 
-        # --- Groqによる冷笑AI反応（固定フレーズにない場合） ---
+        # --- 10%の確率判定を追加 ---
+        # random.random() は 0.0 以上 1.0 未満の数値を返します
+        # 0.1 未満であれば 10% の確率に当選
+        if random.random() >= 0.1:
+            return  # 90%の確率でここで処理を終了（無視）する
+
+        # --- Groqによる冷笑AI反応（10%に当選した場合のみ実行） ---
         async with message.channel.typing():
             try:
-                # 外部API呼び出しをブロッキングしないように実行
                 loop = asyncio.get_event_loop()
                 response = await loop.run_in_executor(None, self._get_groq_response, content)
                 await message.reply(
                     response,
-                    allowed_mentions=discord.AllowedMentions.none() #←これでメンション不可ニダ
+                    allowed_mentions=discord.AllowedMentions.none()
                 )
             except Exception as e:
                 print(f"Groq Error: {e}")
-                # エラー時は静かにしておくか、短い皮肉を返す
-                # await message.channel.send("……（呆れて物も言えませんね）")
 
     def _get_groq_response(self, user_text):
         """Groq APIからレスポンスを取得する（同期関数）"""
