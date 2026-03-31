@@ -217,15 +217,21 @@ class DeployPosButton(discord.ui.Button):
         await i.response.edit_message(content="配置カードを選択", view=view)
 
 class DrawResultView(discord.ui.View):
-    def __init__(self, game, card): super().__init__(); self.game, self.card = game, card
+    def __init__(self, game, card):
+        super().__init__()
+        self.game = game
+        self.card = card
         if card["type"] == "戦闘":
             btn = discord.ui.Button(label="即座に配置", style=discord.ButtonStyle.success)
-            btn.callback = self.deploy_flow; self.add_item(btn)
+            btn.callback = self.deploy_flow
+            self.add_item(btn)
         else:
             btn = discord.ui.Button(label="即座に使用", style=discord.ButtonStyle.success)
-            btn.callback = self.use_immediately; self.add_item(btn)
+            btn.callback = self.use_immediately
+            self.add_item(btn)
         keep = discord.ui.Button(label="手札へ", style=discord.ButtonStyle.secondary)
-        keep.callback = self.keep_flow; self.add_item(keep)
+        keep.callback = self.keep_flow
+        self.add_item(keep)
 
     async def deploy_flow(self, i):
         v = discord.ui.View()
