@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 
-“””
+"""
 dungeon.py  ― ダンジョン探索 Cog
 main.py / config.py の実装をそのまま引き継いだ cogs 対応版
-“””
+"""
 
 import os, io, asyncio, random, datetime, json
 import discord
@@ -69,20 +69,20 @@ _ASSET_CACHE: dict = {}   # {(biome_name, tile_id): Image}
 PLAYER_IMAGE = None        # AGO.PNG
 
 ASSET_CONFIG = {
-(“洞窟”,     D_WALL):  “rock.PNG”,
-(“洞窟”,     D_FLOOR): “jimen.png”,
-(“森”,       D_WALL):  “mori_kabe.png”,
-(“森”,       D_FLOOR): “mori_yuka.png”,
-(“氷雪地帯”, D_WALL):  “Y_k.png”,
-(“氷雪地帯”, D_FLOOR): “Y_y.png”,
-(“砂漠地帯”, D_WALL):  “Y_k.png”,
-(“砂漠地帯”, D_FLOOR): “Y_y.png”,
+("洞窟",     D_WALL):  "rock.PNG",
+("洞窟",     D_FLOOR): "jimen.png",
+("森",       D_WALL):  "mori_kabe.png",
+("森",       D_FLOOR): "mori_yuka.png",
+("氷雪地帯", D_WALL):  "Y_k.png",
+("氷雪地帯", D_FLOOR): "Y_y.png",
+("砂漠地帯", D_WALL):  "Y_k.png",
+("砂漠地帯", D_FLOOR): "Y_y.png",
 }
 
 def load_all_assets():
 global _ASSET_CACHE, PLAYER_IMAGE
 base_dir   = os.path.dirname(os.path.abspath(**file**))
-assets_dir = os.path.join(base_dir, “Assets”)
+assets_dir = os.path.join(base_dir, "Assets")
 
 ```
 # プレイヤー画像
@@ -122,7 +122,7 @@ def d_get_biome(floor):
 for f_range, name, wall_emo, floor_emo, spec_emo, color in D_BIOMES:
 if floor in f_range:
 return name, wall_emo, floor_emo, spec_emo, color
-return “深淵”, “⬛”, “🔲”, “💠”, 0x000000
+return "深淵", "⬛", "🔲", "💠", 0x000000
 
 # ================================================================
 
@@ -192,7 +192,7 @@ def d_build_map_image(uid, floor, px, py, radius=D_VIEW_R):
 d_ensure_map(floor)
 bname, *_ = d_get_biome(floor)
 size = radius * 2 + 1
-img  = Image.new(“RGB”, (size * TILE, size * TILE), (0, 0, 0))
+img  = Image.new("RGB", (size * TILE, size * TILE), (0, 0, 0))
 draw = ImageDraw.Draw(img)
 
 ```
@@ -210,9 +210,9 @@ return img
 def d_render_pillow(uid, floor, px, py, radius=D_VIEW_R):
 img = d_build_map_image(uid, floor, px, py, radius)
 buf = io.BytesIO()
-img.save(buf, format=“PNG”)
+img.save(buf, format="PNG")
 buf.seek(0)
-return discord.File(fp=buf, filename=“map.png”)
+return discord.File(fp=buf, filename="map.png")
 
 # ================================================================
 
@@ -221,51 +221,51 @@ return discord.File(fp=buf, filename=“map.png”)
 # ================================================================
 
 SHOP_LAYOUT = [
-“#######”,
-“#…..#”,
-“#.CCC.#”,
-“#…..#”,
-“#…..#”,
-“#E….#”,
-“#######”,
+"#######",
+"#…..#",
+"#.CCC.#",
+"#…..#",
+"#…..#",
+"#E….#",
+"#######",
 ]
 BASE_LAYOUT = [
-“#########”,
-“#…….#”,
-“#.S…S.#”,
-“#…….#”,
-“#..@.R..#”,
-“#…….#”,
-“#.B…A.#”,
-“#E……#”,
-“#########”,
+"#########",
+"#…….#",
+"#.S…S.#",
+"#…….#",
+"#..@.R..#",
+"#…….#",
+"#.B…A.#",
+"#E……#",
+"#########",
 ]
 LOBY_LAYOUT = [
-“############”,
-“#……….#”,
-“#……….#”,
-“#……….#”,
-“#……….#”,
-“#……….#”,
-“#……….#”,
-“#……….#”,
-“############”,
+"############",
+"#……….#",
+"#……….#",
+"#……….#",
+"#……….#",
+"#……….#",
+"#……….#",
+"#……….#",
+"############",
 ]
 
 def _parse_layout(layout):
 grid = {}; start = (1, 1)
 for y, row in enumerate(layout):
 for x, ch in enumerate(row):
-if   ch == “#”: grid[(x, y)] = I_WALL
-elif ch == “.”: grid[(x, y)] = I_FLOOR
-elif ch == “E”: grid[(x, y)] = I_EXIT
-elif ch == “C”: grid[(x, y)] = I_COUNTER
-elif ch == “R”: grid[(x, y)] = I_REST
-elif ch == “S”: grid[(x, y)] = I_STORAGE
-elif ch == “@”: grid[(x, y)] = I_FLOOR; start = (x, y)
-elif ch == “B”: grid[(x, y)] = I_BAKERY
-elif ch == “L”: grid[(x, y)] = I_SLOT
-elif ch == “D”: grid[(x, y)] = I_DOUBLE
+if   ch == "#": grid[(x, y)] = I_WALL
+elif ch == ".": grid[(x, y)] = I_FLOOR
+elif ch == "E": grid[(x, y)] = I_EXIT
+elif ch == "C": grid[(x, y)] = I_COUNTER
+elif ch == "R": grid[(x, y)] = I_REST
+elif ch == "S": grid[(x, y)] = I_STORAGE
+elif ch == "@": grid[(x, y)] = I_FLOOR; start = (x, y)
+elif ch == "B": grid[(x, y)] = I_BAKERY
+elif ch == "L": grid[(x, y)] = I_SLOT
+elif ch == "D": grid[(x, y)] = I_DOUBLE
 return grid, start
 
 SHOP_GRID, SHOP_START = _parse_layout(SHOP_LAYOUT)
@@ -276,11 +276,11 @@ T_SIZE = 32
 
 def i_render_pillow(grid, pw, ph):
 if not grid:
-img = Image.new(“RGBA”, (T_SIZE, T_SIZE), (0, 0, 0, 255))
+img = Image.new("RGBA", (T_SIZE, T_SIZE), (0, 0, 0, 255))
 else:
 max_x = max(x for x, y in grid) + 1
 max_y = max(y for x, y in grid) + 1
-img = Image.new(“RGBA”, (max_x * T_SIZE, max_y * T_SIZE), (0, 0, 0, 255))
+img = Image.new("RGBA", (max_x * T_SIZE, max_y * T_SIZE), (0, 0, 0, 255))
 
 ```
 draw = ImageDraw.Draw(img)
@@ -427,23 +427,23 @@ D_BASE_CRIT = 0.05
 
 def d_hpbar(hp, max_hp, n=8):
 f = int((hp / max_hp) * n) if max_hp > 0 else 0
-return “█”*f + “░”*(n-f)
+return "█"*f + "░"*(n-f)
 
 def d_get_player(uid):
 if uid not in dg_players:
 dg_players[uid] = {
-“floor”: 1, “x”: 1, “y”: 1,
-“hp”: D_MAX_HP, “max_hp”: D_MAX_HP,
-“atk”: D_BASE_ATK, “def_”: D_BASE_DEF,
-“spd”: D_BASE_SPD, “crit”: D_BASE_CRIT,
+"floor": 1, "x": 1, "y": 1,
+"hp": D_MAX_HP, "max_hp": D_MAX_HP,
+"atk": D_BASE_ATK, "def_": D_BASE_DEF,
+"spd": D_BASE_SPD, "crit": D_BASE_CRIT,
 }
 p = dg_players[uid]
-lv = user_cache.get(uid, {}).get(“level”, 1) or 1
-p[“atk”]    = D_BASE_ATK + lv * 2
-p[“def_”]   = D_BASE_DEF + lv
-p[“spd”]    = D_BASE_SPD + lv * 2
-p[“max_hp”] = D_MAX_HP   + lv * 10
-if p[“hp”] > p[“max_hp”]: p[“hp”] = p[“max_hp”]
+lv = user_cache.get(uid, {}).get("level", 1) or 1
+p["atk"]    = D_BASE_ATK + lv * 2
+p["def_"]   = D_BASE_DEF + lv
+p["spd"]    = D_BASE_SPD + lv * 2
+p["max_hp"] = D_MAX_HP   + lv * 10
+if p["hp"] > p["max_hp"]: p["hp"] = p["max_hp"]
 return p
 
 # ================================================================
@@ -455,37 +455,37 @@ return p
 def d_open_chest(uid):
 u = user_cache.get(uid, {}); roll = random.random()
 if roll < 0.5:
-coins = random.randint(50, 300); u[“coins”] = u.get(“coins”, 0) + coins
-return f”🟨 宝箱！ コイン **+{coins}** 枚”
+coins = random.randint(50, 300); u["coins"] = u.get("coins", 0) + coins
+return f"🟨 宝箱！ コイン **+{coins}** 枚"
 elif roll < 0.8:
-bread = random.randint(3, 15); u[“bread_count”] = u.get(“bread_count”, 0) + bread
-return f”🟨 宝箱！ レアパン **+{bread}** 個”
+bread = random.randint(3, 15); u["bread_count"] = u.get("bread_count", 0) + bread
+return f"🟨 宝箱！ レアパン **+{bread}** 個"
 elif roll < 0.95:
-boxes = random.randint(1, 3); u[“boxes”] = u.get(“boxes”, 0) + boxes
-return f”🟨 宝箱！ 宝箱 **+{boxes}** 個”
+boxes = random.randint(1, 3); u["boxes"] = u.get("boxes", 0) + boxes
+return f"🟨 宝箱！ 宝箱 **+{boxes}** 個"
 else:
-chips = random.randint(100, 500); u[“chips”] = u.get(“chips”, 0) + chips
-return f”🟨 宝箱！ チップ **+{chips}** 枚”
+chips = random.randint(100, 500); u["chips"] = u.get("chips", 0) + chips
+return f"🟨 宝箱！ チップ **+{chips}** 枚"
 
 def d_trigger_trap(uid):
 u = user_cache.get(uid, {}); p = d_get_player(uid); roll = random.random()
 if roll < 0.4:
-loss = random.randint(30, 150); u[“coins”] = max(0, u.get(“coins”, 0) - loss)
-return f”🟥 罠！ コイン **-{loss}** 枚”
+loss = random.randint(30, 150); u["coins"] = max(0, u.get("coins", 0) - loss)
+return f"🟥 罠！ コイン **-{loss}** 枚"
 elif roll < 0.7:
-dmg = random.randint(10, 30); p[“hp”] = max(0, p[“hp”] - dmg)
-return f”🟥 罠！ HP **-{dmg}**”
+dmg = random.randint(10, 30); p["hp"] = max(0, p["hp"] - dmg)
+return f"🟥 罠！ HP **-{dmg}**"
 elif roll < 0.85:
-loss = random.randint(1, 5); u[“bread_count”] = max(0, u.get(“bread_count”, 0) - loss)
-return f”🟥 罠！ レアパン **-{loss}** 個”
+loss = random.randint(1, 5); u["bread_count"] = max(0, u.get("bread_count", 0) - loss)
+return f"🟥 罠！ レアパン **-{loss}** 個"
 else:
-loss = random.randint(50, 200); u[“chips”] = max(0, u.get(“chips”, 0) - loss)
-return f”🟥 罠！ チップ **-{loss}** 枚”
+loss = random.randint(50, 200); u["chips"] = max(0, u.get("chips", 0) - loss)
+return f"🟥 罠！ チップ **-{loss}** 枚"
 
 def d_do_mine(uid):
 u = user_cache.get(uid, {})
 gain = random.randint(30, 200)
-u[“coins”] = u.get(“coins”, 0) + gain
+u["coins"] = u.get("coins", 0) + gain
 return gain
 
 # ================================================================
@@ -495,37 +495,37 @@ return gain
 # ================================================================
 
 D_ENEMY_NAMES = {
-“洞窟”:     [“コウモリ”, “ゴブリン”, “岩石スライム”],
-“森”:       [“オオカミ”, “毒キノコ”, “トレント”],
-“氷雪地帯”: [“雪男”, “アイスゴーレム”, “白熊”],
-“砂漠地帯”: [“サソリ”, “砂蛇”, “炎トカゲ”],
+"洞窟":     ["コウモリ", "ゴブリン", "岩石スライム"],
+"森":       ["オオカミ", "毒キノコ", "トレント"],
+"氷雪地帯": ["雪男", "アイスゴーレム", "白熊"],
+"砂漠地帯": ["サソリ", "砂蛇", "炎トカゲ"],
 }
 D_SUPERENEMY_NAMES = {
-“洞窟”:     [“セミオートキラーマシン”],
-“森”:       [“邪蛇”],
-“氷雪地帯”: [“雪女”],
-“砂漠地帯”: [“鬼”],
+"洞窟":     ["セミオートキラーマシン"],
+"森":       ["邪蛇"],
+"氷雪地帯": ["雪女"],
+"砂漠地帯": ["鬼"],
 }
 D_BOSS_NAMES = {
-“洞窟”:     [“ドラゴン”],
-“森”:       [“ヌシ”, “ぱすた”],
-“氷雪地帯”: [“凍ったコッペパン”],
-“砂漠地帯”: [“炎龍”],
+"洞窟":     ["ドラゴン"],
+"森":       ["ヌシ", "ぱすた"],
+"氷雪地帯": ["凍ったコッペパン"],
+"砂漠地帯": ["炎龍"],
 }
 ENEMY_STATS_MASTER = {
-“コウモリ”:           {“hp_m”:0.7,  “atk_m”:0.5, “def_m”:0.5, “spd”:10, “crit”:0,    “ai”:[“attack”,“wait”], “coin_m”:0.8,  “xp_m”:0.8,  “boxes”:0},
-“ゴブリン”:           {“hp_m”:1.0,  “atk_m”:1.1, “def_m”:0.8, “spd”:15, “crit”:0.08, “ai”:[“attack”],        “coin_m”:1.0,  “xp_m”:1.0,  “boxes”:0},
-“岩石スライム”:       {“hp_m”:1.5,  “atk_m”:0.8, “def_m”:1.8, “spd”:5,  “crit”:0.02, “ai”:[“attack”],        “coin_m”:1.2,  “xp_m”:1.1,  “boxes”:0},
-“オオカミ”:           {“hp_m”:0.9,  “atk_m”:1.2, “def_m”:0.7, “spd”:20, “crit”:0.10, “ai”:[“attack”],        “coin_m”:1.1,  “xp_m”:1.2,  “boxes”:0},
-“毒キノコ”:           {“hp_m”:1.2,  “atk_m”:0.8, “def_m”:1.0, “spd”:5,  “crit”:0.05, “ai”:[“attack”],        “coin_m”:1.0,  “xp_m”:1.0,  “boxes”:0},
-“トレント”:           {“hp_m”:2.0,  “atk_m”:1.0, “def_m”:1.5, “spd”:3,  “crit”:0.03, “ai”:[“attack”,“attack”,“heal”], “coin_m”:1.5,“xp_m”:1.5,“boxes”:0},
-“セミオートキラーマシン”: {“hp_m”:4.5,“atk_m”:2.8,“def_m”:1.5,“spd”:22,“crit”:0.25,“ai”:[“attack”],          “coin_m”:3.0,  “xp_m”:5.0,  “boxes”:1},
-“邪蛇”:               {“hp_m”:3.0,  “atk_m”:3.4, “def_m”:1.2, “spd”:28, “crit”:0.15, “ai”:[“attack”],        “coin_m”:2.5,  “xp_m”:4.0,  “boxes”:1},
-“ヌシ”:               {“hp_m”:20.0, “atk_m”:4.5, “def_m”:2.2, “spd”:12, “crit”:0.10, “ai”:[“attack”],        “coin_m”:10.0, “xp_m”:10.0, “boxes”:5},
-“ドラゴン”:           {“hp_m”:18.0, “atk_m”:5.0, “def_m”:2.5, “spd”:20, “crit”:0,    “ai”:[“attack”],        “coin_m”:12.0, “xp_m”:12.0, “boxes”:5},
-“ぱすた”:            {“hp_m”:100,  “atk_m”:0,   “def_m”:10,  “spd”:100,“crit”:0,    “ai”:[“wait”],          “coin_m”:0.1,  “xp_m”:0.1,  “boxes”:0},
-“ミミック”:           {“hp_m”:2.5,  “atk_m”:2.0, “def_m”:1.2, “spd”:8,  “crit”:0.25, “ai”:[“attack”],        “coin_m”:5.0,  “xp_m”:3.0,  “boxes”:1},
-“default”:            {“hp_m”:1.0,  “atk_m”:1.0, “def_m”:1.0, “spd”:10, “crit”:0.05, “ai”:[“attack”],        “coin_m”:1.0,  “xp_m”:1.0,  “boxes”:0},
+"コウモリ":           {"hp_m":0.7,  "atk_m":0.5, "def_m":0.5, "spd":10, "crit":0,    "ai":["attack","wait"], "coin_m":0.8,  "xp_m":0.8,  "boxes":0},
+"ゴブリン":           {"hp_m":1.0,  "atk_m":1.1, "def_m":0.8, "spd":15, "crit":0.08, "ai":["attack"],        "coin_m":1.0,  "xp_m":1.0,  "boxes":0},
+"岩石スライム":       {"hp_m":1.5,  "atk_m":0.8, "def_m":1.8, "spd":5,  "crit":0.02, "ai":["attack"],        "coin_m":1.2,  "xp_m":1.1,  "boxes":0},
+"オオカミ":           {"hp_m":0.9,  "atk_m":1.2, "def_m":0.7, "spd":20, "crit":0.10, "ai":["attack"],        "coin_m":1.1,  "xp_m":1.2,  "boxes":0},
+"毒キノコ":           {"hp_m":1.2,  "atk_m":0.8, "def_m":1.0, "spd":5,  "crit":0.05, "ai":["attack"],        "coin_m":1.0,  "xp_m":1.0,  "boxes":0},
+"トレント":           {"hp_m":2.0,  "atk_m":1.0, "def_m":1.5, "spd":3,  "crit":0.03, "ai":["attack","attack","heal"], "coin_m":1.5,"xp_m":1.5,"boxes":0},
+"セミオートキラーマシン": {"hp_m":4.5,"atk_m":2.8,"def_m":1.5,"spd":22,"crit":0.25,"ai":["attack"],          "coin_m":3.0,  "xp_m":5.0,  "boxes":1},
+"邪蛇":               {"hp_m":3.0,  "atk_m":3.4, "def_m":1.2, "spd":28, "crit":0.15, "ai":["attack"],        "coin_m":2.5,  "xp_m":4.0,  "boxes":1},
+"ヌシ":               {"hp_m":20.0, "atk_m":4.5, "def_m":2.2, "spd":12, "crit":0.10, "ai":["attack"],        "coin_m":10.0, "xp_m":10.0, "boxes":5},
+"ドラゴン":           {"hp_m":18.0, "atk_m":5.0, "def_m":2.5, "spd":20, "crit":0,    "ai":["attack"],        "coin_m":12.0, "xp_m":12.0, "boxes":5},
+"ぱすた":            {"hp_m":100,  "atk_m":0,   "def_m":10,  "spd":100,"crit":0,    "ai":["wait"],          "coin_m":0.1,  "xp_m":0.1,  "boxes":0},
+"ミミック":           {"hp_m":2.5,  "atk_m":2.0, "def_m":1.2, "spd":8,  "crit":0.25, "ai":["attack"],        "coin_m":5.0,  "xp_m":3.0,  "boxes":1},
+"default":            {"hp_m":1.0,  "atk_m":1.0, "def_m":1.0, "spd":10, "crit":0.05, "ai":["attack"],        "coin_m":1.0,  "xp_m":1.0,  "boxes":0},
 }
 
 def d_make_enemy(floor, forced_name=None):
@@ -588,45 +588,45 @@ return {
 async def dg_save_player(uid):
 if uid not in dg_players: return
 try:
-supabase.table(“dungeon_players”).upsert(
-{“user_id”: uid, “data”: dg_players[uid]}
+supabase.table("dungeon_players").upsert(
+{"user_id": uid, "data": dg_players[uid]}
 ).execute()
 except Exception as e:
-print(f”dg_save_player失敗 {uid}: {e}”)
+print(f"dg_save_player失敗 {uid}: {e}")
 
 async def dg_save_map(floor):
 if floor not in dg_maps: return
 try:
-supabase.table(“dungeon_maps”).upsert({
-“floor”:  floor,
-“grid”:   dg_maps[floor],
-“starts”: list(dg_starts.get(floor, (1, 1))),
-“used”:   [list(u) for u in dg_used.get(floor, set())],
+supabase.table("dungeon_maps").upsert({
+"floor":  floor,
+"grid":   dg_maps[floor],
+"starts": list(dg_starts.get(floor, (1, 1))),
+"used":   [list(u) for u in dg_used.get(floor, set())],
 }).execute()
 except Exception as e:
-print(f”dg_save_map失敗 floor={floor}: {e}”)
+print(f"dg_save_map失敗 floor={floor}: {e}")
 
 async def dg_save_base(uid):
 try:
 if uid in dg_bases:
 fl, x, y = dg_bases[uid]
-supabase.table(“dungeon_bases”).upsert(
-{“user_id”: uid, “floor”: fl, “x”: x, “y”: y}
+supabase.table("dungeon_bases").upsert(
+{"user_id": uid, "floor": fl, "x": x, "y": y}
 ).execute()
 else:
-supabase.table(“dungeon_bases”).delete().eq(“user_id”, uid).execute()
+supabase.table("dungeon_bases").delete().eq("user_id", uid).execute()
 except Exception as e:
-print(f”dg_save_base失敗 {uid}: {e}”)
+print(f"dg_save_base失敗 {uid}: {e}")
 
 async def dg_load_all():
-“”“起動時に全データをDBからロード（on_ready から呼ぶ）”””
+"""起動時に全データをDBからロード（on_ready から呼ぶ）"""
 try:
-res = supabase.table(“dungeon_players”).select(”*”).execute()
+res = supabase.table("dungeon_players").select("*").execute()
 for row in res.data:
-dg_players[row[“user_id”]] = row[“data”]
-print(f”dungeon_players ロード完了: {len(dg_players)}件”)
+dg_players[row["user_id"]] = row["data"]
+print(f"dungeon_players ロード完了: {len(dg_players)}件")
 except Exception as e:
-print(f”dungeon_players ロード失敗: {e}”)
+print(f"dungeon_players ロード失敗: {e}")
 
 ```
 try:
@@ -709,15 +709,15 @@ except Exception as e:
 async def d_render_image(bot, uid, floor, px, py, radius=D_VIEW_R):
 img = d_build_map_image(uid, floor, px, py, radius)
 buf = io.BytesIO()
-img.save(buf, format=“PNG”)
+img.save(buf, format="PNG")
 buf.seek(0)
 try:
 ch  = bot.get_channel(DUNGEON_IMG_CHANNEL_ID) or   
 await bot.fetch_channel(DUNGEON_IMG_CHANNEL_ID)
-msg = await ch.send(file=discord.File(buf, filename=“map.png”))
+msg = await ch.send(file=discord.File(buf, filename="map.png"))
 return msg.attachments[0].url
 except Exception as e:
-print(f”画像アップロード失敗: {e}”)
+print(f"画像アップロード失敗: {e}")
 return None
 
 # ================================================================
@@ -1088,7 +1088,7 @@ async def rightdown(self,i, b): await self._move(i,  1,  1)
 class ShopInteriorView(InteriorView):
 def **init**(self, uid, return_floor, return_x, return_y):
 super().**init**(uid, SHOP_GRID, SHOP_START[0], SHOP_START[1],
-return_floor, return_x, return_y, “🏪 ショップ”, 0x8B4513)
+return_floor, return_x, return_y, "🏪 ショップ", 0x8B4513)
 
 ```
 async def _on_step(self, cell, i=None):
@@ -1192,7 +1192,7 @@ async def _buy(self, i, price, item):
 class BaseInteriorView(InteriorView):
 def **init**(self, uid, return_floor, return_x, return_y, is_own=True):
 super().**init**(uid, BASE_GRID, BASE_START[0], BASE_START[1],
-return_floor, return_x, return_y, “🏠 拠点”, 0x4a4a8a)
+return_floor, return_x, return_y, "🏠 拠点", 0x4a4a8a)
 self.is_own = is_own
 if self.children:
 self.children[-1].disabled = not is_own
@@ -1461,7 +1461,7 @@ async def status(self, i, b):
 
 # ================================================================
 
-class DungeonCog(commands.Cog, name=“DungeonCog”):
+class DungeonCog(commands.Cog, name="DungeonCog"):
 def **init**(self, bot):
 self.bot = bot
 
@@ -1615,4 +1615,4 @@ await bot.add_cog(cog)
 # タスク開始
 if not cog.dungeon_task.is_running():
 cog.dungeon_task.start()
-print(“✅ DungeonCog をロードしました”)
+print("✅ DungeonCog をロードしました")
