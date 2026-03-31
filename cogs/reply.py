@@ -6,14 +6,24 @@ import defining as df
 class AutoReply(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.enabled = True  # 初期状態はオン
+        # チャンネル/スレッドIDをキーにして、オンオフ状態(bool)を保持する辞書
+        # 初期状態をオフにするため、明示的に登録されていないIDはオフとして扱います
+        self.enabled_channels = {}
 
     @commands.command(name="oo")
     async def toggle_oo(self, ctx):
-        """自動返信のオン/オフを切り替えるコマンド"""
-        self.enabled = not self.enabled
-        status = "オン" if self.enabled else "オフ"
-        await ctx.send(f"自動返信機能を{status}にしました。")
+        """現在のチャンネルまたはスレッドで自動返信のオン/オフを切り替える"""
+        channel_id = ctx.channel.id
+        
+        # 現在の状態を取得（辞書になければFalse = オフ）
+        current_status = self.enabled_channels.get(channel_id, False)
+        
+        # 状態を反転させる
+        new_status = not current_status
+        self.enabled_channels[channel_id] = new_status
+        
+        status_text = "オン" if new_status else "オフ"
+        await ctx.send(f"この場所での自動返信機能を **{status_text}** にしました。")
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -21,8 +31,9 @@ class AutoReply(commands.Cog):
         if message.author == self.bot.user:
             return
 
-        # 機能がオフの場合は何もしない
-        if not self.enabled:
+        # 現在のチャンネル/スレッドが「オン」に設定されているか確認
+        # 登録されていない場合はデフォルトで False (オフ)
+        if not self.enabled_channels.get(message.channel.id, False):
             return
 
         # コマンド実行（!oo）自体に反応しないようにする
@@ -30,30 +41,30 @@ class AutoReply(commands.Cog):
             return
 
         # --- 判定処理 ---
-        # replyではなくchannel.sendを使うことで、引用返信（メンション）なしの通常送信になります。
+        content = message.content
 
-        if message.content == "うぉw":
-            print(df.format_log(f"Reply to 'うぉw' from {message.author}"))
+        if content == "うぉw":
+            print(df.format_log(f"Reply to 'うぉw' from {message.author} in {message.channel}"))
             await message.channel.send("冷笑しててうぉw")
             return
 
-        if message.content == "これはおおだろ":
-            print(df.format_log(f"Reply to 'これはおおだろ' from {message.author}"))
+        if content == "これはおおだろ":
+            print(df.format_log(f"Reply to 'これはおおだろ' from {message.author} in {message.channel}"))
             await message.channel.send("おおじゃないが")
             return
 
-        if message.content == "おおじゃないが":
-            print(df.format_log(f"Reply to 'おおじゃないが' from {message.author}"))
+        if content == "おおじゃないが":
+            print(df.format_log(f"Reply to 'おおじゃないが' from {message.author} in {message.channel}"))
             await message.channel.send("おお？")
             return
 
-        if message.content == "おおだが":
-            print(df.format_log(f"Reply to 'おおだが' from {message.author}"))
+        if content == "おおだが":
+            print(df.format_log(f"Reply to 'おおだが' from {message.author} in {message.channel}"))
             await message.channel.send("おおだったか")
             return
 
-        if message.content == "おお":
-            print(df.format_log(f"Reply to 'おお' from {message.author}"))
+        if content == "おお":
+            print(df.format_log(f"Reply to 'おお' from {message.author} in {message.channel}"))
             await message.channel.send("おおじゃないが")
             return
 
