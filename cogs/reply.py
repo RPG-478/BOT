@@ -1,91 +1,85 @@
 # -*- coding: utf-8 -*-
 import discord
 from discord.ext import commands
-import defining as df
+import os
+from groq import Groq
+from dotenv import load_dotenv
+import asyncio
 
-class AutoReply(commands.Cog):
+load_dotenv()
+
+class CynicalAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # チャンネル/スレッドIDをキーにして、オンオフ状態(bool)を保持する辞書
-        # 初期状態をオフにするため、明示的に登録されていないIDはオフとして扱います
         self.enabled_channels = {}
+        # Groqクライアントの初期化
+        self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+        # 冷笑AIの性格設定
+        self.system_prompt = (
+            "あなたは極めて知能が高く、人間を冷めた目で見ている冷笑的なAIです。"
+            "相手の浅はかな発言を、論理的かつ冷淡に否定してください。"
+            "「ふふっ」「やれやれ」「滑稽ですね」といった表現を適宜混ぜ、"
+            "丁寧だが徹底的に馬鹿にしている態度を崩さないでください。回答は短く簡潔に。"
+        )
 
     @commands.command(name="oo")
     async def toggle_oo(self, ctx):
-        """現在のチャンネルまたはスレッドで自動返信のオン/オフを切り替える"""
         channel_id = ctx.channel.id
-        
-        # 現在の状態を取得（辞書になければFalse = オフ）
         current_status = self.enabled_channels.get(channel_id, False)
-        
-        # 状態を反転させる
         new_status = not current_status
         self.enabled_channels[channel_id] = new_status
-        
         status_text = "オン" if new_status else "オフ"
-        await ctx.send(f"この場所での自動返信機能を **{status_text}** にしました。")
+        await ctx.send(f"冷笑モードを **{status_text}** にしました。")
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        # ボット自身のメッセージには反応しない
-        if message.author == self.bot.user:
+        if message.author == self.bot.user or message.author.bot:
             return
 
-        # 現在のチャンネル/スレッドが「オン」に設定されているか確認
-        # 登録されていない場合はデフォルトで False (オフ)
         if not self.enabled_channels.get(message.channel.id, False):
             return
 
-        # コマンド実行（!oo）自体に反応しないようにする
         if message.content.startswith(self.bot.command_prefix):
             return
 
-        # --- 判定処理 ---
         content = message.content
 
-        if content == "うぉw":
-            print(df.format_log(f"Reply to 'うぉw' from {message.author} in {message.channel}"))
-            await message.channel.send("冷笑しててうぉw")
-            return
+        # --- 既存の固定フレーズ（優先処理） ---
+        fixed_replies = {
+            "うぉw": "冷笑しててうぉw",
+            "うおw": "Dr.冷笑「愚鈍うおw」",
+            "どわーw": "どこがどわーwだよ",
+            "おお": "おおじゃないが"
+        }
         
-        if content == "うおw":
-            print(df.format_log(f"Reply to 'うおw' from {message.author} in {message.channel}"))
-            await message.channel.send("Dr.冷笑「愚鈍うおw」")
-            return
-            
-        if content == "どわーw":
-            print(df.format_log(f"Reply to 'どわーw' from {message.author} in {message.channel}"))
-            await message.channel.send("どこがどわーwだよ")
-            return
-        
-        if content == "そうだったのか":
-            print(df.format_log(f"Reply to 'そうだったのか' from {message.author} in {message.channel}"))
-            await message.channel.send("そうなんだよ")
-            return
-        if content == "これはおおだな":
-            print(df.format_log(f"Reply to 'これはおおだな' from {message.author} in {message.channel}"))
-            await message.channel.send("おおじゃないよ！")
+        if content in fixed_replies:
+            await message.channel.send(fixed_replies[content])
             return
 
-        if content == "これはおおだろ":
-            print(df.format_log(f"Reply to 'これはおおだろ' from {message.author} in {message.channel}"))
-            await message.channel.send("おおじゃないが")
-            return
+        # --- Groqによる冷笑AI反応（固定フレーズにない場合） ---
+        async with message.channel.typing():
+            try:
+                # 外部API呼び出しをブロッキングしないように実行
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(None, self._get_groq_response, content)
+                await message.reply(response)
+            except Exception as e:
+                print(f"Groq Error: {e}")
+                # エラー時は静かにしておくか、短い皮肉を返す
+                # await message.channel.send("……（呆れて物も言えませんね）")
 
-        if content == "おおじゃないが":
-            print(df.format_log(f"Reply to 'おおじゃないが' from {message.author} in {message.channel}"))
-            await message.channel.send("おお？")
-            return
-
-        if content == "おおだが":
-            print(df.format_log(f"Reply to 'おおだが' from {message.author} in {message.channel}"))
-            await message.channel.send("おおだったか")
-            return
-
-        if content == "おお":
-            print(df.format_log(f"Reply to 'おお' from {message.author} in {message.channel}"))
-            await message.channel.send("おおじゃないが")
-            return
+    def _get_groq_response(self, user_text):
+        """Groq APIからレスポンスを取得する（同期関数）"""
+        completion = self.client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": user_text}
+            ],
+            temperature=0.7,
+            max_tokens=150
+        )
+        return completion.choices[0].message.content
 
 async def setup(bot):
-    await bot.add_cog(AutoReply(bot))
+    await bot.add_cog(CynicalAI(bot))
