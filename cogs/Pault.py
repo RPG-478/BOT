@@ -31,15 +31,26 @@ def make_embed(game):
     embed.add_field(name="ターン", value=f"第 {game.turn} ターン", inline=True)
     embed.add_field(name="ログ", value=game.logs, inline=False)
     
-    def get_n(card): return f"{card['name']}" if card else "陥落"
-    def get_l(cards): return " | ".join([f"`{c['name']}`" for c in cards]) if cards else "なし"
-    def get_hand(cards): return ", ".join([f"[{c['name']}]" for c in cards]) if cards else "なし"
+    def format_card(card):
+        if not card: return "【 陥落 】"
+        s = BATTLE_STATS.get(card["name"], [0, 0])
+        return f"[{card['name']} ({s[0]}/{s[1]})]"
+
+    # サブスポンの1番上だけを取得するヘルパー
+    def get_top(cards):
+        return format_card(cards[-1]) if cards else "[ 空き ]"
+
+    # CPU盤面 (右・城・左 の順でプレイヤー視点での反転を表現)
+    cpu_board = f"{get_top(c['right'])} {format_card(c['main'])} {get_top(c['left'])}"
+    embed.add_field(name="▼ 相手の布陣 (右翼 | 城 | 左翼)", value=f"```\n{cpu_board}\n```", inline=False)
+
+    embed.add_field(name="VS", value="-----------", inline=False)
+
+    # プレイヤー盤面 (左・城・右)
+    p1_board = f"{get_top(p['left'])} {format_card(p['main'])} {get_top(p['right'])}"
+    embed.add_field(name="▲ あなたの布陣 (左翼 | 城 | 右翼)", value=f"```\n{p1_board}\n```", inline=False)
     
-    embed.add_field(name="相手(CPU)の城", value=get_n(c["main"]), inline=True)
-    embed.add_field(name="相手の布陣", value=f"L: {get_l(c['left'])}\nR: {get_l(c['right'])}", inline=False)
-    embed.add_field(name="---", value="フィールド", inline=False)
-    embed.add_field(name="あなたの布陣", value=f"L: {get_l(p['left'])}\nR: {get_l(p['right'])}", inline=False)
-    embed.add_field(name="あなたの城", value=get_n(p["main"]), inline=True)
+    def get_hand(cards): return ", ".join([f"[{c['name']}]" for c in cards]) if cards else "なし"
     embed.add_field(name="手札", value=get_hand(p["hand"]), inline=False)
     embed.set_footer(text=f"山札: {len(game.deck)}枚")
     return embed
@@ -99,13 +110,16 @@ async def cpu_turn_logic(i, game):
     cpu, p1 = game.players["cpu"], game.players["p1"]
     if game.deck: cpu["hand"].append(game.deck.pop(0))
     logs = []
+    # CPU配置ロジック
     for idx, c in enumerate(cpu["hand"][:]):
         if c["type"] == "戦闘":
             if len(cpu["left"]) < 2: cpu["left"].append(cpu["hand"].pop(idx))
             elif len(cpu["right"]) < 2: cpu["right"].append(cpu["hand"].pop(idx))
+    # CPU攻撃ロジック
     if game.turn >= 2:
         for side in ["left", "right"]:
             if cpu[side]:
+                # CPUから見た対面への攻撃
                 target_side = "right" if side == "left" else "left"
                 atk_card = cpu[side].pop(0)
                 if p1[target_side]:
@@ -149,7 +163,7 @@ class MainMenuView(discord.ui.View):
     @discord.ui.button(label="サポート", style=discord.ButtonStyle.success)
     async def support(self, i: discord.Interaction, b: discord.ui.Button):
         hand = self.game.players["p1"]["hand"]; opts = get_options_from_list(hand, BATTLE_STATS, "サポート")
-        if not opts: return await i.response.send_message("なし", ephemeral=True)
+        if not opts: return await i.response.send_message("サポートカードを持っていません", ephemeral=True)
         view = discord.ui.View(); select = discord.ui.Select(options=opts, placeholder="使用するサポートを選択")
         async def callback(it):
             card = hand.pop(int(it.data['values'][0])); await process_support_logic(it, self.game, card)
@@ -158,7 +172,7 @@ class MainMenuView(discord.ui.View):
 
     @discord.ui.button(label="終了", style=discord.ButtonStyle.secondary)
     async def quit(self, i: discord.Interaction, b: discord.ui.Button):
-        await i.response.edit_message(content="終了", embed=None, view=None)
+        await i.response.edit_message(content="ゲームを終了しました", embed=None, view=None)
 
 async def process_support_logic(interaction, game, card):
     if card["name"] == "ドロー":
@@ -206,7 +220,7 @@ class DeployPosButton(discord.ui.Button):
     def __init__(self, game, side): super().__init__(label=f"{side.upper()}配置", style=discord.ButtonStyle.secondary); self.game, self.side = game, side
     async def callback(self, i: discord.Interaction):
         hand = self.game.players["p1"]["hand"]; opts = get_options_from_list(hand, BATTLE_STATS, "戦闘")
-        if not opts: return await i.response.send_message("なし", ephemeral=True)
+        if not opts: return await i.response.send_message("戦闘カードを持っていません", ephemeral=True)
         view = discord.ui.View(); select = discord.ui.Select(options=opts)
         async def cb(it):
             card = hand.pop(int(it.data['values'][0]))
