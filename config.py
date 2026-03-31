@@ -15,8 +15,8 @@ load_dotenv()
 
 # ============================================================
 
-TOKEN  = os.getenv(‘TOKEN’)
-PREFIX = “!”
+TOKEN  = os.getenv('TOKEN')
+PREFIX = "!"
 
 # ============================================================
 
@@ -24,14 +24,14 @@ PREFIX = “!”
 
 # ============================================================
 
-SUPABASE_URL = os.getenv(‘SUPABASE_URL’)
-SUPABASE_KEY = os.getenv(‘SUPABASE_KEY’)
+SUPABASE_URL = os.getenv('SUPABASE_URL')
+SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 
 if SUPABASE_URL and SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 else:
 supabase = None
-print(“WARNING: Supabase credentials are missing.”)
+print("WARNING: Supabase credentials are missing.")
 
 # ============================================================
 
@@ -42,7 +42,7 @@ print(“WARNING: Supabase credentials are missing.”)
 JST = datetime.timezone(datetime.timedelta(hours=9))
 
 def get_now():
-“”“日本時間の現在時刻を返す”””
+"""日本時間の現在時刻を返す"""
 return datetime.datetime.now(JST)
 
 COLOR_SUCCESS = 0x00ff88   # 成功・完了
@@ -102,28 +102,28 @@ Dg         = {}   # 探索済み座標 {uid: {floor: set[(x,y)]}}
 
 # — タイルID（文字列） —
 
-D_WALL   = “wall”
-D_FLOOR  = “floor”
-D_START  = “start”
-D_STAIRS = “stairs”
-D_CHEST  = “chest”
-D_TRAP   = “trap”
-D_SHOP   = “shop”
-D_BASE   = “base”
-D_MINE   = “mine”
-D_LOBY   = “loby”
+D_WALL   = "wall"
+D_FLOOR  = "floor"
+D_START  = "start"
+D_STAIRS = "stairs"
+D_CHEST  = "chest"
+D_TRAP   = "trap"
+D_SHOP   = "shop"
+D_BASE   = "base"
+D_MINE   = "mine"
+D_LOBY   = "loby"
 
 # — 施設内部タイルID —
 
-I_WALL    = “i_wall”
-I_FLOOR   = “i_floor”
-I_EXIT    = “i_exit”
-I_COUNTER = “i_counter”
-I_REST    = “i_rest”
-I_STORAGE = “i_storage”
-I_BAKERY  = “i_bakery”
-I_DOUBLE  = “i_double”
-I_SLOT    = “i_slot”
+I_WALL    = "i_wall"
+I_FLOOR   = "i_floor"
+I_EXIT    = "i_exit"
+I_COUNTER = "i_counter"
+I_REST    = "i_rest"
+I_STORAGE = "i_storage"
+I_BAKERY  = "i_bakery"
+I_DOUBLE  = "i_double"
+I_SLOT    = "i_slot"
 
 # — マップサイズ —
 
@@ -136,26 +136,26 @@ TILE     = 32   # 1マスのピクセル数
 # — バイオーム定義 (floor range, 名前, 壁emoji, 床emoji, 特殊emoji, 埋め込みカラー) —
 
 D_BIOMES = [
-(range(1,  10), “洞窟”,     “⬜”, “⬛”, “🌫️”, 0x5C4033),
-(range(10, 20), “森”,       “🟫”, “🟩”, “🌫️”, 0x2D5A1B),
-(range(20, 30), “氷雪地帯”, “⬜”, “🔹”, “🌫️”, 0x5B9BD5),
-(range(30, 41), “砂漠地帯”, “🟧”, “🟨”, “🌫️”, 0xC8600A),
+(range(1,  10), "洞窟",     "⬜", "⬛", "🌫️", 0x5C4033),
+(range(10, 20), "森",       "🟫", "🟩", "🌫️", 0x2D5A1B),
+(range(20, 30), "氷雪地帯", "⬜", "🔹", "🌫️", 0x5B9BD5),
+(range(30, 41), "砂漠地帯", "🟧", "🟨", "🌫️", 0xC8600A),
 ]
 
 # — バイオームごとのエンカウント率 —
 
 D_ENCOUNTER_RATES = {
-“洞窟”:     0.05,
-“森”:       0.20,
-“氷雪地帯”: 0.07,
-“砂漠地帯”: 0.13,
+"洞窟":     0.05,
+"森":       0.20,
+"氷雪地帯": 0.07,
+"砂漠地帯": 0.13,
 }
 
 # — タイルカラー（Pillow描画用） —
 
 TILE_COLORS = {
-D_WALL:   {“洞窟”:(80,60,50),   “森”:(40,60,20),   “氷雪地帯”:(200,220,240), “砂漠地帯”:(120,80,30)},
-D_FLOOR:  {“洞窟”:(40,30,25),   “森”:(60,100,30),  “氷雪地帯”:(100,160,200), “砂漠地帯”:(200,160,60)},
+D_WALL:   {"洞窟":(80,60,50),   "森":(40,60,20),   "氷雪地帯":(200,220,240), "砂漠地帯":(120,80,30)},
+D_FLOOR:  {"洞窟":(40,30,25),   "森":(60,100,30),  "氷雪地帯":(100,160,200), "砂漠地帯":(200,160,60)},
 D_START:  (30, 100, 220),
 D_STAIRS: (220, 60,  60),
 D_CHEST:  (220, 200, 30),
@@ -163,6 +163,6 @@ D_TRAP:   None,          # 床と同色（見えない）
 D_SHOP:   (180, 80,  200),
 D_BASE:   (80,  120, 220),
 D_MINE:   (255, 0,   120),
-“player”: (30,  220, 120),
-“fog”:    (0,   0,   0),
+"player": (30,  220, 120),
+"fog":    (0,   0,   0),
 }
