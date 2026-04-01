@@ -15,16 +15,15 @@ class SelectiveAnnoyingAI(commands.Cog):
         self.enabled_channels = {}
         self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
         
-        # 性格設定：蛇足がない場合は「NONE」とだけ答えるよう指示
+        # 性格設定：蛇足を積極的に生成するよう指示を強化
         self.system_prompt = (
             "あなたはコミュニティに居座る『物知り気取りで絶妙にウザい人』です。"
             "以下のガイドラインを厳守してください："
             "1. 直接的な罵倒や「死ね」などの禁止用語は厳禁。"
-            "2. ユーザーの発言に対し、聞いてもいない豆知識や補足を「蛇足ですが」と付け足してください。"
-            "3. 少し小馬鹿にしたような、でも丁寧な口調を意識すること。"
+            "2. ユーザーの発言に対し、何かしら関係のある豆知識や、どうでもいい補足を「蛇足ですが」と付け足してください。"
+            "3. 文末には「ｗ」を付け、少し小馬鹿にしたような、でも丁寧な口調を意識すること。"
             "4. 文章は1〜2文で完結させてください。"
-            "5. 重要：もしユーザーの発言が短すぎたり、蛇足を挟む余地がない場合は、"
-            "   余計なことは言わず、ただ一言『NONE』とだけ返信してください。"
+            "5. どうしても何も思いつかない、あるいは「あ」や「うん」など極端に短い発言にのみ『NONE』と返してください。"
         )
 
     @commands.command(name="oo")
@@ -49,7 +48,7 @@ class SelectiveAnnoyingAI(commands.Cog):
 
         content = message.content
 
-        # --- 固定フレーズ ---
+        # --- 固定フレーズ（ここは確率無視で100%） ---
         fixed_replies = {
             "うぉw": "あ、それ『うぉw』じゃなくて『うおw』の方が通っぽいですよｗ",
             "うおw": "感嘆詞の使い方が独特で味わい深いですねｗ",
@@ -61,20 +60,22 @@ class SelectiveAnnoyingAI(commands.Cog):
             await message.channel.send(fixed_replies[content])
             return
 
-        # --- 10%の確率判定 ---
-        if random.random() >= 0.95:
+        # --- 【修正】10%の確率判定 ---
+        # 0.1未満であれば通過（10%の確率）
+        if random.random() >= 0.1:
             return
 
-        # --- Groqによる蛇足生成（AIが「話せる」と判断した時だけ返信） ---
+        # --- Groqによる蛇足生成 ---
         try:
+            # 先にAPIを叩いて内容があるか確認
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(None, self._get_groq_response, content)
             
-            # AIが「蛇足なし」と判断して NONE を返した場合は何もしない
+            # AIが「蛇足なし」と判断した場合は何もしない
             if "NONE" in response.upper():
                 return
 
-            # 有効な返信がある場合のみ「入力中」を出して返信
+            # 返信がある場合のみ「入力中」を出して返信
             async with message.channel.typing():
                 await message.reply(
                     response,
@@ -84,14 +85,14 @@ class SelectiveAnnoyingAI(commands.Cog):
             print(f"Groq Error: {e}")
 
     def _get_groq_response(self, user_text):
-        """Groq APIから蛇足を生成。ネタがなければ NONE を返す"""
+        """Groq APIから蛇足を生成"""
         completion = self.client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": user_text}
             ],
-            temperature=0.8,
+            temperature=0.9, # 遊び心を出すために少し上げる
             max_tokens=150
         )
         return completion.choices[0].message.content
