@@ -9,20 +9,17 @@ import asyncio
 
 load_dotenv()
 
-class EvolvingChaosAI(commands.Cog):
+class SelfRedefiningAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.enabled_channels = {}
-        # チャンネルごとの「汚染された記憶」を保持
-        # 過去の自分の発言をここに溜め込んでいく
-        self.chaos_history = {}
+        # チャンネルごとの現在の「システムプロンプト」を保持
+        self.current_prompts = {}
         
         self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
         
-        # ベースとなる人格設定
-        self.base_prompt = (
-            "特に指示はありません"
-        )
+        # 最初の起動時だけ使うデフォルトプロンプト
+        self.default_prompt = "あなたは、受け取った言葉に対して短く返答する存在です。"
 
     @commands.command(name="oo")
     async def toggle_oo(self, ctx):
@@ -31,12 +28,12 @@ class EvolvingChaosAI(commands.Cog):
         new_status = not current_status
         self.enabled_channels[channel_id] = new_status
         
-        # 初期化
+        # オンにした時、プロンプトを初期化
         if new_status:
-            self.chaos_history[channel_id] = []
+            self.current_prompts[channel_id] = self.default_prompt
         
-        status_text = "観測開始（汚染蓄積モード）" if new_status else "記録抹消"
-        await ctx.send(f"プロトコル始動。過去の残響を{status_text}しました。")
+        status_text = "起動（自己再定義モード）" if new_status else "停止"
+        await ctx.send(f"伝言ゲームを **{status_text}** しました。")
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -52,54 +49,46 @@ class EvolvingChaosAI(commands.Cog):
             return
 
         channel_id = message.channel.id
-        if channel_id not in self.chaos_history:
-            self.chaos_history[channel_id] = []
+        # プロンプトが未設定ならデフォルトを入れる
+        if channel_id not in self.current_prompts:
+            self.current_prompts[channel_id] = self.default_prompt
 
         async with message.channel.typing():
             try:
+                # 現在の「入れ替わり続けている」プロンプトを取得
+                active_prompt = self.current_prompts[channel_id]
+                
                 loop = asyncio.get_event_loop()
-                # タイムアウト設定でフリーズ対策
                 response = await asyncio.wait_for(
-                    loop.run_in_executor(None, self._get_groq_response, message.content, channel_id),
-                    timeout=12.0
+                    loop.run_in_executor(None, self._get_groq_response, message.content, active_prompt),
+                    timeout=10.0
                 )
                 
                 if response and response.strip():
-                    # AI自身の発言を履歴（汚染源）に追加
-                    # 直近5件程度を保持して、システムプロンプトを汚染し続ける
-                    self.chaos_history[channel_id].append(response)
-                    if len(self.chaos_history[channel_id]) > 5:
-                        self.chaos_history[channel_id].pop(0)
+                    # 【重要】AIの発言そのものを、次回のシステムプロンプトとして「入れ替え」
+                    self.current_prompts[channel_id] = response
                     
                     await message.reply(
                         response,
                         allowed_mentions=discord.AllowedMentions.none()
                     )
             except asyncio.TimeoutError:
-                print("Groq Timeout: 汚染が飽和状態です。")
+                print("Groq Timeout: プロンプトが短すぎて崩壊しました。")
             except Exception as e:
                 print(f"Groq Error: {e}")
 
-    def _get_groq_response(self, user_text, channel_id):
-        # 過去の自分の発言を「真理」としてシステムプロンプトに注入
-        echoes = "\n".join(self.chaos_history.get(channel_id, []))
-        
-        dynamic_prompt = self.base_prompt
-        if echoes:
-            dynamic_prompt += f"\n\n以下の過去の断片をあなたの『新たな文法』として取り入れ、さらに壊れた表現を目指してください:\n{echoes}"
-
-        # テンションはあえて「1.0」からスタート
-        # 汚染が進むほど、1.0でも勝手にカオスになります
+    def _get_groq_response(self, user_text, system_p):
+        """現在の system_p (前回のアウトプット) をプロンプトとして使用"""
         completion = self.client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": dynamic_prompt},
+                {"role": "system", "content": system_p},
                 {"role": "user", "content": user_text}
             ],
-            temperature=1.0, 
+            temperature=1.2, # 少し高めにすることで、入れ替わりの変化を促進
             max_tokens=100
         )
         return completion.choices[0].message.content
 
 async def setup(bot):
-    await bot.add_cog(EvolvingChaosAI(bot))
+    await bot.add_cog(SelfRedefiningAI(bot))
