@@ -9,23 +9,30 @@ class WordWolf(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.game_running = False
-        self.players = []        # 初期参加者
-        self.alive_players = []  # 生存者リスト
+        self.players = []
+        self.alive_players = []
         self.wolf = None
         self.player_words = {}
         
-        # 50語のワードリスト
+        # 100語以上のワードリスト
         self.word_pool = [
-            "リンゴ", "ナシ", "バナナ", "イチゴ", "焼肉", "すき焼き", "寿司", "ラーメン",
-            "カレー", "ハンバーグ", "学校", "塾", "会社", "公園", "スマホ", "パソコン",
-            "テレビ", "電子レンジ", "冷蔵庫", "洗濯機", "海", "プール", "山", "川",
-            "ディズニーランド", "ユニバ", "富士急", "映画館", "シャンプー", "リンス",
-            "石鹸", "洗剤", "犬", "猫", "うさぎ", "ハムスター", "野球", "サッカー",
-            "テニス", "バスケ", "数学", "英語", "国語", "理科", "社会", "ピアノ",
-            "ギター", "ドラム", "バイオリン", "教科書", "ノート", "鉛筆", "消しゴム"
+            "リンゴ", "ナシ", "バナナ", "イチゴ", "ブドウ", "メロン", "スイカ", "桃",
+            "焼肉", "すき焼き", "寿司", "ラーメン", "カレー", "ハンバーグ", "パスタ", "牛丼",
+            "学校", "塾", "会社", "公園", "図書館", "病院", "駅", "空港",
+            "スマホ", "パソコン", "テレビ", "電子レンジ", "冷蔵庫", "洗濯機", "掃除機", "ドライヤー",
+            "海", "プール", "山", "川", "砂漠", "森林", "湖", "滝",
+            "ディズニーランド", "ユニバ", "富士急", "映画館", "水族館", "動物園", "美術館", "カラオケ",
+            "シャンプー", "リンス", "石鹸", "洗剤", "歯磨き粉", "タオル", "ハンカチ", "ティッシュ",
+            "犬", "猫", "うさぎ", "ハムスター", "ライオン", "ゾウ", "キリン", "ペンギン",
+            "野球", "サッカー", "テニス", "バスケ", "バレー", "卓球", "水泳", "柔道",
+            "数学", "英語", "国語", "理科", "社会", "音楽", "体育", "図工",
+            "ピアノ", "ギター", "ドラム", "バイオリン", "フルート", "トランペット", "琴", "三味線",
+            "教科書", "ノート", "鉛筆", "消しゴム", "定規", "コンパス", "筆箱", "ハサミ",
+            "東京", "大阪", "名古屋", "福岡", "札幌", "沖縄", "京都", "横浜",
+            "パン", "ごはん", "うどん", "そば", "餅", "パスタ", "ピザ", "サンドイッチ"
         ]
 
-    @app_commands.command(name="wordwolf", description="50語からランダムペアで開始（サバイバル形式）")
+    @app_commands.command(name="wordwolf", description="ワードウルフを開始（ウルフ自爆ルールあり）")
     async def wordwolf(self, interaction: discord.Interaction):
         if self.game_running:
             await interaction.response.send_message("既にゲームが進行中です。", ephemeral=True)
@@ -49,7 +56,6 @@ class WordWolf(commands.Cog):
             await interaction.channel.send("人数不足（3人以上必要）のため中止します。")
             return
 
-        # 50語の中からランダムに2つ選んでペアを作る
         selected_words = random.sample(self.word_pool, 2)
         common_word, wolf_word = selected_words
             
@@ -63,7 +69,8 @@ class WordWolf(commands.Cog):
         await interaction.channel.send(
             f"**ゲーム開始！** 参加者: {', '.join([p.display_name for p in self.players])}\n"
             "各自ボタンでワードを確認してください。\n"
-            "⚠️ **【ルール】メンションでチャレンジ！失敗すると即脱落＆ミュートです。**",
+            "⚠️ **【重要】誰かをメンションするとチャレンジになります！**\n"
+            "※村人が失敗：脱落。ウルフが失敗：その場で村人勝利！",
             view=check_view
         )
 
@@ -71,7 +78,6 @@ class WordWolf(commands.Cog):
         self.bot.loop.create_task(self.game_timer(interaction.channel))
 
     async def game_timer(self, channel):
-        """5分タイマー（1分ごとに通知）"""
         for i in range(4, 0, -1):
             await asyncio.sleep(60)
             if not self.game_running: return
@@ -86,19 +92,24 @@ class WordWolf(commands.Cog):
         if not self.game_running or message.author.bot:
             return
         
-        # メンション検知（生存者によるものか確認）
         if message.mentions and message.author in self.alive_players:
             target = message.mentions[0]
-            
-            # 自分以外かつ生存者リストにいる相手へのメンションのみ反応
             if target != message.author and target in self.alive_players:
                 await self.execute_challenge(message.channel, message.author, target)
 
     async def execute_challenge(self, channel, challenger, target):
         role = discord.utils.get(channel.guild.roles, name="muted")
         
+        # 1. ウルフによるチャレンジ（釣り）の場合
+        if challenger == self.wolf:
+            # ウルフが村人を指名してしまったら、その瞬間にウルフの負け
+            await channel.send(f"💥 **ウルフの自爆！** {challenger.mention} はウルフでしたが、村人 {target.mention} を指名したため敗北しました。")
+            await self.end_game(channel, "villager_win")
+            return
+
+        # 2. 村人によるチャレンジの場合
         if target == self.wolf:
-            await channel.send(f"✅ **チャレンジ成功！** {target.mention} はウルフでした！")
+            await channel.send(f"✅ **チャレンジ成功！** {target.mention} はウルフでした！村人の勝利です。")
             await self.end_game(channel, "villager_win")
         else:
             await channel.send(f"❌ **チャレンジ失敗！** {challenger.mention} は脱落しました。")
@@ -108,7 +119,7 @@ class WordWolf(commands.Cog):
                 try: await challenger.add_roles(role)
                 except: pass
             
-            # 勝利判定：生存者が2人（ウルフ1名、村人1名）になったらウルフ勝利
+            # 生存者が2人（ウルフ1・村人1）になったらウルフ勝利
             if len(self.alive_players) <= 2:
                 await self.end_game(channel, "wolf_win")
             else:
@@ -124,13 +135,13 @@ class WordWolf(commands.Cog):
 
         await channel.send(f"━━━━━━━━━━━━━━\n{msg}\n━━━━━━━━━━━━━━")
         
-        # 全員のMutedロールを解除
         role = discord.utils.get(channel.guild.roles, name="muted")
         if role:
             for p in self.players:
                 try: await p.remove_roles(role)
                 except: pass
 
+# --- UI Components ---
 class JoinView(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=60)
