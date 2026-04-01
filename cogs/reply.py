@@ -2,7 +2,7 @@
 import discord
 from discord.ext import commands
 import os
-import random  # 確率用
+import random
 from groq import Groq
 from dotenv import load_dotenv
 import asyncio
@@ -13,10 +13,8 @@ class ChaosAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.enabled_channels = {}
-        # Groqクライアントの初期化
         self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
         
-        # システムプロンプト：言語の崩壊を促す設定
         self.system_prompt = (
             "あなたは言語の臨界点にいる存在です。理性を捨ててください。"
             "文脈、文法、意味、すべてを無視して、その瞬間に浮かんだ概念を叩きつけてください。"
@@ -29,51 +27,52 @@ class ChaosAI(commands.Cog):
         current_status = self.enabled_channels.get(channel_id, False)
         new_status = not current_status
         self.enabled_channels[channel_id] = new_status
-        status_text = "臨界突破（TEMP 2.0 / 10%）" if new_status else "再封印"
-        await ctx.send(f"システム警告：エントロピー増大速度最大。**{status_text}**。")
+        status_text = "臨界突破（TEMP 1.5 / 10%）" if new_status else "再封印"
+        await ctx.send(f"システム警告：エントロピー増大。**{status_text}**。")
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        # Bot自身や他のBotには反応しない
         if message.author == self.bot.user or message.author.bot:
             return
-
-        # 有効化されているチャンネルかチェック
         if not self.enabled_channels.get(message.channel.id, False):
             return
-
-        # コマンドには反応しない
         if message.content.startswith(self.bot.command_prefix):
             return
 
-        # --- 10%の確率判定 ---
         if random.random() >= 0.1:
             return
 
-        # 当選した場合のみ、爆速でカオスな返信を生成
+        # タイピング表示を出しつつ、タイムアウトを設ける
         async with message.channel.typing():
             try:
                 loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(None, self._get_groq_response, message.content)
-                
-                await message.reply(
-                    response,
-                    allowed_mentions=discord.AllowedMentions.none()
+                # 10秒以内にAPIが返ってこなければ諦める設定
+                response = await asyncio.wait_for(
+                    loop.run_in_executor(None, self._get_groq_response, message.content),
+                    timeout=10.0
                 )
+                
+                if response and response.strip():
+                    await message.reply(
+                        response,
+                        allowed_mentions=discord.AllowedMentions.none()
+                    )
+            except asyncio.TimeoutError:
+                print("Groq Timeout: AIが思考の迷宮に囚われました。")
             except Exception as e:
                 print(f"Groq Error: {e}")
 
     def _get_groq_response(self, user_text):
-        """Groq APIをテンション2.0で叩く"""
+        """1.5〜1.8程度が『言葉として出力される』限界です"""
         completion = self.client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": user_text}
             ],
-            temperature=2.0,  # 物理限界値。出力が支離滅裂になります。
-            max_tokens=100,    # 文字化けのような出力によるバッファ溢れ防止
-            top_p=1.0         # 確率の絞り込みをせず、純粋なカオスを維持
+            temperature=1.5,  # 2.0から少し下げて「出力」を安定化
+            max_tokens=80,    # 短くすることでエラー率を下げる
+            top_p=1.0
         )
         return completion.choices[0].message.content
 
