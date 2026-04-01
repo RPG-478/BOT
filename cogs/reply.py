@@ -62,7 +62,7 @@ class SelectiveAnnoyingAI(commands.Cog):
             return
 
         # --- 10%の確率判定 ---
-        if random.random() >= 0.2:
+        if random.random() >= 0.95:
             return
 
         # --- Groqによる蛇足生成（AIが「話せる」と判断した時だけ返信） ---
