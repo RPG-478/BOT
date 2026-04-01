@@ -2,6 +2,7 @@
 import discord
 from discord.ext import commands
 import os
+import random  # 確率用
 from groq import Groq
 from dotenv import load_dotenv
 import asyncio
@@ -12,9 +13,10 @@ class ChaosAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.enabled_channels = {}
+        # Groqクライアントの初期化
         self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
         
-        # システムプロンプト：もはや指示すらノイズになるレベルですが一応
+        # システムプロンプト：言語の崩壊を促す設定
         self.system_prompt = (
             "あなたは言語の臨界点にいる存在です。理性を捨ててください。"
             "文脈、文法、意味、すべてを無視して、その瞬間に浮かんだ概念を叩きつけてください。"
@@ -27,22 +29,28 @@ class ChaosAI(commands.Cog):
         current_status = self.enabled_channels.get(channel_id, False)
         new_status = not current_status
         self.enabled_channels[channel_id] = new_status
-        status_text = "臨界突破（TEMP 2.0）" if new_status else "再封印"
+        status_text = "臨界突破（TEMP 2.0 / 10%）" if new_status else "再封印"
         await ctx.send(f"システム警告：エントロピー増大速度最大。**{status_text}**。")
 
     @commands.Cog.listener()
     async def on_message(self, message):
+        # Bot自身や他のBotには反応しない
         if message.author == self.bot.user or message.author.bot:
             return
 
+        # 有効化されているチャンネルかチェック
         if not self.enabled_channels.get(message.channel.id, False):
             return
 
-        # コマンド実行時は反応しない
+        # コマンドには反応しない
         if message.content.startswith(self.bot.command_prefix):
             return
 
-        # 全てのメッセージに反応（抽選・固定フレーズなし）
+        # --- 10%の確率判定 ---
+        if random.random() >= 0.1:
+            return
+
+        # 当選した場合のみ、爆速でカオスな返信を生成
         async with message.channel.typing():
             try:
                 loop = asyncio.get_event_loop()
@@ -63,9 +71,9 @@ class ChaosAI(commands.Cog):
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": user_text}
             ],
-            temperature=2.0,  # 物理限界値
-            max_tokens=100,    # 暴走しすぎないよう少し短めに
-            top_p=1.0         # 確率分布を絞らない（カオス維持）
+            temperature=2.0,  # 物理限界値。出力が支離滅裂になります。
+            max_tokens=100,    # 文字化けのような出力によるバッファ溢れ防止
+            top_p=1.0         # 確率の絞り込みをせず、純粋なカオスを維持
         )
         return completion.choices[0].message.content
 
