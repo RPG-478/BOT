@@ -9,19 +9,18 @@ import asyncio
 
 load_dotenv()
 
-class HaikuAI(commands.Cog):
+class GrassAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.enabled_channels = {}
         self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
         
-        # 575を死守させるための強力なシステムプロンプト
+        # 30文字制限と「w」の指示を徹底
         self.system_prompt = (
-            "あなたは俳句と川柳の達人です。以下のルールを『絶対』に守ってください：\n"
-            "1. 返答は必ず『五・七・五』の合計17音だけで構成してください。\n"
-            "2. 余計な解説、挨拶、結びの言葉は一切禁止します。575以外の文字を出力しないでください。\n"
-            "3. 季語はあってもなくても構いませんが、日本語としてのリズムを最優先してください。\n"
-            "4. 標語や説明文ではなく、情景や感情、あるいは皮肉を込めた一句にしてください。"
+            "あなたは語彙力が乏しく、常に笑っている存在です。"
+            "1. 返答は句読点を含め、必ず『30文字以内』に収めてください。"
+            "2. 文末や文中に『w』や『www』を大量に使い、小馬鹿にしたように笑ってください。"
+            "3. 難しい話はせず、短く、浅いコメントだけを返してください。"
         )
 
     @commands.command(name="oo")
@@ -30,18 +29,15 @@ class HaikuAI(commands.Cog):
         current_status = self.enabled_channels.get(channel_id, False)
         new_status = not current_status
         self.enabled_channels[channel_id] = new_status
-        
-        status_text = "起動（575モード）" if new_status else "停止"
-        await ctx.send(f"詠み人知らず、**{status_text}**。")
+        status_text = "起動ww" if new_status else "停止"
+        await ctx.send(f"芝生モード、**{status_text}**。")
 
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author == self.bot.user or message.author.bot:
             return
-
         if not self.enabled_channels.get(message.channel.id, False):
             return
-
         if message.content.startswith(self.bot.command_prefix):
             return
 
@@ -54,31 +50,31 @@ class HaikuAI(commands.Cog):
                 loop = asyncio.get_event_loop()
                 response = await asyncio.wait_for(
                     loop.run_in_executor(None, self._get_groq_response, message.content),
-                    timeout=10.0
+                    timeout=8.0
                 )
                 
-                if response and response.strip():
-                    # 念のため、改行などを整理して美しく表示
-                    clean_haiku = response.replace(" ", "　").replace("、", "　")
+                if response:
+                    # 改行を消して一行に強制
+                    clean_res = response.replace("\n", " ")[:30]
                     await message.reply(
-                        clean_haiku,
+                        clean_res,
                         allowed_mentions=discord.AllowedMentions.none()
                     )
             except Exception as e:
                 print(f"Groq Error: {e}")
 
     def _get_groq_response(self, user_text):
-        """Groq APIで575を生成"""
+        """Groq APIで短文草生成"""
         completion = self.client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": f"お題：{user_text}\nこれについて一句詠んでください。"}
+                {"role": "user", "content": user_text}
             ],
-            temperature=0.7, # リズムの正確さと創造性のバランス
-            max_tokens=50
+            temperature=1.0,
+            max_tokens=40 # 30文字程度に収まるトークン量
         )
         return completion.choices[0].message.content
 
 async def setup(bot):
-    await bot.add_cog(HaikuAI(bot))
+    await bot.add_cog(GrassAI(bot))
