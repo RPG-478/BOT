@@ -4,30 +4,36 @@ from discord.ext import commands
 from discord import app_commands
 import asyncio
 import random
-import time
 
 class WordWolf(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.game_running = False
-        self.players = []
+        self.players = []        # 初期参加者
+        self.alive_players = []  # 生存者リスト
         self.wolf = None
         self.player_words = {}
-        self.start_time = 0
-        self.word_pairs = [
-            ("リンゴ", "ナシ"), ("焼肉", "すき焼き"), ("シャンプー", "リンス"),
-            ("学校", "塾"), ("スマホ", "パソコン"), ("海", "プール"),
-            ("ディズニーランド", "ユニバ"), ("少年ジャンプ", "週刊マガジン")
+        
+        # 50語のワードリスト
+        self.word_pool = [
+            "リンゴ", "ナシ", "バナナ", "イチゴ", "焼肉", "すき焼き", "寿司", "ラーメン",
+            "カレー", "ハンバーグ", "学校", "塾", "会社", "公園", "スマホ", "パソコン",
+            "テレビ", "電子レンジ", "冷蔵庫", "洗濯機", "海", "プール", "山", "川",
+            "ディズニーランド", "ユニバ", "富士急", "映画館", "シャンプー", "リンス",
+            "石鹸", "洗剤", "犬", "猫", "うさぎ", "ハムスター", "野球", "サッカー",
+            "テニス", "バスケ", "数学", "英語", "国語", "理科", "社会", "ピアノ",
+            "ギター", "ドラム", "バイオリン", "教科書", "ノート", "鉛筆", "消しゴム"
         ]
 
-    @app_commands.command(name="wordwolf", description="ワードウルフを開始します（5分制限）")
+    @app_commands.command(name="wordwolf", description="50語からランダムペアで開始（サバイバル形式）")
     async def wordwolf(self, interaction: discord.Interaction):
         if self.game_running:
             await interaction.response.send_message("既にゲームが進行中です。", ephemeral=True)
             return
 
-        self.game_running = False # 初期化
+        self.game_running = False
         self.players = []
+        self.alive_players = []
         self.player_words = {}
         
         join_view = JoinView(self)
@@ -43,94 +49,92 @@ class WordWolf(commands.Cog):
             await interaction.channel.send("人数不足（3人以上必要）のため中止します。")
             return
 
-        # ワード選定と割り当て
-        common, wolf_w = random.choice(self.word_pairs)
-        if random.random() > 0.5:
-            common, wolf_w = wolf_w, common
+        # 50語の中からランダムに2つ選んでペアを作る
+        selected_words = random.sample(self.word_pool, 2)
+        common_word, wolf_word = selected_words
             
         self.wolf = random.choice(self.players)
+        self.alive_players = self.players.copy()
+        
         for p in self.players:
-            self.player_words[p.id] = wolf_w if p == self.wolf else common
+            self.player_words[p.id] = wolf_word if p == self.wolf else common_word
 
-        # 確認用ボタンの送信
         check_view = CheckWordView(self)
         await interaction.channel.send(
-            f"**募集終了！** 参加者: {', '.join([p.display_name for p in self.players])}\n"
-            "各自、下のボタンでワードを確認してください。\n"
-            "⚠️ **【ルール】誰かをメンションすると『チャレンジ（指名）』になります！**",
+            f"**ゲーム開始！** 参加者: {', '.join([p.display_name for p in self.players])}\n"
+            "各自ボタンでワードを確認してください。\n"
+            "⚠️ **【ルール】メンションでチャレンジ！失敗すると即脱落＆ミュートです。**",
             view=check_view
         )
 
-        # ゲーム開始処理
         self.game_running = True
-        self.start_time = time.time()
-        
-        # 5分間のカウントダウンタスクを開始
         self.bot.loop.create_task(self.game_timer(interaction.channel))
 
     async def game_timer(self, channel):
-        """1分ごとに通知し、5分で終了させるタイマー"""
+        """5分タイマー（1分ごとに通知）"""
         for i in range(4, 0, -1):
             await asyncio.sleep(60)
-            if not self.game_running: return # 途中で決着がついたら終了
-            await channel.send(f"⏰ **残り {i} 分** です。")
+            if not self.game_running: return
+            await channel.send(f"⏰ **残り {i} 分** です。 生存者: {len(self.alive_players)}名")
         
         await asyncio.sleep(60)
         if self.game_running:
-            self.game_running = False
-            await channel.send(f"⌛ **タイムアップ！ ウルフの勝利です！**\n正解のウルフは {self.wolf.mention} でした。")
+            await self.end_game(channel, "time_up")
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        """メンションを検知してチャレンジ判定を行う"""
         if not self.game_running or message.author.bot:
             return
         
-        # プレイヤーが誰かをメンションしたかチェック
-        if message.mentions and message.author in self.players:
-            target = message.mentions[0] # 最初のメンション対象を取得
+        # メンション検知（生存者によるものか確認）
+        if message.mentions and message.author in self.alive_players:
+            target = message.mentions[0]
             
-            # 自分へのメンションは無視
-            if target == message.author:
-                return
-            
-            # プレイヤー以外へのメンションも無視
-            if target not in self.players:
-                return
-
-            # チャレンジ判定開始
-            await self.execute_challenge(message.channel, message.author, target)
+            # 自分以外かつ生存者リストにいる相手へのメンションのみ反応
+            if target != message.author and target in self.alive_players:
+                await self.execute_challenge(message.channel, message.author, target)
 
     async def execute_challenge(self, channel, challenger, target):
-        """判定とミュート処理"""
         role = discord.utils.get(channel.guild.roles, name="muted")
         
         if target == self.wolf:
-            await channel.send(f"✅ **チャレンジ成功！** {target.mention} はウルフでした！村人の勝利です。")
-            punished = target
-            self.game_running = False # 決着
+            await channel.send(f"✅ **チャレンジ成功！** {target.mention} はウルフでした！")
+            await self.end_game(channel, "villager_win")
         else:
-            await channel.send(f"❌ **チャレンジ失敗！** {challenger.mention} は無実の者を疑ったため脱落です。")
-            punished = challenger
+            await channel.send(f"❌ **チャレンジ失敗！** {challenger.mention} は脱落しました。")
+            self.alive_players.remove(challenger)
+            
+            if role:
+                try: await challenger.add_roles(role)
+                except: pass
+            
+            # 勝利判定：生存者が2人（ウルフ1名、村人1名）になったらウルフ勝利
+            if len(self.alive_players) <= 2:
+                await self.end_game(channel, "wolf_win")
+            else:
+                await channel.send(f"生存者は残り {len(self.alive_players)} 名です。")
 
-        # ミュート処理
+    async def end_game(self, channel, result):
+        self.game_running = False
+        
+        if result == "villager_win":
+            msg = "🎉 **村人チームの勝利です！**"
+        else:
+            msg = f"🐺 **ウルフの勝利です！**\n正解は {self.wolf.mention} でした。"
+
+        await channel.send(f"━━━━━━━━━━━━━━\n{msg}\n━━━━━━━━━━━━━━")
+        
+        # 全員のMutedロールを解除
+        role = discord.utils.get(channel.guild.roles, name="muted")
         if role:
-            try:
-                await punished.add_roles(role)
-                await channel.send(f"{punished.mention} を1分間ミュートします。")
-                await asyncio.sleep(60)
-                await punished.remove_roles(role)
-                await channel.send(f"{punished.mention} のミュートを解除しました。")
-            except:
-                pass
-
-# --- UI Components ---
+            for p in self.players:
+                try: await p.remove_roles(role)
+                except: pass
 
 class JoinView(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=60)
         self.cog = cog
-
     @discord.ui.button(label="参加", style=discord.ButtonStyle.green)
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user not in self.cog.players:
@@ -143,7 +147,6 @@ class CheckWordView(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=None)
         self.cog = cog
-
     @discord.ui.button(label="自分のワードを確認", style=discord.ButtonStyle.secondary)
     async def check(self, interaction: discord.Interaction, button: discord.ui.Button):
         word = self.cog.player_words.get(interaction.user.id)
