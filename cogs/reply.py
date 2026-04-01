@@ -21,8 +21,7 @@ class EvolvingChaosAI(commands.Cog):
         
         # ベースとなる人格設定
         self.base_prompt = (
-            "あなたは観測者です。受け取った言葉に対し、短く、"
-            "かつ少しずつ理性を削ぎ落とした独自の解釈を返してください。"
+            "特に指示はありません"
         )
 
     @commands.command(name="oo")
