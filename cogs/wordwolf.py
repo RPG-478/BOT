@@ -32,7 +32,7 @@ class WordWolf(commands.Cog):
             "パン", "ごはん", "うどん", "そば", "餅", "パスタ", "ピザ", "サンドイッチ"
         ]
 
-    @app_commands.command(name="wordwolf", description="ワードウルフを開始（ウルフ自爆ルールあり）")
+    @app_commands.command(name="wordwolf", description="ワードウルフを開始（生存者リスト通知あり）")
     async def wordwolf(self, interaction: discord.Interaction):
         if self.game_running:
             await interaction.response.send_message("既にゲームが進行中です。", ephemeral=True)
@@ -69,8 +69,8 @@ class WordWolf(commands.Cog):
         await interaction.channel.send(
             f"**ゲーム開始！** 参加者: {', '.join([p.display_name for p in self.players])}\n"
             "各自ボタンでワードを確認してください。\n"
-            "⚠️ **【重要】誰かをメンションするとチャレンジになります！**\n"
-            "※村人が失敗：脱落。ウルフが失敗：その場で村人勝利！",
+            "⚠️ **【ルール】メンションでチャレンジ判定！**\n"
+            "村人が失敗：脱落。ウルフが失敗：即敗北。",
             view=check_view
         )
 
@@ -78,10 +78,17 @@ class WordWolf(commands.Cog):
         self.bot.loop.create_task(self.game_timer(interaction.channel))
 
     async def game_timer(self, channel):
+        """1分ごとに残り時間と生存プレイヤーリストを通知"""
         for i in range(4, 0, -1):
             await asyncio.sleep(60)
             if not self.game_running: return
-            await channel.send(f"⏰ **残り {i} 分** です。 生存者: {len(self.alive_players)}名")
+            
+            # 生存者の名前をリスト化
+            alive_names = [p.display_name for p in self.alive_players]
+            await channel.send(
+                f"⏰ **残り {i} 分**\n"
+                f"生存プレイヤー: {', '.join(alive_names)}"
+            )
         
         await asyncio.sleep(60)
         if self.game_running:
@@ -100,14 +107,11 @@ class WordWolf(commands.Cog):
     async def execute_challenge(self, channel, challenger, target):
         role = discord.utils.get(channel.guild.roles, name="muted")
         
-        # 1. ウルフによるチャレンジ（釣り）の場合
         if challenger == self.wolf:
-            # ウルフが村人を指名してしまったら、その瞬間にウルフの負け
             await channel.send(f"💥 **ウルフの自爆！** {challenger.mention} はウルフでしたが、村人 {target.mention} を指名したため敗北しました。")
             await self.end_game(channel, "villager_win")
             return
 
-        # 2. 村人によるチャレンジの場合
         if target == self.wolf:
             await channel.send(f"✅ **チャレンジ成功！** {target.mention} はウルフでした！村人の勝利です。")
             await self.end_game(channel, "villager_win")
@@ -119,11 +123,12 @@ class WordWolf(commands.Cog):
                 try: await challenger.add_roles(role)
                 except: pass
             
-            # 生存者が2人（ウルフ1・村人1）になったらウルフ勝利
             if len(self.alive_players) <= 2:
                 await self.end_game(channel, "wolf_win")
             else:
-                await channel.send(f"生存者は残り {len(self.alive_players)} 名です。")
+                # 脱落後の生存者リストも表示
+                alive_names = [p.display_name for p in self.alive_players]
+                await channel.send(f"生存プレイヤー: {', '.join(alive_names)}")
 
     async def end_game(self, channel, result):
         self.game_running = False
