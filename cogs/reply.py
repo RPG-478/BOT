@@ -67,9 +67,6 @@ class LycosAI(commands.Cog):
         try:
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(None, self._get_groq_response, content)
-            
-            if "NONE" in response.upper():
-                return
 
             async with message.channel.typing():
                 await message.reply(
