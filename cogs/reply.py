@@ -70,7 +70,7 @@ class ChaosAI(commands.Cog):
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": user_text}
             ],
-            temperature=1.2,  # 2.0から少し下げて「出力」を安定化
+            temperature= 0.1,  # 2.0から少し下げて「出力」を安定化
             max_tokens=80,    # 短くすることでエラー率を下げる
             top_p=1.0
         )
