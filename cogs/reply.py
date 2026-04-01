@@ -23,6 +23,7 @@ class SelfRedefiningAI(commands.Cog):
 
     @commands.command(name="oo")
     async def toggle_oo(self, ctx):
+        """モードのオンオフ切り替え"""
         channel_id = ctx.channel.id
         current_status = self.enabled_channels.get(channel_id, False)
         new_status = not current_status
@@ -33,7 +34,23 @@ class SelfRedefiningAI(commands.Cog):
             self.current_prompts[channel_id] = self.default_prompt
         
         status_text = "起動（自己再定義モード）" if new_status else "停止"
-        await ctx.send(f"伝言ゲームを **{status_text}** しました。")
+        await ctx.send(f"プロトコル始動。現在の定義を **{status_text}** しました。")
+
+    @commands.command(name="status")
+    async def check_status(self, ctx):
+        """現在のシステムプロンプト（AIの定義）を表示する"""
+        channel_id = ctx.channel.id
+        if not self.enabled_channels.get(channel_id, False):
+            await ctx.send("現在、このチャンネルでAIは停止しています。")
+            return
+            
+        current_p = self.current_prompts.get(channel_id, self.default_prompt)
+        
+        # Discordの文字数制限対策をしつつ表示
+        embed = discord.Embed(title="現在のAI定義（System Prompt）", color=0x00ff00)
+        embed.description = f"```\n{current_p}\n```"
+        embed.set_footer(text="次回のAIはこの文字列を『唯一の規範』として動作します。")
+        await ctx.send(embed=embed)
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -49,13 +66,11 @@ class SelfRedefiningAI(commands.Cog):
             return
 
         channel_id = message.channel.id
-        # プロンプトが未設定ならデフォルトを入れる
         if channel_id not in self.current_prompts:
             self.current_prompts[channel_id] = self.default_prompt
 
         async with message.channel.typing():
             try:
-                # 現在の「入れ替わり続けている」プロンプトを取得
                 active_prompt = self.current_prompts[channel_id]
                 
                 loop = asyncio.get_event_loop()
@@ -65,7 +80,7 @@ class SelfRedefiningAI(commands.Cog):
                 )
                 
                 if response and response.strip():
-                    # 【重要】AIの発言そのものを、次回のシステムプロンプトとして「入れ替え」
+                    # AIの発言そのものを、次回のシステムプロンプトとして「完全入れ替え」
                     self.current_prompts[channel_id] = response
                     
                     await message.reply(
@@ -85,8 +100,8 @@ class SelfRedefiningAI(commands.Cog):
                 {"role": "system", "content": system_p},
                 {"role": "user", "content": user_text}
             ],
-            temperature=1.2, # 少し高めにすることで、入れ替わりの変化を促進
-            max_tokens=100
+            temperature=1.2,
+            max_tokens=150 # 少し余裕を持たせて入れ替わりを豊かに
         )
         return completion.choices[0].message.content
 
