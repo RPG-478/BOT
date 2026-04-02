@@ -5,7 +5,7 @@ from discord import app_commands
 import asyncio
 import random
 
-class WordWolf(commands.Cog):
+class StarailWordWolf(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.game_running = False
@@ -33,8 +33,8 @@ class WordWolf(commands.Cog):
             "鏡流", "不死途", "飛霄", "ヒアンシー", "ファイノン", "キャストリス", "クラーラ", "彦"
         ]
 
-    @app_commands.command(name="wordwolf", description="ワードウルフを開始（全体で3回までチャレンジ可能）")
-    async def wordwolf(self, interaction: discord.Interaction):
+    @app_commands.command(name="Starailwordwolf", description="ワードウルフを開始（全体で3回までチャレンジ可能）")
+    async def Starailwordwolf(self, interaction: discord.Interaction):
         if self.game_running:
             await interaction.response.send_message("既にゲームが進行中です。", ephemeral=True)
             return
@@ -177,4 +177,4 @@ class CheckWordView(discord.ui.View):
             await interaction.response.send_message("プレイヤーではありません。", ephemeral=True)
 
 async def setup(bot):
-    await bot.add_cog(WordWolf(bot))
+    await bot.add_cog(StarailWordWolf(bot))
