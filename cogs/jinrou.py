@@ -109,7 +109,7 @@ class JinrouCog(commands.Cog):
         await interaction.channel.send(f"ゲーム開始！役職一覧: {roles_list}", view=RoleCheckView(self.game, self))
 
         try:
-            await self.run_discussion(minutes=2, title="特別ディスカッション")
+            await self.run_discussion(minutes=3, title="特別ディスカッション")
             while self.game.is_running:
                 await self.run_night_phase()
                 if not self.game.is_running or await self.check_victory(): break
