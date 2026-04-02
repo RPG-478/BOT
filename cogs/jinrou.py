@@ -127,7 +127,7 @@ class JinrouCog(commands.Cog):
             f"【ゲーム開始】参加プレイヤー: {players_mentions}\n"
             "今回の役職一覧: 村人 / 人狼 / 騎士 / てるてる坊主 / 狂人 / 霊媒師 / 占い師\n"
             "役職確認ボタンを押して、自分の役職を確認してください。",
-            view=RoleCheckView(self.game),
+            view=RoleCheckView(self.game, self),
         )
 
         try:
@@ -399,63 +399,36 @@ class RecruitView(discord.ui.View):
 # ------------------------------------------------------
 
 class RoleCheckView(discord.ui.View):
-
-    def __init__(self, game: JinrouGame):
-        super().__init__(timeout=600)  # 10 分間有効
+    def __init__(self, game: JinrouGame, cog: JinrouCog): # cogを追加
+        super().__init__(timeout=None)
         self.game = game
-
-    async def on_error(
-        self,
-        interaction: discord.Interaction,
-        error: Exception,
-        item: discord.ui.Item,
-    ) -> None:
-        """コールバック内の例外を握り潰さず必ずユーザーに通知する。"""
-        msg = f"役職確認中にエラーが発生しました: `{error}`"
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.send_message(msg, ephemeral=True)
-            else:
-                await interaction.followup.send(msg, ephemeral=True)
-        except Exception:
-            pass
+        self.cog = cog # 保持しておく
 
     @discord.ui.button(label="役職を確認する", style=discord.ButtonStyle.primary)
-    async def check_role(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def check_role(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
         player_id = interaction.user.id
-
+        
         if player_id not in self.game.roles:
-            await interaction.response.send_message(
-                "あなたはゲームに参加していません。", ephemeral=True
-            )
+            await interaction.followup.send("参加していません。", ephemeral=True)
             return
 
         role = self.game.roles[player_id]
-        wolves_str = self.game.get_wolves_names()
+        
+        # 【修正箇所】 self.game ではなく self.cog から呼び出す
+        wolves = self.cog.get_wolves_names() 
 
-        descriptions: dict[str, str] = {
-            "村人":
-                "【村人陣営】特殊な能力はありません。議論で人狼を見つけ出しましょう。",
-            "人狼":
-                f"【人狼陣営】夜に一人を襲撃できます。仲間（人狼）は「{wolves_str}」です。",
-            "狂人":
-                f"【人狼陣営】人狼の味方をする人間です。人狼は「{wolves_str}」です。",
-            "てるてる坊主":
-                "【第3陣営】自分が追放されると単独勝利です！議論を惑わしましょう。",
-            "占い師":
-                "【村人陣営】毎晩、一人を選んで人狼か人間かを知ることができます。",
-            "霊媒師":
-                "【村人陣営】毎晩、前日に追放された人が人狼だったかを知ることができます。",
-            "騎士":
-                "【村人陣営】毎晩、一人を守ることができます。自分自身は守れません。",
+        desc = {
+            "村人": "【村人陣営】能力なし。議論で人狼を見つけましょう。",
+            "人狼": f"【人狼陣営】夜に襲撃可能。仲間: {wolves}",
+            "狂人": f"【人狼陣営】人狼の味方。人狼: {wolves}",
+            "てるてる坊主": "【第3陣営】追放されると勝利！",
+            "占い師": "【村人陣営】毎晩、一人を占えます。",
+            "霊媒師": "【村人陣営】追放された人の正体を知れます。",
+            "騎士": "【村人陣営】毎晩、一人を守れます。",
         }
+        await interaction.followup.send(f"あなたの役職は **{role}** です。\n{desc.get(role, '')}", ephemeral=True)
 
-        await interaction.response.send_message(
-            f"あなたの役職は **{role}** です。\n{descriptions.get(role, '')}",
-            ephemeral=True,
-        )
 
 
 # ------------------------------------------------------
