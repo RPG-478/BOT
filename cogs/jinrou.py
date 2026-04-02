@@ -159,7 +159,10 @@ class JinrouCog(commands.Cog):
             await asyncio.sleep(1)
             timer += 1
 
-        await msg.delete()
+        try:
+            await msg.delete()
+        except:
+            pass
         await self.process_night_results()
 
     # 夜のアクション結果の処理
@@ -207,7 +210,10 @@ class JinrouCog(commands.Cog):
 
         self.game.voted_count = {}
         await asyncio.sleep(60)  # 投票時間1分
-        await msg.delete()
+        try:
+            await msg.delete()
+        except:
+            pass
 
         if not self.game.voted_count:
             await self.game.game_channel.send(
@@ -321,7 +327,7 @@ class RecruitView(discord.ui.View):
             )
 
 
-# 役職確認ビュー（狂人や人狼に仲間を通知）
+# 役職確認ビュー（エラー対策: defer追加）
 class RoleCheckView(discord.ui.View):
 
     def __init__(self, game):
@@ -334,9 +340,12 @@ class RoleCheckView(discord.ui.View):
     async def check_role(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
+        # 応答を保留してエラーを防止
+        await interaction.response.defer(ephemeral=True)
+
         player_id = interaction.user.id
         if player_id not in self.game.roles:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "あなたはゲームに参加していません。", ephemeral=True
             )
             return
@@ -354,7 +363,7 @@ class RoleCheckView(discord.ui.View):
             "騎士": "【村人陣営】毎晩、一人を守ることができます。自分自身は守れません。",
         }
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"あなたの役職は **{role}** です。\n{descriptions.get(role, '')}",
             ephemeral=True,
         )
@@ -411,15 +420,16 @@ class NightActionView(discord.ui.View):
                 "襲撃する対象を選んでください：", view=view, ephemeral=True
             )
         elif role == "霊媒師":
+            await interaction.response.defer(ephemeral=True)
             if self.game.last_executed:
                 executed_role = self.game.roles.get(self.game.last_executed)
                 is_wolf = "人狼" if executed_role == "人狼" else "人間"
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     f"昨日追放された人は 【{is_wolf}】 でした。",
                     ephemeral=True,
                 )
             else:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "昨日追放された人はいません。", ephemeral=True
                 )
         else:
@@ -432,7 +442,7 @@ class NightActionView(discord.ui.View):
 class ActionSelectView(discord.ui.View):
 
     def __init__(self, game, options, action_type):
-        super().__init__(timeout=30)
+        super().__init__(timeout=None)
         self.game = game
         self.action_type = action_type
         select = discord.ui.Select(
@@ -443,18 +453,19 @@ class ActionSelectView(discord.ui.View):
         self.add_item(select)
 
     async def select_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         target_id = int(self.children[0].values[0])
         self.game.night_actions[interaction.user.id] = target_id
 
         if self.action_type == "占い":
             target_role = self.game.roles.get(target_id)
             is_wolf = "人狼" if target_role == "人狼" else "人間"
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"占いの結果、そのプレイヤーは 【{is_wolf}】 です。",
                 ephemeral=True,
             )
         else:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "対象を選択しました。", ephemeral=True
             )
         self.stop()
@@ -464,7 +475,7 @@ class ActionSelectView(discord.ui.View):
 class PublicVoteView(discord.ui.View):
 
     def __init__(self, game, options):
-        super().__init__(timeout=60)
+        super().__init__(timeout=None)
         self.game = game
         select = discord.ui.Select(
             placeholder="投票先を選んでください", options=options
@@ -473,6 +484,7 @@ class PublicVoteView(discord.ui.View):
         self.add_item(select)
 
     async def select_callback(self, interaction: discord.Interaction):
+        # 公開投票なので defer は不要（即レスポンス）
         target_val = self.children[0].values[0]
         self.game.voted_count[interaction.user.id] = target_val
         await interaction.response.send_message(
