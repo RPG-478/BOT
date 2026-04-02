@@ -5,7 +5,7 @@ from discord import app_commands
 import asyncio
 import random
 
-class StarailWordWolf(commands.Cog):
+class StarailWordWolfGame(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.game_running = False
@@ -15,7 +15,7 @@ class StarailWordWolf(commands.Cog):
         self.player_words = {}
         self.remaining_challenges = 3  # チャレンジ残り回数
         
-        # 100語以上のワードリスト
+        # 100語以上のワードリスト（スターレイル版を維持）
         self.word_pool = [
             "雪衣", "霊砂", "椒丘", "トパーズ", "愉悦", "調和", "ペラ", "ルカ",
             "青雀", "昼夜の狭間を駆ける鷹", "成り上がりチャンピオン", "星の如く輝く天才", "泥の如き眠り", "存護", "均衡", "貪欲",
@@ -33,8 +33,8 @@ class StarailWordWolf(commands.Cog):
             "鏡流", "不死途", "飛霄", "ヒアンシー", "ファイノン", "キャストリス", "クラーラ", "彦"
         ]
 
-    @app_commands.command(name="Starailwordwolf", description="ワードウルフを開始（全体で3回までチャレンジ可能）")
-    async def Starailwordwolf(self, interaction: discord.Interaction):
+    @app_commands.command(name="starail_wolf", description="スターレイル版ワードウルフを開始（全体で3回までチャレンジ可能）")
+    async def starail_wolf(self, interaction: discord.Interaction):
         if self.game_running:
             await interaction.response.send_message("既にゲームが進行中です。", ephemeral=True)
             return
@@ -47,7 +47,7 @@ class StarailWordWolf(commands.Cog):
         
         join_view = JoinView(self)
         await interaction.response.send_message(
-            "🐺 **ワードウルフ参加者募集中！**\n1分以内に【参加】ボタンを押してください。", 
+            "🐺 **【スターレイル版】ワードウルフ参加者募集中！**\n1分以内に【参加】ボタンを押してください。", 
             view=join_view
         )
         
@@ -151,7 +151,6 @@ class StarailWordWolf(commands.Cog):
                 try: await p.remove_roles(role)
                 except: pass
 
-# UI Components は変更なし
 class JoinView(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=60)
@@ -177,4 +176,4 @@ class CheckWordView(discord.ui.View):
             await interaction.response.send_message("プレイヤーではありません。", ephemeral=True)
 
 async def setup(bot):
-    await bot.add_cog(StarailWordWolf(bot))
+    await bot.add_cog(StarailWordWolfGame(bot))
