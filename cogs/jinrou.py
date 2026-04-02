@@ -64,7 +64,7 @@ class JinrouCog(commands.Cog):
         pool = ["一般通過あごむに", "占い師"]
         pool += ["人狼"] * num_wolves
         
-        pro_roles = ["てるてる坊主", "サイコキラー", "あごむに破道砲", "デカ狼", "パン屋"]
+        pro_roles = ["ハゲ", "サイコキラー", "あごむに破道砲", "デカ狼", "パン屋"]
         base_roles = ["霊媒師", "騎士", "狂人"]
         
         while len(pool) < num:
@@ -243,8 +243,8 @@ class JinrouCog(commands.Cog):
             self.game.last_executed = int(target_id)
             self.game.alive_players = [p for p in self.game.alive_players if p.id != int(target_id)]
             await self.mute_member(target_m)
-            if self.game.roles.get(int(target_id)) == "てるてる坊主":
-                await self.game.game_channel.send("てるてる坊主が追放された！単独勝利！")
+            if self.game.roles.get(int(target_id)) == "ハゲ":
+                await self.game.game_channel.send("ハゲが追放された！単独勝利！")
                 self.game.is_running = False
 
 # ======================================================
@@ -332,7 +332,7 @@ class RoleCheckView(discord.ui.View):
         descs = {
             "一般通過あごむに": "市民。", "占い師": "毎晩一人を占い、人狼か知る。", "霊媒師": "昨日追放された者の正体を知る。",
             "人狼": f"仲間: {wolves}", "騎士": "毎晩一人を守る。", "狂人": "人狼の味方。",
-            "てるてる坊主": "追放されたら勝利。", "サイコキラー": "自分に関与した者を返り討ちにします。",
+            "ハゲ": "追放されたら勝利。", "サイコキラー": "自分に関与した者を返り討ちにします。",
             "あごむに破道砲": "一度だけ自分と道連れに数人をキルできる。", "デカ狼": "占われてもバレない人狼。襲撃も可能。",
             "パン屋": "生きている間、朝にパンを配ります。"
         }
