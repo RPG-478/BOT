@@ -64,7 +64,7 @@ class JinrouCog(commands.Cog):
         pool = ["一般通過あごむに", "占い師"]
         pool += ["人狼"] * num_wolves
         
-        pro_roles = ["ハゲ", "サイコキラー", "あごむに破道砲", "デカ狼", "パン屋"]
+        pro_roles = ["ハゲ", "メンヘラ", "あごむに破道砲", "デカ狼", "パン屋"]
         base_roles = ["霊媒師", "騎士", "狂人"]
         
         while len(pool) < num:
@@ -161,14 +161,14 @@ class JinrouCog(commands.Cog):
         dead_ids = set()
         wolves_target = None
         knight_target = None
-        psycho_killer_ids = [p.id for p in self.game.alive_players if self.game.roles.get(p.id) == "サイコキラー"]
+        psycho_killer_ids = [p.id for p in self.game.alive_players if self.game.roles.get(p.id) == "メンヘラ"]
 
         for p_id, t_id in self.game.night_actions.items():
             role = self.game.roles.get(p_id)
             
             if t_id in psycho_killer_ids:
                 dead_ids.add(p_id)
-                await self.game.game_channel.send(f"【悲報】誰かがサイコキラーに返り討ちにされました...")
+                await self.game.game_channel.send(f"【悲報】誰かがメンヘラに返り討ちにされました...")
 
             if role in ["人狼", "デカ狼"]: wolves_target = t_id
             elif role == "騎士": knight_target = t_id
