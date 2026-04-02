@@ -331,7 +331,7 @@ class RecruitView(discord.ui.View):
 class RoleCheckView(discord.ui.View):
 
     def __init__(self, game):
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)  # timeout=None → 5分に変更
         self.game = game
 
     @discord.ui.button(
@@ -340,7 +340,6 @@ class RoleCheckView(discord.ui.View):
     async def check_role(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
-        # 応答を保留してエラーを防止
         await interaction.response.defer(ephemeral=True)
 
         player_id = interaction.user.id
@@ -367,6 +366,7 @@ class RoleCheckView(discord.ui.View):
             f"あなたの役職は **{role}** です。\n{descriptions.get(role, '')}",
             ephemeral=True,
         )
+
 
 
 # 夜のアクション受付ビュー
