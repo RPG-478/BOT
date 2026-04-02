@@ -5,7 +5,7 @@ from discord import app_commands
 import asyncio
 import random
 
-class WordWolf(commands.Cog):
+class CustomWordWolf(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.game_running = False
@@ -177,4 +177,4 @@ class CheckWordView(discord.ui.View):
             await interaction.response.send_message("プレイヤーではありません。", ephemeral=True)
 
 async def setup(bot):
-    await bot.add_cog(WordWolf(bot))
+    await bot.add_cog(CustomWordWolf(bot))
