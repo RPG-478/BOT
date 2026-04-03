@@ -86,6 +86,7 @@ class JinrouCog(commands.Cog):
         random.shuffle(pool)
         for i, p in enumerate(self.game.players):
             self.game.roles[p.id] = pool[i]
+
     @app_commands.command(name="jinrou_help", description="役職の説明を確認します")
     async def jinrou_help(self, interaction: discord.Interaction):
         help_text = (
@@ -111,15 +112,16 @@ class JinrouCog(commands.Cog):
         await interaction.response.send_message(help_text, ephemeral=True)
 
     @app_commands.command(name="jinrou", description="人狼ゲームを開始します")
-    async def jinrou(self, interaction: discord.Interaction):
+    @app_commands.describe(wait_minutes="募集期間を分単位で指定してください（デフォルト1分）")
+    async def jinrou(self, interaction: discord.Interaction, wait_minutes: int = 1):
         if self.game.is_running:
             return await interaction.response.send_message("進行中です", ephemeral=True)
 
         self.game = JinrouGame()
         self.game.is_running = True
         self.game.game_channel = interaction.channel
-        await interaction.response.send_message("募集開始(1分)", view=RecruitView(self.game))
-        await asyncio.sleep(60)
+        await interaction.response.send_message(f"募集開始({wait_minutes}分)", view=RecruitView(self.game))
+        await asyncio.sleep(wait_minutes * 60)
 
         if len(self.game.players) < 5:
             self.game.is_running = False
@@ -128,17 +130,21 @@ class JinrouCog(commands.Cog):
         self.game.alive_players = self.game.players.copy()
         self.assign_roles()
         
-        # タフむにを偽装表示
+        # 参加プレイヤー全員をメンション
+        mentions = " ".join([p.mention for p in self.game.players])
+        
+        # 役職一覧の表示偽装
         roles_for_display = []
         for r in self.game.roles.values():
-            if r == "タフむに": roles_for_display.append("一般通過あごむに")
-            else: roles_for_display.append(r)
-        roles_for_display = []
-        for r in self.game.roles.values():
-            if r == "入狼": roles_for_display.append("人狼")
-            else: roles_for_display.append(r)
+            if r == "タフむに":
+                roles_for_display.append("一般通過あごむに")
+            elif r == "入狼":
+                roles_for_display.append("人狼")
+            else:
+                roles_for_display.append(r)
+        
         roles_list = " / ".join(set(roles_for_display))
-        await interaction.channel.send(f"ゲーム開始！役職一覧: {roles_list}", view=RoleCheckView(self.game, self))
+        await interaction.channel.send(f"{mentions}\nゲーム開始！役職一覧: {roles_list}", view=RoleCheckView(self.game, self))
 
         try:
             await self.run_discussion(minutes=2, title="特別ディスカッション")
@@ -303,7 +309,7 @@ class JinrouCog(commands.Cog):
         if target_m:
             await self.game.game_channel.send(f"投票の結果、{target_m.display_name} さんが追放されました。")
             
-            # タフむにの反撃ロジックは削除しました
+            # タフむにの追放時反撃ロジックは削除済み
 
             self.game.last_executed = int(target_id)
             self.game.alive_players = [p for p in self.game.alive_players if p.id != int(target_id)]
@@ -381,7 +387,7 @@ class ActionSelectView(discord.ui.View):
             self.game.night_actions[interaction.user.id] = t_id
             if self.atype == "占い":
                 r = self.game.roles.get(t_id)
-                # 入狼、人狼、ワンころは人狼と判定される。デカ狼は人間と判定される。
+                # 入狼、人狼、ワンころは人狼と判定。デカ狼は人間と判定。
                 res = "人狼" if r in ["人狼", "入狼", "ワンころ"] else "人間"
                 await interaction.response.send_message(f"占いの結果、対象は【{res}】です。", ephemeral=True)
             else:
@@ -404,19 +410,24 @@ class RoleCheckView(discord.ui.View):
     @discord.ui.button(label="役職確認", style=discord.ButtonStyle.primary)
     async def check(self, interaction, button):
         real_role = self.game.roles.get(interaction.user.id)
-        # タフむにの場合は表示を「一般通過あごむに」に偽装
-        display_role = "一般通過あごむに" if real_role == "タフむに" else real_role
-        display_role = "人狼" if real_role == "入狼" else real_role
+        
+        # 役職表示の偽装
+        display_role = real_role
+        if real_role == "タフむに":
+            display_role = "一般通過あごむに"
+        elif real_role == "入狼":
+            display_role = "人狼"
+            
         wolves = self.cog.get_wolves_names()
         descs = {
             "一般通過あごむに": "一般通過あごむに。空気薄い。", "占い師": "毎晩1人を占える、金はないのでビー玉で占っている。", "霊媒師": "昨日追放された者の正体を知る。",
-            "人狼": f"仲間: {wolves}", "騎士": "毎晩一人をつまようじで守る。", "狂人": "人狼の味方。無能。",
+            "人狼": f"仲間: {wolves}", "騎士": "毎晩一人をつまようじで守る。", "狂人": "人狼の味方. 無能。",
             "ハゲ": "追放されたら勝てる。髪の毛が観測できないバグが発生している。", "メンヘラ": "自分に関与した者を殺す。",
             "あごむに破道砲": "自らを弾にして1人を狙い撃ちできるが、誤発してもう1人殺す", "デカ狼": "占い師に賄賂を払って白判定にする。デカイだけである。",
             "パン屋": "生きているうちは朝にパンを配る。ワンチャン死んでても配る",
             "マサイ族": "視力がいい。だがこのゲームにおいて視力は関係ない。",
             "入狼": "生まれた名前が悪かったな！！ビー玉で占ってるやつに人狼と誤解される村陣営。",
-            "ワンころ": "最初の夜に飼い主を決める。飼い主がいないと人狼になる第三陣営。",
+            "ワンころ": "最初の夜に飼い主を決める。飼い主がいれば村、いなければ人狼になる。占いは「人狼」。",
             "タフむに": "殺された時に殺し返す一般通過あごむに。"
         }
         await interaction.response.send_message(f"役職: {display_role}\n{descs.get(real_role, '詳細なし')}", ephemeral=True)
