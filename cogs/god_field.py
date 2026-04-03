@@ -31,7 +31,8 @@ TEST_CARDS = [
     Card("パンチ", "ATTACK", "NONE", 3, price=1, description="威力3/無属性"),
     Card("革の帽子", "DEFENSE", "NONE", 1, price=1, description="防御1/無属性"),
     Card("革の服", "DEFENSE", "NONE", 2, price=2, description="防御2/無属性"),
-    Card("アイアンガントレット", "DEFENSE", "NONE", 3, price=3, description="防御3/無属性")
+    Card("アイアンガントレット", "DEFENSE", "NONE", 3, price=3, description="防御3/無属性"),
+    Card("アイアンシールド", "DEFENCE", "NONE", 4, price=4, description="防御4/無属性"),
 ]
 
 # --- UI コンポーネント ---
