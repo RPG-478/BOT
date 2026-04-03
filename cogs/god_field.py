@@ -15,7 +15,7 @@ class Card:
         self.price = price
         self.description = description
 
-# アイテムセット (修正・追加分)
+# アイテムセット
 TEST_CARDS = [
     Card("銅の棍棒", "ATTACK", "NONE", 1, price=1, description="威力1/無属性"),
     Card("銀の棍棒", "ATTACK", "NONE", 1, price=10, description="威力1/無属性"),
@@ -42,7 +42,7 @@ TEST_CARDS = [
     Card("スーパーミラー", "DEFENSE", "REFLECT", 0, price=10, description="全てを跳ね返す"),
     Card("棘ベルト", "ATTACK", "NONE", 2, price=3, description="攻2/防4"),
     Card("鎖ガマ", "ATTACK", "NONE", 5, price=2, description="威力5"),
-    Card("硬いつち", "ATTACK", "NONE", 6, price=3, description="威力6"),
+    Card("硬いつつ", "ATTACK", "NONE", 6, price=3, description="威力6"),
     Card("打撃の鉄板", "ATTACK", "NONE", 5, price=3, description="攻5/防7"),
     Card("エルボーサック", "ATTACK", "NONE", 6, price=3, description="攻6/防3"),
     Card("なぎなたクラシック", "ATTACK", "NONE", 7, price=3, description="威力7"),
@@ -79,7 +79,6 @@ class ActionSelect(discord.ui.Select):
         options = []
         for i, card in enumerate(player["hand"]):
             tag = f"【{card.category}】"
-            # 視認性向上のため詳細を表示
             desc = f"{card.description}"
             options.append(discord.SelectOption(label=f"{tag}{card.name}", value=str(i), description=desc))
         if not options: options.append(discord.SelectOption(label="祈る", value="pray"))
@@ -113,7 +112,6 @@ class ActionSelect(discord.ui.Select):
             return
 
         if card.category in ["ATTACK", "MAGIC"]:
-            # 鬼のくつ等はATTACKカテゴリとして扱い、ここで対象選択へ
             await interaction.response.edit_message(content=f"{card.name}の攻撃対象を選択：", view=TargetSelectView(self.player, card, idx, self.game_state, self.channel, self.interaction_id, mode="ATTACK"))
         else:
             await interaction.response.send_message("防御神器は攻撃された時に使用します。", ephemeral=True)
@@ -122,7 +120,6 @@ class SellSelectView(discord.ui.View):
     def __init__(self, player, sell_card_idx, game_state, channel, interaction_id):
         super().__init__(timeout=60)
         self.player, self.sell_card_idx, self.game_state, self.channel, self.interaction_id = player, sell_card_idx, game_state, channel, interaction_id
-        # 「売る」カード自体以外から選択
         options = [discord.SelectOption(label=f"{c.name}({c.price}円)", value=str(i)) for i, c in enumerate(player["hand"]) if i != sell_card_idx]
         if options:
             sel = discord.ui.Select(placeholder="売りつける神器を選択", options=options)
@@ -171,7 +168,6 @@ class TargetSelectView(discord.ui.View):
             target = self.game_state["players"][tid]
             if self.mode == "ATTACK":
                 self.game_state["active_interaction_id"] = None
-                # 魔法系(MAGIC)は一度使うと以後何度でも選択可能（手札から消えない）
                 if self.card.category != "MAGIC":
                     self.attacker["hand"].pop(self.card_idx); self.attacker["hand"].append(random.choice(TEST_CARDS))
                 await interaction.response.edit_message(content=f"{target['name']}への攻撃を確定しました。", view=None)
@@ -187,7 +183,6 @@ class TargetSelectView(discord.ui.View):
                 else: target["hp"] -= (p - target["money"] - target["mp"]); target["money"] = target["mp"] = 0
                 target["hp"] = max(0, target["hp"])
                 self.attacker["money"] += p
-                # 売った神器と、売るカード本体を消費
                 self.attacker["hand"].pop(self.card_idx)
                 actual_tool_idx = self.sell_tool_idx if self.sell_tool_idx < len(self.attacker["hand"]) else 0
                 self.attacker["hand"].pop(actual_tool_idx)
@@ -222,15 +217,14 @@ class DefensePromptView(discord.ui.View):
     async def open_def(self, i, btn):
         if i.user.id != self.tid or self.resolved: return
         p = self.gs["players"][self.tid]
-        # 防御だけでなく武器でも防御可能。鬼のくつのようなATTACK属性でも防御値があれば選択可能。
-        opts = [discord.SelectOption(label="無防備", value="none")] + [discord.SelectOption(label=f"【防御】{c.name}(防:{c.value if hasattr(c, 'value') else 0})", value=str(idx)) for idx, c in enumerate(p["hand"]) if c.category in ["DEFENSE", "ATTACK"]]
+        # バグ修正：武器(ATTACK)での防御を禁止し、DEFENSEカテゴリのみを選択肢にする。
+        opts = [discord.SelectOption(label="無防備", value="none")] + [discord.SelectOption(label=f"【防御】{c.name}(防:{c.value})", value=str(idx)) for idx, c in enumerate(p["hand"]) if c.category == "DEFENSE"]
         v = discord.ui.View(); sel = discord.ui.Select(placeholder="複数選択可能", options=opts, min_values=1, max_values=len(opts))
         async def cb(inter: discord.Interaction):
             if self.resolved: return
             self.resolved = True
             dc = []
             if "none" not in sel.values:
-                # 逆順にpopしてインデックスずれを防ぐ
                 for idx in sorted([int(x) for x in sel.values], reverse=True):
                     card = p["hand"].pop(idx)
                     dc.append(card)
@@ -270,7 +264,6 @@ class GodField(commands.Cog):
         v = JoinView(timeout=wait_time); await ctx.send("ゴッドフィールド：参加者募集中...", view=v)
         await asyncio.sleep(wait_time)
         if len(v.joined_users) < 2: return await ctx.send("人数不足のため中止します。")
-        # 初期HPは40以上(40)に設定
         ps = {u.id: {"id": u.id, "name": u.display_name, "hp": 40, "mp": 20, "hand": random.choices(TEST_CARDS, k=8), "money": 10} for u in v.joined_users}
         self.games[ctx.channel.id] = {"players": ps, "turn_order": list(ps.keys()), "current_index": 0, "active_interaction_id": None, "cog": self, "temp_msgs": []}
         await self.send_turn_panel(ctx.channel)
@@ -278,7 +271,6 @@ class GodField(commands.Cog):
     async def send_turn_panel(self, ch):
         if ch.id not in self.games: return
         g = self.games[ch.id]
-        # 使用済みのパネルやログを削除
         for m in g["temp_msgs"]:
             try: await m.delete()
             except: pass
@@ -302,20 +294,37 @@ class GodField(commands.Cog):
 
     async def resolve_damage(self, ch, a, t, atk, dfs):
         dmg = atk.value; g = self.games[ch.id]
+        # 特殊処理: 跳ね返し
         for d in dfs:
+            if d.attr == "REFLECT" or d.name == "スーパーミラー":
+                await self.log(ch, "【防御】神器を跳ね返しました！")
+                return await self.trigger_defense_phase(ch, t, a["id"], atk)
             if d.name == "乱弾武剣" and atk.attr in ["NONE", "PHYSICAL"]:
                 nt = random.choice([p for p in g["players"].values() if p["hp"] > 0])
                 await self.log(ch, f"【防御】乱弾武剣で弾きました！ ➔ 次の標的：{nt['name']}")
                 return await self.trigger_defense_phase(ch, a, nt["id"], atk, skip=(nt["id"]==t["id"]))
-            if d.attr == "REFLECT" or d.name == "スーパーミラー":
-                await self.log(ch, "【防御】神器を跳ね返しました！")
-                return await self.trigger_defense_phase(ch, t, a["id"], atk)
-        # 属性相性計算（簡易）
-        td = sum([d.value for d in dfs if not (atk.attr != "NONE" and hasattr(d, 'attr') and d.attr == "PHYSICAL")])
+
+        # バグ修正：属性付き攻撃は、無属性防御では防げないロジック
+        td = 0
+        for d in dfs:
+            # 攻撃が無属性(NONE)の場合、全ての防御値が有効
+            if atk.attr == "NONE":
+                td += d.value
+            # 攻撃に属性がある場合
+            else:
+                # 防具の属性が攻撃属性と一致する場合のみ軽減
+                if d.attr == atk.attr:
+                    td += d.value
+                else:
+                    await self.log(ch, f"【無効】属性不一致：{d.name}では{atk.attr}属性を防げません！")
+
         dmg = max(0, dmg - td)
-        # 特殊アイテム：ゴーストソード
-        if atk.name == "ゴーストソード": a["hp"] += dmg; await self.log(ch, f"【吸収】{dmg}回復しました。")
-        t["hp"] = max(0, t["hp"] - dmg); await self.log(ch, f"【結果】{t['name']}に{dmg}ダメージを与えました。(HP:{t['hp']})")
+        if atk.name == "ゴーストソード": 
+            a["hp"] += dmg
+            await self.log(ch, f"【吸収】{dmg}回復しました。")
+        
+        t["hp"] = max(0, t["hp"] - dmg)
+        await self.log(ch, f"【結果】{t['name']}に{dmg}ダメージを与えました。(HP:{t['hp']})")
         if t["hp"] <= 0: await self.log(ch, f"【昇天】{t['name']}が力尽きました。")
         await self.process_turn_end(ch)
 
