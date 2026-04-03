@@ -406,7 +406,7 @@ class RoleCheckView(discord.ui.View):
         real_role = self.game.roles.get(interaction.user.id)
         # タフむにの場合は表示を「一般通過あごむに」に偽装
         display_role = "一般通過あごむに" if real_role == "タフむに" else real_role
-        
+        display_role = "人狼" if real_role == "入狼" else real_role
         wolves = self.cog.get_wolves_names()
         descs = {
             "一般通過あごむに": "一般通過あごむに。空気薄い。", "占い師": "毎晩1人を占える、金はないのでビー玉で占っている。", "霊媒師": "昨日追放された者の正体を知る。",
