@@ -120,7 +120,11 @@ class JinrouCog(commands.Cog):
         self.game = JinrouGame()
         self.game.is_running = True
         self.game.game_channel = interaction.channel
-        await interaction.response.send_message(f"募集開始({wait_minutes}分)", view=RecruitView(self.game))
+        
+        # 募集Viewの生成。タイムアウトを指定分に合わせる
+        view = RecruitView(self.game, timeout=wait_minutes * 60)
+        await interaction.response.send_message(f"募集開始({wait_minutes}分)", view=view)
+        
         await asyncio.sleep(wait_minutes * 60)
 
         if len(self.game.players) < 5:
@@ -309,8 +313,6 @@ class JinrouCog(commands.Cog):
         if target_m:
             await self.game.game_channel.send(f"投票の結果、{target_m.display_name} さんが追放されました。")
             
-            # タフむにの追放時反撃ロジックは削除済み
-
             self.game.last_executed = int(target_id)
             self.game.alive_players = [p for p in self.game.alive_players if p.id != int(target_id)]
             await self.mute_member(target_m)
@@ -387,16 +389,16 @@ class ActionSelectView(discord.ui.View):
             self.game.night_actions[interaction.user.id] = t_id
             if self.atype == "占い":
                 r = self.game.roles.get(t_id)
-                # 入狼、人狼、ワンころは人狼と判定。デカ狼は人間と判定。
                 res = "人狼" if r in ["人狼", "入狼", "ワンころ"] else "人間"
                 await interaction.response.send_message(f"占いの結果、対象は【{res}】です。", ephemeral=True)
             else:
                 await interaction.response.send_message("完了。", ephemeral=True)
 
 class RecruitView(discord.ui.View):
-    def __init__(self, game):
-        super().__init__(timeout=60)
+    def __init__(self, game, timeout: int):
+        super().__init__(timeout=timeout)
         self.game = game
+        
     @discord.ui.button(label="参加する", style=discord.ButtonStyle.success)
     async def join(self, interaction, button):
         if interaction.user not in self.game.players:
@@ -407,11 +409,11 @@ class RoleCheckView(discord.ui.View):
     def __init__(self, game, cog):
         super().__init__(timeout=None)
         self.game, self.cog = game, cog
+        
     @discord.ui.button(label="役職確認", style=discord.ButtonStyle.primary)
     async def check(self, interaction, button):
         real_role = self.game.roles.get(interaction.user.id)
         
-        # 役職表示の偽装
         display_role = real_role
         if real_role == "タフむに":
             display_role = "一般通過あごむに"
@@ -421,7 +423,7 @@ class RoleCheckView(discord.ui.View):
         wolves = self.cog.get_wolves_names()
         descs = {
             "一般通過あごむに": "一般通過あごむに。空気薄い。", "占い師": "毎晩1人を占える、金はないのでビー玉で占っている。", "霊媒師": "昨日追放された者の正体を知る。",
-            "人狼": f"仲間: {wolves}", "騎士": "毎晩一人をつまようじで守る。", "狂人": "人狼の味方. 無能。",
+            "人狼": f"仲間: {wolves}", "騎士": "毎晩一人をつまようじで守る。", "狂人": "人狼の味方。無能。",
             "ハゲ": "追放されたら勝てる。髪の毛が観測できないバグが発生している。", "メンヘラ": "自分に関与した者を殺す。",
             "あごむに破道砲": "自らを弾にして1人を狙い撃ちできるが、誤発してもう1人殺す", "デカ狼": "占い師に賄賂を払って白判定にする。デカイだけである。",
             "パン屋": "生きているうちは朝にパンを配る。ワンチャン死んでても配る",
@@ -448,4 +450,3 @@ class PublicVoteView(discord.ui.View):
 
 async def setup(bot):
     await bot.add_cog(JinrouCog(bot))
-
