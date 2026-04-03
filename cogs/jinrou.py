@@ -86,6 +86,30 @@ class JinrouCog(commands.Cog):
         random.shuffle(pool)
         for i, p in enumerate(self.game.players):
             self.game.roles[p.id] = pool[i]
+    @app_commands.command(name="jinrou_help", description="人狼ゲームの役職一覧と説明を表示します")
+    async def jinrou_help(self, interaction: discord.Interaction):
+        help_text = (
+            "### 🛡️ 村人陣営\n"
+            "**・一般通過あごむに**: 何の能力もない一般人。空気。\n"
+            "**・占い師**: 毎晩1人を占い「人狼」か「人間」かを知る。ビー玉使用。\n"
+            "**・霊媒師**: 昨日追放された人が「人狼」か「人間」かを知る。\n"
+            "**・騎士**: 毎晩1人をつまようじで守る（自分以外）。\n"
+            "**・パン屋**: 生きている間、毎朝パンを届けて生存を知らせる。\n"
+            "**・マサイ族**: 視力がいい。ゲーム上は特に意味はない。\n"
+            "**・入狼**: 占われると「人狼」と判定されるが、心は村人。\n"
+            "**・タフむに**: 殺された時に殺し返す一般通過あごむに（表示はあごむに）。\n\n"
+            "### 🐺 人狼陣営\n"
+            "**・人狼**: 毎晩1人を襲撃する。人狼同士は互いを知っている。\n"
+            "**・デカ狼**: 占われても「人間」と判定される。体がデカいだけ。\n"
+            "**・狂人**: 人狼の味方だが、誰が人狼かは知らない。占いでは「人間」。\n"
+            "**・メンヘラ**: 自分に関与（占い・襲撃・守り）した者を返り討ちにする。\n\n"
+            "### 🃏 第三陣営・その他\n"
+            "**・ハゲ**: 追放されたら単独勝利。髪の毛は観測できない。\n"
+            "**・あごむに破道砲**: 3日目以降、自爆覚悟で対象とランダムな1人を道連れにする。\n"
+            "**・ワンころ**: 最初の夜に飼い主を決める。飼い主がいれば村陣営として守り、いなければ人狼となる。占われると「人狼」。"
+        )
+        await interaction.response.send_message(help_text, ephemeral=True)
+
 
     @app_commands.command(name="jinrou", description="人狼ゲームを開始します")
     async def jinrou(self, interaction: discord.Interaction):
