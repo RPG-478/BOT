@@ -10,22 +10,28 @@ class Card:
         self.name = name
         self.category = category  # "ATTACK", "DEFENSE", "SPECIAL", "MAGIC"
         self.attr = attr          # "PHYSICAL", "FIRE", "WATER", "NONE"
-        self.value = value        # 威力、防御力、特殊効果値
+        self.value = value
         self.mp_cost = mp_cost
-        self.price = price        # 売却価格/購入価格
+        self.price = price
         self.description = description
 
 # 更新されたカードセット
 TEST_CARDS = [
-    Card("ファイアボール", "MAGIC", "FIRE", 15, mp_cost=5, price=10, description="威力15/炎属性"),
     Card("銅の棍棒", "ATTACK", "NONE", 1, price=1, description="威力1/無属性"),
     Card("銀の棍棒", "ATTACK", "NONE", 1, price=10, description="威力1/無属性"),
     Card("乱弾武剣", "DEFENSE", "NONE", 5, price=10, description="防御5/無属性を弾く"),
-    Card("革の盾", "DEFENSE", "PHYSICAL", 8, price=2, description="防御8/物理専用"),
+    Card("スマイルのしずく", "SPECIAL", "HEAL_HP", 5, price=1, description="HP5回復"),
+    Card("スマイルの花", "SPECIAL", "HEAL_MP", 5, price=1, description="MP5回復"),
     Card("買う", "SPECIAL", "BUY", 0, price=0, description="他人の神器を買う"),
     Card("売る", "SPECIAL", "SELL", 0, price=0, description="自分の神器を売る"),
-    Card("両替", "SPECIAL", "EXCHANGE", 10, price=0, description="HP/MP/金を変換"),
-    Card("バチェット", "ATTACK", "NONE", 4, price=3, description="威力4/無属性")
+    Card("両替", "SPECIAL", "EXCHANGE", 0, price=0, description="ステータス変換"),
+    Card("バチェット", "ATTACK", "NONE", 4, price=3, description="威力4/無属性"),
+    Card("ムチ", "ATTACK", "NONE", 2, price=1, description="威力2/無属性"),
+    Card("セイバーロッド", "ATTACK", "NONE", 2, price=10, description="威力2/防御6/無属性"),
+    Card("パンチ", "ATTACK", "NONE", 3, price=1, description="威力3/無属性"),
+    Card("革の帽子", "DEFENSE", "NONE", 1, price=1, description="防御1/無属性"),
+    Card("革の服", "DEFENSE", "NONE", 2, price=2, description="防御2/無属性"),
+    Card("アイアンガントレット", "DEFENSE", "NONE", 3, price=3, description="防御3/無属性")
 ]
 
 # --- UI コンポーネント ---
@@ -82,10 +88,24 @@ class ActionSelect(discord.ui.Select):
         card_idx = int(self.values[0])
         card = self.player["hand"][card_idx]
 
-        # 特殊カード判定
         if card.category == "SPECIAL":
-            view = TargetSelectView(self.player, card, card_idx, self.game_state, self.channel, self.interaction_id, mode=card.attr)
-            await interaction.response.edit_message(content=f"{card.name}の対象を選択してください。", view=view)
+            if card.attr == "EXCHANGE":
+                view = ExchangeView(self.player, card_idx, self.game_state, self.channel, self.interaction_id)
+                await interaction.response.edit_message(content="交換する項目を選択してください。", view=view)
+            elif card.attr in ["HEAL_HP", "HEAL_MP"]:
+                self.game_state["active_interaction_id"] = None
+                self.player["hand"].pop(card_idx)
+                self.player["hand"].append(random.choice(TEST_CARDS))
+                if card.attr == "HEAL_HP":
+                    self.player["hp"] = min(40, self.player["hp"] + card.value)
+                else:
+                    self.player["mp"] += card.value
+                await interaction.response.send_message(f"{card.name}を使用しました。", ephemeral=True)
+                await self.channel.send(f"{self.player['name']}が{card.name}を使用しました。")
+                await self.game_state["cog"].process_turn_end(self.channel)
+            else:
+                view = TargetSelectView(self.player, card, card_idx, self.game_state, self.channel, self.interaction_id, mode=card.attr)
+                await interaction.response.edit_message(content=f"{card.name}の対象を選択してください。", view=view)
             return
 
         if card.category == "MAGIC" and self.player["mp"] < card.mp_cost:
@@ -96,6 +116,36 @@ class ActionSelect(discord.ui.Select):
             await interaction.response.edit_message(content=f"{card.name}の対象を選択してください。", view=view)
         else:
             await interaction.response.send_message("防御カードは攻撃された時に使用します。", ephemeral=True)
+
+class ExchangeView(discord.ui.View):
+    def __init__(self, player, card_idx, game_state, channel, interaction_id):
+        super().__init__(timeout=60)
+        self.player = player
+        self.card_idx = card_idx
+        self.game_state = game_state
+        self.channel = channel
+        self.interaction_id = interaction_id
+
+    async def do_exchange(self, interaction, from_attr, to_attr):
+        if self.game_state.get("active_interaction_id") != self.interaction_id: return
+        val = 10
+        if self.player.get(from_attr, 0) >= val:
+            self.player[from_attr] -= val
+            self.player[to_attr] += val
+            self.player["hand"].pop(self.card_idx)
+            self.player["hand"].append(random.choice(TEST_CARDS))
+            self.game_state["active_interaction_id"] = None
+            await self.channel.send(f"{self.player['name']}が両替({from_attr}→{to_attr})を行いました。")
+            await self.game_state["cog"].process_turn_end(self.channel)
+        else:
+            await interaction.response.send_message("リソースが足りません。", ephemeral=True)
+
+    @discord.ui.button(label="HP(10)→MP(10)", style=discord.ButtonStyle.secondary)
+    async def hp_mp(self, interaction, button): await self.do_exchange(interaction, "hp", "mp")
+    @discord.ui.button(label="MP(10)→金(10)", style=discord.ButtonStyle.secondary)
+    async def mp_money(self, interaction, button): await self.do_exchange(interaction, "mp", "money")
+    @discord.ui.button(label="金(10)→HP(10)", style=discord.ButtonStyle.secondary)
+    async def money_hp(self, interaction, button): await self.do_exchange(interaction, "money", "hp")
 
 class TargetSelectView(discord.ui.View):
     def __init__(self, attacker, card, card_idx, game_state, channel, interaction_id, mode="ATTACK"):
@@ -108,90 +158,93 @@ class TargetSelectView(discord.ui.View):
         self.interaction_id = interaction_id
         self.mode = mode
 
-        # 両替は自分自身のみ
-        if mode == "EXCHANGE":
-            btn = discord.ui.Button(label="自分自身", style=discord.ButtonStyle.primary)
-            btn.callback = self.make_callback(attacker["id"])
-            self.add_item(btn)
-        else:
-            for p_id, p_data in game_state["players"].items():
-                if p_id != attacker["id"] and p_data["hp"] > 0:
-                    btn = discord.ui.Button(label=f"{p_data['name']}", style=discord.ButtonStyle.danger if mode=="ATTACK" else discord.ButtonStyle.secondary)
-                    btn.callback = self.make_callback(p_id)
-                    self.add_item(btn)
+        for p_id, p_data in game_state["players"].items():
+            if p_id != attacker["id"] and p_data["hp"] > 0:
+                btn = discord.ui.Button(label=f"{p_data['name']}", style=discord.ButtonStyle.danger if mode=="ATTACK" else discord.ButtonStyle.secondary)
+                btn.callback = self.make_callback(p_id)
+                self.add_item(btn)
 
     def make_callback(self, target_id):
         async def callback(interaction: discord.Interaction):
             if self.game_state.get("active_interaction_id") != self.interaction_id:
                 return await interaction.response.send_message("無効なアクションです。", ephemeral=True)
             
-            self.game_state["active_interaction_id"] = None
             target = self.game_state["players"][target_id]
             
             if self.mode == "ATTACK":
+                self.game_state["active_interaction_id"] = None
                 self.attacker["hand"].pop(self.card_idx)
                 self.attacker["hand"].append(random.choice(TEST_CARDS))
                 await interaction.response.edit_message(content=f"{target['name']}への攻撃確定。", view=None)
                 await self.game_state["cog"].trigger_defense_phase(self.channel, self.attacker, target_id, self.card)
             
             elif self.mode == "BUY":
-                # 相手の手札からランダムに提示
                 item = random.choice(target["hand"])
-                if self.attacker["money"] >= item.price:
-                    self.attacker["money"] -= item.price
-                    target["money"] += item.price
-                    target["hand"].remove(item)
-                    target["hand"].append(random.choice(TEST_CARDS))
-                    self.attacker["hand"].pop(self.card_idx)
-                    self.attacker["hand"].append(item)
-                    await self.channel.send(f"{self.attacker['name']}が{target['name']}から{item.name}を{item.price}円で購入しました。")
-                else:
-                    await self.channel.send(f"{self.attacker['name']}は金が足りず、貧乏としてキャンセルされました。")
-                await self.game_state["cog"].process_turn_end(self.channel)
+                view = BuyConfirmView(self.attacker, target, item, self.card_idx, self.game_state, self.channel, self.interaction_id)
+                await interaction.response.edit_message(content=f"{target['name']}から{item.name}を{item.price}円で買いますか？", view=view)
 
             elif self.mode == "SELL":
-                # 自分の手札から次に売るカードを選択させる必要があるが、ここでは簡易的に「売る」カード以外のランダムな1枚を売りつける
-                sellable = [c for c in self.attacker["hand"] if c != self.card]
+                self.game_state["active_interaction_id"] = None
+                sellable = [c for i, c in enumerate(self.attacker["hand"]) if i != self.card_idx]
                 if not sellable: return await self.game_state["cog"].process_turn_end(self.channel)
                 item = random.choice(sellable)
                 price = item.price
                 
-                # 徴収ロジック
                 if target["money"] >= price:
                     target["money"] -= price
                     self.attacker["money"] += price
                 elif (target["money"] + target["mp"]) >= price:
                     diff = price - target["money"]
                     target["money"] = 0
-                    target["mp"] -= diff
+                    target["mp"] = max(0, target["mp"] - diff)
                     self.attacker["money"] += price
                 else:
                     diff = price - (target["money"] + target["mp"])
                     target["money"] = 0
                     target["mp"] = 0
-                    target["hp"] -= diff
+                    target["hp"] = max(0, target["hp"] - diff)
                     self.attacker["money"] += price
 
                 self.attacker["hand"].remove(item)
                 self.attacker["hand"].append(random.choice(TEST_CARDS))
-                self.attacker["hand"].pop(self.attacker["hand"].index(self.card)) # 売るカード自身も消費
+                self.attacker["hand"].pop(self.attacker["hand"].index(self.card))
                 self.attacker["hand"].append(random.choice(TEST_CARDS))
                 target["hand"].append(item)
-                
-                await self.channel.send(f"{self.attacker['name']}が{target['name']}に{item.name}を売りつけました（{price}円徴収）。")
+                await self.channel.send(f"{self.attacker['name']}が{target['name']}に{item.name}を売りつけました。")
                 await self.game_state["cog"].process_turn_end(self.channel)
-
-            elif self.mode == "EXCHANGE":
-                # HP -> MP (10単位)
-                if self.attacker["hp"] > 10:
-                    self.attacker["hp"] -= 10
-                    self.attacker["mp"] += 10
-                    await self.channel.send(f"{self.attacker['name']}が両替を行いました(HP-10/MP+10)。")
-                self.attacker["hand"].pop(self.card_idx)
-                self.attacker["hand"].append(random.choice(TEST_CARDS))
-                await self.game_state["cog"].process_turn_end(self.channel)
-
         return callback
+
+class BuyConfirmView(discord.ui.View):
+    def __init__(self, buyer, seller, item, card_idx, game_state, channel, interaction_id):
+        super().__init__(timeout=60)
+        self.buyer = buyer
+        self.seller = seller
+        self.item = item
+        self.card_idx = card_idx
+        self.game_state = game_state
+        self.channel = channel
+        self.interaction_id = interaction_id
+
+    @discord.ui.button(label="買う", style=discord.ButtonStyle.success)
+    async def buy(self, interaction, button):
+        if self.buyer["money"] >= self.item.price:
+            self.buyer["money"] -= self.item.price
+            self.seller["money"] += self.item.price
+            self.seller["hand"].remove(self.item)
+            self.seller["hand"].append(random.choice(TEST_CARDS))
+            self.buyer["hand"].pop(self.card_idx)
+            self.buyer["hand"].append(self.item)
+            await self.channel.send(f"{self.buyer['name']}が{self.item.name}を購入しました。")
+        else:
+            await self.channel.send(f"{self.buyer['name']}は金が足りませんでした。")
+        self.game_state["active_interaction_id"] = None
+        await self.game_state["cog"].process_turn_end(self.channel)
+
+    @discord.ui.button(label="買わない", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction, button):
+        await self.channel.send(f"{self.buyer['name']}は購入を見送りました。")
+        self.game_state["active_interaction_id"] = None
+        await self.game_state["cog"].process_turn_end(self.channel)
 
 class TurnControlView(discord.ui.View):
     def __init__(self, current_p_id, player, game, channel, interaction_id):
@@ -209,7 +262,6 @@ class TurnControlView(discord.ui.View):
             return await interaction.response.send_message("あなたのターンではありません。", ephemeral=True)
         if self.game.get("active_interaction_id") != self.interaction_id or self.resolved:
             return await interaction.response.send_message("無効なアクションです。", ephemeral=True)
-        
         view = HandActionView(self.player, self.game, self.channel, self.interaction_id)
         await interaction.response.send_message("手札選択", view=view, ephemeral=True)
 
@@ -217,7 +269,7 @@ class TurnControlView(discord.ui.View):
         if not self.resolved and self.game.get("active_interaction_id") == self.interaction_id:
             self.resolved = True
             self.game["active_interaction_id"] = None
-            await self.channel.send(f"{self.player['name']}タイムアウト。スキップします。")
+            await self.channel.send(f"{self.player['name']}タイムアウト。")
             await self.game["cog"].process_turn_end(self.channel)
 
 class DefensePromptView(discord.ui.View):
@@ -241,32 +293,28 @@ class DefensePromptView(discord.ui.View):
         options = [discord.SelectOption(label="無防備", value="none")]
         for i, c in enumerate(player["hand"]):
             if c.category == "DEFENSE":
-                options.append(discord.SelectOption(label=f"{c.name}(防:{c.value}/{c.attr})", value=str(i)))
+                options.append(discord.SelectOption(label=f"{c.name}(防:{c.value})", value=str(i)))
         
         view = discord.ui.View()
-        # 複数選択可能に
         select = discord.ui.Select(placeholder="防御カード選択(複数可)", options=options, min_values=1, max_values=len(options))
 
         async def select_callback(inter: discord.Interaction):
             if self.resolved: return
             self.resolved = True
             self.stop()
-            
             def_cards = []
             if "none" not in select.values:
-                # 選択されたインデックスを降順でソートしてpop時のインデックスずれを防ぐ
                 indices = sorted([int(v) for v in select.values], reverse=True)
                 for idx in indices:
                     c = player["hand"].pop(idx)
                     def_cards.append(c)
                     player["hand"].append(random.choice(TEST_CARDS))
-            
             await inter.response.send_message("防御確定。", ephemeral=True)
             await self.game_state["cog"].resolve_damage(self.channel, self.attacker, player, self.card, def_cards)
 
         select.callback = select_callback
         view.add_item(select)
-        await interaction.response.send_message("防御カードを選択(複数可)。", view=view, ephemeral=True)
+        await interaction.response.send_message("防御選択。", view=view, ephemeral=True)
 
     async def on_timeout(self):
         if not self.resolved:
@@ -283,20 +331,18 @@ class GodField(commands.Cog):
 
     @commands.hybrid_command(name="god_field")
     async def god_field(self, ctx, wait_time: int = 60):
-        if ctx.channel.id in self.games:
-            return await ctx.send("進行中。")
+        if ctx.channel.id in self.games: return await ctx.send("進行中。")
         view = JoinView(timeout=wait_time)
-        await ctx.send("ゴッドフィールド参加受付中...", view=view)
+        await ctx.send("参加受付中...", view=view)
         await asyncio.sleep(wait_time)
-        if len(view.joined_users) < 2:
-            return await ctx.send("中止。")
+        if len(view.joined_users) < 2: return await ctx.send("中止。")
 
         players = {}
         for user in view.joined_users:
             players[user.id] = {
                 "id": user.id, "name": user.display_name,
                 "hp": 40, "mp": 20, "hand": random.choices(TEST_CARDS, k=5),
-                "money": 10, "guardian": None
+                "money": 10
             }
         self.games[ctx.channel.id] = {
             "players": players, "turn_order": list(players.keys()),
@@ -317,9 +363,14 @@ class GodField(commands.Cog):
         embed = discord.Embed(title=f"{player['name']}のターン", description=status, color=0x333333)
         await channel.send(content=f"<@{p_id}>", embed=embed, view=TurnControlView(p_id, player, game, channel, new_id))
 
-    async def trigger_defense_phase(self, channel, attacker, target_id, attack_card):
+    async def trigger_defense_phase(self, channel, attacker, target_id, attack_card, skip_defense=False):
         game = self.games[channel.id]
-        attacker["mp"] -= attack_card.mp_cost
+        if skip_defense:
+            await channel.send(f"自分に当たった！防御できません。")
+            await self.resolve_damage(channel, attacker, game["players"][target_id], attack_card, [])
+            return
+
+        attacker["mp"] = max(0, attacker["mp"] - attack_card.mp_cost)
         await channel.send(f"{attacker['name']} -> {game['players'][target_id]['name']} : {attack_card.name}")
         await channel.send(content=f"<@{target_id}> 防御選択", view=DefensePromptView(attacker, target_id, attack_card, game, channel))
 
@@ -327,32 +378,23 @@ class GodField(commands.Cog):
         damage = atk_card.value
         game = self.games[channel.id]
         
-        # 弾く・跳ね返す判定
         for dc in def_cards:
-            # 乱弾武剣による「弾く」(無属性または威力10以下を想定)
             if dc.name == "乱弾武剣" and (atk_card.attr == "NONE" or atk_card.attr == "PHYSICAL"):
                 alive = [p for p in game["players"].values() if p["hp"] > 0]
                 new_target = random.choice(alive)
-                await channel.send(f"弾いた！攻撃は{new_target['name']}へ再抽選されます。")
-                return await self.trigger_defense_phase(channel, attacker, new_target["id"], atk_card)
+                # 自分に返った場合は防御不可フラグ
+                is_self = (new_target["id"] == target["id"])
+                await channel.send(f"弾いた！次は{new_target['name']}です。")
+                return await self.trigger_defense_phase(channel, attacker, new_target["id"], atk_card, skip_defense=is_self)
             
-            # 跳ね返す(名前で判定)
-            if "跳ね返す" in dc.description: # 特殊効果として
-                await channel.send(f"跳ね返した！攻撃は{attacker['name']}へ戻ります。")
+            if "跳ね返す" in dc.description:
+                await channel.send(f"跳ね返した！")
                 return await self.trigger_defense_phase(channel, target, attacker["id"], atk_card)
 
-        # 通常ダメージ計算
-        total_def = 0
-        for dc in def_cards:
-            # 属性武器判定: 属性あり武器 vs 無属性防具(PHYSICAL)
-            if atk_card.attr != "NONE" and dc.attr == "PHYSICAL":
-                continue # 防御不可
-            total_def += dc.value
-        
+        total_def = sum([dc.value for dc in def_cards if not (atk_card.attr != "NONE" and dc.attr == "PHYSICAL")])
         damage = max(0, damage - total_def)
-        target["hp"] -= damage
-        await channel.send(f"{target['name']}に{damage}ダメージ。(残HP:{max(0, target['hp'])})")
-        
+        target["hp"] = max(0, target["hp"] - damage)
+        await channel.send(f"{target['name']}に{damage}ダメージ。(残HP:{target['hp']})")
         if target["hp"] <= 0: await channel.send(f"{target['name']}昇天。")
         await self.process_turn_end(channel)
 
@@ -373,3 +415,4 @@ class GodField(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(GodField(bot))
+
