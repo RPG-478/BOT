@@ -62,11 +62,11 @@ class JinrouCog(commands.Cog):
         num = len(self.game.players)
         num_wolves = max(1, num // 5)
         
-        pool = ["一般通過あごむに", "占い師"]
+        pool = ["一般通過あごむに", "占い師", "騎士"]
         pool += ["人狼"] * num_wolves
         
         pro_roles = ["ハゲ", "メンヘラ", "あごむに破道砲", "デカ狼", "パン屋", "マサイ族", "入狼", "ワンころ", "タフむに"]
-        base_roles = ["霊媒師", "騎士", "狂人"]
+        base_roles = ["霊媒師", "狂人"]
         
         while len(pool) < num:
             if num >= 6 and pro_roles:
@@ -133,7 +133,10 @@ class JinrouCog(commands.Cog):
         for r in self.game.roles.values():
             if r == "タフむに": roles_for_display.append("一般通過あごむに")
             else: roles_for_display.append(r)
-        
+        roles_for_display = []
+        for r in self.game.roles.values():
+            if r == "入狼": roles_for_display.append("人狼")
+            else: roles_for_display.append(r)
         roles_list = " / ".join(set(roles_for_display))
         await interaction.channel.send(f"ゲーム開始！役職一覧: {roles_list}", view=RoleCheckView(self.game, self))
 
