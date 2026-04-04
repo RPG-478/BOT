@@ -71,7 +71,7 @@ class JinrouCog(commands.Cog):
         pool = ["一般通過あごむに", "占い師", "騎士"]
         pool += ["人狼"] * num_wolves
         
-        pro_roles = ["ハゲ", "メンヘラ", "あごむに破道砲", "デカ狼", "パン屋", "マサイ族", "入狼", "ワンころ", "タフむに"]
+        pro_roles = ["ハゲ", "メンヘラ", "あごむに破道砲", "デカ狼", "パン屋", "マサイ族", "入狼", "ワンころ", "タフむに", "狂信者"]
         base_roles = ["霊媒師", "狂人"]
         
         while len(pool) < num:
@@ -101,19 +101,46 @@ class JinrouCog(commands.Cog):
         
         game.is_running = False
         await self.reset_mutes(game)
-        await interaction.response.send_message("🚨 管理者によりゲームが強制終了されました。")
+        await interaction.response.send_message("管理者によりゲームが強制終了されました。")
+
+    @app_commands.command(name="jinrou_help", description="各役職の詳細な説明を表示します")
+    async def jinrou_help(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="人狼ゲーム 役職説明書",
+            description="各役職の役割と特徴の一覧です。絵文字はありません。真面目に読みなさい。",
+            color=discord.Color.dark_gray()
+        )
+        roles_info = {
+            "一般通過あごむに": "空気。存在しているだけで偉い。特に何もしない。",
+            "占い師": "毎晩1人を占える。安物のビー玉を使って人間か人狼かを見抜く。",
+            "霊媒師": "昨日追放された者が人間だったか人狼だったかを確認する悪趣味な仕事。",
+            "騎士": "毎晩1人をつまようじで守る。自分は守れない不器用なやつ。",
+            "人狼": "村人を食べる。仲間同士は誰が人狼か知っている。",
+            "狂人": "人狼の味方をする人間。人狼が誰かは知らないが、とにかく場を乱す。",
+            "ハゲ": "追放されたら勝利。髪の毛が観測できないバグのせいで目立ちすぎる。",
+            "メンヘラ": "自分に関与した（占う、守る、食べる）者を物理的に消去する。",
+            "あごむに破道砲": "自爆して対象を道連れにする。さらにもう1人も誤発で巻き込む。",
+            "デカ狼": "占い師を賄賂で黙らせる人狼。デカイだけで威圧感がある。",
+            "パン屋": "生きていれば朝にパンを配る。死んでいても何故かパンが届く怪奇現象を起こす。",
+            "マサイ族": "視力が非常に高いが、人狼ゲームにおいて視力は何の役にも立たない。",
+            "入狼": "人狼のような名前の村人。占われると人狼判定が出る不幸なやつ。",
+            "ワンころ": "最初に飼い主を決める。飼い主が死ぬかいない場合は野良化して人狼になる。",
+            "タフむに": "殺された時に最後の一撃で相手を道連れにする根性の一般通過。",
+            "狂信者": "人狼とデカ狼が誰かを知っている熱狂的なファン。人狼陣営の参謀。"
+        }
+        for name, desc in roles_info.items():
+            embed.add_field(name=name, value=desc, inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="jinrou", description="人狼ゲームを開始します")
-    @app_commands.describe(wait_minutes="募集時間を分単位で指定（1〜1440分 = 24時間）")
+    @app_commands.describe(wait_minutes="募集時間を分単位で指定（1から1440分）")
     async def jinrou(self, interaction: discord.Interaction, wait_minutes: int = 1):
         game = self.get_game(interaction.channel_id)
         if game.is_running:
             return await interaction.response.send_message("このチャンネルでは既にゲームが進行中です。", ephemeral=True)
 
-        # 募集時間のバリデーション（最大24時間）
         wait_minutes = max(1, min(wait_minutes, 1440))
         
-        # ゲームの初期化
         game.is_running = True
         game.game_channel = interaction.channel
         game.players = []
@@ -124,12 +151,11 @@ class JinrouCog(commands.Cog):
         game.last_executed = None
 
         view = RecruitView(game, timeout=wait_minutes * 60)
-        await interaction.response.send_message(f"🐺 人狼ゲーム募集開始！\n募集時間: **{wait_minutes}分**", view=view)
+        await interaction.response.send_message(f"人狼ゲーム募集開始。募集時間: {wait_minutes}分", view=view)
         
-        # 1秒ごとにチェックを行い、killコマンド等に対応できるようにする
         for _ in range(wait_minutes * 60):
             await asyncio.sleep(1)
-            if not game.is_running: return # 強制終了された場合
+            if not game.is_running: return
 
         if len(game.players) < 5:
             game.is_running = False
@@ -140,7 +166,6 @@ class JinrouCog(commands.Cog):
         
         mentions = " ".join([p.mention for p in game.players])
         
-        # 表示用の役職リスト作成
         roles_for_display = []
         for r in game.roles.values():
             if r == "タフむに": roles_for_display.append("一般通過あごむに")
@@ -149,29 +174,25 @@ class JinrouCog(commands.Cog):
         
         roles_list = " / ".join(set(roles_for_display))
         await interaction.channel.send(
-            f"{mentions}\n【ゲーム開始】今回の役職内訳: {roles_list}\n下のボタンで自分の役職を確認してください。",
+            f"{mentions}\nゲーム開始。今回の役職内訳: {roles_list}\n下のボタンで自分の役職を確認してください。",
             view=RoleCheckView(game, self)
         )
 
         try:
-            # 最初の特別ディスカッション
             await self.run_discussion(game, minutes=2, title="特別ディスカッション")
             
             while game.is_running:
-                # 夜のフェーズ
                 await self.run_night_phase(game)
                 if not game.is_running or await self.check_victory(game): break
                 
-                # 昼のフェーズ
                 await self.run_discussion(game, minutes=3, title="昼のディスカッション")
                 if not game.is_running: break
                 
-                # 投票フェーズ
                 await self.run_voting_phase(game)
                 if not game.is_running or await self.check_victory(game): break
                 
         except Exception as e:
-            print(f"Game Error (Channel {interaction.channel_id}): {e}")
+            print(f"Game Error: {e}")
         finally:
             await self.reset_mutes(game)
             game.is_running = False
@@ -180,7 +201,7 @@ class JinrouCog(commands.Cog):
         if not game.is_running: return
         await game.game_channel.send(f"ーー {title}（{minutes}分） ーー")
         if any(game.roles.get(p.id) == "パン屋" for p in game.alive_players):
-            await game.game_channel.send("🍞 パン屋さんが美味しいパンを焼いてくれました。")
+            await game.game_channel.send("パン屋さんが美味しいパンを焼いてくれました。")
         
         for _ in range(minutes * 60):
             await asyncio.sleep(1)
@@ -197,7 +218,6 @@ class JinrouCog(commands.Cog):
         view = NightActionView(game)
         msg = await game.game_channel.send("アクションを選択してください", view=view)
         
-        # 必要アクション数の計算
         req_roles = ["占い師", "騎士", "人狼", "デカ狼", "あごむに破道砲"]
         if game.day_count == 1: req_roles.append("ワンころ")
         req = sum(1 for p in game.alive_players if game.roles.get(p.id) in req_roles)
@@ -225,7 +245,7 @@ class JinrouCog(commands.Cog):
             role = game.roles.get(p_id)
             if t_id in psycho_killer_ids:
                 dead_ids.add(p_id)
-                await game.game_channel.send(f"【悲報】誰かがメンヘラに返り討ちにされました...")
+                await game.game_channel.send("誰かがメンヘラに返り討ちにされました。")
 
             if role in ["人狼", "デカ狼"]: wolves_target = t_id
             elif role == "騎士": knight_targets.add(t_id)
@@ -234,7 +254,7 @@ class JinrouCog(commands.Cog):
                 game.used_hadouhou = True
                 others = [p.id for p in game.alive_players if p.id not in [p_id, t_id]]
                 if others: dead_ids.add(random.choice(others))
-                await game.game_channel.send("💥 **あごむに破道砲が火を噴いた！**")
+                await game.game_channel.send("あごむに破道砲が火を噴きました。")
 
         if wolves_target and wolves_target not in knight_targets:
             dead_ids.add(wolves_target)
@@ -244,35 +264,35 @@ class JinrouCog(commands.Cog):
                 if d_id in [p.id for p in game.alive_players]:
                     m = game.game_channel.guild.get_member(d_id)
                     if m:
-                        await game.game_channel.send(f"【夜の結果】{m.display_name} さんが犠牲になりました。")
+                        await game.game_channel.send(f"夜の結果: {m.display_name} さんが犠牲になりました。")
                         if game.roles.get(d_id) == "タフむに":
                             killers = [pid for pid, tid in game.night_actions.items() if tid == d_id]
                             if killers:
                                 k_id = random.choice(killers)
                                 k_m = game.game_channel.guild.get_member(k_id)
                                 if k_m:
-                                    await game.game_channel.send(f"💥 **タフむにの反撃！** {k_m.display_name} を道連れにした！")
+                                    await game.game_channel.send(f"タフむにの反撃。 {k_m.display_name} を道連れにしました。")
                                     game.alive_players = [p for p in game.alive_players if p.id != k_id]
                                     await self.mute_member(k_m)
                         game.alive_players = [p for p in game.alive_players if p.id != d_id]
                         await self.mute_member(m)
         else:
-            await game.game_channel.send("【夜の結果】昨晩の犠牲者はいないようです。")
+            await game.game_channel.send("夜の結果: 昨晩の犠牲者はいないようです。")
 
     async def check_victory(self, game):
         if not game.is_running: return True
         def is_wolf_side(p_id):
             r = game.roles.get(p_id)
-            if r in ["人狼", "デカ狼", "狂人"]: return True
+            if r in ["人狼", "デカ狼", "狂人", "狂信者"]: return True
             if r == "ワンころ" and p_id not in game.wan_owner: return True
             return False
         wolves = [p for p in game.alive_players if is_wolf_side(p.id)]
         non_wolves = [p for p in game.alive_players if not is_wolf_side(p.id)]
         if not wolves:
-            await game.game_channel.send("人狼全滅！村人陣営の勝利！")
+            await game.game_channel.send("人狼全滅。村人陣営の勝利です。")
             return True
         if len(wolves) >= len(non_wolves):
-            await game.game_channel.send("人狼が支配した！人狼陣営の勝利！")
+            await game.game_channel.send("人狼が支配した。人狼陣営の勝利です。")
             return True
         return False
 
@@ -305,7 +325,7 @@ class JinrouCog(commands.Cog):
             game.alive_players = [p for p in game.alive_players if p.id != int(target_id)]
             await self.mute_member(target_m)
             if game.roles.get(int(target_id)) == "ハゲ":
-                await game.game_channel.send("ハゲが追放された！ハゲの勝利！")
+                await game.game_channel.send("ハゲが追放された。ハゲの勝利です。")
                 game.is_running = False
 
 # ======================================================
@@ -325,24 +345,24 @@ class RoleCheckView(discord.ui.View):
         
         wolves = self.cog.get_wolves_names(self.game)
         descs = {
-            "一般通過あごむに": "一般通過あごむに。空気薄い。", 
-            "占い師": "毎晩1人を占える、金はないのでビー玉で占っている。", 
-            "霊媒師": "昨日追放された者の正体を知る。",
+            "一般通過あごむに": "一般通過あごむに。空気より存在感が薄い。", 
+            "占い師": "毎晩1人を占える。金がないのでビー玉で占っている。", 
+            "霊媒師": "昨日追放された者の正体を覗き見る趣味がある。",
             "人狼": f"仲間: {wolves}", 
             "騎士": "毎晩一人をつまようじで守る。", 
-            "狂人": "人狼の味方。無能。",
+            "狂人": "人狼の味方。基本的に無能である。",
             "ハゲ": "追放されたら勝てる。髪の毛が観測できないバグが発生している。", 
-            "メンヘラ": "自分に関与した者を殺す。",
-            "あごむに破道砲": "自らを弾にして1人を狙い撃ちできるが、誤発してもう1人殺す", 
+            "メンヘラ": "自分に関与した者を物理的に消す。",
+            "あごむに破道砲": "自らを弾にして1人を狙い撃ちできるが、誤発してもう1人殺す。", 
             "デカ狼": "占い師に賄賂を払って白判定にする。デカイだけである。",
-            "パン屋": "生きているうちは朝にパンを配る。ワンチャン死んでても配る",
-            "マサイ族": "視力がいい。だがこのゲームにおいて視力は関係ない。",
-            "入狼": "生まれた名前が悪かったな！！ビー玉で占ってるやつに人狼と誤解される村陣営。",
-            "ワンころ": "最初の夜に飼い主を決める。飼い主がいないと人狼になる第三陣営。",
-            "タフむに": "殺された時に殺し返す一般通過あごむに。"
+            "パン屋": "生きているうちは朝にパンを配る。死んでいてもなぜかパンが届く。",
+            "マサイ族": "視力がいい。だがこのゲームにおいて視力は全く必要ない。",
+            "入狼": "生まれた名前が悪かった。ビー玉で占ってるやつに人狼と誤解される哀れな村陣営。",
+            "ワンころ": "最初の夜に飼い主を決める。飼い主がいないと野生化して人狼になる。",
+            "タフむに": "殺された時に殺し返す根性のある一般通過あごむに。",
+            "狂信者": f"人狼とデカ狼を知っている熱狂的な人狼ファン。 仲間: {wolves}"
         }
 
-        # 画像対応表
         role_image_map = {
             "一般通過あごむに": "NOMAL.PNG",
             "人狼": "JINROU.PNG",
@@ -377,8 +397,14 @@ class NightActionView(discord.ui.View):
         p_id = interaction.user.id
         if p_id not in [p.id for p in self.game.alive_players]: return
         role = self.game.roles.get(p_id)
+        
+        # 夜に行動がない役職の判定
+        passive_roles = ["一般通過あごむに", "霊媒師", "狂人", "ハゲ", "メンヘラ", "パン屋", "マサイ族", "入狼", "タフむに", "狂信者"]
+        if role in passive_roles:
+            return await interaction.response.send_message("お前は寝てろ。明日の朝までじっとしてなさい。", ephemeral=True)
+            
         opts = [discord.SelectOption(label=p.display_name, value=str(p.id)) for p in self.game.alive_players if p.id != p_id]
-        if not opts: return await interaction.response.send_message("対象なし。", ephemeral=True)
+        if not opts: return await interaction.response.send_message("対象がいません。", ephemeral=True)
         await interaction.response.send_message("対象を選択:", view=ActionSelectView(self.game, opts, role), ephemeral=True)
 
 class ActionSelectView(discord.ui.View):
@@ -406,7 +432,7 @@ class RecruitView(discord.ui.View):
     async def join(self, interaction, button):
         if interaction.user not in self.game.players:
             self.game.players.append(interaction.user)
-            await interaction.response.send_message(f"✅ {interaction.user.display_name} さんが参加！")
+            await interaction.response.send_message(f"{interaction.user.display_name} さんが参加しました。")
 
 class PublicVoteView(discord.ui.View):
     def __init__(self, game, options):
@@ -417,7 +443,7 @@ class PublicVoteView(discord.ui.View):
         self.add_item(s)
     async def callback(self, interaction):
         self.game.voted_count[interaction.user.id] = self.children[0].values[0]
-        await interaction.response.send_message(f"🗳️ {interaction.user.display_name} さんが投票完了。")
+        await interaction.response.send_message(f"{interaction.user.display_name} さんが投票完了。")
 
 async def setup(bot):
     await bot.add_cog(JinrouCog(bot))
