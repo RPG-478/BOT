@@ -49,7 +49,8 @@ TEST_CARDS = [
     Card("吹き矢", "ATTACK", "NONE", 1, price=1, description="追加ダメージ1"),
     Card("ゴーストソード", "ATTACK", "NONE", 7, price=10, description="威力7/HP吸収"),
     Card("鬼のくつ", "ATTACK", "NONE", 5, price=10, description="威力5/防3/攻撃時消耗"),
-    Card("火の玉", "MAGIC", "FIRE", 2, mp_cost=2, price=3, description="威力2/炎魔法(MP2)")
+    Card("火の玉", "MAGIC", "FIRE", 2, mp_cost=2, price=3, description="威力2/炎魔法(MP2)"),
+    Card("もろぶっこみアクス", "ATTACK", "NONE", 12, price=4, description="威力12"),
 ]
 
 # --- UI コンポーネント ---
@@ -264,7 +265,7 @@ class GodField(commands.Cog):
         v = JoinView(timeout=wait_time); await ctx.send("ゴッドフィールド：参加者募集中...", view=v)
         await asyncio.sleep(wait_time)
         if len(v.joined_users) < 2: return await ctx.send("人数不足のため中止します。")
-        ps = {u.id: {"id": u.id, "name": u.display_name, "hp": 40, "mp": 20, "hand": random.choices(TEST_CARDS, k=8), "money": 10} for u in v.joined_users}
+        ps = {u.id: {"id": u.id, "name": u.display_name, "hp": 40, "mp": 10, "hand": random.choices(TEST_CARDS, k=8), "money": 20} for u in v.joined_users}
         self.games[ctx.channel.id] = {"players": ps, "turn_order": list(ps.keys()), "current_index": 0, "active_interaction_id": None, "cog": self, "temp_msgs": []}
         await self.send_turn_panel(ctx.channel)
 
