@@ -22,6 +22,7 @@ class JinrouGame:
         self.used_hadouhou = False # あごむに破道砲の使用済みフラグ
         self.day_count = 0        # 経過日数
         self.wan_owner = {}       # {ワンころID: 飼い主ID}
+        self.masai_evasion = {}   # {マサイID: 回避可能か(bool)}
 
 # ======================================================
 #  Cog 本体
@@ -122,7 +123,7 @@ class JinrouCog(commands.Cog):
             "あごむに破道砲": "自爆して対象を道連れにする。さらにもう1人も誤発で巻き込む。",
             "デカ狼": "占い師を賄賂で黙らせる人狼。デカイだけで威圧感がある。",
             "パン屋": "生きていれば朝にパンを配る。死んでいても何故かパンが届く怪奇現象を起こす。",
-            "マサイ族": "視力が非常に高いが、人狼ゲームにおいて視力は何の役にも立たない。",
+            "マサイ族": "視力とジャンプ力が高い。夜に人狼を見つければ回避判定を得る。襲撃されても50%で飛び跳ねて避ける。視力はこのゲームに関係ない",
             "入狼": "人狼のような名前の村人。占われると人狼判定が出る不幸なやつ。",
             "ワンころ": "最初に飼い主を決める。飼い主が死ぬかいない場合は野良化して人狼になる。",
             "タフむに": "殺された時に最後の一撃で相手を道連れにする根性の一般通過。",
@@ -149,6 +150,7 @@ class JinrouCog(commands.Cog):
         game.wan_owner = {}
         game.used_hadouhou = False
         game.last_executed = None
+        game.masai_evasion = {}
 
         view = RecruitView(game, timeout=wait_minutes * 60)
         await interaction.response.send_message(f"人狼ゲーム募集開始。募集時間: {wait_minutes}分", view=view)
@@ -218,7 +220,7 @@ class JinrouCog(commands.Cog):
         view = NightActionView(game)
         msg = await game.game_channel.send("アクションを選択してください", view=view)
         
-        req_roles = ["占い師", "騎士", "人狼", "デカ狼", "あごむに破道砲"]
+        req_roles = ["占い師", "騎士", "人狼", "デカ狼", "あごむに破道砲", "マサイ族"]
         if game.day_count == 1: req_roles.append("ワンころ")
         req = sum(1 for p in game.alive_players if game.roles.get(p.id) in req_roles)
         
@@ -257,7 +259,14 @@ class JinrouCog(commands.Cog):
                 await game.game_channel.send("あごむに破道砲が火を噴きました。")
 
         if wolves_target and wolves_target not in knight_targets:
-            dead_ids.add(wolves_target)
+            # マサイ族の回避判定
+            if game.roles.get(wolves_target) == "マサイ族" and game.masai_evasion.get(wolves_target):
+                if random.random() < 0.5:
+                    await game.game_channel.send("マサイ族はジャンプ力が高いので襲撃を回避しました。")
+                else:
+                    dead_ids.add(wolves_target)
+            else:
+                dead_ids.add(wolves_target)
 
         if dead_ids:
             for d_id in dead_ids:
@@ -356,7 +365,7 @@ class RoleCheckView(discord.ui.View):
             "あごむに破道砲": "自らを弾にして1人を狙い撃ちできるが、誤発してもう1人殺す。", 
             "デカ狼": "占い師に賄賂を払って白判定にする。デカイだけである。",
             "パン屋": "生きているうちは朝にパンを配る。死んでいてもなぜかパンが届く。",
-            "マサイ族": "視力がいい。だがこのゲームにおいて視力は全く必要ない。",
+            "マサイ族": "視力とジャンプ力が高い。夜に人狼を見つければ回避判定を得る。襲撃されても50%で飛び跳ねて避ける。視力はこのゲームにおいて関係ない",
             "入狼": "生まれた名前が悪かった。ビー玉で占ってるやつに人狼と誤解される哀れな村陣営。",
             "ワンころ": "最初の夜に飼い主を決める。飼い主がいないと野生化して人狼になる。",
             "タフむに": "殺された時に殺し返す根性のある一般通過あごむに。",
@@ -368,10 +377,7 @@ class RoleCheckView(discord.ui.View):
             "人狼": "JINROU.PNG",
             "マサイ族": "MASAI.PNG",
             "メンヘラ": "MENHERA.PNG",
-            "入狼": "NYUROU.PNG",
-            "騎士": "KISHI.PNG",
-            "霊媒師": "REIBAI.PNG",
-            "占い師": "URANAI.PNG",
+            "入狼": "NYUROU.PNG"
         }
 
         embed = discord.Embed(
@@ -399,10 +405,15 @@ class NightActionView(discord.ui.View):
     async def action(self, interaction, button):
         p_id = interaction.user.id
         if p_id not in [p.id for p in self.game.alive_players]: return
+        
+        # 二重アクション防止チェック
+        if p_id in self.game.night_actions:
+            return await interaction.response.send_message("アクションは既に完了しています。欲張らないでください。", ephemeral=True)
+
         role = self.game.roles.get(p_id)
         
         # 夜に行動がない役職の判定
-        passive_roles = ["一般通過あごむに", "霊媒師", "狂人", "ハゲ", "メンヘラ", "パン屋", "マサイ族", "入狼", "タフむに", "狂信者"]
+        passive_roles = ["一般通過あごむに", "霊媒師", "狂人", "ハゲ", "メンヘラ", "パン屋", "入狼", "タフむに", "狂信者"]
         if role in passive_roles:
             return await interaction.response.send_message("お前は寝てろ。明日の朝までじっとしてなさい。", ephemeral=True)
             
@@ -418,12 +429,25 @@ class ActionSelectView(discord.ui.View):
         s.callback = self.callback
         self.add_item(s)
     async def callback(self, interaction):
+        p_id = interaction.user.id
+        # 二重アクション防止（セレクトボックス経由）
+        if p_id in self.game.night_actions:
+            return await interaction.response.send_message("既にアクションは受理されています。", ephemeral=True)
+
         t_id = int(self.children[0].values[0])
-        self.game.night_actions[interaction.user.id] = t_id
+        self.game.night_actions[p_id] = t_id
+
         if self.role == "占い師":
             r = self.game.roles.get(t_id)
             res = "人狼" if r in ["人狼", "入狼", "ワンころ"] else "人間"
             await interaction.response.send_message(f"結果: 【{res}】", ephemeral=True)
+        elif self.role == "マサイ族":
+            r = self.game.roles.get(t_id)
+            if r in ["人狼", "デカ狼"]:
+                self.game.masai_evasion[p_id] = True
+                await interaction.response.send_message("人狼を特定しました。ジャンプして避ける準備をしました。", ephemeral=True)
+            else:
+                await interaction.response.send_message("人狼ではありませんでした。", ephemeral=True)
         else:
             await interaction.response.send_message("完了。", ephemeral=True)
 
