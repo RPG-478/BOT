@@ -123,7 +123,7 @@ class JinrouCog(commands.Cog):
             "あごむに破道砲": "自爆して対象を道連れにする。さらにもう1人も誤発で巻き込む。",
             "デカ狼": "占い師を賄賂で黙らせる人狼。デカイだけで威圧感がある。",
             "パン屋": "生きていれば朝にパンを配る。死んでいても何故かパンが届く怪奇現象を起こす。",
-            "マサイ族": "視力とジャンプ力が高い。夜に人狼を見つければ回避判定を得る。襲撃されても50%で飛び跳ねて避ける。視力はこのゲームに関係ない",
+            "マサイ族": "視力とジャンプ力が高い。夜に1人を観察する。もし対象が人狼なら襲撃を50%で回避する準備を整える。真偽は誰にもわからない。",
             "入狼": "人狼のような名前の村人。占われると人狼判定が出る不幸なやつ。",
             "ワンころ": "最初に飼い主を決める。飼い主が死ぬかいない場合は野良化して人狼になる。",
             "タフむに": "殺された時に最後の一撃で相手を道連れにする根性の一般通過。",
@@ -348,6 +348,9 @@ class RoleCheckView(discord.ui.View):
     @discord.ui.button(label="役職確認", style=discord.ButtonStyle.primary)
     async def check(self, interaction, button):
         real_role = self.game.roles.get(interaction.user.id)
+        if real_role is None:
+            return await interaction.response.send_message("あなたはゲームに参加していません。", ephemeral=True)
+            
         display_role = real_role
         if real_role == "タフむに": display_role = "一般通過あごむに"
         elif real_role == "入狼": display_role = "人狼"
@@ -365,7 +368,7 @@ class RoleCheckView(discord.ui.View):
             "あごむに破道砲": "自らを弾にして1人を狙い撃ちできるが、誤発してもう1人殺す。", 
             "デカ狼": "占い師に賄賂を払って白判定にする。デカイだけである。",
             "パン屋": "生きているうちは朝にパンを配る。死んでいてもなぜかパンが届く。",
-            "マサイ族": "視力とジャンプ力が高い。夜に人狼を見つければ回避判定を得る。襲撃されても50%で飛び跳ねて避ける。視力はこのゲームにおいて関係ない",
+            "マサイ族": "視力とジャンプ力が高い。夜に1人を観察する。もし対象が人狼なら襲撃を50%で回避する準備を整える。真偽は誰にもわからない。",
             "入狼": "生まれた名前が悪かった。ビー玉で占ってるやつに人狼と誤解される哀れな村陣営。",
             "ワンころ": "最初の夜に飼い主を決める。飼い主がいないと野生化して人狼になる。",
             "タフむに": "殺された時に殺し返す根性のある一般通過あごむに。",
@@ -446,11 +449,10 @@ class ActionSelectView(discord.ui.View):
             await interaction.response.send_message(f"結果: 【{res}】", ephemeral=True)
         elif self.role == "マサイ族":
             r = self.game.roles.get(t_id)
+            # マサイ族の真偽を隠蔽
             if r in ["人狼", "デカ狼"]:
                 self.game.masai_evasion[p_id] = True
-                await interaction.response.send_message("人狼を特定しました。ジャンプして避ける準備をしました。", ephemeral=True)
-            else:
-                await interaction.response.send_message("人狼ではありませんでした。", ephemeral=True)
+            await interaction.response.send_message("対象の観察を完了しました。人狼であれば回避の準備を整えます。", ephemeral=True)
         else:
             await interaction.response.send_message("完了。", ephemeral=True)
 
@@ -472,8 +474,18 @@ class PublicVoteView(discord.ui.View):
         s.callback = self.callback
         self.add_item(s)
     async def callback(self, interaction):
-        self.game.voted_count[interaction.user.id] = self.children[0].values[0]
-        await interaction.response.send_message(f"{interaction.user.display_name} さんが投票完了。")
+        p_id = interaction.user.id
+        
+        # 生存確認
+        if p_id not in [p.id for p in self.game.alive_players]:
+            return await interaction.response.send_message("死人に口なし。墓場で大人しくしていなさい。", ephemeral=True)
+            
+        # 二重投票確認
+        if p_id in self.game.voted_count:
+            return await interaction.response.send_message("既に投票済みです。意志を何度も変えることはできません。", ephemeral=True)
+
+        self.game.voted_count[p_id] = self.children[0].values[0]
+        await interaction.response.send_message(f"{interaction.user.display_name} さんが投票を完了しました。")
 
 async def setup(bot):
     await bot.add_cog(JinrouCog(bot))
