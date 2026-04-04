@@ -378,6 +378,9 @@ class RoleCheckView(discord.ui.View):
             "マサイ族": "MASAI.PNG",
             "メンヘラ": "MENHERA.PNG",
             "入狼": "NYUROU.PNG"
+            "騎士": "KISHI.PNG",
+            "占い師": "URANAI.PNG",
+            "霊媒師": "REIBAI.PNG",
         }
 
         embed = discord.Embed(
