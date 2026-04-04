@@ -1509,38 +1509,38 @@ class GodField(commands.Cog):
         if dmg > 0:
             if attack_card.ability == "absorbHP":
                 attacker["hp"] += dmg
-                await self.log(channel, f"💚 {attacker['name']} HP+{dmg}（HP吸収）")
+                await self.log(channel, f"{attacker['name']} HP+{dmg}（HP吸収）")
 
             if attack_card.ability == "dealSameDamage":
                 attacker["hp"] = max(0, attacker["hp"] - dmg)
-                await self.log(channel, f"⚠️ {attacker['name']} にも {dmg} ダメージ（邪神の大剣）")
+                await self.log(channel, f"{attacker['name']} にも {dmg} ダメージ（邪神の大剣）")
 
             if attack_card.ability == "addCurseOnDamage" and attack_card.curse:
                 target["curses"][attack_card.curse] = True
                 await self.log(channel,
-                    f"☠️ {target['name']} に **{CURSE_NAME.get(attack_card.curse,'?')}** が発症！"
+                    f"{target['name']} に **{CURSE_NAME.get(attack_card.curse,'?')}** が発症！"
                 )
 
             if attack_card.ability == "attackTwice":
-                await self.log(channel, f"⚔️⚔️ {attack_card.name} — **二回攻撃！**")
+                await self.log(channel, f"{attack_card.name} — **二回攻撃！**")
                 return await self.trigger_defense_phase(channel, attacker, target["id"], attack_card)
 
         # === 防御カウンター ===
         for dc in defense_cards:
             if dc.ability == "counterAtk" and dmg > 0:
                 attacker["hp"] = max(0, attacker["hp"] - dmg)
-                await self.log(channel, f"⚡ {target['name']} 反撃！ {dmg} ダメージ！（{dc.name}）")
+                await self.log(channel, f"{target['name']} 反撃！ {dmg} ダメージ！（{dc.name}）")
             elif dc.ability == "counter2xAtk" and dmg > 0:
                 attacker["hp"] = max(0, attacker["hp"] - dmg * 2)
-                await self.log(channel, f"⚡⚡ {target['name']} 2倍反撃！ {dmg*2} ダメージ！（{dc.name}）")
+                await self.log(channel, f"{target['name']} 2倍反撃！ {dmg*2} ダメージ！（{dc.name}）")
             elif dc.ability == "counterBoost2xMP" and dmg > 0:
                 target["mp"] += dmg * 2
-                await self.log(channel, f"💙 {target['name']} MP+{dmg*2}（海王の指輪）")
+                await self.log(channel, f"{target['name']} MP+{dmg*2}（海王の指輪）")
             elif dc.ability == "counterTakeCP" and dmg > 0:
                 taken = min(attacker["cp"], dmg)
                 attacker["cp"] -= taken
                 target["cp"]   += taken
-                await self.log(channel, f"💰 {target['name']} が {attacker['name']} から 💰{taken} 没収！（金星の指輪）")
+                await self.log(channel, f"{target['name']} が {attacker['name']} から 💰{taken} 没収！（金星の指輪）")
             elif dc.ability == "counterCurse" and dmg > 0:
                 attacker["curses"][dc.curse] = True
                 await self.log(channel,
@@ -1553,13 +1553,13 @@ class GodField(commands.Cog):
             if target.get("revive_hp", 0):
                 target["hp"] = target["revive_hp"]
                 target["revive_hp"] = 0
-                await self.log(channel, f"☀️ {target['name']} 蘇生！ HP:{target['hp']}")
+                await self.log(channel, f"{target['name']} 蘇生！ HP:{target['hp']}")
             else:
-                await self.log(channel, f"💀 **{target['name']}** が昇天した！")
+                await self.log(channel, f"**{target['name']}** が昇天した！")
 
         # 昇天チェック (攻撃側)
         if attacker["hp"] <= 0 and attack_card.ability != "attackTwice":
-            await self.log(channel, f"💀 **{attacker['name']}** も昇天した！")
+            await self.log(channel, f"**{attacker['name']}** も昇天した！")
 
         await self.process_turn_end(channel)
 
@@ -1572,7 +1572,7 @@ class GodField(commands.Cog):
         alive = [i for i, p in g["players"].items() if p["hp"] > 0]
         if len(alive) <= 1:
             winner = g["players"][alive[0]]["name"] if alive else "なし"
-            await channel.send(f"🏆 **勝者：{winner}！** ゲーム終了！")
+            await channel.send(f"**勝者：{winner}！** ゲーム終了！")
             del self.games[channel.id]
             return
 
