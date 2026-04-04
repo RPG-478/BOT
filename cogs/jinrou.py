@@ -377,7 +377,7 @@ class RoleCheckView(discord.ui.View):
             "人狼": "JINROU.PNG",
             "マサイ族": "MASAI.PNG",
             "メンヘラ": "MENHERA.PNG",
-            "入狼": "NYUROU.PNG"
+            "入狼": "NYUROU.PNG",
             "騎士": "KISHI.PNG",
             "占い師": "URANAI.PNG",
             "霊媒師": "REIBAI.PNG",
