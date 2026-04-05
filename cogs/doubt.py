@@ -1,4 +1,4 @@
-import discord
+import discord  # 小文字に修正
 from discord.ext import commands
 import asyncio
 import random
@@ -8,12 +8,12 @@ class DoubtEngine:
     def __init__(self, player_ids):
         self.players = player_ids
         self.hands = {p_id: [] for p_id in player_ids}
-        self.field = []  # [(player_id, actual_card)]
+        self.field = []  
         self.current_turn_idx = 0
         self.last_claimed_num = None
         self.last_player_id = None
         self.is_accepting_doubt = False
-        self.last_panel_msg = None # 削除対象のメッセージ保持用
+        self.last_panel_msg = None 
         
         self._setup_game()
 
@@ -22,7 +22,7 @@ class DoubtEngine:
         deck = [f"[{s}-{r}]" for s in suits for r in range(1, 14)]
         random.shuffle(deck)
         
-        per_player = 52 // len(self.players) # 3人なら17枚ずつ(余り1)
+        per_player = 52 // len(self.players) 
         for i, p_id in enumerate(self.players):
             self.hands[p_id] = sorted(deck[i*per_player : (i+1)*per_player])
 
@@ -37,7 +37,6 @@ class DoubtEngine:
 
 class CardSelect(discord.ui.Select):
     def __init__(self, hand, game_engine, cog):
-        # 最大25枚までの制限対応
         options = [discord.SelectOption(label=card, value=card) for card in hand[:25]]
         super().__init__(placeholder="出すカードを1枚選んでください", options=options)
         self.game_engine = game_engine
@@ -93,7 +92,6 @@ class Doubt(commands.Cog):
         self.pending_cards = {}   
 
     async def send_main_screen(self, channel, game):
-        # 古いパネルがあれば削除
         if game.last_panel_msg:
             try:
                 await game.last_panel_msg.delete()
@@ -112,6 +110,7 @@ class Doubt(commands.Cog):
 
     @commands.command(name="doubt")
     async def start_game(self, ctx):
+        """!doubt で直接起動するコマンド"""
         players = [ctx.author.id]
         embed = discord.Embed(
             title="ダウト参加者募集", 
@@ -135,9 +134,8 @@ class Doubt(commands.Cog):
         msg = await ctx.send(embed=embed, view=view)
         await asyncio.sleep(60) 
         
-        # 3人以上制限の追加
         if len(players) < 3:
-            try: await msg.delete() # 募集パネルを消す
+            try: await msg.delete()
             except: pass
             return await ctx.send(f"人数不足（現在{len(players)}名）のため、ゲームを開始できませんでした。3名以上集めてください。")
         
@@ -152,7 +150,6 @@ class Doubt(commands.Cog):
         game = self.games.get(message.channel.id)
         if not game: return
 
-        # 1. 数字宣言
         if message.author.id == game.current_player_id and message.author.id in self.pending_cards:
             if message.content.isdigit():
                 val = int(message.content)
@@ -163,7 +160,6 @@ class Doubt(commands.Cog):
                     game.last_claimed_num = val
                     game.last_player_id = message.author.id
                     
-                    # 宣言メッセージを出したあとパネルを更新しない（ダウト待機のため）
                     embed = discord.Embed(
                         description=f"<@{message.author.id}> が「**{val}**」を宣言してカードを置きました。\n**5秒以内**に「ダウト」と言えば審議できます。", 
                         color=0xFFFFFF
@@ -179,12 +175,9 @@ class Doubt(commands.Cog):
                         game.is_accepting_doubt = False
                         await self.send_main_screen(message.channel, game)
 
-        # 2. ダウト判定
         elif "ダウト" in message.content and game.is_accepting_doubt:
             game.is_accepting_doubt = False
             last_player, actual_card = game.field[-1]
-            
-            # カード文字列から数字だけ抜き出す処理
             actual_num = int(''.join(filter(str.isdigit, actual_card)))
             is_lie = (actual_num != game.last_claimed_num)
             
@@ -206,7 +199,6 @@ class Doubt(commands.Cog):
             
             await message.channel.send(embed=embed)
             
-            # 勝利判定
             for p_id in game.players:
                 if len(game.hands[p_id]) == 0:
                     win_embed = discord.Embed(title="Game Set!", description=f"勝者: <@{p_id}>", color=0xFFFFFF)
