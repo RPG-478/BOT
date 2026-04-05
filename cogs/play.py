@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -6,15 +7,12 @@ import sys
 import os
 import asyncio
 
-# --- パスの自動解決 ---
 current_dir = os.path.dirname(__file__)
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-# 送信先チャンネルID
 DEBUG_CHANNEL_ID = 1476946191362166894
 
-# --- 共通のログ送信関数 ---
 async def send_debug_log(bot, message: str):
     channel = bot.get_channel(DEBUG_CHANNEL_ID)
     if channel:
@@ -22,7 +20,6 @@ async def send_debug_log(bot, message: str):
     else:
         print(f"Debug channel not found: {message}")
 
-# --- ダウト専用：参加募集View ---
 class DoubtJoinView(discord.ui.View):
     def __init__(self, host_id):
         super().__init__(timeout=60)
@@ -36,7 +33,6 @@ class DoubtJoinView(discord.ui.View):
         else:
             await interaction.response.send_message("既に参加しています", ephemeral=True)
 
-# --- ワードウルフ専用：ジャンル選択メニュー ---
 class WordWolfGenreView(discord.ui.View):
     def __init__(self, bot):
         super().__init__(timeout=60)
@@ -77,7 +73,6 @@ class WordWolfGenreView(discord.ui.View):
         except Exception:
             await send_debug_log(self.bot, f"WordWolfエラー:\n{traceback.format_exc()}")
 
-# --- メイン：ゲーム選択メニュー ---
 class GameSelectView(discord.ui.View):
     def __init__(self, bot):
         super().__init__(timeout=60)
@@ -109,7 +104,6 @@ class GameSelectView(discord.ui.View):
                     await send_debug_log(self.bot, "エラー: Doubt Cogが見つかりません。")
                     return
                 
-                # 同ファイル内のDoubtJoinViewを使用
                 join_view = DoubtJoinView(interaction.user.id)
                 embed = discord.Embed(
                     title="Doubt 参加者募集", 
@@ -117,8 +111,6 @@ class GameSelectView(discord.ui.View):
                     color=0xFFFFFF
                 )
                 await interaction.response.edit_message(content=None, embed=embed, view=join_view)
-                
-                # 他のゲーム（人狼等）と同じく loop.create_task で Cog のメソッドを叩く
                 self.bot.loop.create_task(cog.start_from_hub(interaction.channel, join_view.players))
                 await send_debug_log(self.bot, "Doubtのタスクを流用形式で起動しました。")
 
@@ -174,10 +166,16 @@ class PlayHub(commands.Cog):
 
     @app_commands.command(name="play", description="全てのミニゲームメニューを表示します")
     async def play(self, interaction: discord.Interaction):
+        # 1. 応答を保留して時間を稼ぐ
+        await interaction.response.defer()
+        
         await send_debug_log(self.bot, f"/play コマンドが実行されました (Channel: {interaction.channel.id})")
+        
         view = GameSelectView(self.bot)
         embed = discord.Embed(title="GAME MENU", description="プレイしたいゲームを選択してください。", color=0xFFFFFF)
-        await interaction.followup.send(embed=embed, view=view)
+        
+        # 2. 保留した応答を編集してメニューを表示
+        await interaction.edit_original_response(embed=embed, view=view)
 
 async def setup(bot):
     await bot.add_cog(PlayHub(bot))
