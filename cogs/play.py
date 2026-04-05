@@ -103,7 +103,7 @@ class GameSelectView(discord.ui.View):
                 await interaction.response.edit_message(view=WordWolfGenreView(self.bot))
 
             elif game_value == "doubt":
-                cog = self.bot.get_cog("Doubt")
+                cog = self.bot.get_cog("doubt")
                 if not cog:
                     await interaction.response.edit_message(content="エラー: Doubtモジュールがロードされていません。", view=None)
                     await send_debug_log(self.bot, "エラー: Doubt Cogが見つかりません。")
