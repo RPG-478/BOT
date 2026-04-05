@@ -123,6 +123,38 @@ class CustomWordWolf(commands.Cog):
         self.game_running = True
         self.bot.loop.create_task(self.game_timer(interaction.channel))
 
+    # --- play.py の GameSelectView から呼ばれるゲーム開始メソッド ---
+    async def begin_game(self, channel, wordlist: str):
+        """JoinView 表示後 60 秒待機してゲームを開始する。play.py から create_task で呼ぶ。"""
+        await asyncio.sleep(60)
+
+        if len(self.players) < 3:
+            await channel.send("人数不足（3人以上必要）のため中止します。")
+            return
+
+        list_names = {"standard": "標準", "starail": "崩壊：スターレイル", "genshin": "原神"}
+        current_list_name = list_names.get(wordlist, "標準")
+
+        pool = self.word_pools.get(wordlist, self.word_pools["standard"])
+        selected_words = random.sample(pool, 2)
+        common_word, wolf_word = selected_words
+        self.wolf = random.choice(self.players)
+        self.alive_players = self.players.copy()
+
+        for p in self.players:
+            self.player_words[p.id] = wolf_word if p == self.wolf else common_word
+
+        check_view = CheckWordView(self)
+        await channel.send(
+            f"**ゲーム開始！** 参加者: {', '.join([p.display_name for p in self.players])}\n"
+            f"リスト: **{current_list_name}** / 各自ボタンでワードを確認してください。\n"
+            f"⚠️ **【ルール】メンションで判定（全体で残り {self.remaining_challenges} 回まで）**",
+            view=check_view
+        )
+
+        self.game_running = True
+        self.bot.loop.create_task(self.game_timer(channel))
+
     async def game_timer(self, channel):
         for i in range(4, 0, -1):
             await asyncio.sleep(60)
