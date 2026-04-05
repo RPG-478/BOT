@@ -47,15 +47,42 @@ class CardSelect(discord.ui.Select):
         self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
-        selected = self.values[0]
-        self.cog.pending_cards[interaction.user.id] = selected
+        # カードが選択されたら即座に処理を実行（チャットでの数字入力を廃止）
+        selected_card = self.values[0]
+        game = self.game_engine
+        user_id = interaction.user.id
         
-        target_num = self.game_engine.next_required_num
-        embed = discord.Embed(
-            description=f"選んだカード: **{selected}**\n次に、このカードとして「**{target_num}**」とチャットで送信してください。", 
-            color=0xFFFFFF
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # 念のためのチェック
+        if user_id != game.current_player_id:
+            return await interaction.response.send_message("あなたのターンではありません", ephemeral=True)
+        
+        # 宣言する数字を自動決定
+        claimed_num = game.next_required_num
+        
+        # 手札から削除
+        if selected_card in game.hands[user_id]:
+            game.hands[user_id].remove(selected_card)
+            game.field.append((user_id, selected_card))
+            game.last_claimed_num = claimed_num
+            game.last_player_id = user_id
+            game.pass_count = 0
+            
+            # メッセージ送信（インタラクションへの応答として）
+            await interaction.response.send_message(f"**{selected_card}** を「**{claimed_num}**」として出しました。", ephemeral=True)
+            await interaction.channel.send(f"<@{user_id}> が「**{claimed_num}**」を宣言してカードを置きました。5秒間ダウト受付中。")
+            
+            # 次の数字をセット（13の次は1）
+            game.next_required_num = 1 if claimed_num == 13 else claimed_num + 1
+            
+            game.is_accepting_doubt = True
+            game.next_turn()
+            
+            # ダウト待機
+            await asyncio.sleep(5)
+            
+            if game.is_accepting_doubt:
+                game.is_accepting_doubt = False
+                await self.cog.send_main_screen(interaction.channel, game)
 
 class GameControlView(discord.ui.View):
     def __init__(self, game_engine, cog):
@@ -102,7 +129,6 @@ class Doubt(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.games = {}
-        self.pending_cards = {}
 
     async def send_main_screen(self, channel, game):
         if game.last_panel_msg:
@@ -120,18 +146,9 @@ class Doubt(commands.Cog):
         embed.add_field(name="プレイヤー", value="\n".join(status_list), inline=False)
         
         view = GameControlView(game, self)
-        game.last_panel_msg = await channel.send(embed=embed, view=view)
-
-    async def start_from_hub(self, channel, player_ids):
-        await asyncio.sleep(60)
-        
-        if len(player_ids) < 3:
-            return await channel.send("人数不足（3名以上必要）のため、ダウトを開始できませんでした。")
-        
-        engine = DoubtEngine(player_ids)
-        self.games[channel.id] = engine
-        await channel.send("3名以上の参加を確認。カードを配り、ゲームを開始します！")
-        await self.send_main_screen(channel, engine)
+        # メンションをembedの外で送る
+        content = f"次の方、カードを選んでください: <@{game.current_player_id}>"
+        game.last_panel_msg = await channel.send(content=content, embed=embed, view=view)
 
     @commands.command(name="doubt")
     async def start_game(self, ctx):
@@ -142,7 +159,17 @@ class Doubt(commands.Cog):
             color=0xFFFFFF
         )
         await ctx.send(embed=embed, view=view)
-        await self.start_from_hub(ctx.channel, view.players)
+        
+        await asyncio.sleep(60)
+        
+        player_ids = view.players
+        if len(player_ids) < 3:
+            return await ctx.channel.send("人数不足（3名以上必要）のため、ダウトを開始できませんでした。")
+        
+        engine = DoubtEngine(player_ids)
+        self.games[ctx.channel.id] = engine
+        await ctx.channel.send("3名以上の参加を確認。カードを配り、ゲームを開始します！")
+        await self.send_main_screen(ctx.channel, engine)
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -153,7 +180,6 @@ class Doubt(commands.Cog):
         # パス処理
         if message.author.id == game.current_player_id and message.content == "パス":
             game.pass_count += 1
-            # 全員がパスしたらリセット
             if game.pass_count >= len(game.players):
                 game.next_required_num = 1
                 game.pass_count = 0
@@ -162,37 +188,6 @@ class Doubt(commands.Cog):
             game.next_turn()
             await self.send_main_screen(message.channel, game)
             return
-
-        # カードを置く処理
-        if message.author.id == game.current_player_id and message.author.id in self.pending_cards:
-            if message.content.isdigit():
-                val = int(message.content)
-                # 指定の数字以外は弾く
-                if val != game.next_required_num:
-                    await message.channel.send(f"現在は「{game.next_required_num}」を出す番です。", delete_after=3)
-                    return
-
-                card = self.pending_cards.pop(message.author.id)
-                if card in game.hands[message.author.id]:
-                    game.hands[message.author.id].remove(card)
-                    game.field.append((message.author.id, card))
-                    game.last_claimed_num = val
-                    game.last_player_id = message.author.id
-                    game.pass_count = 0 # 誰かが出したらパスカウントリセット
-                    
-                    await message.channel.send(f"<@{message.author.id}> が「**{val}**」を宣言してカードを置きました。5秒間ダウト受付中。")
-                    
-                    # 次の数字をセット（13の次は1）
-                    game.next_required_num = 1 if val == 13 else val + 1
-                    
-                    game.is_accepting_doubt = True
-                    game.next_turn()
-                    
-                    await asyncio.sleep(5)
-                    
-                    if game.is_accepting_doubt:
-                        game.is_accepting_doubt = False
-                        await self.send_main_screen(message.channel, game)
 
         # ダウト宣言の処理
         elif "ダウト" in message.content and game.is_accepting_doubt:
@@ -225,9 +220,7 @@ class Doubt(commands.Cog):
             game.hands[penalty_user].sort()
             game.field.clear()
             
-            # ダウトが発生したら数字は1に戻る
             game.next_required_num = 1
-            
             await message.channel.send(embed=embed)
             
             for p_id in game.players:
