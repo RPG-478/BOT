@@ -1,8 +1,15 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+import asyncio
 
-# --- ワードウルフ専用：ジャンル選択メニュー ---
+# 各ファイルをあらかじめインポートしておく（呼び出し時の遅延を防ぐ）
+import wordwolf
+import Pault
+import onlinePault
+import jinrou
+import god_field
+
 class WordWolfGenreView(discord.ui.View):
     def __init__(self, bot):
         super().__init__(timeout=60)
@@ -17,22 +24,21 @@ class WordWolfGenreView(discord.ui.View):
         ]
     )
     async def select_genre(self, interaction: discord.Interaction, select: discord.ui.Select):
+        # 処理が長引く可能性を考慮して、まず「考え中」の状態にする
+        await interaction.response.defer(ephemeral=True)
+        
         genre = select.values[0]
-        # wordwolf.py のクラス名「CustomWordWolf」を取得
         cog = self.bot.get_cog("CustomWordWolf")
         if cog:
-            import wordwolf
-            # 状態をリセット
             cog.game_running = True
             cog.players = [interaction.user]
-            # wordwolf.py の JoinView を呼び出し
             embed = discord.Embed(title="ワードウルフ参加者募集", color=0xFFFFFF)
             embed.description = f"ジャンル: **{genre}**\n\n参加者は下のボタンを押してください。"
-            await interaction.response.send_message(embed=embed, view=wordwolf.JoinView(cog))
+            # deferした後は followup.send を使う
+            await interaction.followup.send(embed=embed, view=wordwolf.JoinView(cog))
         else:
-            await interaction.response.send_message("WordWolf Cogが見つかりません。", ephemeral=True)
+            await interaction.followup.send("エラー: WordWolf Cogが見つかりません。", ephemeral=True)
 
-# --- メイン：ゲーム選択メニュー ---
 class GameSelectView(discord.ui.View):
     def __init__(self, bot):
         super().__init__(timeout=60)
@@ -57,53 +63,46 @@ class GameSelectView(discord.ui.View):
             embed = discord.Embed(title="ワードウルフ設定", description="ジャンルを選択してください。", color=0xFFFFFF)
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         
-        # 2. Pault (Pault.py)
+        # 2. Pault (シングル)
         elif game_value == "pault":
-            import Pault
+            # 念のため defer してタイムアウトを防ぐ
+            await interaction.response.defer()
             game = Pault.PaultGame(interaction.user)
             embed = Pault.make_embed(game)
             embed.color = 0xFFFFFF
-            await interaction.response.send_message(embed=embed, view=Pault.SetupView(game))
+            await interaction.followup.send(embed=embed, view=Pault.SetupView(game))
             
-        # 3. Online Pault (onlinePault.py)
+        # 3. Online Pault
         elif game_value == "online_pault":
-            import onlinePault
+            await interaction.response.defer()
             embed = discord.Embed(title="Online Pault 募集", description="対戦相手を待っています...", color=0xFFFFFF)
-            await interaction.response.send_message(embed=embed, view=onlinePault.OnlineEntryView(interaction.user))
+            await interaction.followup.send(embed=embed, view=onlinePault.OnlineEntryView(interaction.user))
 
-        # 4. 人狼ゲーム (jinrou.py)
+        # 4. 人狼ゲーム
         elif game_value == "jinrou":
-            import jinrou
+            await interaction.response.defer()
             cog = self.bot.get_cog("JinrouCog")
             if cog:
                 game = cog.get_game(interaction.channel_id)
                 game.is_running = True
                 game.players = [interaction.user]
-                embed = discord.Embed(title="人狼ゲーム 参加者募集", description="「参加する」ボタンを押してください。", color=0xFFFFFF)
-                await interaction.response.send_message(embed=embed, view=jinrou.RecruitView(game, 60))
+                embed = discord.Embed(title="人狼ゲーム 参加者募集", description="参加ボタンを押してください。", color=0xFFFFFF)
+                await interaction.followup.send(embed=embed, view=jinrou.RecruitView(game, 60))
             else:
-                await interaction.response.send_message("JinrouCogが見つかりません。", ephemeral=True)
+                await interaction.followup.send("JinrouCogが見つかりません。", ephemeral=True)
 
-        # 5. God Field (god_field.py)
+        # 5. God Field
         elif game_value == "godfield":
-            import god_field
             embed = discord.Embed(title="God Field", description="ゲームを開始します。", color=0xFFFFFF)
-            # 現在の god_field.py は即座に /godfield コマンドで開始する形式のため
-            # ここでは案内のみ、または専用の開始ロジックを呼び出します
             await interaction.response.send_message(embed=embed)
 
-# --- 窓口Cog本体 ---
 class PlayHub(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="play", description="ゲームメニューを表示します")
+    @app_commands.command(name="play", description="ミニゲームメニューを表示")
     async def play(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="GAME MENU",
-            description="プレイしたいゲームをリストから選択してください。",
-            color=0xFFFFFF
-        )
+        embed = discord.Embed(title="GAME MENU", description="プレイするゲームを選択してください。", color=0xFFFFFF)
         view = GameSelectView(self.bot)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
