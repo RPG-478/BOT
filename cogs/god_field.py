@@ -1591,6 +1591,50 @@ class GodField(commands.Cog):
 # ================================================================
 # setup
 # ================================================================
+# god_field.py への追記パッチ
+# 以下のメソッドを GodField クラスの process_turn_end の直後、
+# クラス末尾（async def setup(bot) の直前）に追加してください。
 
+# ================================================================
+# 追加メソッド: play.py ハブとの連携用
+# ================================================================
+
+    # --- play.py の GameSelectView から呼ばれるゲーム開始メソッド ---
+    async def start_from_hub(self, channel, join_view):
+        """
+        play.py の GameSelectView で JoinView を表示した後に
+        create_task で呼ばれる。60 秒待機してからゲームを開始する。
+        """
+        await asyncio.sleep(60)
+
+        if len(join_view.joined_users) < 2:
+            await channel.send("⚠️ 人数不足（最低2名）のため中止します。")
+            return
+
+        players     = {u.id: create_player(u) for u in join_view.joined_users}
+        turn_order  = list(players.keys())
+        random.shuffle(turn_order)
+
+        self.games[channel.id] = {
+            "players":               players,
+            "turn_order":            turn_order,
+            "current_index":         0,
+            "round":                 1,
+            "active_interaction_id": None,
+            "cog":                   self,
+            "temp_msgs":             [],
+            "tiebreak":              False,
+        }
+        names = "、".join(p["name"] for p in players.values())
+        await channel.send(f"🌟 **戦い開始！** 参戦者：{names}")
+        await self.send_turn_panel(channel)
+
+
+# ================================================================
+# 挿入位置の目印（元ファイルのこの行の直前に上記メソッドを追加）
+# ================================================================
+# async def setup(bot):
+#     await bot.add_cog(GodField(bot))
 async def setup(bot):
     await bot.add_cog(GodField(bot))
+    
