@@ -40,7 +40,7 @@ class MyBot(commands.Bot):
             channel = self.get_channel(NOTIFY_CHANNEL_ID)
             if channel:
                 try:
-                    await channel.send("システムを更新しました。")
+                    await channel.send("<a:AGOMUNIMUNI:1490255555632037909>システムを更新しました。")
                     print(df.format_log(f"Update notification sent to {channel.name}"))
                 except Exception as e:
                     print(df.format_log(f"Failed to send update message: {e}"))
