@@ -1,11 +1,9 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+import importlib
 
-# 各ファイルから必要なクラスやViewをインポート
-# ファイル名にスペースがある場合はインポート時に工夫が必要なため、
-# 読み込みエラーを防ぐために内部で get_cog を多用する構成にします。
-
+# --- ワードウルフ専用：ジャンル選択メニュー ---
 class WordWolfGenreView(discord.ui.View):
     def __init__(self, bot):
         super().__init__(timeout=60)
@@ -17,25 +15,25 @@ class WordWolfGenreView(discord.ui.View):
             discord.SelectOption(label="スタンダード", value="standard"),
             discord.SelectOption(label="原神", value="genshin"),
             discord.SelectOption(label="崩壊：スターレイル", value="starrail"),
-            discord.SelectOption(label="数学", value="math"),
         ]
     )
     async def select_genre(self, interaction: discord.Interaction, select: discord.ui.Select):
         genre = select.values[0]
-        # wordwolf.py内のクラス名は CustomWordWolf となっています
+        # wordwolf.py内のクラス名は CustomWordWolf です
         cog = self.bot.get_cog("CustomWordWolf")
         if cog:
-            import wordwolf # wordwolf.py をインポート
+            import wordwolf
             cog.game_running = True
             cog.players = [interaction.user]
-            
+            # 選択されたジャンルでお題を決定する処理（元のコードのロジックに準拠）
+            # ここでは募集Viewに移行します
             embed = discord.Embed(title="ワードウルフ参加者募集", color=0xFFFFFF)
             embed.description = f"ジャンル: **{genre}**\n\n「参加」ボタンを押してください。"
-            # wordwolf.py 内の JoinView を使用
             await interaction.response.edit_message(content=None, embed=embed, view=wordwolf.JoinView(cog))
         else:
             await interaction.response.edit_message(content="エラー: WordWolf Cogが見つかりません。", view=None)
 
+# --- メイン：ゲーム選択メニュー ---
 class GameSelectView(discord.ui.View):
     def __init__(self, bot):
         super().__init__(timeout=60)
@@ -54,52 +52,50 @@ class GameSelectView(discord.ui.View):
     async def select_game(self, interaction: discord.Interaction, select: discord.ui.Select):
         game_value = select.values[0]
 
-        # --- ワードウルフ ---
+        # 1. ワードウルフ (wordwolf.py)
         if game_value == "wordwolf":
             view = WordWolfGenreView(self.bot)
             embed = discord.Embed(title="ワードウルフ設定", description="お題のジャンルを選んでください。", color=0xFFFFFF)
             await interaction.response.edit_message(content=None, embed=embed, view=view)
         
-        # --- Pault (シングル) ---
+        # 2. Pault (Pault.py)
         elif game_value == "pault":
-            # Pault 3.py 内のクラス名は Pault となっています
-            import importlib
-            pault_module = importlib.import_module("Pault 3") # スペース対策
-            game = pault_module.PaultGame(interaction.user)
-            embed = pault_module.make_embed(game)
+            import Pault
+            game = Pault.PaultGame(interaction.user)
+            embed = Pault.make_embed(game)
             embed.color = 0xFFFFFF
-            await interaction.response.edit_message(content=None, embed=embed, view=pault_module.SetupView(game))
+            await interaction.response.edit_message(content=None, embed=embed, view=Pault.SetupView(game))
             
-        # --- Online Pault ---
+        # 3. Online Pault (onlinePault.py)
         elif game_value == "online_pault":
             import onlinePault
             embed = discord.Embed(title="Online Pault 募集", description="対戦相手を待っています...", color=0xFFFFFF)
             await interaction.response.edit_message(content=None, embed=embed, view=onlinePault.OnlineEntryView(interaction.user))
 
-        # --- 人狼ゲーム ---
+        # 4. 人狼ゲーム (jinrou.py)
         elif game_value == "jinrou":
-            import importlib
-            jinrou_module = importlib.import_module("jinrou 5") # スペース対策
+            import jinrou
             cog = self.bot.get_cog("JinrouCog")
             if cog:
                 game = cog.get_game(interaction.channel_id)
                 game.is_running = True
                 game.players = [interaction.user]
                 embed = discord.Embed(title="人狼ゲーム 参加者募集", description="参加ボタンを押してください。", color=0xFFFFFF)
-                await interaction.response.edit_message(content=None, embed=embed, view=jinrou_module.RecruitView(game, 60))
+                await interaction.response.edit_message(content=None, embed=embed, view=jinrou.RecruitView(game, 60))
 
-        # --- God Field ---
+        # 5. God Field (god_field.py)
         elif game_value == "godfield":
-            import importlib
-            gf_module = importlib.import_module("god_field 2")
-            embed = discord.Embed(title="God Field", description="ゲームを開始します。現在準備中...", color=0xFFFFFF)
+            import god_field
+            embed = discord.Embed(title="God Field", description="ゲームを開始します。参加者を募集してください。", color=0xFFFFFF)
+            # 必要に応じて募集Viewを追加
             await interaction.response.edit_message(content=None, embed=embed, view=None)
 
+# --- 窓口Cog本体 ---
 class PlayHub(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="play", description="ミニゲームメニューを開きます")
+    @app_commands.command(name="play", description="全てのミニゲームメニューを表示します")
     async def play(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="GAME MENU",
