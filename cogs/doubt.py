@@ -19,7 +19,7 @@ class DoubtEngine:
 
     def _setup_game(self):
         suits = ["S", "H", "D", "C"]
-        # デッキ作成
+        # カードリスト作成 [S-1] ~ [C-13]
         deck = [f"[{s}-{r}]" for s in suits for r in range(1, 14)]
         random.shuffle(deck)
         
@@ -39,7 +39,7 @@ class DoubtEngine:
 
 class CardSelect(discord.ui.Select):
     def __init__(self, hand, game_engine, cog):
-        # Discord制限により最大25項目まで
+        # Discordの制限によりセレクトメニューは最大25項目まで
         options = [discord.SelectOption(label=card, value=card) for card in hand[:25]]
         super().__init__(placeholder="出すカードを1枚選んでください", options=options)
         self.game_engine = game_engine
@@ -51,7 +51,7 @@ class CardSelect(discord.ui.Select):
         self.cog.pending_cards[interaction.user.id] = selected
         
         embed = discord.Embed(
-            description=f"選んだカード: **{selected}**\n次に、宣言する数字(1-13)をチャットで送信してください。", 
+            description=f"選んだカード: **{selected}**\n次に、このカードとして宣言する数字(1-13)をチャットで送信してください。", 
             color=0xFFFFFF
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -90,7 +90,7 @@ class GameControlView(discord.ui.View):
 # --- PlayHub連携用：参加募集View ---
 class DoubtJoinView(discord.ui.View):
     def __init__(self, host_id):
-        super().__init__(timeout=60)
+        super().__init__(timeout=65) # 非同期待機時間より少し長めに設定
         self.players = [host_id]
 
     @discord.ui.button(label="参加", style=discord.ButtonStyle.green)
@@ -110,6 +110,7 @@ class Doubt(commands.Cog):
         self.pending_cards = {}   # user_id: selected_card_str
 
     async def send_main_screen(self, channel, game):
+        # 古い操作パネルを削除
         if game.last_panel_msg:
             try:
                 await game.last_panel_msg.delete()
@@ -127,13 +128,14 @@ class Doubt(commands.Cog):
         game.last_panel_msg = await channel.send(embed=embed, view=view)
 
     async def start_from_hub(self, channel, player_ids):
-        """PlayHub等からプレイヤーリストを受け取って開始する"""
+        """PlayHub等からプレイヤーリストを受け取って開始するインターフェース"""
+        # 募集時間を待つ場合は呼び出し側かここでsleepを入れる
         if len(player_ids) < 3:
             return await channel.send("人数不足（3名以上必要）のため、ダウトを開始できませんでした。")
         
         engine = DoubtEngine(player_ids)
         self.games[channel.id] = engine
-        await channel.send("3名以上の参加を確認。ゲームを開始します！")
+        await channel.send("カードを配り、ダウトを開始します！")
         await self.send_main_screen(channel, engine)
 
     @commands.command(name="doubt")
@@ -171,6 +173,7 @@ class Doubt(commands.Cog):
                     game.is_accepting_doubt = True
                     game.next_turn()
                     
+                    # 5秒間のダウト受付タイム
                     await asyncio.sleep(5)
                     
                     if game.is_accepting_doubt:
@@ -182,7 +185,7 @@ class Doubt(commands.Cog):
             game.is_accepting_doubt = False
             last_player, actual_card = game.field[-1]
             
-            # 数字抽出
+            # カード文字列から数字を抽出
             actual_num = int(''.join(filter(str.isdigit, actual_card)))
             is_lie = (actual_num != game.last_claimed_num)
             
@@ -197,6 +200,7 @@ class Doubt(commands.Cog):
                 embed.description = f"**本当でした！**\nダウトと言った <@{message.author.id}> がすべて回収します。"
                 penalty_user = message.author.id
             
+            # ペナルティ回収
             for _, c in game.field:
                 game.hands[penalty_user].append(c)
             game.hands[penalty_user].sort()
