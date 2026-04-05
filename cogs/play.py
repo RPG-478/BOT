@@ -177,7 +177,7 @@ class PlayHub(commands.Cog):
         await send_debug_log(self.bot, f"/play コマンドが実行されました (Channel: {interaction.channel.id})")
         view = GameSelectView(self.bot)
         embed = discord.Embed(title="GAME MENU", description="プレイしたいゲームを選択してください。", color=0xFFFFFF)
-        await interaction.response.send_message(embed=embed, view=view)
+        await interaction.followup.send(embed=embed, view=view)
 
 async def setup(bot):
     await bot.add_cog(PlayHub(bot))
