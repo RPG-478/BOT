@@ -66,14 +66,6 @@ class CustomWordWolf(commands.Cog):
                 "過負荷", "感電", "超電導", "開花", "激化", "結晶", "拡散", "凍結"
             ]
         }
-
-    @app_commands.command(name="wordwolf", description="ワードウルフを開始（全体で3回までチャレンジ可能）")
-    @app_commands.describe(wordlist="使用するワードリストを選択してください")
-    @app_commands.choices(wordlist=[
-        app_commands.Choice(name="標準 (Standard)", value="standard"),
-        app_commands.Choice(name="崩壊：スターレイル (Starail)", value="starail"),
-        app_commands.Choice(name="原神 (Genshin)", value="genshin"),
-    ])
     async def wordwolf(self, interaction: discord.Interaction, wordlist: str = "standard"):
         if self.game_running:
             await interaction.response.send_message("既にゲームが進行中です。", ephemeral=True)
