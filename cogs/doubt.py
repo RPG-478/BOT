@@ -23,12 +23,15 @@ class DoubtEngine:
 
     def _setup_game(self):
         suits = ["S", "H", "D", "C"]
+        # 1-13のカード + ジョーカー2枚を作成
         deck = [f"[{s}-{r}]" for s in suits for r in range(1, 14)]
+        deck.extend(["[JK-1]", "[JK-2]"])
         random.shuffle(deck)
         
         per_player = len(deck) // len(self.players)
         for i, p_id in enumerate(self.players):
             start = i * per_player
+            # 余ったカードは最後の人に配分
             end = (i + 1) * per_player if i != len(self.players) - 1 else len(deck)
             self.hands[p_id] = sorted(deck[start:end])
 
@@ -47,7 +50,6 @@ class CardSelect(discord.ui.Select):
         self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
-        # 宣言の入力を介さず、選択された時点で自動的に現在の目標数字として処理
         selected_card = self.values[0]
         game = self.game_engine
         user_id = interaction.user.id
@@ -62,7 +64,7 @@ class CardSelect(discord.ui.Select):
             game.field.append((user_id, selected_card))
             game.last_claimed_num = claimed_num
             game.last_player_id = user_id
-            game.pass_count = 0 # 誰かが出したらパスカウントリセット
+            game.pass_count = 0 
             
             await interaction.response.send_message(f"**{selected_card}** を「**{claimed_num}**」として出しました。", ephemeral=True)
             await interaction.channel.send(f"<@{user_id}> が「**{claimed_num}**」を宣言してカードを置きました。5秒間ダウト受付中。")
@@ -105,7 +107,6 @@ class GameControlView(discord.ui.View):
         
         view = discord.ui.View()
         view.add_item(CardSelect(self.game_engine.hands[interaction.user.id], self.game_engine, self.cog))
-        # 宣言は自動なので「どのカードを〜として出しますか？」のみ聞く
         await interaction.response.send_message(f"どのカードを「{self.game_engine.next_required_num}」として出しますか？", view=view, ephemeral=True)
 
 class DoubtJoinView(discord.ui.View):
@@ -142,7 +143,6 @@ class Doubt(commands.Cog):
         embed.add_field(name="プレイヤー", value="\n".join(status_list), inline=False)
         
         view = GameControlView(game, self)
-        # 手番プレイヤーをEmbedの外でメンション
         content = f"次の方、カードを選んでください: <@{game.current_player_id}>"
         game.last_panel_msg = await channel.send(content=content, embed=embed, view=view)
 
@@ -177,7 +177,6 @@ class Doubt(commands.Cog):
         # パス処理
         if message.author.id == game.current_player_id and message.content == "パス":
             game.pass_count += 1
-            # 全員がパスしたらリセット
             if game.pass_count >= len(game.players):
                 game.next_required_num = 1
                 game.pass_count = 0
@@ -195,22 +194,27 @@ class Doubt(commands.Cog):
             game.is_accepting_doubt = False
             last_player, actual_card = game.field[-1]
             
-            try:
-                actual_num = int(''.join(filter(str.isdigit, actual_card.split('-')[-1])))
-            except:
-                actual_num = 0
-                
-            is_lie = (actual_num != game.last_claimed_num)
+            # ジョーカー判定：カード名に "JK" が含まれていれば、常に宣言通りの数字として扱う
+            if "JK" in actual_card:
+                is_lie = False
+            else:
+                try:
+                    actual_num = int(''.join(filter(str.isdigit, actual_card.split('-')[-1])))
+                except:
+                    actual_num = 0
+                is_lie = (actual_num != game.last_claimed_num)
             
-            embed = discord.Embed(title="審議結果", color=0xFFFFFF)
+            # 結果に応じた色の設定（成功: 緑, 失敗: 赤）
+            embed_color = 0x00FF00 if is_lie else 0xFF0000
+            embed = discord.Embed(title="審議結果", color=embed_color)
             embed.add_field(name="宣言された数字", value=f"{game.last_claimed_num}")
             embed.add_field(name="実際のカード", value=f"{actual_card}")
             
             if is_lie:
-                embed.description = f"**嘘でした！**\n出した人 <@{last_player}> は場のカードをすべて回収します。"
+                embed.description = f"**嘘でした！**（ダウト成功）\n出した人 <@{last_player}> は場のカードをすべて回収します。"
                 penalty_user = last_player
             else:
-                embed.description = f"**本当でした！**\nダウトと言った <@{message.author.id}> がすべて回収します。"
+                embed.description = f"**本当でした！**（ダウト失敗）\nダウトと言った <@{message.author.id}> がすべて回収します。"
                 penalty_user = message.author.id
             
             for _, c in game.field:
@@ -218,15 +222,14 @@ class Doubt(commands.Cog):
             game.hands[penalty_user].sort()
             game.field.clear()
             
-            # ダウトが発生したら数字は1に戻る
-            game.next_required_num = 1
+            # 数字のリセットは行わず、そのままループを継続する
             
             await message.channel.send(embed=embed)
             
             for p_id in game.players:
                 if len(game.hands.get(p_id, [])) == 0:
                     win_embed = discord.Embed(title="Game Set!", description=f"勝者: <@{p_id}>", color=0xFFFFFF)
-                    await message.channel.send(embed=win_embed)
+                    await message.channel.send(win_embed)
                     if message.channel.id in self.games:
                         del self.games[message.channel.id]
                     return
