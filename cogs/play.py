@@ -96,7 +96,6 @@ class GameSelectView(discord.ui.View):
     )
     async def select_game(self, interaction: discord.Interaction, select: discord.ui.Select):
         game_value = select.values[0]
-        await interaction.response.defer()
         await send_debug_log(self.bot, f"{interaction.user} が {game_value} を選択しました。")
 
         try:
