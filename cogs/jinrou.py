@@ -159,23 +159,37 @@ class JinrouCog(commands.Cog):
             await asyncio.sleep(1)
             if not game.is_running: return
 
+        await self._start_game_loop(game, interaction.channel)
+
+    # --- play.py の GameSelectView から呼ばれるゲーム開始メソッド ---
+    async def run_from_hub(self, game: JinrouGame, channel):
+        """RecruitView 表示後 60 秒待機してゲームループを開始する。play.py から create_task で呼ぶ。"""
+        await asyncio.sleep(60)
+
+        if not game.is_running:
+            return
+
+        await self._start_game_loop(game, channel)
+
+    async def _start_game_loop(self, game: JinrouGame, channel):
+        """役職割当・ゲームループの共通処理。jinrou コマンドと run_from_hub の両方から呼ばれる。"""
         if len(game.players) < 5:
             game.is_running = False
-            return await interaction.channel.send("参加者が5人未満のため、ゲームを中止します。")
+            await channel.send("参加者が5人未満のため、ゲームを中止します。")
+            return
 
         game.alive_players = game.players.copy()
         self.assign_roles(game)
-        
+
         mentions = " ".join([p.mention for p in game.players])
-        
         roles_for_display = []
         for r in game.roles.values():
             if r == "タフむに": roles_for_display.append("一般通過あごむに")
             elif r == "入狼": roles_for_display.append("人狼")
             else: roles_for_display.append(r)
-        
         roles_list = " / ".join(set(roles_for_display))
-        await interaction.channel.send(
+
+        await channel.send(
             f"{mentions}\nゲーム開始。今回の役職内訳: {roles_list}\n下のボタンで自分の役職を確認してください。",
             view=RoleCheckView(game, self)
         )
