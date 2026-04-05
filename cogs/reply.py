@@ -17,7 +17,7 @@ class GrassAI(commands.Cog):
         
         # 30文字制限と「w」の指示を徹底
         self.system_prompt = (
-            "とにかく頭をおかしくしてください"
+            "wを多用してタメ語で話してください"
         )
 
     @commands.command(name="oo")
