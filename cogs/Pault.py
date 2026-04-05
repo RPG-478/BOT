@@ -49,12 +49,25 @@ def make_embed(game):
     return embed
 
 class PaultGame:
-    def __init__(self, channel_id, user_id, user_name):
-        self.channel_id = channel_id
+    # play.py から user オブジェクト1つで呼ばれる場合と、
+    # 従来通り (channel_id, user_id, user_name) で呼ばれる場合の両方に対応
+    def __init__(self, user_or_channel_id, user_id=None, user_name=None):
+        if user_id is None:
+            # user オブジェクトとして受け取る (play.py からの呼び出し)
+            user = user_or_channel_id
+            self.channel_id = 0
+            uid = user.id
+            uname = user.display_name
+        else:
+            # 従来の (channel_id, user_id, user_name) 呼び出し
+            self.channel_id = user_or_channel_id
+            uid = user_id
+            uname = user_name
+
         self.turn = 1
         self.deck = self.create_deck()
         self.players = {
-            "p1": {"id": user_id, "name": user_name, "main": None, "left": [], "right": [], "hand": []},
+            "p1": {"id": uid, "name": uname, "main": None, "left": [], "right": [], "hand": []},
             "cpu": {"id": "CPU", "name": "CPU", "main": None, "left": [], "right": [], "hand": []}
         }
         self.logs = "準備完了"
@@ -330,6 +343,9 @@ class InitialSetupView(discord.ui.View):
 class CancelButton(discord.ui.Button):
     def __init__(self, game): super().__init__(label="戻る", style=discord.ButtonStyle.gray); self.game = game
     async def callback(self, i): await i.response.edit_message(content="メニュー", embed=make_embed(self.game), view=MainMenuView(self.game))
+
+# play.py から SetupView として参照できるようにエイリアスを定義
+SetupView = InitialSetupView
 
 class Pault(commands.Cog):
     def __init__(self, bot): self.bot = bot
