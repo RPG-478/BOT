@@ -66,6 +66,10 @@ class CustomWordWolf(commands.Cog):
                 "過負荷", "感電", "超電導", "開花", "激化", "結晶", "拡散", "凍結"
             ]
         }
+    async def wordwolf(self, interaction: discord.Interaction, wordlist: str = "standard"):
+        if self.game_running:
+            await interaction.response.send_message("既にゲームが進行中です。", ephemeral=True)
+            return
 
         self.game_running = False
         self.players = []
