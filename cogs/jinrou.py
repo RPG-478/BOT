@@ -132,6 +132,14 @@ class JinrouCog(commands.Cog):
         for name, desc in roles_info.items():
             embed.add_field(name=name, value=desc, inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="jinrou", description="人狼ゲームを開始します")
+    @app_commands.describe(wait_minutes="募集時間を分単位で指定（1から1440分）")
+    async def jinrou(self, interaction: discord.Interaction, wait_minutes: int = 1):
+        game = self.get_game(interaction.channel_id)
+        if game.is_running:
+            return await interaction.response.send_message("このチャンネルでは既にゲームが進行中です。", ephemeral=True)
+
         wait_minutes = max(1, min(wait_minutes, 1440))
         
         game.is_running = True
