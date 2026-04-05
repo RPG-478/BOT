@@ -112,9 +112,19 @@ class Doubt(commands.Cog):
         view = GameControlView(game, self)
         game.last_panel_msg = await channel.send(embed=embed, view=view)
 
+    async def start_from_hub(self, channel, player_ids):
+        """PlayHub等の外部からプレイヤーリストを受け取って開始するインターフェース"""
+        if len(player_ids) < 3:
+            return await channel.send("人数不足（3名以上必要）のため、ダウトを開始できませんでした。")
+        
+        engine = DoubtEngine(player_ids)
+        self.games[channel.id] = engine
+        await channel.send("カードを配り、ダウトを開始します！")
+        await self.send_main_screen(channel, engine)
+
     @commands.command(name="doubt")
     async def start_game(self, ctx):
-        """!doubt で参加者募集を開始"""
+        """!doubt で直接参加者募集を開始"""
         players = [ctx.author.id]
         embed = discord.Embed(
             title="ダウト参加者募集", 
@@ -138,16 +148,7 @@ class Doubt(commands.Cog):
         msg = await ctx.send(embed=embed, view=view)
         await asyncio.sleep(60) # 60秒間待機
         
-        # 3人以上制限のチェック
-        if len(players) < 3:
-            try: await msg.delete() 
-            except: pass
-            return await ctx.send(f"人数不足（現在{len(players)}名）のため、ゲームを開始できませんでした。3名以上で再挑戦してください。")
-        
-        engine = DoubtEngine(players)
-        self.games[ctx.channel.id] = engine
-        await ctx.send("3名以上の参加を確認。ゲームを開始します！")
-        await self.send_main_screen(ctx.channel, engine)
+        await self.start_from_hub(ctx.channel, players)
 
     @commands.Cog.listener()
     async def on_message(self, message):
