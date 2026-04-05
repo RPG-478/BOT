@@ -217,7 +217,7 @@ class JinrouCog(commands.Cog):
         if not game.is_running: return
         await game.game_channel.send(f"ーー {title}（{minutes}分） ーー")
         if any(game.roles.get(p.id) == "パン屋" for p in game.alive_players):
-            await game.game_channel.send("パン屋さんが美味しいパンを焼いてくれました。")
+            await game.game_channel.send("<:PANYA:1490254577558093944>パン屋がパンを焼きました")
         
         for _ in range(minutes * 60):
             await asyncio.sleep(1)
@@ -261,7 +261,7 @@ class JinrouCog(commands.Cog):
             role = game.roles.get(p_id)
             if t_id in psycho_killer_ids:
                 dead_ids.add(p_id)
-                await game.game_channel.send("誰かがメンヘラに返り討ちにされました。")
+                await game.game_channel.send("<:MENHERA:1490254584739008522>誰かがメンヘラに返り討ちにされました。")
 
             if role in ["人狼", "デカ狼"]: wolves_target = t_id
             elif role == "騎士": knight_targets.add(t_id)
@@ -276,7 +276,7 @@ class JinrouCog(commands.Cog):
             # マサイ族の回避判定
             if game.roles.get(wolves_target) == "マサイ族" and game.masai_evasion.get(wolves_target):
                 if random.random() < 0.5:
-                    await game.game_channel.send("マサイ族はジャンプ力が高いので襲撃を回避しました。")
+                    await game.game_channel.send("<:MASAI:1490254590757572758>マサイ族はジャンプ力が高いので襲撃を回避しました。")
                 else:
                     dead_ids.add(wolves_target)
             else:
@@ -300,7 +300,7 @@ class JinrouCog(commands.Cog):
                         game.alive_players = [p for p in game.alive_players if p.id != d_id]
                         await self.mute_member(m)
         else:
-            await game.game_channel.send("夜の結果: 昨晩の犠牲者はいないようです。")
+            await game.game_channel.send("<:KISHI:1490254592800456794>夜の結果: 昨晩の犠牲者はいないようです。")
 
     async def check_victory(self, game):
         if not game.is_running: return True
@@ -462,7 +462,7 @@ class ActionSelectView(discord.ui.View):
         if self.role == "占い師":
             r = self.game.roles.get(t_id)
             res = "人狼" if r in ["人狼", "入狼", "ワンころ"] else "人間"
-            await interaction.response.send_message(f"結果: 【{res}】", ephemeral=True)
+            await interaction.response.send_message(f"<:URANAI:1490255412837093568>結果: 【{res}】", ephemeral=True)
         elif self.role == "マサイ族":
             r = self.game.roles.get(t_id)
             # マサイ族の真偽を隠蔽
@@ -480,7 +480,7 @@ class RecruitView(discord.ui.View):
     async def join(self, interaction, button):
         if interaction.user not in self.game.players:
             self.game.players.append(interaction.user)
-            await interaction.response.send_message(f"{interaction.user.display_name} さんが参加しました。")
+            await interaction.response.send_message(f"<a:AGOMUNIMUNI:1490255555632037909>{interaction.user.display_name} さんが参加しました。")
 
 class PublicVoteView(discord.ui.View):
     def __init__(self, game, options):
