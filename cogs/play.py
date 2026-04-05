@@ -89,21 +89,23 @@ class GameSelectView(discord.ui.View):
                 await interaction.response.edit_message(view=WordWolfGenreView(self.bot))
 
             elif game_value == "doubt":
-                # ダウトのCogを取得
+                # Doubt Cogを取得
                 cog = self.bot.get_cog("Doubt")
                 if not cog:
-                    await send_debug_log(self.bot, "エラー: Doubt Cogが見つかりません。")
+                    # ロードされているCogの一覧をログに出力して原因を特定しやすくする
+                    loaded_cogs = ", ".join(self.bot.cogs.keys())
+                    await send_debug_log(self.bot, f"エラー: Doubt Cogが見つかりません。現在のCog一覧: {loaded_cogs}")
+                    await interaction.response.edit_message(content="エラー: Doubtモジュールがロードされていません。", view=None)
                     return
                 
-                # インタラクションを一度「考え中」にするか、メッセージを更新
-                await interaction.response.edit_message(content="ダウトを準備しています...", embed=None, view=None)
+                # インタラクションを完了させ、募集メッセージに移行
+                await interaction.response.edit_message(content="ダウトの募集を開始します...", embed=None, view=None)
                 
-                # Doubt Cog内の募集処理をキック
-                # 擬似的に ctx を作成してコマンドを呼び出す
+                # Contextを生成してDoubt Cogのstart_gameコマンドを実行
                 ctx = await self.bot.get_context(interaction.message)
                 ctx.author = interaction.user
-                await cog.start_game(ctx)
-                await send_debug_log(self.bot, "Doubt の募集を開始しました。")
+                self.bot.loop.create_task(cog.start_game(ctx))
+                await send_debug_log(self.bot, "Doubt の募集フェーズを開始しました。")
 
             elif game_value == "pault":
                 import Pault
