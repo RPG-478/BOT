@@ -400,6 +400,12 @@ class RoleCheckView(discord.ui.View):
             "霊媒師": "REIBAI.PNG",
             "パン屋": "PANYA.PNG",
             "狂人": "KYOJIN.PNG",
+            "ハゲ": "HAGE.PNG",
+            "デカ狼": "DEKAROU.PNG",
+            "あごむに破道砲": "AGOMUNIHADOHOU.PNG",
+            "ワンころ": "WANKORO.PNG",
+            "タフむに": "TAHUMUNI.PNG",
+            "狂信者": "KYOUSINSYA.PNG",
         }
 
         embed = discord.Embed(
