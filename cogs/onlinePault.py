@@ -326,5 +326,7 @@ class OnlineEntryView(discord.ui.View):
 
 class OnlinePault(commands.Cog):
     def __init__(self, bot): self.bot = bot
+    async def online_pault(self, interaction: discord.Interaction):
+        await interaction.response.send_message(f"【Online Pault】{interaction.user.display_name}が挑戦者を待っています...", view=OnlineEntryView(interaction.user))
 
 async def setup(bot): await bot.add_cog(OnlinePault(bot))
