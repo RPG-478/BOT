@@ -63,7 +63,7 @@ class GameControlView(discord.ui.View):
         embed = discord.Embed(title="あなたの手札", description=hand_str, color=0xFFFFFF)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="カードを置く", style=discord.ButtonStyle.blue)
+    @discord.ui.button(label="カードを置く", style=discord.ButtonStyle.red)
     async def play(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.game_engine.current_player_id:
             return await interaction.response.send_message("あなたのターンではありません", ephemeral=True)
