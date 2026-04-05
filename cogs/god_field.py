@@ -1019,6 +1019,17 @@ class GodField(commands.Cog):
         return e
 
     # ---------- ゲーム開始 ----------
+    async def god_field(self, ctx, wait_time: int = 60):
+        if ctx.channel.id in self.games:
+            return await ctx.send("⚠️ 現在対戦が進行中です。")
+
+        v = JoinView(timeout=wait_time)
+        await ctx.send(
+            f"⚡ **ゴッドフィールド** — 参戦者を募集中！（{wait_time}秒）\n"
+            "属性・呪い・奇跡が渦巻く神器カードバトル。",
+            view=v
+        )
+        await asyncio.sleep(wait_time)
 
         if len(v.joined_users) < 2:
             return await ctx.send("⚠️ 人数不足（最低2名）のため中止します。")
