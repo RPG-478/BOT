@@ -13,13 +13,13 @@ class DoubtEngine:
         self.last_claimed_num = None
         self.last_player_id = None
         self.is_accepting_doubt = False
-        self.last_panel_msg = None # 削除対象のメッセージ保持用
+        self.last_panel_msg = None 
         
         self._setup_game()
 
     def _setup_game(self):
         suits = ["S", "H", "D", "C"]
-        # カードリスト作成 [S-1] ~ [C-13]
+        # デッキ作成
         deck = [f"[{s}-{r}]" for s in suits for r in range(1, 14)]
         random.shuffle(deck)
         
@@ -39,7 +39,7 @@ class DoubtEngine:
 
 class CardSelect(discord.ui.Select):
     def __init__(self, hand, game_engine, cog):
-        # Discordの制限によりセレクトメニューは最大25項目まで
+        # Discord制限により最大25項目まで
         options = [discord.SelectOption(label=card, value=card) for card in hand[:25]]
         super().__init__(placeholder="出すカードを1枚選んでください", options=options)
         self.game_engine = game_engine
@@ -47,10 +47,11 @@ class CardSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         selected = self.values[0]
+        # Cog側の辞書に一時保存
         self.cog.pending_cards[interaction.user.id] = selected
         
         embed = discord.Embed(
-            description=f"選んだカード: **{selected}**\n次に、このカードとして宣言する数字(1-13)をチャットで送信してください。", 
+            description=f"選んだカード: **{selected}**\n次に、宣言する数字(1-13)をチャットで送信してください。", 
             color=0xFFFFFF
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -86,6 +87,20 @@ class GameControlView(discord.ui.View):
         await self.cog.send_main_screen(interaction.channel, self.game_engine)
         await interaction.response.defer()
 
+# --- PlayHub連携用：参加募集View ---
+class DoubtJoinView(discord.ui.View):
+    def __init__(self, host_id):
+        super().__init__(timeout=60)
+        self.players = [host_id]
+
+    @discord.ui.button(label="参加", style=discord.ButtonStyle.green)
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in self.players:
+            self.players.append(interaction.user.id)
+            await interaction.response.send_message(f"参加しました (現在: {len(self.players)}名)", ephemeral=True)
+        else:
+            await interaction.response.send_message("既に参加しています", ephemeral=True)
+
 # --- Cogメインクラス ---
 
 class Doubt(commands.Cog):
@@ -95,7 +110,6 @@ class Doubt(commands.Cog):
         self.pending_cards = {}   # user_id: selected_card_str
 
     async def send_main_screen(self, channel, game):
-        # 新しいターンが始まる際、古い操作パネルを削除してチャットを汚さないようにする
         if game.last_panel_msg:
             try:
                 await game.last_panel_msg.delete()
@@ -113,42 +127,27 @@ class Doubt(commands.Cog):
         game.last_panel_msg = await channel.send(embed=embed, view=view)
 
     async def start_from_hub(self, channel, player_ids):
-        """PlayHub等の外部からプレイヤーリストを受け取って開始するインターフェース"""
+        """PlayHub等からプレイヤーリストを受け取って開始する"""
         if len(player_ids) < 3:
             return await channel.send("人数不足（3名以上必要）のため、ダウトを開始できませんでした。")
         
         engine = DoubtEngine(player_ids)
         self.games[channel.id] = engine
-        await channel.send("カードを配り、ダウトを開始します！")
+        await channel.send("3名以上の参加を確認。ゲームを開始します！")
         await self.send_main_screen(channel, engine)
 
     @commands.command(name="doubt")
     async def start_game(self, ctx):
-        """!doubt で直接参加者募集を開始"""
-        players = [ctx.author.id]
+        """!doubt で直接募集を開始"""
+        view = DoubtJoinView(ctx.author.id)
         embed = discord.Embed(
             title="ダウト参加者募集", 
             description="ボタンを押して参加してください\n**※3名以上で開始します**（募集時間: 60秒）", 
             color=0xFFFFFF
         )
-        
-        view = discord.ui.View(timeout=65)
-        join_btn = discord.ui.Button(label="参加", style=discord.ButtonStyle.green)
-
-        async def join_callback(interaction):
-            if interaction.user.id not in players:
-                players.append(interaction.user.id)
-                await interaction.response.send_message(f"参加しました (現在: {len(players)}名)", ephemeral=True)
-            else:
-                await interaction.response.send_message("既に参加しています", ephemeral=True)
-        
-        join_btn.callback = join_callback
-        view.add_item(join_btn)
-        
-        msg = await ctx.send(embed=embed, view=view)
-        await asyncio.sleep(60) # 60秒間待機
-        
-        await self.start_from_hub(ctx.channel, players)
+        await ctx.send(embed=embed, view=view)
+        await asyncio.sleep(60)
+        await self.start_from_hub(ctx.channel, view.players)
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -167,16 +166,11 @@ class Doubt(commands.Cog):
                     game.last_claimed_num = val
                     game.last_player_id = message.author.id
                     
-                    embed = discord.Embed(
-                        description=f"<@{message.author.id}> が「**{val}**」を宣言してカードを置きました。\n**5秒以内**に「ダウト」と言えば審議できます。", 
-                        color=0xFFFFFF
-                    )
-                    await message.channel.send(embed=embed)
+                    await message.channel.send(f"<@{message.author.id}> が「**{val}**」を宣言してカードを置きました。5秒間ダウト受付中。")
                     
                     game.is_accepting_doubt = True
                     game.next_turn()
                     
-                    # 5秒間のダウト受付タイム
                     await asyncio.sleep(5)
                     
                     if game.is_accepting_doubt:
@@ -188,7 +182,7 @@ class Doubt(commands.Cog):
             game.is_accepting_doubt = False
             last_player, actual_card = game.field[-1]
             
-            # カード文字列 "[S-10]" 等から数字を抽出
+            # 数字抽出
             actual_num = int(''.join(filter(str.isdigit, actual_card)))
             is_lie = (actual_num != game.last_claimed_num)
             
@@ -203,7 +197,6 @@ class Doubt(commands.Cog):
                 embed.description = f"**本当でした！**\nダウトと言った <@{message.author.id}> がすべて回収します。"
                 penalty_user = message.author.id
             
-            # ペナルティ回収
             for _, c in game.field:
                 game.hands[penalty_user].append(c)
             game.hands[penalty_user].sort()
