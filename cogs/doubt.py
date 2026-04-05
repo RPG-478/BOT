@@ -1,14 +1,14 @@
-import discord  # 1文字目を小文字に修正
+# -*- coding: utf-8 -*-
+import discord
 from discord.ext import commands
 import asyncio
 import random
 
-# --- 内部ゲームロジッククラス ---
 class DoubtEngine:
     def __init__(self, player_ids):
         self.players = player_ids
         self.hands = {p_id: [] for p_id in player_ids}
-        self.field = []  # [(player_id, actual_card)]
+        self.field = []
         self.current_turn_idx = 0
         self.last_claimed_num = None
         self.last_player_id = None
@@ -19,11 +19,9 @@ class DoubtEngine:
 
     def _setup_game(self):
         suits = ["S", "H", "D", "C"]
-        # カードリスト作成 [S-1] ~ [C-13]
         deck = [f"[{s}-{r}]" for s in suits for r in range(1, 14)]
         random.shuffle(deck)
         
-        # 参加人数で均等に配分
         per_player = 52 // len(self.players)
         for i, p_id in enumerate(self.players):
             self.hands[p_id] = sorted(deck[i*per_player : (i+1)*per_player])
@@ -35,11 +33,8 @@ class DoubtEngine:
     def next_turn(self):
         self.current_turn_idx = (self.current_turn_idx + 1) % len(self.players)
 
-# --- UIコンポーネント ---
-
 class CardSelect(discord.ui.Select):
     def __init__(self, hand, game_engine, cog):
-        # Discordの制限によりセレクトメニューは最大25項目まで
         options = [discord.SelectOption(label=card, value=card) for card in hand[:25]]
         super().__init__(placeholder="出すカードを1枚選んでください", options=options)
         self.game_engine = game_engine
@@ -47,7 +42,6 @@ class CardSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         selected = self.values[0]
-        # Cog側の辞書に一時保存
         self.cog.pending_cards[interaction.user.id] = selected
         
         embed = discord.Embed(
@@ -87,7 +81,6 @@ class GameControlView(discord.ui.View):
         await self.cog.send_main_screen(interaction.channel, self.game_engine)
         await interaction.response.defer()
 
-# --- PlayHub連携用：参加募集View ---
 class DoubtJoinView(discord.ui.View):
     def __init__(self, host_id):
         super().__init__(timeout=65) 
@@ -101,16 +94,13 @@ class DoubtJoinView(discord.ui.View):
         else:
             await interaction.response.send_message("既に参加しています", ephemeral=True)
 
-# --- Cogメインクラス ---
-
 class Doubt(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.games = {}           # channel_id: DoubtEngine
-        self.pending_cards = {}   # user_id: selected_card_str
+        self.games = {}
+        self.pending_cards = {}
 
     async def send_main_screen(self, channel, game):
-        # 古い操作パネルを削除
         if game.last_panel_msg:
             try:
                 await game.last_panel_msg.delete()
@@ -128,8 +118,6 @@ class Doubt(commands.Cog):
         game.last_panel_msg = await channel.send(embed=embed, view=view)
 
     async def start_from_hub(self, channel, player_ids):
-        """PlayHub等から呼び出されるエントリポイント"""
-        # 募集時間の60秒をここで待機する（他ゲームと挙動を合わせる）
         await asyncio.sleep(60)
         
         if len(player_ids) < 3:
@@ -142,7 +130,6 @@ class Doubt(commands.Cog):
 
     @commands.command(name="doubt")
     async def start_game(self, ctx):
-        """!doubt で直接募集を開始"""
         view = DoubtJoinView(ctx.author.id)
         embed = discord.Embed(
             title="ダウト参加者募集", 
@@ -150,7 +137,6 @@ class Doubt(commands.Cog):
             color=0xFFFFFF
         )
         await ctx.send(embed=embed, view=view)
-        # 共通の開始フローへ
         await self.start_from_hub(ctx.channel, view.players)
 
     @commands.Cog.listener()
@@ -159,7 +145,6 @@ class Doubt(commands.Cog):
         game = self.games.get(message.channel.id)
         if not game: return
 
-        # 1. 数字宣言の処理
         if message.author.id == game.current_player_id and message.author.id in self.pending_cards:
             if message.content.isdigit():
                 val = int(message.content)
@@ -175,19 +160,16 @@ class Doubt(commands.Cog):
                     game.is_accepting_doubt = True
                     game.next_turn()
                     
-                    # 5秒間のダウト受付タイム
                     await asyncio.sleep(5)
                     
                     if game.is_accepting_doubt:
                         game.is_accepting_doubt = False
                         await self.send_main_screen(message.channel, game)
 
-        # 2. ダウト判定の処理
         elif "ダウト" in message.content and game.is_accepting_doubt:
             game.is_accepting_doubt = False
             last_player, actual_card = game.field[-1]
             
-            # 数字を抽出
             actual_num = int(''.join(filter(str.isdigit, actual_card)))
             is_lie = (actual_num != game.last_claimed_num)
             
@@ -202,7 +184,6 @@ class Doubt(commands.Cog):
                 embed.description = f"**本当でした！**\nダウトと言った <@{message.author.id}> がすべて回収します。"
                 penalty_user = message.author.id
             
-            # ペナルティ回収
             for _, c in game.field:
                 game.hands[penalty_user].append(c)
             game.hands[penalty_user].sort()
@@ -210,7 +191,6 @@ class Doubt(commands.Cog):
             
             await message.channel.send(embed=embed)
             
-            # 勝利判定
             for p_id in game.players:
                 if len(game.hands[p_id]) == 0:
                     win_embed = discord.Embed(title="Game Set!", description=f"勝者: <@{p_id}>", color=0xFFFFFF)
