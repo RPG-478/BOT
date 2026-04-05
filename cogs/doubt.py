@@ -7,6 +7,7 @@ import random
 class DoubtEngine:
     def __init__(self, player_ids):
         self.players = player_ids
+        # 全参加者のIDで辞書を初期化
         self.hands = {p_id: [] for p_id in player_ids}
         self.field = []
         self.current_turn_idx = 0
@@ -19,12 +20,17 @@ class DoubtEngine:
 
     def _setup_game(self):
         suits = ["S", "H", "D", "C"]
+        # 1-13のカードを作成
         deck = [f"[{s}-{r}]" for s in suits for r in range(1, 14)]
         random.shuffle(deck)
         
-        per_player = 52 // len(self.players)
+        # 参加人数で均等に配る
+        per_player = len(deck) // len(self.players)
         for i, p_id in enumerate(self.players):
-            self.hands[p_id] = sorted(deck[i*per_player : (i+1)*per_player])
+            # 最後の1人に余りが出る可能性もあるが、基本52枚なので割り切れる人数を想定
+            start = i * per_player
+            end = (i + 1) * per_player if i != len(self.players) - 1 else len(deck)
+            self.hands[p_id] = sorted(deck[start:end])
 
     @property
     def current_player_id(self):
@@ -35,6 +41,7 @@ class DoubtEngine:
 
 class CardSelect(discord.ui.Select):
     def __init__(self, hand, game_engine, cog):
+        # 選択肢は最大25件まで
         options = [discord.SelectOption(label=card, value=card) for card in hand[:25]]
         super().__init__(placeholder="出すカードを1枚選んでください", options=options)
         self.game_engine = game_engine
@@ -58,6 +65,10 @@ class GameControlView(discord.ui.View):
 
     @discord.ui.button(label="手札確認", style=discord.ButtonStyle.grey)
     async def check_hand(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 参加者チェック
+        if interaction.user.id not in self.game_engine.hands:
+            return await interaction.response.send_message("あなたはゲームに参加していません。", ephemeral=True)
+            
         hand = self.game_engine.hands.get(interaction.user.id, [])
         hand_str = " ".join(hand) if hand else "手札がありません"
         embed = discord.Embed(title="あなたの手札", description=hand_str, color=0xFFFFFF)
@@ -65,6 +76,10 @@ class GameControlView(discord.ui.View):
 
     @discord.ui.button(label="カードを置く", style=discord.ButtonStyle.red)
     async def play(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 参加者チェック
+        if interaction.user.id not in self.game_engine.hands:
+            return await interaction.response.send_message("あなたはゲームに参加していません。", ephemeral=True)
+            
         if interaction.user.id != self.game_engine.current_player_id:
             return await interaction.response.send_message("あなたのターンではありません", ephemeral=True)
         
@@ -111,13 +126,14 @@ class Doubt(commands.Cog):
         embed.add_field(name="現在の手番", value=f"<@{game.current_player_id}>", inline=False)
         embed.add_field(name="場の状況", value=f"合計: {len(game.field)}枚", inline=True)
         
-        status_list = [f"<@{p_id}>: 残り {len(game.hands[p_id])}枚" for p_id in game.players]
+        status_list = [f"<@{p_id}>: 残り {len(game.hands.get(p_id, []))}枚" for p_id in game.players]
         embed.add_field(name="プレイヤー", value="\n".join(status_list), inline=False)
         
         view = GameControlView(game, self)
         game.last_panel_msg = await channel.send(embed=embed, view=view)
 
     async def start_from_hub(self, channel, player_ids):
+        # 募集開始から少し待機（hubからの呼び出し用）
         await asyncio.sleep(60)
         
         if len(player_ids) < 3:
@@ -145,32 +161,46 @@ class Doubt(commands.Cog):
         game = self.games.get(message.channel.id)
         if not game: return
 
+        # カードを置く処理（数字宣言待ち）
         if message.author.id == game.current_player_id and message.author.id in self.pending_cards:
             if message.content.isdigit():
                 val = int(message.content)
                 if 1 <= val <= 13:
                     card = self.pending_cards.pop(message.author.id)
-                    game.hands[message.author.id].remove(card)
-                    game.field.append((message.author.id, card))
-                    game.last_claimed_num = val
-                    game.last_player_id = message.author.id
-                    
-                    await message.channel.send(f"<@{message.author.id}> が「**{val}**」を宣言してカードを置きました。5秒間ダウト受付中。")
-                    
-                    game.is_accepting_doubt = True
-                    game.next_turn()
-                    
-                    await asyncio.sleep(5)
-                    
-                    if game.is_accepting_doubt:
-                        game.is_accepting_doubt = False
-                        await self.send_main_screen(message.channel, game)
+                    # 手札から削除（存在チェック付き）
+                    if card in game.hands[message.author.id]:
+                        game.hands[message.author.id].remove(card)
+                        game.field.append((message.author.id, card))
+                        game.last_claimed_num = val
+                        game.last_player_id = message.author.id
+                        
+                        await message.channel.send(f"<@{message.author.id}> が「**{val}**」を宣言してカードを置きました。5秒間ダウト受付中。")
+                        
+                        game.is_accepting_doubt = True
+                        game.next_turn()
+                        
+                        await asyncio.sleep(5)
+                        
+                        if game.is_accepting_doubt:
+                            game.is_accepting_doubt = False
+                            await self.send_main_screen(message.channel, game)
 
+        # ダウト宣言の処理
         elif "ダウト" in message.content and game.is_accepting_doubt:
+            # 参加者以外のダウトは無視（KeyError防止）
+            if message.author.id not in game.hands:
+                return
+
             game.is_accepting_doubt = False
             last_player, actual_card = game.field[-1]
             
-            actual_num = int(''.join(filter(str.isdigit, actual_card)))
+            # カード文字列から数字を抽出
+            try:
+                # [S-10] のような形式から 10 を取り出す
+                actual_num = int(''.join(filter(str.isdigit, actual_card.split('-')[-1])))
+            except:
+                actual_num = 0
+                
             is_lie = (actual_num != game.last_claimed_num)
             
             embed = discord.Embed(title="審議結果", color=0xFFFFFF)
@@ -184,6 +214,7 @@ class Doubt(commands.Cog):
                 embed.description = f"**本当でした！**\nダウトと言った <@{message.author.id}> がすべて回収します。"
                 penalty_user = message.author.id
             
+            # カード回収（ここでの辞書キー存在は上でチェック済み）
             for _, c in game.field:
                 game.hands[penalty_user].append(c)
             game.hands[penalty_user].sort()
@@ -191,8 +222,9 @@ class Doubt(commands.Cog):
             
             await message.channel.send(embed=embed)
             
+            # 勝利判定
             for p_id in game.players:
-                if len(game.hands[p_id]) == 0:
+                if len(game.hands.get(p_id, [])) == 0:
                     win_embed = discord.Embed(title="Game Set!", description=f"勝者: <@{p_id}>", color=0xFFFFFF)
                     await message.channel.send(embed=win_embed)
                     if message.channel.id in self.games:
