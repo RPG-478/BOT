@@ -4,9 +4,9 @@ from discord.ext import commands
 import traceback
 import sys
 import os
+import asyncio
 
 # --- パスの自動解決 ---
-# cogs フォルダ内のファイルを正しく import できるようにパスを追加
 current_dir = os.path.dirname(__file__)
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
@@ -46,11 +46,9 @@ class WordWolfGenreView(discord.ui.View):
                 await interaction.response.edit_message(content="エラー: Cogが見つかりません。", view=None)
                 return
 
-            # 状態リセット
             cog.game_running = False
             cog.players = [interaction.user]
             
-            # パス追加により通常の import が可能
             import wordwolf
             join_view = wordwolf.JoinView(cog)
             
@@ -59,8 +57,6 @@ class WordWolfGenreView(discord.ui.View):
             embed.description = f"ジャンル: **{list_names.get(genre, genre)}**\n\n「参加」ボタンを押してください。"
             
             await interaction.response.edit_message(content=None, embed=embed, view=join_view)
-            
-            # タスク起動
             self.bot.loop.create_task(cog.begin_game(interaction.channel, genre))
             await send_debug_log(self.bot, f"WordWolf ({genre}) のタスクを起動しました。")
 
@@ -77,6 +73,7 @@ class GameSelectView(discord.ui.View):
         placeholder="遊ぶゲームを選択してください",
         options=[
             discord.SelectOption(label="ワードウルフ", value="wordwolf"),
+            discord.SelectOption(label="ダウト", value="doubt"), # 追加
             discord.SelectOption(label="Pault (シングル)", value="pault"),
             discord.SelectOption(label="Online Pault", value="online_pault"),
             discord.SelectOption(label="人狼ゲーム", value="jinrou"),
@@ -90,6 +87,23 @@ class GameSelectView(discord.ui.View):
         try:
             if game_value == "wordwolf":
                 await interaction.response.edit_message(view=WordWolfGenreView(self.bot))
+
+            elif game_value == "doubt":
+                # ダウトのCogを取得
+                cog = self.bot.get_cog("Doubt")
+                if not cog:
+                    await send_debug_log(self.bot, "エラー: Doubt Cogが見つかりません。")
+                    return
+                
+                # インタラクションを一度「考え中」にするか、メッセージを更新
+                await interaction.response.edit_message(content="ダウトを準備しています...", embed=None, view=None)
+                
+                # Doubt Cog内の募集処理をキック
+                # 擬似的に ctx を作成してコマンドを呼び出す
+                ctx = await self.bot.get_context(interaction.message)
+                ctx.author = interaction.user
+                await cog.start_game(ctx)
+                await send_debug_log(self.bot, "Doubt の募集を開始しました。")
 
             elif game_value == "pault":
                 import Pault
@@ -111,7 +125,6 @@ class GameSelectView(discord.ui.View):
                     return
                 
                 game = cog.get_game(interaction.channel_id)
-                # 状態初期化
                 game.is_running = True
                 game.game_channel = interaction.channel
                 game.players = []
