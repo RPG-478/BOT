@@ -14,7 +14,6 @@ class WordWolfGenreView(discord.ui.View):
             discord.SelectOption(label="スタンダード", value="standard"),
             discord.SelectOption(label="原神", value="genshin"),
             discord.SelectOption(label="崩壊：スターレイル", value="starrail"),
-            discord.SelectOption(label="数学", value="math"),
         ]
     )
     async def select_genre(self, interaction: discord.Interaction, select: discord.ui.Select):
