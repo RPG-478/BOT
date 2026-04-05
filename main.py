@@ -8,7 +8,6 @@ import config
 import defining as df    
 from keep_alive import keep_alive
 
-# 通知用・デバッグ用チャンネルID
 NOTIFY_CHANNEL_ID = 1476170098673717414
 DEBUG_CHANNEL_ID = 1476946191362166894
 
@@ -18,51 +17,48 @@ class MyBot(commands.Bot):
         super().__init__(command_prefix=config.PREFIX, intents=intents)
         self.updated_notified = False
 
-    async def send_debug_log(self, message: str):
-        """Discordのデバッグチャンネルに詳細ログを送信する"""
-        channel = self.get_channel(DEBUG_CHANNEL_ID)
-        if channel:
-            # 長すぎるログ対策で分割送信も考慮（簡易版）
-            msg = f"```py\n[SYSTEM DEBUG]\n{message}\n```"
-            await channel.send(msg[:2000])
-
     async def setup_hook(self):
-        # 起動時にまずデバッグ出力を試みる
-        print(df.format_log("Starting extension loading process..."))
+        print(df.format_log("--- COGS LOADING PROCESS START ---"))
         
         if os.path.exists('./cogs'):
-            for filename in os.listdir('./cogs'):
+            # フォルダ内の全ファイルを表示（認識チェック）
+            files = os.listdir('./cogs')
+            print(df.format_log(f"Files found in ./cogs: {files}"))
+            
+            for filename in files:
                 if filename.endswith('.py') and not filename.startswith('__'):
+                    ext_name = f'cogs.{filename[:-3]}'
+                    print(df.format_log(f"Attempting to load: {ext_name}"))
                     try:
-                        await self.load_extension(f'cogs.{filename[:-3]}')
-                        print(df.format_log(f"Extension loaded: {filename}"))
+                        await self.load_extension(ext_name)
+                        print(df.format_log(f"SUCCESS: {filename} loaded."))
                     except Exception:
-                        # ここが最強ポイント：エラーの全内容（トレースバック）を文字列にする
-                        err = traceback.format_exc()
-                        print(df.format_log(f"CRITICAL ERROR loading {filename}:\n{err}"))
-                        # 起動直後でまだReadyでない場合があるため、あとで送信するためのフラグなどを立てるのもアリですが
-                        # ここではコンソール出力を最優先します
+                        # ここでエラーの全詳細を出力
+                        err_detail = traceback.format_exc()
+                        print(df.format_log(f"FAILED: {filename}\n{err_detail}"))
         else:
-            print(df.format_log("Warning: 'cogs' directory not found."))
+            print(df.format_log("ERROR: './cogs' directory not found."))
         
-        await self.tree.sync()
-        print(df.format_log("Slash commands synced successfully."))
+        try:
+            await self.tree.sync()
+            print(df.format_log("Slash commands synced successfully."))
+        except Exception:
+            print(df.format_log(f"Sync Error: {traceback.format_exc()}"))
 
     async def on_ready(self):
         print(df.format_log(f"Logged in as {self.user} (ID: {self.user.id})"))
         
-        # 起動時にエラーがあった場合、ここでDiscordに一括報告させる仕組み
-        channel = self.get_channel(NOTIFY_CHANNEL_ID)
-        if channel and not self.updated_notified:
-            try:
-                await channel.send("<a:AGOMUNIMUNI:1490255555632037909>システムを更新しました。")
-                
-                # もし起動時に読み込めなかったCogがあれば、デバッグチャンネルに詳細を飛ばす
-                # (setup_hookでのエラーを保存しておいてここで送るのも有効)
-                
-                self.updated_notified = True
-            except Exception as e:
-                print(df.format_log(f"Notification error: {e}"))
+        # ロード済みのCogを一覧表示
+        print(df.format_log(f"Active Cogs: {list(self.cogs.keys())}"))
+
+        if not self.updated_notified:
+            channel = self.get_channel(NOTIFY_CHANNEL_ID)
+            if channel:
+                try:
+                    await channel.send("<a:AGOMUNIMUNI:1490255555632037909>システムを更新しました。")
+                except Exception as e:
+                    print(df.format_log(f"Notification error: {e}"))
+            self.updated_notified = True 
 
 bot = MyBot()
 
@@ -72,6 +68,4 @@ if __name__ == "__main__":
     try:
         bot.run(config.TOKEN)
     except Exception:
-        # 実行時エラーも丸ごとキャッチ
-        err = traceback.format_exc()
-        print(df.format_log(f"Bot runtime crash:\n{err}"))
+        print(df.format_log(f"Bot runtime crash:\n{traceback.format_exc()}"))
