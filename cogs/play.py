@@ -22,6 +22,20 @@ async def send_debug_log(bot, message: str):
     else:
         print(f"Debug channel not found: {message}")
 
+# --- ダウト専用：参加募集View ---
+class DoubtJoinView(discord.ui.View):
+    def __init__(self, host_id):
+        super().__init__(timeout=60)
+        self.players = [host_id]
+
+    @discord.ui.button(label="参加", style=discord.ButtonStyle.green)
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in self.players:
+            self.players.append(interaction.user.id)
+            await interaction.response.send_message(f"参加しました (現在: {len(self.players)}名)", ephemeral=True)
+        else:
+            await interaction.response.send_message("既に参加しています", ephemeral=True)
+
 # --- ワードウルフ専用：ジャンル選択メニュー ---
 class WordWolfGenreView(discord.ui.View):
     def __init__(self, bot):
@@ -89,17 +103,14 @@ class GameSelectView(discord.ui.View):
                 await interaction.response.edit_message(view=WordWolfGenreView(self.bot))
 
             elif game_value == "doubt":
-                # 他のゲームと同様にCogを直接取得
                 cog = self.bot.get_cog("Doubt")
                 if not cog:
-                    await send_debug_log(self.bot, "エラー: Doubt Cogが見つかりません。")
                     await interaction.response.edit_message(content="エラー: Doubtモジュールがロードされていません。", view=None)
+                    await send_debug_log(self.bot, "エラー: Doubt Cogが見つかりません。")
                     return
                 
-                # doubt.py 内にある DoubtJoinView をインポートして使用
-                import doubt
-                join_view = doubt.DoubtJoinView(interaction.user.id)
-                
+                # 同ファイル内のDoubtJoinViewを使用
+                join_view = DoubtJoinView(interaction.user.id)
                 embed = discord.Embed(
                     title="Doubt 参加者募集", 
                     description="ボタンを押して参加してください（3名以上）\n制限時間: 60秒", 
@@ -107,7 +118,7 @@ class GameSelectView(discord.ui.View):
                 )
                 await interaction.response.edit_message(content=None, embed=embed, view=join_view)
                 
-                # 他のゲームと同じ流用形式で Cog の開始メソッドにプレイヤーリストを渡す
+                # 他のゲーム（人狼等）と同じく loop.create_task で Cog のメソッドを叩く
                 self.bot.loop.create_task(cog.start_from_hub(interaction.channel, join_view.players))
                 await send_debug_log(self.bot, "Doubtのタスクを流用形式で起動しました。")
 
