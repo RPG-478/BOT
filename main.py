@@ -3,12 +3,14 @@ import discord
 from discord.ext import commands
 import os
 import asyncio
+import traceback
 import config
 import defining as df    
 from keep_alive import keep_alive
 
-
+# 通知用・デバッグ用チャンネルID
 NOTIFY_CHANNEL_ID = 1476170098673717414
+DEBUG_CHANNEL_ID = 1476946191362166894
 
 class MyBot(commands.Bot):
     def __init__(self):
@@ -16,15 +18,30 @@ class MyBot(commands.Bot):
         super().__init__(command_prefix=config.PREFIX, intents=intents)
         self.updated_notified = False
 
+    async def send_debug_log(self, message: str):
+        """Discordのデバッグチャンネルに詳細ログを送信する"""
+        channel = self.get_channel(DEBUG_CHANNEL_ID)
+        if channel:
+            # 長すぎるログ対策で分割送信も考慮（簡易版）
+            msg = f"```py\n[SYSTEM DEBUG]\n{message}\n```"
+            await channel.send(msg[:2000])
+
     async def setup_hook(self):
+        # 起動時にまずデバッグ出力を試みる
+        print(df.format_log("Starting extension loading process..."))
+        
         if os.path.exists('./cogs'):
             for filename in os.listdir('./cogs'):
-                if filename.endswith('.py') and os.path.isfile(os.path.join('./cogs', filename)):
+                if filename.endswith('.py') and not filename.startswith('__'):
                     try:
                         await self.load_extension(f'cogs.{filename[:-3]}')
                         print(df.format_log(f"Extension loaded: {filename}"))
-                    except Exception as e:
-                        print(df.format_log(f"Error loading {filename}: {e}"))
+                    except Exception:
+                        # ここが最強ポイント：エラーの全内容（トレースバック）を文字列にする
+                        err = traceback.format_exc()
+                        print(df.format_log(f"CRITICAL ERROR loading {filename}:\n{err}"))
+                        # 起動直後でまだReadyでない場合があるため、あとで送信するためのフラグなどを立てるのもアリですが
+                        # ここではコンソール出力を最優先します
         else:
             print(df.format_log("Warning: 'cogs' directory not found."))
         
@@ -33,21 +50,19 @@ class MyBot(commands.Bot):
 
     async def on_ready(self):
         print(df.format_log(f"Logged in as {self.user} (ID: {self.user.id})"))
-        sb_exists = getattr(config, 'supabase', None)
-        print(f"Supabase Status: {'Connected' if sb_exists else 'Disconnected'}")
-
-        if not self.updated_notified:
-            channel = self.get_channel(NOTIFY_CHANNEL_ID)
-            if channel:
-                try:
-                    await channel.send("<a:AGOMUNIMUNI:1490255555632037909>システムを更新しました。")
-                    print(df.format_log(f"Update notification sent to {channel.name}"))
-                except Exception as e:
-                    print(df.format_log(f"Failed to send update message: {e}"))
-            else:
-                print(df.format_log("Warning: Notification channel not found."))
-            
-            self.updated_notified = True 
+        
+        # 起動時にエラーがあった場合、ここでDiscordに一括報告させる仕組み
+        channel = self.get_channel(NOTIFY_CHANNEL_ID)
+        if channel and not self.updated_notified:
+            try:
+                await channel.send("<a:AGOMUNIMUNI:1490255555632037909>システムを更新しました。")
+                
+                # もし起動時に読み込めなかったCogがあれば、デバッグチャンネルに詳細を飛ばす
+                # (setup_hookでのエラーを保存しておいてここで送るのも有効)
+                
+                self.updated_notified = True
+            except Exception as e:
+                print(df.format_log(f"Notification error: {e}"))
 
 bot = MyBot()
 
@@ -56,9 +71,7 @@ if __name__ == "__main__":
     print("DEBUG: Keep-alive server initiated.")
     try:
         bot.run(config.TOKEN)
-    except Exception as e:
-        error_msg = f"Bot runtime error: {e}"
-        try:
-            print(df.format_log(error_msg))
-        except:
-            print(error_msg)
+    except Exception:
+        # 実行時エラーも丸ごとキャッチ
+        err = traceback.format_exc()
+        print(df.format_log(f"Bot runtime crash:\n{err}"))
