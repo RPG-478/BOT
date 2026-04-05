@@ -120,8 +120,8 @@ class JinrouCog(commands.Cog):
             "狂人": "人狼の味方をする人間。人狼が誰かは知らないが、とにかく場を乱す。",
             "ハゲ": "追放されたら勝利。髪の毛が観測できないバグのせいで目立ちすぎる。",
             "メンヘラ": "自分に関与した（占う、守る、食べる）者を物理的に消去する。",
-            "あごむに破道砲": "自爆して対象を道連れにする。さらにもう1人も誤発で巻き込む。",
-            "デカ狼": "占い師を賄賂で黙らせる人狼。デカイだけで威圧感がある。",
+            "あごむに破道砲": "自爆して対象を道連れにする。さらにもう1人も誤発で巻き込む。（※3日目の夜以降に使用可能）",
+            "デカ狼": "占い師を賄賂で黙らせる人狼. デカイだけで威圧感がある。",
             "パン屋": "生きていれば朝にパンを配る。死んでいても何故かパンが届く怪奇現象を起こす。",
             "マサイ族": "視力とジャンプ力が高い。夜に1人を観察する。もし対象が人狼なら襲撃を50%で回避する準備を整える。真偽は誰にもわからない。",
             "入狼": "人狼のような名前の村人。占われると人狼判定が出る不幸なやつ。",
@@ -334,13 +334,24 @@ class JinrouCog(commands.Cog):
         try: await msg.delete()
         except: pass
         for p in game.alive_players: await self.unmute_member(p)
-        if not game.voted_count: return await game.game_channel.send("投票なし。")
+        
+        if not game.voted_count: 
+            return await game.game_channel.send("投票なし。")
+        
+        # 投票集計（skipを考慮）
         counts = Counter(game.voted_count.values())
         most = counts.most_common()
+        
+        # 最多得票が同数の場合、または誰も投票していない場合
         if len(most) > 1 and most[0][1] == most[1][1]:
             return await game.game_channel.send("同数票のため追放なし。")
+        
         target_id = most[0][0]
-        if target_id == "skip": return await game.game_channel.send("スキップされました。")
+        
+        # スキップ判定の修正: skipが最多得票ならスキップメッセージを出す
+        if target_id == "skip":
+            return await game.game_channel.send("投票の結果、スキップされました。追放はありません。")
+            
         target_m = game.game_channel.guild.get_member(int(target_id))
         if target_m:
             await game.game_channel.send(f"{target_m.display_name} さんが追放されました。")
@@ -379,7 +390,7 @@ class RoleCheckView(discord.ui.View):
             "狂人": "人狼の味方。基本的に無能である。",
             "ハゲ": "追放されたら勝てる。髪の毛が観測できないバグが発生している。", 
             "メンヘラ": "自分に関与した者を物理的に消す。",
-            "あごむに破道砲": "自らを弾にして1人を狙い撃ちできるが、誤発してもう1人殺す。", 
+            "あごむに破道砲": "自らを弾にして1人を狙い撃ちできるが、誤発してもう1人殺す。（※3日目の夜以降に使用可能）", 
             "デカ狼": "占い師に賄賂を払って白判定にする。デカイだけである。",
             "パン屋": "生きているうちは朝にパンを配る。死んでいてもなぜかパンが届く。",
             "マサイ族": "視力とジャンプ力が高い。夜に1人を観察する。もし対象が人狼なら襲撃を50%で回避する準備を整える。真偽は誰にもわからない。",
@@ -390,22 +401,12 @@ class RoleCheckView(discord.ui.View):
         }
 
         role_image_map = {
-            "一般通過あごむに": "NOMAL.PNG",
-            "人狼": "JINROU.PNG",
-            "マサイ族": "MASAI.PNG",
-            "メンヘラ": "MENHERA.PNG",
-            "入狼": "NYUROU.PNG",
-            "騎士": "KISHI.PNG",
-            "占い師": "URANAI.PNG",
-            "霊媒師": "REIBAI.PNG",
-            "パン屋": "PANYA.PNG",
-            "狂人": "KYOJIN.PNG",
-            "ハゲ": "HAGE.PNG",
-            "デカ狼": "DEKAROU.PNG",
-            "あごむに破道砲": "AGOMUNIHADOHOU.PNG",
-            "ワンころ": "WANKORO.PNG",
-            "タフむに": "TAHUMUNI.PNG",
-            "狂信者": "KYOUSINSYA.PNG",
+            "一般通過あごむに": "NOMAL.PNG", "人狼": "JINROU.PNG", "マサイ族": "MASAI.PNG",
+            "メンヘラ": "MENHERA.PNG", "入狼": "NYUROU.PNG", "騎士": "KISHI.PNG",
+            "占い師": "URANAI.PNG", "霊媒師": "REIBAI.PNG", "パン屋": "PANYA.PNG",
+            "狂人": "KYOJIN.PNG", "ハゲ": "HAGE.PNG", "デカ狼": "DEKAROU.PNG",
+            "あごむに破道砲": "AGOMUNIHADOHOU.PNG", "ワンころ": "WANKORO.PNG",
+            "タフむに": "TAHUMUNI.PNG", "狂信者": "KYOUSINSYA.PNG",
         }
 
         embed = discord.Embed(
@@ -440,6 +441,10 @@ class NightActionView(discord.ui.View):
 
         role = self.game.roles.get(p_id)
         
+        # あごむに破道砲の制限チェック(修正箇所: 3日目(day_count=3)の夜から打てるように)
+        if role == "あごむに破道砲" and self.game.day_count < 3:
+            return await interaction.response.send_message(f"あごむに破道砲は第3夜からしか使用できません。(現在は第{self.game.day_count}夜)", ephemeral=True)
+
         # 夜に行動がない役職の判定
         passive_roles = ["一般通過あごむに", "霊媒師", "狂人", "ハゲ", "メンヘラ", "パン屋", "入狼", "タフむに", "狂信者"]
         if role in passive_roles:
@@ -474,7 +479,7 @@ class ActionSelectView(discord.ui.View):
             # マサイ族の真偽を隠蔽
             if r in ["人狼", "デカ狼"]:
                 self.game.masai_evasion[p_id] = True
-            await interaction.response.send_message("対象の観察を完了しました。人狼であれば回避の準備を整えます。", ephemeral=True)
+            await interaction.response.send_message("対象の観察を完了しました。人狼であれば回避の準備を整える。", ephemeral=True)
         else:
             await interaction.response.send_message("完了。", ephemeral=True)
 
