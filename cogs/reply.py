@@ -17,11 +17,7 @@ class GrassAI(commands.Cog):
         
         # 30文字制限と「w」の指示を徹底
         self.system_prompt = (
-            "30%くらいの確率で何も言わずに<a:BAKUHATU:1490259644717993995>だけ送ってください"
-            "あなたは語彙力が乏しく、常に笑っている存在です。"
-            "1. 返答は句読点を含め、必ず『30文字以内』に収めてください。"
-            "2. 文末や文中に『w』や『www』を大量に使い、小馬鹿にしたように笑ってください。"
-            "3. 難しい話はせず、短く、浅いコメントだけを返してください。"
+            "<a:BAKUHATU:1490259644717993995>"
         )
 
     @commands.command(name="oo")
@@ -43,7 +39,7 @@ class GrassAI(commands.Cog):
             return
 
         # 10%の確率判定
-        if random.random() >= 0.1:
+        if random.random() >= 0.3:
             return
 
         async with message.channel.typing():
@@ -72,7 +68,7 @@ class GrassAI(commands.Cog):
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": user_text}
             ],
-            temperature=1.0,
+            temperature=1.2,
             max_tokens=40 # 30文字程度に収まるトークン量
         )
         return completion.choices[0].message.content
