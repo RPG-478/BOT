@@ -90,7 +90,7 @@ class GameControlView(discord.ui.View):
 # --- PlayHub連携用：参加募集View ---
 class DoubtJoinView(discord.ui.View):
     def __init__(self, host_id):
-        super().__init__(timeout=65) # 非同期待機時間より少し長めに設定
+        super().__init__(timeout=65) 
         self.players = [host_id]
 
     @discord.ui.button(label="参加", style=discord.ButtonStyle.green)
@@ -128,14 +128,16 @@ class Doubt(commands.Cog):
         game.last_panel_msg = await channel.send(embed=embed, view=view)
 
     async def start_from_hub(self, channel, player_ids):
-        """PlayHub等からプレイヤーリストを受け取って開始するインターフェース"""
-        # 募集時間を待つ場合は呼び出し側かここでsleepを入れる
+        """PlayHub等から呼び出されるエントリポイント"""
+        # 募集時間の60秒をここで待機する（他ゲームと挙動を合わせる）
+        await asyncio.sleep(60)
+        
         if len(player_ids) < 3:
             return await channel.send("人数不足（3名以上必要）のため、ダウトを開始できませんでした。")
         
         engine = DoubtEngine(player_ids)
         self.games[channel.id] = engine
-        await channel.send("カードを配り、ダウトを開始します！")
+        await channel.send("3名以上の参加を確認。カードを配り、ゲームを開始します！")
         await self.send_main_screen(channel, engine)
 
     @commands.command(name="doubt")
@@ -148,7 +150,7 @@ class Doubt(commands.Cog):
             color=0xFFFFFF
         )
         await ctx.send(embed=embed, view=view)
-        await asyncio.sleep(60)
+        # 直接コマンド実行時も start_from_hub を利用して開始
         await self.start_from_hub(ctx.channel, view.players)
 
     @commands.Cog.listener()
@@ -213,7 +215,8 @@ class Doubt(commands.Cog):
                 if len(game.hands[p_id]) == 0:
                     win_embed = discord.Embed(title="Game Set!", description=f"勝者: <@{p_id}>", color=0xFFFFFF)
                     await message.channel.send(embed=win_embed)
-                    del self.games[message.channel.id]
+                    if message.channel.id in self.games:
+                        del self.games[message.channel.id]
                     return
 
             await self.send_main_screen(message.channel, game)
