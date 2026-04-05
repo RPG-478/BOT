@@ -349,5 +349,8 @@ SetupView = InitialSetupView
 
 class Pault(commands.Cog):
     def __init__(self, bot): self.bot = bot
+    async def pault(self, interaction: discord.Interaction):
+        game = PaultGame(interaction.channel_id, interaction.user.id, interaction.user.display_name)
+        await interaction.response.send_message(embed=make_embed(game), view=InitialSetupView(game))
 
 async def setup(bot): await bot.add_cog(Pault(bot))
