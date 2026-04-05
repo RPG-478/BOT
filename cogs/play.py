@@ -22,6 +22,20 @@ async def send_debug_log(bot, message: str):
     else:
         print(f"Debug channel not found: {message}")
 
+# --- ダウト専用：参加募集View ---
+class DoubtJoinView(discord.ui.View):
+    def __init__(self, host_id):
+        super().__init__(timeout=60)
+        self.players = [host_id]
+
+    @discord.ui.button(label="参加", style=discord.ButtonStyle.green)
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in self.players:
+            self.players.append(interaction.user.id)
+            await interaction.response.send_message(f"参加しました (現在: {len(self.players)}名)", ephemeral=True)
+        else:
+            await interaction.response.send_message("既に参加しています", ephemeral=True)
+
 # --- ワードウルフ専用：ジャンル選択メニュー ---
 class WordWolfGenreView(discord.ui.View):
     def __init__(self, bot):
@@ -73,7 +87,7 @@ class GameSelectView(discord.ui.View):
         placeholder="遊ぶゲームを選択してください",
         options=[
             discord.SelectOption(label="ワードウルフ", value="wordwolf"),
-            discord.SelectOption(label="ダウト", value="doubt"), # 追加
+            discord.SelectOption(label="ダウト", value="doubt"),
             discord.SelectOption(label="Pault (シングル)", value="pault"),
             discord.SelectOption(label="Online Pault", value="online_pault"),
             discord.SelectOption(label="人狼ゲーム", value="jinrou"),
@@ -89,23 +103,23 @@ class GameSelectView(discord.ui.View):
                 await interaction.response.edit_message(view=WordWolfGenreView(self.bot))
 
             elif game_value == "doubt":
-                # Doubt Cogを取得
                 cog = self.bot.get_cog("Doubt")
                 if not cog:
-                    # ロードされているCogの一覧をログに出力して原因を特定しやすくする
-                    loaded_cogs = ", ".join(self.bot.cogs.keys())
-                    await send_debug_log(self.bot, f"エラー: Doubt Cogが見つかりません。現在のCog一覧: {loaded_cogs}")
+                    await send_debug_log(self.bot, "エラー: Doubt Cogが見つかりません。")
                     await interaction.response.edit_message(content="エラー: Doubtモジュールがロードされていません。", view=None)
                     return
                 
-                # インタラクションを完了させ、募集メッセージに移行
-                await interaction.response.edit_message(content="ダウトの募集を開始します...", embed=None, view=None)
+                join_view = DoubtJoinView(interaction.user.id)
+                embed = discord.Embed(title="Doubt 参加者募集", description="ボタンを押して参加してください（3名以上）\n制限時間: 60秒", color=0xFFFFFF)
+                await interaction.response.edit_message(content=None, embed=embed, view=join_view)
                 
-                # Contextを生成してDoubt Cogのstart_gameコマンドを実行
-                ctx = await self.bot.get_context(interaction.message)
-                ctx.author = interaction.user
-                self.bot.loop.create_task(cog.start_game(ctx))
-                await send_debug_log(self.bot, "Doubt の募集フェーズを開始しました。")
+                # 60秒待機してから Cog の開始メソッドを呼ぶ
+                async def start_doubt():
+                    await asyncio.sleep(60)
+                    await cog.start_from_hub(interaction.channel, join_view.players)
+
+                self.bot.loop.create_task(start_doubt())
+                await send_debug_log(self.bot, "Doubtの募集タスクを起動しました。")
 
             elif game_value == "pault":
                 import Pault
