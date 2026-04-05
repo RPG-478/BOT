@@ -1,4 +1,4 @@
-import discord
+import discord  # 1文字目を小文字に修正
 from discord.ext import commands
 import asyncio
 import random
@@ -150,7 +150,7 @@ class Doubt(commands.Cog):
             color=0xFFFFFF
         )
         await ctx.send(embed=embed, view=view)
-        # 直接コマンド実行時も start_from_hub を利用して開始
+        # 共通の開始フローへ
         await self.start_from_hub(ctx.channel, view.players)
 
     @commands.Cog.listener()
@@ -187,7 +187,7 @@ class Doubt(commands.Cog):
             game.is_accepting_doubt = False
             last_player, actual_card = game.field[-1]
             
-            # カード文字列から数字を抽出
+            # 数字を抽出
             actual_num = int(''.join(filter(str.isdigit, actual_card)))
             is_lie = (actual_num != game.last_claimed_num)
             
