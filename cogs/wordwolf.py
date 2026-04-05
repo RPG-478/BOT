@@ -13,28 +13,68 @@ class CustomWordWolf(commands.Cog):
         self.alive_players = []
         self.wolf = None
         self.player_words = {}
-        self.remaining_challenges = 3  # チャレンジ残り回数
+        self.remaining_challenges = 3
         
-        # 標準的なワードリスト（100語以上）
-        self.word_pool = [
-            "リンゴ", "ナシ", "バナナ", "イチゴ", "ブドウ", "メロン", "スイカ", "桃",
-            "焼肉", "すき焼き", "寿司", "ラーメン", "カレー", "ハンバーグ", "パスタ", "牛丼",
-            "学校", "塾", "会社", "公園", "図書館", "病院", "駅", "空港",
-            "スマホ", "パソコン", "テレビ", "電子レンジ", "冷蔵庫", "洗濯機", "掃除機", "ドライヤー",
-            "海", "プール", "山", "川", "砂漠", "森林", "湖", "滝",
-            "ディズニーランド", "ユニバ", "富士急", "映画館", "水族館", "動物園", "美術館", "カラオケ",
-            "シャンプー", "リンス", "石鹸", "洗剤", "歯磨き粉", "タオル", "ハンカチ", "ティッシュ",
-            "犬", "猫", "うさぎ", "ハムスター", "ライオン", "ゾウ", "キリン", "ペンギン",
-            "野球", "サッカー", "テニス", "バスケ", "バレー", "卓球", "水泳", "柔道",
-            "数学", "英語", "国語", "理科", "社会", "音楽", "体育", "図工",
-            "ピアノ", "ギター", "ドラム", "バイオリン", "フルート", "トランペット", "琴", "三味線",
-            "教科書", "ノート", "鉛筆", "消しゴム", "定規", "コンパス", "筆箱", "ハサミ",
-            "東京", "大阪", "名古屋", "福岡", "札幌", "沖縄", "京都", "横浜",
-            "パン", "ごはん", "うどん", "そば", "餅", "ピザ", "サンドイッチ", "おにぎり"
-        ]
+        # 各種ワードリストの定義
+        self.word_pools = {
+            "standard": [
+                "リンゴ", "ナシ", "バナナ", "イチゴ", "ブドウ", "メロン", "スイカ", "桃",
+                "焼肉", "すき焼き", "寿司", "ラーメン", "カレー", "ハンバーグ", "パスタ", "牛丼",
+                "学校", "塾", "会社", "公園", "図書館", "病院", "駅", "空港",
+                "スマホ", "パソコン", "テレビ", "電子レンジ", "冷蔵庫", "洗濯機", "掃除機", "ドライヤー",
+                "海", "プール", "山", "川", "砂漠", "森林", "湖", "滝",
+                "ディズニーランド", "ユニバ", "富士急", "映画館", "水族館", "動物園", "美術館", "カラオケ",
+                "シャンプー", "リンス", "石鹸", "洗剤", "歯磨き粉", "タオル", "ハンカチ", "ティッシュ",
+                "犬", "猫", "うさぎ", "ハムスター", "ライオン", "ゾウ", "キリン", "ペンギン",
+                "野球", "サッカー", "テニス", "バスケ", "バレー", "卓球", "水泳", "柔道",
+                "数学", "英語", "国語", "理科", "社会", "音楽", "体育", "図工",
+                "ピアノ", "ギター", "ドラム", "バイオリン", "フルート", "トランペット", "琴", "三味線",
+                "教科書", "ノート", "鉛筆", "消しゴム", "定規", "コンパス", "筆箱", "ハサミ",
+                "東京", "大阪", "名古屋", "福岡", "札幌", "沖縄", "京都", "横浜",
+                "パン", "ごはん", "うどん", "そば", "餅", "ピザ", "サンドイッチ", "おにぎり"
+            ],
+            "starail": [
+                "雪衣", "霊砂", "椒丘", "トパーズ", "愉悦", "調和", "ペラ", "ルカ",
+                "青雀", "昼夜の狭間を駆ける鷹", "成り上がりチャンピオン", "星の如く輝く天才", "泥の如き眠り", "存護", "均衡", "貪欲",
+                "壊滅", "姫子", "ジェパード", "ゴーナウス", "これがウチだよ！", "防衛", "彼女が観ると決めた時", "きらびやかな世界",
+                "繁殖", "記憶", "タケタケ冒険記", "ルアン・メェイ", "停雲", "帰忘の流離人", "乱破", "アルジェンティ",
+                "2度目の生に向かって", "フォローして！", "論剣", "夜の帷の中で", "燃え盛る黎明のように", "フレイムスティーラー", "フォフォ", "Dr.レイシオ",
+                "獲物の視線", "彼女の炎を忘れずに", "待つのみ", "だが戦争は終わらない", "ヘルタ", "マダムヘルタ", "その一刻、目に焼き付けて", "ブートヒル",
+                "初めてのクエストの前に", "星海巡行", "銀河鉄道の夜", "折れた竜骨", "天体階差機関", "ウェンワーク", "サルソット", "爻光",
+                "セイバー", "サフェル", "アーチャー", "アーラン", "雲璃", "丹恒", "丹恒飲月", "丹恒騰荒",
+                "刃", "銀狼", "開拓者", "羅刹", "サンポ", "アグライア", "黄泉", "カカワーシャ",
+                "景元", "モゼ", "虚照", "花火", "火花", "フェルマータ", "輪形", "アベンチュリン",
+                "トリビー", "ホタル", "ダリア", "空の虹が消えぬように", "生命、消滅すべし", "ダンスダンスダンス", "ライコス", "鉄墓",
+                "ケリュドラ", "セイレンス", "ロビン", "ブラックスワン", "カフカ", "アキヴィリ", "薬師", "アッハ",
+                "白露", "ゼーレ", "フック", "エリシア", "キュレネ", "長夜月", "三月なのか", "ヴェルト",
+                "鏡流", "不死途", "飛霄", "ヒアンシー", "ファイノン", "キャストリス", "クラーラ", "彦"
+            ],
+            "genshin": [
+                "パイモン", "空", "蛍", "ダインスレイヴ", "ジン", "アンバー", "リサ", "ガイア",
+                "バーバラ", "ディルック", "レザー", "ウェンティ", "クレー", "ベネット", "ノエル", "フィッシュル",
+                "スクロース", "モナ", "刻晴", "七七", "甘雨", "鍾離", "タルタリヤ", "胡桃",
+                "魈", "神里綾華", "宵宮", "雷電将軍", "珊瑚宮心海", "荒瀧一斗", "八重神子", "夜蘭",
+                "ニィロウ", "ナヒーダ", "セノ", "放浪者", "アルハイゼン", "ディシア", "フリーナ", "ヌヴィレット",
+                "ナヴィア", "閑雲", "クロリンデ", "エミリエ", "ムアラニ", "キィニチ", "シロネン", "チャスカ",
+                "モンド", "璃月", "稲妻", "スメール", "フォンテーヌ", "ナタ", "至冬", "カーンルイア",
+                "セシリアの花", "清心", "鳴草", "サウマラクサ蓮", "ルエトワール", "火素", "燃晶の欠片", "夜魂の加護",
+                "風龍廃墟", "望舒旅館", "鳴神大社", "オルモス港", "メロピデ要塞", "聖火競技場", "ドラゴンスパイン", "層岩巨淵",
+                "風の翼", "神の目", "邪眼", "失われた瞳", "脆弱樹脂", "濃縮樹脂", "原石", "創世結晶",
+                "翠緑の影", "燃え盛る緋炎の魔女", "旧貴族のしつけ", "絶縁の旗印", "深林の記憶", "黄金の劇団", "黒曜の典", "絵巻",
+                "アビスの魔術師", "遺跡守衛", "ヒルチャール", "ファデュイ", "宝盗団", "野伏衆", "エルマイト旅団", "深罪の浸礼者",
+                "天理の調停者", "執行官", "七神", "眷属", "降臨者", "元素反応", "蒸発", "溶解",
+                "過負荷", "感電", "超電導", "開花", "激化", "結晶", "拡散", "凍結"
+            ]
+        }
 
     @app_commands.command(name="wordwolf", description="ワードウルフを開始（全体で3回までチャレンジ可能）")
-    async def wordwolf(self, interaction: discord.Interaction):
+    @app_commands.describe(wordlist="使用するワードリストを選択してください")
+    @app_commands.choices(wordlist=[
+        app_commands.Choice(name="標準 (Standard)", value="standard"),
+        app_commands.Choice(name="崩壊：スターレイル (Starail)", value="starail"),
+        app_commands.Choice(name="原神 (Genshin)", value="genshin"),
+    ])
+    async def wordwolf(self, interaction: discord.Interaction, wordlist: str = "standard"):
         if self.game_running:
             await interaction.response.send_message("既にゲームが進行中です。", ephemeral=True)
             return
@@ -43,11 +83,15 @@ class CustomWordWolf(commands.Cog):
         self.players = []
         self.alive_players = []
         self.player_words = {}
-        self.remaining_challenges = 3 # ゲーム開始時にリセット
+        self.remaining_challenges = 3 
         
+        # 選択されたワードリストを表示名に変換
+        list_names = {"standard": "標準", "starail": "崩壊：スターレイル", "genshin": "原神"}
+        current_list_name = list_names.get(wordlist, "標準")
+
         join_view = JoinView(self)
         await interaction.response.send_message(
-            "🐺 **ワードウルフ参加者募集中！**\n1分以内に【参加】ボタンを押してください。", 
+            f"🐺 **ワードウルフ参加者募集中！** (リスト: **{current_list_name}**)\n1分以内に【参加】ボタンを押してください。", 
             view=join_view
         )
         
@@ -58,7 +102,9 @@ class CustomWordWolf(commands.Cog):
             await interaction.channel.send("人数不足（3人以上必要）のため中止します。")
             return
 
-        selected_words = random.sample(self.word_pool, 2)
+        # 選択されたプールからワードを抽出
+        pool = self.word_pools.get(wordlist, self.word_pools["standard"])
+        selected_words = random.sample(pool, 2)
         common_word, wolf_word = selected_words
         self.wolf = random.choice(self.players)
         self.alive_players = self.players.copy()
@@ -69,9 +115,8 @@ class CustomWordWolf(commands.Cog):
         check_view = CheckWordView(self)
         await interaction.channel.send(
             f"**ゲーム開始！** 参加者: {', '.join([p.display_name for p in self.players])}\n"
-            f"各自ボタンでワードを確認してください。\n"
-            f"⚠️ **【ルール】メンションで判定（全体で残り {self.remaining_challenges} 回まで）**\n"
-            f"ウルフの自爆、または村人が回数内にウルフを当てれば村人勝利！",
+            f"リスト: **{current_list_name}** / 各自ボタンでワードを確認してください。\n"
+            f"⚠️ **【ルール】メンションで判定（全体で残り {self.remaining_challenges} 回まで）**",
             view=check_view
         )
 
@@ -79,7 +124,6 @@ class CustomWordWolf(commands.Cog):
         self.bot.loop.create_task(self.game_timer(interaction.channel))
 
     async def game_timer(self, channel):
-        """1分ごとに残り時間と生存プレイヤーリストを通知"""
         for i in range(4, 0, -1):
             await asyncio.sleep(60)
             if not self.game_running: return
@@ -104,16 +148,14 @@ class CustomWordWolf(commands.Cog):
                 await self.execute_challenge(message.channel, message.author, target)
 
     async def execute_challenge(self, channel, challenger, target):
-        self.remaining_challenges -= 1 # 回数を減らす
+        self.remaining_challenges -= 1
         role = discord.utils.get(channel.guild.roles, name="muted")
         
-        # ウルフによるチャレンジ（自爆）
         if challenger == self.wolf:
             await channel.send(f"💥 **ウルフの自爆！** {challenger.mention} はウルフでしたが、村人 {target.mention} を指名したため敗北しました。")
             await self.end_game(channel, "villager_win")
             return
 
-        # 村人によるチャレンジ
         if target == self.wolf:
             await channel.send(f"✅ **チャレンジ成功！** {target.mention} はウルフでした！村人の勝利です。")
             await self.end_game(channel, "villager_win")
@@ -126,7 +168,6 @@ class CustomWordWolf(commands.Cog):
                 try: await challenger.add_roles(role)
                 except: pass
             
-            # 勝利判定：残り回数が0、または生存者がウルフ含め2人以下
             if self.remaining_challenges <= 0:
                 await channel.send("🚫 **チャレンジ回数が尽きました...**")
                 await self.end_game(channel, "wolf_win")
