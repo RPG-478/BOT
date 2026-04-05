@@ -1,5 +1,6 @@
 # ~/BOT/cogs/OnlinePault.py
 # -*- coding: utf-8 -*-
+# ※ このファイルは変更なし。play.py から OnlineEntryView(interaction.user) で直接呼び出せます。
 import discord
 from discord.ext import commands
 from discord import app_commands
