@@ -14,19 +14,15 @@ class Muted(commands.Cog):
     def cog_unload(self):
         self.check_mute_expiry.cancel()
 
-    # --- 共通ユーティリティ ---
-    async def is_admin_role(self, interaction: discord.Interaction, silent=False) -> bool:
+    async def is_admin_role(self, interaction: discord.Interaction) -> bool:
         allowed_role_id = self.admin_roles.get(interaction.guild_id)
-        is_admin = interaction.user.guild_permissions.administrator
-        has_role = allowed_role_id and any(role.id == allowed_role_id for role in interaction.user.roles)
-
-        if is_admin or has_role:
+        if interaction.user.guild_permissions.administrator:
+            return True
+        if allowed_role_id and any(role.id == allowed_role_id for role in interaction.user.roles):
             return True
         
-        if not silent:
-            msg = "管理ロールが設定されていないか、実行権限がありません。" if not allowed_role_id else "このコマンドを実行する権限がありません。"
-            embed = discord.Embed(description=msg, color=self.embed_color)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+        embed = discord.Embed(description="管理ロールが設定されていないか、権限がありません。管理者による `/muted admin_role:` の設定が必要です。", color=self.embed_color)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         return False
 
     async def get_or_create_muted_role(self, guild: discord.Guild):
@@ -42,35 +38,31 @@ class Muted(commands.Cog):
         for (gid, uid), expire_time in self.mute_tasks.items():
             if now >= expire_time:
                 guild = self.bot.get_guild(gid)
-                member = guild.get_member(uid) if guild else None
-                role = discord.utils.get(guild.roles, name="Muted") if guild else None
+                if not guild: continue
+                member = guild.get_member(uid)
+                role = discord.utils.get(guild.roles, name="Muted")
                 if member and role:
                     try: await member.remove_roles(role)
                     except: pass
                 expired.append((gid, uid))
         for item in expired: del self.mute_tasks[item]
 
-    # --- セレクトメニューの定義 ---
+    # --- セレクトメニュー ---
     class MuteSettingView(discord.ui.View):
-        def __init__(self, cog, admin_only=True):
-            super().__init__(timeout=180)
+        def __init__(self, cog):
+            super().__init__(timeout=60) # 1分でメニューを無効化
             self.cog = cog
 
         @discord.ui.select(
-            placeholder="実行する操作を選択してください",
+            placeholder="操作を選択（一度選択すると終了します）",
             options=[
-                discord.SelectOption(label="権限同期 (Link)", value="link", description="全チャンネルを発言不可に設定します"),
-                discord.SelectOption(label="非表示切替 (Hide Toggle)", value="hide", description="全チャンネルの表示/非表示を切り替えます"),
-                discord.SelectOption(label="管理ロール設定 (Set Admin)", value="admin", description="コマンド行使権限ロールを設定します(管理者のみ)"),
+                discord.SelectOption(label="権限同期", value="link", description="全チャンネルを発言不可に設定"),
+                discord.SelectOption(label="非表示切替", value="hide_toggle", description="全チャンネルの表示/非表示を反転"),
             ]
         )
         async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
-            # 管理ロール設定は管理者のみ
-            if select.values[0] == "admin" and not interaction.user.guild_permissions.manage_roles:
-                return await interaction.response.send_message("ロール管理権限が必要です。", ephemeral=True)
-            
             await interaction.response.defer(ephemeral=True)
-            role, created = await self.cog.get_or_create_muted_role(interaction.guild)
+            role, _ = await self.cog.get_or_create_muted_role(interaction.guild)
             embed = discord.Embed(color=self.cog.embed_color)
 
             if select.values[0] == "link":
@@ -80,32 +72,32 @@ class Muted(commands.Cog):
                         await ch.set_permissions(role, send_messages=False, add_reactions=False, connect=False)
                         success += 1
                     except: error += 1
-                embed.title = "権限同期完了"
-                embed.description = f"成功: {success} / 失敗: {error}\n発言禁止を全チャンネルに同期しました。"
+                embed.description = f"同期完了 (成功: {success} / 失敗: {error})"
 
-            elif select.values[0] == "hide":
-                first_ch = interaction.guild.text_channels[0]
-                should_hide = not (first_ch.overwrites_for(role).view_channel == False)
+            elif select.values[0] == "hide_toggle":
+                # 最初のチャンネルの状態を見て、非表示にするか元に戻すか決める
+                target_ch = interaction.guild.text_channels[0]
+                current_overwrite = target_ch.overwrites_for(role)
+                
+                # 現在「見えない」設定なら、設定をクリア(None)して見えるようにする
+                # 現在「見える」または「未設定」なら、Falseにして見えないようにする
+                is_hidden = (current_overwrite.view_channel == False)
+                new_view_state = None if is_hidden else False
+
                 for ch in interaction.guild.text_channels:
-                    try: await ch.set_permissions(role, view_channel=None if not should_hide else False, send_messages=False)
+                    try:
+                        await ch.set_permissions(role, view_channel=new_view_state, send_messages=False)
                     except: continue
-                embed.title = "表示設定変更"
-                embed.description = "全チャンネルを非表示にしました。" if should_hide else "非表示設定を解除しました(発言不可は維持)。"
+                
+                embed.description = "非表示設定を解除しました。" if is_hidden else "全てのチャンネルを非表示にしました。"
 
-            elif select.values[0] == "admin":
-                embed.title = "管理ロール設定"
-                embed.description = "この操作は `/muted setting` の引数 `admin_role` を指定して直接実行してください。"
-
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            # 選択されたらメニューを削除して、二度押しできないようにする
+            await interaction.edit_original_response(embed=embed, view=None)
+            self.stop() # Viewのループを止める
 
     # --- メインコマンド ---
-    @app_commands.command(name="muted", description="Mutedシステムの総合管理設定")
-    @app_commands.describe(
-        target="Mutedを付与するメンバー", 
-        minutes="付与する時間(分)", 
-        admin_role="管理ロールとして設定するロール",
-        isolation_channel="隔離先として設定するチャンネル"
-    )
+    @app_commands.command(name="muted", description="Mutedシステム管理")
+    @app_commands.describe(target="対象者", minutes="時間(分)", admin_role="管理ロール設定", isolation_channel="隔離先設定")
     async def muted_setting(
         self, 
         interaction: discord.Interaction, 
@@ -114,26 +106,26 @@ class Muted(commands.Cog):
         admin_role: discord.Role = None,
         isolation_channel: discord.TextChannel = None
     ):
-        # 1. 管理ロールの設定（引数がある場合）
+        # 1. 管理ロール設定
         if admin_role:
             if not interaction.user.guild_permissions.manage_roles:
-                return await interaction.response.send_message("ロール管理権限が必要です。", ephemeral=True)
+                return await interaction.response.send_message("権限が不足しています。", ephemeral=True)
             self.admin_roles[interaction.guild_id] = admin_role.id
             embed = discord.Embed(description=f"管理ロールを {admin_role.mention} に設定しました。", color=self.embed_color)
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        # 以降、権限チェック
+        # 権限チェック
         if not await self.is_admin_role(interaction): return
 
-        # 2. 個別付与 (givetime) の処理（ターゲットと時間がある場合）
+        # 2. 個別付与 (実行後、再度使うにはコマンドを打ち直す)
         if target and minutes:
-            role, created = await self.get_or_create_muted_role(interaction.guild)
+            role, _ = await self.get_or_create_muted_role(interaction.guild)
             await target.add_roles(role)
             self.mute_tasks[(interaction.guild_id, target.id)] = datetime.now(timezone.utc) + timedelta(minutes=minutes)
-            embed = discord.Embed(title="Muted付与", description=f"{target.display_name} を {minutes}分間 Mutedにしました。", color=self.embed_color)
+            embed = discord.Embed(description=f"{target.display_name} を {minutes}分間 Mutedにしました。", color=self.embed_color)
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        # 3. 隔離設定の処理（隔離チャンネル指定がある場合）
+        # 3. 隔離設定
         if isolation_channel:
             await interaction.response.defer(ephemeral=True)
             role, _ = await self.get_or_create_muted_role(interaction.guild)
@@ -145,12 +137,8 @@ class Muted(commands.Cog):
             embed = discord.Embed(description=f"{isolation_channel.mention} 以外を非表示にしました。", color=self.embed_color)
             return await interaction.followup.send(embed=embed, ephemeral=True)
 
-        # 4. それ以外（引数なし）の場合はセレクトメニューを表示
-        embed = discord.Embed(
-            title="Muted システム設定",
-            description="実行したいメニューを選択してください。このメッセージはあなたにのみ表示されます。",
-            color=self.embed_color
-        )
+        # 4. 引数なし：メニュー表示（一度使うと消える）
+        embed = discord.Embed(title="Muted システム設定", description="メニューを選択してください。一度実行すると終了します。", color=self.embed_color)
         await interaction.response.send_message(embed=embed, view=self.MuteSettingView(self), ephemeral=True)
 
 async def setup(bot):
