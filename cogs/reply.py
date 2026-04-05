@@ -17,7 +17,7 @@ class GrassAI(commands.Cog):
         
         # 30文字制限と「w」の指示を徹底
         self.system_prompt = (
-            "<a:BAKUHATU:1490259644717993995>"
+            "とにかく頭をおかしくしてください"
         )
 
     @commands.command(name="oo")
