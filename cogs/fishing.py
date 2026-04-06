@@ -271,6 +271,7 @@ class FishingBattleView(discord.ui.View):
 
     async def _finish(self, interaction, text, success):
         self.cog.active_sessions.pop(self.s["user_id"], None)
+        self.cog.user_inventories[user_id].append({"name": name, "weight": weight, "rarity": rarity})
         color = discord.Color.gold() if success else discord.Color.dark_gray()
         
         embed = discord.Embed(title="釣りリザルト", description=text, color=color)
