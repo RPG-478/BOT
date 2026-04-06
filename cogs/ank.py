@@ -26,7 +26,7 @@ class Ank(commands.Cog):
 
                 # 指定されたコメ数に到達したらリアクションを付けて終了
                 if count == target:
-                    await msg.add_reaction("🎯")
+                    await msg.add_reaction("<a:BAKUHATU:1490259644717993995>")
                     break
                     
         except asyncio.TimeoutError:
