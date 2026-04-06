@@ -98,7 +98,6 @@ class FishingCog(commands.Cog):
                 session["task"].cancel()
             if "hit_event" in session:
                 session["hit_event"].set()
-            # session自体は削除するが、last_msgは削除メソッドで呼ぶまで保持
             self.active_sessions.pop(user_id, None)
 
     @app_commands.command(name="fish", description="Open the fishing menu")
@@ -120,7 +119,6 @@ class FishingCog(commands.Cog):
         
         view = MainMenuView(user_id, self)
         
-        # 既存のメッセージがある場合は編集、ない場合は送信
         if interaction.response.is_done():
             msg = await interaction.edit_original_response(content=None, embed=embed, view=view)
         else:
@@ -137,7 +135,6 @@ class FishingCog(commands.Cog):
         wait_seconds = random.randint(*biome["wait_range"])
         hit_event = asyncio.Event()
 
-        # 常に最新のパネルに更新するため古いメッセージは削除
         await self.delete_last_message(user_id)
         
         if user_id in self.active_sessions:
@@ -160,8 +157,6 @@ class FishingCog(commands.Cog):
         )
         view = WaitingView(user_id, self)
         
-        # start_waitingは常に新しいメッセージ（Waitingパネル）を出すため、
-        # interactionが既に消費されていても、新規送信または編集で対応
         if interaction.response.is_done():
             msg = await interaction.followup.send(embed=embed, view=view)
         else:
@@ -280,7 +275,8 @@ class MainMenuView(discord.ui.View):
         profile["coins"] += total
         profile["inventory"] = []
         await self.cog.save_user_data(self.user_id, profile)
-        # 通知はEphemeral、メニュー更新はeditで行いログ流出を防ぐ
+        
+        # 通知はエフェメラル、元メッセージ(Status)はeditして最新化する
         await interaction.response.send_message(f"Sold for {total} Coins.", ephemeral=True)
         await self.cog._show_main_menu(interaction)
 
@@ -325,6 +321,8 @@ class ShopView(discord.ui.View):
     @discord.ui.button(label="Back", style=discord.ButtonStyle.danger)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id: return
+        # Shopパネルはメインメニューと同じメッセージオブジェクトを使用しているが、
+        # 万が一のためにセッション管理を確認しつつメニューに戻す
         await self.cog._show_main_menu(interaction)
 
 class WaitingView(discord.ui.View):
@@ -336,10 +334,8 @@ class WaitingView(discord.ui.View):
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id: return
-        # Waitingパネルを削除してからメインメニューを表示
         await self.cog.delete_last_message(self.user_id)
         await self.cog.cleanup_session(self.user_id)
-        # cleanup_sessionでactive_sessions[user_id]が消えるため、新規でshow_main_menu
         await self.cog._show_main_menu(interaction)
 
 class HitConfirmView(discord.ui.View):
@@ -424,9 +420,9 @@ class SuccessView(discord.ui.View):
     async def menu(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id: return
         self.restarted = True
-        # SUCCESSパネルを削除してメインメニューへ
         await self.cog.delete_last_message(self.user_id)
         await self.cog.cleanup_session(self.user_id)
         await self.cog._show_main_menu(interaction)
 
 async def setup(bot): await bot.add_cog(FishingCog(bot))
+
