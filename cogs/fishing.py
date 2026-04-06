@@ -98,8 +98,7 @@ class FishingCog(commands.Cog):
                 session["task"].cancel()
             if "hit_event" in session:
                 session["hit_event"].set()
-            # We don't necessarily delete the last message here to keep the "LOST" or "SUCCESS" logs
-            # until the next action starts.
+            # session自体は削除するが、last_msgは削除メソッドで呼ぶまで保持
             self.active_sessions.pop(user_id, None)
 
     @app_commands.command(name="fish", description="Open the fishing menu")
@@ -120,13 +119,14 @@ class FishingCog(commands.Cog):
         embed.add_field(name="Bag", value=f"{len(profile['inventory'])} / 20", inline=True)
         
         view = MainMenuView(user_id, self)
+        
+        # 既存のメッセージがある場合は編集、ない場合は送信
         if interaction.response.is_done():
             msg = await interaction.edit_original_response(content=None, embed=embed, view=view)
         else:
             await interaction.response.send_message(embed=embed, view=view)
             msg = await interaction.original_response()
         
-        # Initialize session tracking for msg cleanup
         if user_id not in self.active_sessions:
             self.active_sessions[user_id] = {}
         self.active_sessions[user_id]["last_msg"] = msg
@@ -137,14 +137,14 @@ class FishingCog(commands.Cog):
         wait_seconds = random.randint(*biome["wait_range"])
         hit_event = asyncio.Event()
 
-        # Delete previous battle/result message if starting a new wait
+        # 常に最新のパネルに更新するため古いメッセージは削除
         await self.delete_last_message(user_id)
         
-        # We don't cleanup_session fully here because we need to preserve last_msg etc.
-        # Just cancel pending tasks
         if user_id in self.active_sessions:
             if "task" in self.active_sessions[user_id] and not self.active_sessions[user_id]["task"].done():
                 self.active_sessions[user_id]["task"].cancel()
+        else:
+            self.active_sessions[user_id] = {}
 
         self.active_sessions[user_id].update({
             "status": "waiting",
@@ -160,8 +160,10 @@ class FishingCog(commands.Cog):
         )
         view = WaitingView(user_id, self)
         
+        # start_waitingは常に新しいメッセージ（Waitingパネル）を出すため、
+        # interactionが既に消費されていても、新規送信または編集で対応
         if interaction.response.is_done():
-            msg = await interaction.edit_original_response(content=None, embed=embed, view=view)
+            msg = await interaction.followup.send(embed=embed, view=view)
         else:
             await interaction.response.send_message(embed=embed, view=view)
             msg = await interaction.original_response()
@@ -183,7 +185,6 @@ class FishingCog(commands.Cog):
         session = self.active_sessions.get(user_id)
         if not session: return
         
-        # Delete the "WAITING..." panel message
         await self.delete_last_message(user_id)
         
         session["status"] = "hit_pending"
@@ -199,7 +200,6 @@ class FishingCog(commands.Cog):
             
             try:
                 await asyncio.wait_for(hit_event.wait(), timeout=10.0)
-                # Success: start_battle handles its own UI
                 await self.start_battle(user_id, interaction)
             except asyncio.TimeoutError:
                 await self.cleanup_session(user_id)
@@ -211,7 +211,6 @@ class FishingCog(commands.Cog):
         session = self.active_sessions.get(user_id)
         if not session: return
         
-        # Delete the "HIT!" notification message
         await self.delete_last_message(user_id)
         
         fish_key = random.choice(BIOMES[session["biome_id"]]["fish_pool"])
@@ -233,7 +232,6 @@ class FishingCog(commands.Cog):
         }
         session["status"] = "battling"
         
-        # Create a new message for Battle
         embed = discord.Embed(title="BATTLE", description="Preparing battle...", color=0xe67e22)
         msg = await interaction.channel.send(embed=embed)
         session["last_msg"] = msg
@@ -282,6 +280,7 @@ class MainMenuView(discord.ui.View):
         profile["coins"] += total
         profile["inventory"] = []
         await self.cog.save_user_data(self.user_id, profile)
+        # 通知はEphemeral、メニュー更新はeditで行いログ流出を防ぐ
         await interaction.response.send_message(f"Sold for {total} Coins.", ephemeral=True)
         await self.cog._show_main_menu(interaction)
 
@@ -330,14 +329,17 @@ class ShopView(discord.ui.View):
 
 class WaitingView(discord.ui.View):
     def __init__(self, user_id, cog):
-        super().__init__(timeout=None) # Timeout is now None as requested
+        super().__init__(timeout=None)
         self.user_id = user_id
         self.cog = cog
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id: return
+        # Waitingパネルを削除してからメインメニューを表示
+        await self.cog.delete_last_message(self.user_id)
         await self.cog.cleanup_session(self.user_id)
+        # cleanup_sessionでactive_sessions[user_id]が消えるため、新規でshow_main_menu
         await self.cog._show_main_menu(interaction)
 
 class HitConfirmView(discord.ui.View):
@@ -372,8 +374,8 @@ class BattleView(discord.ui.View):
         s["hp"] -= random.randint(int(s["power"] * 0.7), s["power"])
         hp_ratio = max(0, s["hp"]) / s["max_hp"]
         if random.random() < (s["base_escape"] * (s["picks"]**1.4) * (hp_ratio + 0.2)) and s["hp"] > 0:
-            await self.cog.cleanup_session(self.user_id)
             await session["last_msg"].edit(content="LOST: Line snapped!", embed=None, view=None)
+            await self.cog.cleanup_session(self.user_id)
             return
 
         if s["hp"] <= 0:
@@ -422,6 +424,8 @@ class SuccessView(discord.ui.View):
     async def menu(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id: return
         self.restarted = True
+        # SUCCESSパネルを削除してメインメニューへ
+        await self.cog.delete_last_message(self.user_id)
         await self.cog.cleanup_session(self.user_id)
         await self.cog._show_main_menu(interaction)
 
