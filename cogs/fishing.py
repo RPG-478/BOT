@@ -12,19 +12,19 @@ BIOMES = {
     "sea": {
         "name": "Sea",
         "color": 0x3498db,
-        "wait_range": (300, 3000),
+        "wait_range": (45, 120),
         "fish_pool": ["mackerel", "tuna", "seabass"]
     },
     "river": {
         "name": "River",
         "color": 0x1abc9c,
-        "wait_range": (30, 180),
+        "wait_range": (15, 60),
         "fish_pool": ["sweetfish", "salmon", "char"]
     },
     "pond": {
         "name": "Pond",
         "color": 0x2ecc71,
-        "wait_range": (5, 30),
+        "wait_range": (1, 15),
         "fish_pool": ["medaka", "koi", "crucian"]
     }
 }
