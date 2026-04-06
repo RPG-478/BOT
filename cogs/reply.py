@@ -78,7 +78,7 @@ class ReplyAI(commands.Cog):
         limit = data["max_limit"]
 
         if used >= limit:
-            return await ctx.send(f"今日の制限（{used}/{limit}）に達したよ。日付が変わるのを待つか、/invite で枠を増やしてね。")
+            return await ctx.send(f"今日の制限（{used}/{limit}）に達しました。日付が変わるのを待つか、/invite で他のサーバーに特別招待を行ってください")
 
         # 2. 応答生成
         async with ctx.typing():
