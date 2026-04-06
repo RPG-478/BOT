@@ -82,6 +82,15 @@ class FishingCog(commands.Cog):
             return int(power * 2.5)
         return power
 
+    async def delete_last_message(self, user_id: int):
+        session = self.active_sessions.get(user_id)
+        if session and "last_msg" in session:
+            try:
+                await session["last_msg"].delete()
+            except:
+                pass
+            session.pop("last_msg", None)
+
     async def cleanup_session(self, user_id: int):
         if user_id in self.active_sessions:
             session = self.active_sessions[user_id]
@@ -89,6 +98,8 @@ class FishingCog(commands.Cog):
                 session["task"].cancel()
             if "hit_event" in session:
                 session["hit_event"].set()
+            # We don't necessarily delete the last message here to keep the "LOST" or "SUCCESS" logs
+            # until the next action starts.
             self.active_sessions.pop(user_id, None)
 
     @app_commands.command(name="fish", description="Open the fishing menu")
@@ -110,9 +121,15 @@ class FishingCog(commands.Cog):
         
         view = MainMenuView(user_id, self)
         if interaction.response.is_done():
-            await interaction.edit_original_response(content=None, embed=embed, view=view)
+            msg = await interaction.edit_original_response(content=None, embed=embed, view=view)
         else:
             await interaction.response.send_message(embed=embed, view=view)
+            msg = await interaction.original_response()
+        
+        # Initialize session tracking for msg cleanup
+        if user_id not in self.active_sessions:
+            self.active_sessions[user_id] = {}
+        self.active_sessions[user_id]["last_msg"] = msg
 
     async def start_waiting(self, interaction: discord.Interaction, biome_id: str):
         user_id = interaction.user.id
@@ -120,15 +137,21 @@ class FishingCog(commands.Cog):
         wait_seconds = random.randint(*biome["wait_range"])
         hit_event = asyncio.Event()
 
-        # Ensure old tasks are gone
-        await self.cleanup_session(user_id)
+        # Delete previous battle/result message if starting a new wait
+        await self.delete_last_message(user_id)
         
-        self.active_sessions[user_id] = {
+        # We don't cleanup_session fully here because we need to preserve last_msg etc.
+        # Just cancel pending tasks
+        if user_id in self.active_sessions:
+            if "task" in self.active_sessions[user_id] and not self.active_sessions[user_id]["task"].done():
+                self.active_sessions[user_id]["task"].cancel()
+
+        self.active_sessions[user_id].update({
             "status": "waiting",
             "biome_id": biome_id,
             "hit_event": hit_event,
             "interaction": interaction
-        }
+        })
 
         embed = discord.Embed(
             title="WAITING...",
@@ -137,13 +160,13 @@ class FishingCog(commands.Cog):
         )
         view = WaitingView(user_id, self)
         
-        # Determine if we use edit or followup for the message
         if interaction.response.is_done():
             msg = await interaction.edit_original_response(content=None, embed=embed, view=view)
         else:
             await interaction.response.send_message(embed=embed, view=view)
             msg = await interaction.original_response()
 
+        self.active_sessions[user_id]["last_msg"] = msg
         task = asyncio.create_task(self._wait_loop(user_id, msg, wait_seconds))
         self.active_sessions[user_id]["task"] = task
 
@@ -159,6 +182,10 @@ class FishingCog(commands.Cog):
     async def _trigger_hit(self, user_id, interaction: discord.Interaction):
         session = self.active_sessions.get(user_id)
         if not session: return
+        
+        # Delete the "WAITING..." panel message
+        await self.delete_last_message(user_id)
+        
         session["status"] = "hit_pending"
         hit_event = session["hit_event"]
 
@@ -168,9 +195,11 @@ class FishingCog(commands.Cog):
                 content=f"HIT! {interaction.user.mention} A fish bit the bait! Press [Hook] within 10s!",
                 view=view
             )
+            session["last_msg"] = hit_msg
+            
             try:
                 await asyncio.wait_for(hit_event.wait(), timeout=10.0)
-                await hit_msg.delete()
+                # Success: start_battle handles its own UI
                 await self.start_battle(user_id, interaction)
             except asyncio.TimeoutError:
                 await self.cleanup_session(user_id)
@@ -181,6 +210,10 @@ class FishingCog(commands.Cog):
     async def start_battle(self, user_id, interaction: discord.Interaction):
         session = self.active_sessions.get(user_id)
         if not session: return
+        
+        # Delete the "HIT!" notification message
+        await self.delete_last_message(user_id)
+        
         fish_key = random.choice(BIOMES[session["biome_id"]]["fish_pool"])
         fish_base = FISH_DATA[fish_key]
         mod = random.uniform(0.8, 1.3)
@@ -199,11 +232,17 @@ class FishingCog(commands.Cog):
             "picks": 0, "power": power, "biome_id": session["biome_id"]
         }
         session["status"] = "battling"
+        
+        # Create a new message for Battle
+        embed = discord.Embed(title="BATTLE", description="Preparing battle...", color=0xe67e22)
+        msg = await interaction.channel.send(embed=embed)
+        session["last_msg"] = msg
+        
         await self._update_battle_ui(user_id, interaction)
 
     async def _update_battle_ui(self, user_id, interaction: discord.Interaction):
         session = self.active_sessions.get(user_id)
-        if not session or "battle" not in session: return
+        if not session or "battle" not in session or "last_msg" not in session: return
         s = session["battle"]
         hp_ratio = max(0, s["hp"]) / s["max_hp"]
         tension_val = (s["base_escape"] * (s["picks"]**1.4) * (hp_ratio + 0.2)) * 100
@@ -216,10 +255,7 @@ class FishingCog(commands.Cog):
         embed.add_field(name="Tension", value=f"`{t_bar}`", inline=True)
         
         view = BattleView(user_id, self)
-        if not interaction.response.is_done():
-            await interaction.response.edit_message(embed=embed, view=view)
-        else:
-            await interaction.edit_original_response(embed=embed, view=view)
+        await session["last_msg"].edit(embed=embed, view=view)
 
 class MainMenuView(discord.ui.View):
     def __init__(self, user_id, cog):
@@ -294,7 +330,7 @@ class ShopView(discord.ui.View):
 
 class WaitingView(discord.ui.View):
     def __init__(self, user_id, cog):
-        super().__init__(timeout=None)
+        super().__init__(timeout=None) # Timeout is now None as requested
         self.user_id = user_id
         self.cog = cog
 
@@ -337,7 +373,7 @@ class BattleView(discord.ui.View):
         hp_ratio = max(0, s["hp"]) / s["max_hp"]
         if random.random() < (s["base_escape"] * (s["picks"]**1.4) * (hp_ratio + 0.2)) and s["hp"] > 0:
             await self.cog.cleanup_session(self.user_id)
-            await interaction.edit_original_response(content="LOST: Line snapped!", embed=None, view=None)
+            await session["last_msg"].edit(content="LOST: Line snapped!", embed=None, view=None)
             return
 
         if s["hp"] <= 0:
@@ -351,9 +387,8 @@ class BattleView(discord.ui.View):
             embed.set_footer(text="Auto-casting in 5 seconds...")
             
             view = SuccessView(self.user_id, self.cog, s["biome_id"])
-            await interaction.edit_original_response(embed=embed, view=view)
+            await session["last_msg"].edit(embed=embed, view=view)
             
-            # Start auto-restart task
             task = asyncio.create_task(view.auto_restart(interaction))
             session["task"] = task
         else:
@@ -386,7 +421,7 @@ class SuccessView(discord.ui.View):
     @discord.ui.button(label="Menu", style=discord.ButtonStyle.secondary)
     async def menu(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id: return
-        self.restarted = True # Stop auto-restart
+        self.restarted = True
         await self.cog.cleanup_session(self.user_id)
         await self.cog._show_main_menu(interaction)
 
