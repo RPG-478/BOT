@@ -8,12 +8,12 @@ url = "YOUR_SUPABASE_URL"
 key = "YOUR_SUPABASE_KEY"
 supabase = create_client(url, key)
 
-class Wallet(commands.Cog):
+class Status(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
     @app_commands.command(name="status", description="現在の所持金とPランクを確認します")
-    async def wallet(self, interaction: discord.Interaction):
+    async def status(self, interaction: discord.Interaction):
         user_id = str(interaction.user.id)
         
         try:
@@ -48,7 +48,7 @@ class Wallet(commands.Cog):
             await interaction.response.send_message(embed=embed)
 
         except Exception as e:
-            print(f"Error fetching wallet: {e}")
+            print(f"Error fetching status: {e}")
             await interaction.response.send_message("データの取得中にエラーが発生しました。", ephemeral=True)
 
 async def setup(bot):
