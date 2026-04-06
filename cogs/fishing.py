@@ -27,35 +27,35 @@ BIOMES = {
 }
 
 FISH_DATA = {
-    "aji": {"name": "アジ", "rarity": 1, "max_hp": 50, "base_escape": 0.02, "price_range": (10, 20)},
-    "maguro": {"name": "マグロ", "rarity": 5, "max_hp": 300, "base_escape": 0.12, "price_range": (500, 1200)},
-    "suzuki": {"name": "スズキ", "rarity": 3, "max_hp": 120, "base_escape": 0.05, "price_range": (100, 250)},
-    "ayu": {"name": "アユ", "rarity": 1, "max_hp": 40, "base_escape": 0.015, "price_range": (15, 30)},
-    "sake": {"name": "サケ", "rarity": 3, "max_hp": 150, "base_escape": 0.06, "price_range": (120, 300)},
-    "medaka": {"name": "メダカ", "rarity": 1, "max_hp": 10, "base_escape": 0.005, "price_range": (1, 5)},
-    "koi": {"name": "コイ", "rarity": 2, "max_hp": 80, "base_escape": 0.04, "price_range": (50, 100)}
+    "aji": {"name": "アジ", "rarity": 1, "max_hp": 50, "base_escape": 0.02},
+    "maguro": {"name": "マグロ", "rarity": 5, "max_hp": 300, "base_escape": 0.12},
+    "suzuki": {"name": "スズキ", "rarity": 3, "max_hp": 120, "base_escape": 0.05},
+    "ayu": {"name": "アユ", "rarity": 1, "max_hp": 40, "base_escape": 0.015},
+    "sake": {"name": "サケ", "rarity": 3, "max_hp": 150, "base_escape": 0.06},
+    "medaka": {"name": "メダカ", "rarity": 1, "max_hp": 10, "base_escape": 0.005},
+    "koi": {"name": "コイ", "rarity": 2, "max_hp": 80, "base_escape": 0.04}
 }
 
 class FishingCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # セッション管理 {user_id: {"end_time": float, "is_active": bool}}
-        self.waiting_sessions = {}
+        # セッション管理 {user_id: {"end_time": float, "status": str, "main_interaction": Interaction}}
+        self.active_sessions = {}
 
     def get_rod_power(self, level):
         """竿のレベルからダメージ期待値を算出"""
         return 10 + (level * 5)
 
     @app_commands.command(name="fish", description="釣り場を選択して釣りを開始します")
-    @app_commands.describe(biome="釣りをする場所を選択してください")
+    @app_commands.describe(biome="釣り場を選択してください")
     @app_commands.choices(biome=[
         app_commands.Choice(name=v["name"], value=k) for k, v in BIOMES.items()
     ])
     async def fish(self, interaction: discord.Interaction, biome: str):
         user_id = str(interaction.user.id)
 
-        if user_id in self.waiting_sessions:
-            await interaction.response.send_message("既に釣りの準備中、または格闘中です。", ephemeral=True)
+        if user_id in self.active_sessions:
+            await interaction.response.send_message("既に釣りを行っています。", ephemeral=True)
             return
 
         await self._start_waiting_phase(interaction, biome)
@@ -65,10 +65,11 @@ class FishingCog(commands.Cog):
         biome = BIOMES[biome_id]
         wait_seconds = random.randint(*biome["wait_range"])
         
-        # セッション情報の登録
-        self.waiting_sessions[user_id] = {
+        self.active_sessions[user_id] = {
             "end_time": time.time() + wait_seconds,
-            "is_active": True
+            "status": "waiting",
+            "main_interaction": interaction,
+            "biome_id": biome_id
         }
 
         view = WaitingView(interaction.user.id, self)
@@ -77,75 +78,95 @@ class FishingCog(commands.Cog):
             view=view
         )
 
-        # 待機ループ (揺らすボタンによる時間短縮をリアルタイム反映)
+        # 待機ループ
         while True:
-            if user_id not in self.waiting_sessions:
-                return # 中止された場合
+            if user_id not in self.active_sessions or self.active_sessions[user_id]["status"] != "waiting":
+                return
             
-            remaining = self.waiting_sessions[user_id]["end_time"] - time.time()
-            if remaining <= 0:
+            if time.time() >= self.active_sessions[user_id]["end_time"]:
                 break
             
             await asyncio.sleep(1)
 
-        # ヒットフェーズへ移行
-        await self._on_hit_notification(interaction, biome_id)
+        await self._trigger_hit(user_id)
 
-    async def _on_hit_notification(self, interaction, biome_id):
-        """アタリ発生時の通知とあわせる確認"""
-        user_id = str(interaction.user.id)
-        if user_id not in self.waiting_sessions:
+    async def _trigger_hit(self, user_id):
+        """アタリ発生通知（別メッセージ送信）"""
+        if user_id not in self.active_sessions:
             return
 
-        view = HitConfirmView(interaction.user.id, biome_id, self)
-        await interaction.edit_original_response(
-            content=f"{interaction.user.mention} ❗ **アタリが来ました！竿が動いています！**\n（5秒以内に『あわせる』を押してください）",
+        session = self.active_sessions[user_id]
+        session["status"] = "hit_pending"
+        interaction = session["main_interaction"]
+
+        # 通知用の新規メッセージを別枠で送信
+        view = HitConfirmView(user_id, self)
+        hit_msg = await interaction.channel.send(
+            content=f"{interaction.user.mention} ❗ **アタリです！竿が強く引かれています！**\n（5秒以内に『あわせる』を押してください）",
             view=view
         )
         
-        # 5秒間のタイムアウト監視
+        # 5秒待機
         await asyncio.sleep(5)
         
-        # 5秒経ってもセッションがWaiting状態のまま（確認されていない）なら逃げられる
-        if user_id in self.waiting_sessions and self.waiting_sessions[user_id].get("is_active"):
-            self.waiting_sessions.pop(user_id, None)
-            retry_view = RetryView(interaction.user.id, biome_id, self)
+        # 5秒後、まだhit_pending状態ならタイムアウト処理
+        if user_id in self.active_sessions and self.active_sessions[user_id]["status"] == "hit_pending":
+            self.active_sessions.pop(user_id, None)
+            
+            # アタリメッセージを削除
+            try:
+                await hit_msg.delete()
+            except:
+                pass
+            
+            # メインメッセージを逃走表示に更新
+            retry_view = RetryView(user_id, session["biome_id"], self)
             await interaction.edit_original_response(
-                content=f"{interaction.user.mention} 魚に逃げられてしまいました...（反応が遅すぎました）",
+                content=f"魚に逃げられてしまいました...（反応がありませんでした）",
                 view=retry_view
             )
 
-    async def _start_battle_phase(self, interaction, biome_id):
-        """格闘フェーズの開始"""
-        user_id = str(interaction.user.id)
-        
-        # 魚の抽選
+    async def start_battle(self, user_id, hit_msg):
+        """あわせる成功時。アタリメッセージを削除し、メインメッセージでバトル開始"""
+        if user_id not in self.active_sessions:
+            return
+
+        session = self.active_sessions[user_id]
+        session["status"] = "battling"
+        interaction = session["main_interaction"]
+        biome_id = session["biome_id"]
+
+        # アタリメッセージを即座に削除
+        try:
+            await hit_msg.delete()
+        except:
+            pass
+
+        # 魚の選出とバトルデータ準備
         fish_key = random.choice(BIOMES[biome_id]["fish_pool"])
-        fish_base = FISH_DATA[fish_key]
+        fish = FISH_DATA[fish_key]
+        rod_level = 1 # 仮
         
-        # ユーザーデータの取得（モック: 本来はSupabaseから取得）
-        rod_level = 1 
-        
-        session_data = {
+        battle_data = {
             "user_id": user_id,
             "fish_key": fish_key,
-            "fish_name": fish_base["name"],
-            "rarity": fish_base["rarity"],
-            "max_hp": fish_base["max_hp"],
-            "hp": fish_base["max_hp"],
-            "base_escape": fish_base["base_escape"],
+            "fish_name": fish["name"],
+            "rarity": fish["rarity"],
+            "max_hp": fish["max_hp"],
+            "hp": fish["max_hp"],
+            "base_escape": fish["base_escape"],
             "picks": 0,
             "rod_power": self.get_rod_power(rod_level),
             "biome_id": biome_id
         }
 
-        view = FishingBattleView(session_data, self)
-        await interaction.response.edit_message(
-            content=f"🎣 **格闘開始！** \n出現: **{fish_base['name']}** (⭐{fish_base['rarity']})",
+        view = FishingBattleView(battle_data, self)
+        await interaction.edit_original_response(
+            content=f"🎣 **格闘開始！** \n出現: **{fish['name']}** (⭐{fish['rarity']})",
             view=view
         )
 
-# --- View: 予約フェーズ用 ---
+# --- View: 待機用 (メインメッセージ) ---
 class WaitingView(discord.ui.View):
     def __init__(self, user_id, cog):
         super().__init__(timeout=None)
@@ -158,40 +179,37 @@ class WaitingView(discord.ui.View):
             await interaction.response.defer()
             return
 
-        if self.user_id in self.cog.waiting_sessions:
-            reduction = random.randint(1, 4)
-            self.cog.waiting_sessions[self.user_id]["end_time"] -= reduction
+        if self.user_id in self.cog.active_sessions:
+            # 内部的に短縮
+            self.cog.active_sessions[self.user_id]["end_time"] -= random.randint(1, 4)
             await interaction.response.defer()
 
-    @discord.ui.button(label="釣りをやめる", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="中止", style=discord.ButtonStyle.danger)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
         if str(interaction.user.id) != self.user_id:
-            await interaction.response.send_message("操作権限がありません。", ephemeral=True)
+            await interaction.response.defer()
             return
-
-        self.cog.waiting_sessions.pop(self.user_id, None)
+        self.cog.active_sessions.pop(self.user_id, None)
         await interaction.response.edit_message(content="釣りを中止しました。", view=None)
 
-# --- View: ヒット確認用 (5秒制限) ---
+# --- View: ヒット確認用 (別枠メッセージ) ---
 class HitConfirmView(discord.ui.View):
-    def __init__(self, user_id, biome_id, cog):
+    def __init__(self, user_id, cog):
         super().__init__(timeout=5)
         self.user_id = str(user_id)
-        self.biome_id = biome_id
         self.cog = cog
 
     @discord.ui.button(label="あわせる！", style=discord.ButtonStyle.success, emoji="🎣")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if str(interaction.user.id) != self.user_id:
-            await interaction.response.send_message("あなたの竿ではありません。", ephemeral=True)
+            await interaction.response.defer()
             return
         
-        # セッションを「格闘中」に変更（監視ループを抜けるため）
-        if self.user_id in self.cog.waiting_sessions:
-            self.cog.waiting_sessions[self.user_id]["is_active"] = False # 通知監視用フラグをオフ
-            await self.cog._start_battle_phase(interaction, self.biome_id)
+        # インタラクションを完了させ、Cog側のバトル開始処理を呼ぶ
+        await interaction.response.defer()
+        await self.cog.start_battle(self.user_id, interaction.message)
 
-# --- View: バトルフェーズ用 ---
+# --- View: バトル用 (メインメッセージ) ---
 class FishingBattleView(discord.ui.View):
     def __init__(self, session, cog):
         super().__init__(timeout=60)
@@ -201,7 +219,7 @@ class FishingBattleView(discord.ui.View):
     @discord.ui.button(label="Pick!", style=discord.ButtonStyle.primary)
     async def pick(self, interaction: discord.Interaction, button: discord.ui.Button):
         if str(interaction.user.id) != self.s["user_id"]:
-            await interaction.response.send_message("これはあなたの獲物ではありません。", ephemeral=True)
+            await interaction.response.defer()
             return
 
         self.s["picks"] += 1
@@ -209,30 +227,28 @@ class FishingBattleView(discord.ui.View):
         self.s["hp"] -= damage
 
         hp_ratio = max(0, self.s["hp"]) / self.s["max_hp"]
+        # P = (BaseRarity * (Picks^1.5)) * (CurrentHP / MaxHP)
         escape_prob = (self.s["base_escape"] * (self.s["picks"] ** 1.5)) * hp_ratio
 
         if random.random() < escape_prob and self.s["hp"] > 0:
-            await self._finish_battle(interaction, f"不覚！ **{self.s['fish_name']}** は逃げてしまった...", success=False)
+            await self._finish(interaction, f"**{self.s['fish_name']}** は逃げてしまった...", success=False)
             return
 
         if self.s["hp"] <= 0:
-            # Supabase保存処理（ここで行う）
-            await self._finish_battle(interaction, f"成功！ **{self.s['fish_name']}** を釣り上げた！", success=True)
+            # 保存処理などをここに実装
+            await self._finish(interaction, f"成功！ **{self.s['fish_name']}** を釣り上げた！", success=True)
         else:
-            bar_len = 10
-            filled = round(bar_len * hp_ratio)
-            gauge = "■" * filled + "□" * (bar_len - filled)
-            
+            gauge = "■" * round(10 * hp_ratio) + "□" * (10 - round(10 * hp_ratio))
             await interaction.response.edit_message(
-                content=f"格闘中... (HP: {max(0, self.s['hp'])} / {self.s['max_hp']})\n`{gauge}`",
+                content=f"格闘中... HP: {max(0, self.s['hp'])}/{self.s['max_hp']}\n`{gauge}`"
             )
 
-    async def _finish_battle(self, interaction, text, success):
-        self.cog.waiting_sessions.pop(self.s["user_id"], None)
+    async def _finish(self, interaction, text, success):
+        self.cog.active_sessions.pop(self.s["user_id"], None)
         view = RetryView(self.s["user_id"], self.s["biome_id"], self.cog)
         await interaction.response.edit_message(content=text, view=view)
 
-# --- View: リザルト用 ---
+# --- View: リトライ用 (メインメッセージ) ---
 class RetryView(discord.ui.View):
     def __init__(self, user_id, biome_id, cog):
         super().__init__(timeout=60)
@@ -243,11 +259,9 @@ class RetryView(discord.ui.View):
     @discord.ui.button(label="もう一度釣る", style=discord.ButtonStyle.success)
     async def retry(self, interaction: discord.Interaction, button: discord.ui.Button):
         if str(interaction.user.id) != str(self.user_id):
-            await interaction.response.send_message("本人しか再開できません。", ephemeral=True)
+            await interaction.response.defer()
             return
-        
         await self.cog._start_waiting_phase(interaction, self.biome_id)
 
 async def setup(bot):
     await bot.add_cog(FishingCog(bot))
-
