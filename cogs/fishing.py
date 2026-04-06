@@ -258,7 +258,7 @@ class FishingCog(commands.Cog):
 
 class MainMenuView(discord.ui.View):
     def __init__(self, user_id, cog):
-        super().__init__(timeout=None)
+        super().__init__(timeout=120)
         self.user_id = user_id
         self.cog = cog
 
@@ -334,7 +334,7 @@ class ShopView(discord.ui.View):
 
 class WaitingView(discord.ui.View):
     def __init__(self, user_id, cog):
-        super().__init__(timeout=None)
+        super().__init__(timeout=3000)
         self.user_id = user_id
         self.cog = cog
 
@@ -424,7 +424,7 @@ class BattleView(discord.ui.View):
 
 class SuccessView(discord.ui.View):
     def __init__(self, user_id, cog, biome_id):
-        super().__init__(timeout=None)
+        super().__init__(timeout=120)
         self.user_id = user_id
         self.cog = cog
         self.biome_id = biome_id
