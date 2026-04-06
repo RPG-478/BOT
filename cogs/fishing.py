@@ -98,14 +98,17 @@ class FishingCog(commands.Cog):
                 session["task"].cancel()
             if "hit_event" in session:
                 session["hit_event"].set()
+            # session自体を削除
             self.active_sessions.pop(user_id, None)
 
     @app_commands.command(name="fish", description="Open the fishing menu")
     async def fish(self, interaction: discord.Interaction):
         user_id = interaction.user.id
+        # 新しく起動した場合、既存のセッション（待機・バトル等）があれば強制終了
         if user_id in self.active_sessions:
-            await interaction.response.send_message("You are already fishing!", ephemeral=True)
-            return
+            await self.delete_last_message(user_id)
+            await self.cleanup_session(user_id)
+        
         await self._show_main_menu(interaction)
 
     async def _show_main_menu(self, interaction: discord.Interaction):
@@ -119,8 +122,9 @@ class FishingCog(commands.Cog):
         
         view = MainMenuView(user_id, self)
         
+        # 既存のインタラクションに応答済みか確認
         if interaction.response.is_done():
-            msg = await interaction.edit_original_response(content=None, embed=embed, view=view)
+            msg = await interaction.followup.send(embed=embed, view=view)
         else:
             await interaction.response.send_message(embed=embed, view=view)
             msg = await interaction.original_response()
@@ -135,6 +139,7 @@ class FishingCog(commands.Cog):
         wait_seconds = random.randint(*biome["wait_range"])
         hit_event = asyncio.Event()
 
+        # パネル更新のため古いメッセージは削除
         await self.delete_last_message(user_id)
         
         if user_id in self.active_sessions:
@@ -157,6 +162,7 @@ class FishingCog(commands.Cog):
         )
         view = WaitingView(user_id, self)
         
+        # 新しいメッセージを送信
         if interaction.response.is_done():
             msg = await interaction.followup.send(embed=embed, view=view)
         else:
@@ -275,9 +281,8 @@ class MainMenuView(discord.ui.View):
         profile["coins"] += total
         profile["inventory"] = []
         await self.cog.save_user_data(self.user_id, profile)
-        
-        # 通知はエフェメラル、元メッセージ(Status)はeditして最新化する
         await interaction.response.send_message(f"Sold for {total} Coins.", ephemeral=True)
+        # メインメニューはedit_original_responseで更新するように修正
         await self.cog._show_main_menu(interaction)
 
     @discord.ui.button(label="Shop", style=discord.ButtonStyle.secondary)
@@ -316,13 +321,15 @@ class ShopView(discord.ui.View):
         else: profile["stats_power"] += 15; profile["level"] += 1
         await self.cog.save_user_data(self.user_id, profile)
         await interaction.response.send_message(f"Bought {item['name']}", ephemeral=True)
+        # 購入後にステータス更新を伴うメインメニューへ戻す
+        await self.cog.delete_last_message(self.user_id)
         await self.cog._show_main_menu(interaction)
 
     @discord.ui.button(label="Back", style=discord.ButtonStyle.danger)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id: return
-        # Shopパネルはメインメニューと同じメッセージオブジェクトを使用しているが、
-        # 万が一のためにセッション管理を確認しつつメニューに戻す
+        # 修正箇所: Shopパネルを削除してからメインメニューを表示
+        await self.cog.delete_last_message(self.user_id)
         await self.cog._show_main_menu(interaction)
 
 class WaitingView(discord.ui.View):
@@ -425,4 +432,3 @@ class SuccessView(discord.ui.View):
         await self.cog._show_main_menu(interaction)
 
 async def setup(bot): await bot.add_cog(FishingCog(bot))
-
