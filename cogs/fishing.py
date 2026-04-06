@@ -157,7 +157,7 @@ class FishingCog(commands.Cog):
 
         embed = discord.Embed(
             title="WAITING...",
-            description=f"Area: {biome['name']}\nWaiting for a bite...",
+            description=f"Area: {biome['name']}\n<a:POYOPOYO:1490724627805110392>Waiting for a bite...",
             color=biome["color"]
         )
         view = WaitingView(user_id, self)
