@@ -33,7 +33,7 @@ class ReplyAI(commands.Cog):
                 data = {
                     "guild_id": guild_id,
                     "used_count": 0,
-                    "max_limit": 10,
+                    "max_limit": 50,
                     "joined_at": datetime.now(timezone.utc).isoformat(),
                     "last_reset_date": today,
                     "is_promoted": False
