@@ -12,13 +12,13 @@ BIOMES = {
     "sea": {
         "name": "Sea",
         "color": 0x3498db,
-        "wait_range": (30, 120),
+        "wait_range": (300, 3000),
         "fish_pool": ["mackerel", "tuna", "seabass"]
     },
     "river": {
         "name": "River",
         "color": 0x1abc9c,
-        "wait_range": (15, 60),
+        "wait_range": (30, 180),
         "fish_pool": ["sweetfish", "salmon", "char"]
     },
     "pond": {
@@ -65,7 +65,7 @@ class FishingCog(commands.Cog):
     async def load_user_data(self, user_id: int):
         if user_id not in self.user_data:
             self.user_data[user_id] = {
-                "coins": 100,
+                "coins": 150,
                 "inventory": [],
                 "items": [],
                 "level": 1,
@@ -365,6 +365,20 @@ class BattleView(discord.ui.View):
         self.user_id = user_id
         self.cog = cog
 
+class BattleView(discord.ui.View):
+    def __init__(self, user_id, cog):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+        self.cog = cog
+        self.restarted = False
+
+    async def auto_restart(self, interaction: discord.Interaction, biome_id: str):
+        await asyncio.sleep(5)
+        # セッションがまだ有効で、かつ再開処理が走っていないか確認
+        if not self.restarted and self.user_id in self.cog.active_sessions:
+            self.restarted = True
+            await self.cog.start_waiting(interaction, biome_id)
+
     @discord.ui.button(label="PULL", style=discord.ButtonStyle.primary)
     async def pull(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id: return
@@ -376,11 +390,19 @@ class BattleView(discord.ui.View):
         s["picks"] += 1
         s["hp"] -= random.randint(int(s["power"] * 0.7), s["power"])
         hp_ratio = max(0, s["hp"]) / s["max_hp"]
+
+        # LOST判定
         if random.random() < (s["base_escape"] * (s["picks"]**1.4) * (hp_ratio + 0.2)) and s["hp"] > 0:
-            await session["last_msg"].edit(content="LOST: Line snapped!", embed=None, view=None)
-            await self.cog.cleanup_session(self.user_id)
+            # 案内メッセージを表示し、UIを消去
+            await session["last_msg"].edit(content="LOST: Line snapped! Auto-casting in 5 seconds...", embed=None, view=None)
+            
+            # 5秒後に自動再開するタスクをスケジュール
+            biome_id = s["biome_id"]
+            task = asyncio.create_task(self.auto_restart(interaction, biome_id))
+            session["task"] = task
             return
 
+        # SUCCESS判定
         if s["hp"] <= 0:
             profile = await self.cog.load_user_data(self.user_id)
             profile["inventory"].append({"name": s["fish_name"], "weight": s["weight"], "rarity": s["rarity"]})
@@ -397,6 +419,7 @@ class BattleView(discord.ui.View):
             task = asyncio.create_task(view.auto_restart(interaction))
             session["task"] = task
         else:
+            # UI更新
             await self.cog._update_battle_ui(self.user_id, interaction)
 
 class SuccessView(discord.ui.View):
