@@ -135,16 +135,16 @@ class WaitingView(discord.ui.View):
     @discord.ui.button(label="竿を揺らす", style=discord.ButtonStyle.secondary)
     async def shake(self, interaction: discord.Interaction, button: discord.ui.Button):
         if str(interaction.user.id) != self.user_id:
-            await interaction.response.send_message("自分の竿ではありません。", ephemeral=True)
+            await interaction.response.defer()
             return
 
         if self.user_id in self.cog.waiting_sessions:
+            # 内部的に1〜4秒短縮するが、ユーザーには通知しない
             reduction = random.randint(1, 4)
             self.cog.waiting_sessions[self.user_id]["end_time"] -= reduction
             
-            # 残り時間を計算して表示
-            remaining = max(0, int(self.cog.waiting_sessions[self.user_id]["end_time"] - time.time()))
-            await interaction.response.send_message(f"竿を揺らした！ 残り約{remaining}秒", ephemeral=True)
+            # response.defer() でインタラクションを静かに完了させる
+            await interaction.response.defer()
 
     @discord.ui.button(label="釣りをやめる", style=discord.ButtonStyle.danger)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -223,4 +223,3 @@ class RetryView(discord.ui.View):
 
 async def setup(bot):
     await bot.add_cog(FishingCog(bot))
-
