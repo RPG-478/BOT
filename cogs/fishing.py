@@ -4,23 +4,24 @@ from discord import app_commands
 import random
 import asyncio
 import time
-import math
-from datetime import datetime
 
-# --- プログラム内定数 (GitHub/Code管理) ---
+# --- プログラム内定数 ---
 BIOMES = {
     "sea": {
         "name": "海",
+        "color": 0x3498db,
         "wait_range": (30, 120),
         "fish_pool": ["aji", "maguro", "suzuki"]
     },
     "river": {
         "name": "川",
+        "color": 0x1abc9c,
         "wait_range": (20, 80),
         "fish_pool": ["ayu", "sake", "iwana"]
     },
     "pond": {
         "name": "池",
+        "color": 0x2ecc71,
         "wait_range": (10, 60),
         "fish_pool": ["medaka", "koi", "funagi"]
     }
@@ -43,7 +44,6 @@ class FishingCog(commands.Cog):
         self.active_sessions = {}
 
     def get_rod_power(self, level):
-        """竿のレベルからダメージ期待値を算出"""
         return 10 + (level * 5)
 
     @app_commands.command(name="fish", description="釣り場を選択して釣りを開始します")
@@ -72,11 +72,20 @@ class FishingCog(commands.Cog):
             "biome_id": biome_id
         }
 
-        view = WaitingView(interaction.user.id, self)
-        await interaction.response.send_message(
-            f"【{biome['name']}】で糸を垂らしました... アタリを待っています。",
-            view=view
+        embed = discord.Embed(
+            title="🎣 釣り開始",
+            description=f"【{biome['name']}】で糸を垂らしました...\nアタリを待っています。",
+            color=biome["color"]
         )
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        embed.set_footer(text="竿を揺らすと時間が短縮されるかもしれません")
+
+        view = WaitingView(interaction.user.id, self)
+        
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, view=view)
+        else:
+            await interaction.response.send_message(embed=embed, view=view)
 
         # 待機ループ
         while True:
@@ -91,7 +100,6 @@ class FishingCog(commands.Cog):
         await self._trigger_hit(user_id)
 
     async def _trigger_hit(self, user_id):
-        """アタリ発生通知（別メッセージ送信）"""
         if user_id not in self.active_sessions:
             return
 
@@ -99,35 +107,30 @@ class FishingCog(commands.Cog):
         session["status"] = "hit_pending"
         interaction = session["main_interaction"]
 
-        # 通知用の新規メッセージを別枠で送信
+        # 別枠のメンションメッセージ送信
         view = HitConfirmView(user_id, self)
         hit_msg = await interaction.channel.send(
-            content=f"{interaction.user.mention} ❗ **アタリです！竿が強く引かれています！**\n（5秒以内に『あわせる』を押してください）",
+            content=f"{interaction.user.mention} ❗ **アタリです！**\n（5秒以内に『あわせる』を押してください）",
             view=view
         )
         
-        # 5秒待機
         await asyncio.sleep(5)
         
-        # 5秒後、まだhit_pending状態ならタイムアウト処理
+        # タイムアウト判定
         if user_id in self.active_sessions and self.active_sessions[user_id]["status"] == "hit_pending":
             self.active_sessions.pop(user_id, None)
-            
-            # アタリメッセージを削除
             try:
                 await hit_msg.delete()
             except:
                 pass
             
-            # メインメッセージを逃走表示に更新
+            embed = discord.Embed(title="❌ 逃げられた", description="反応が遅すぎました...", color=discord.Color.red())
+            embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+            
             retry_view = RetryView(user_id, session["biome_id"], self)
-            await interaction.edit_original_response(
-                content=f"魚に逃げられてしまいました...（反応がありませんでした）",
-                view=retry_view
-            )
+            await interaction.edit_original_response(embed=embed, view=retry_view)
 
     async def start_battle(self, user_id, hit_msg):
-        """あわせる成功時。アタリメッセージを削除し、メインメッセージでバトル開始"""
         if user_id not in self.active_sessions:
             return
 
@@ -136,16 +139,13 @@ class FishingCog(commands.Cog):
         interaction = session["main_interaction"]
         biome_id = session["biome_id"]
 
-        # アタリメッセージを即座に削除
         try:
             await hit_msg.delete()
         except:
             pass
 
-        # 魚の選出とバトルデータ準備
         fish_key = random.choice(BIOMES[biome_id]["fish_pool"])
         fish = FISH_DATA[fish_key]
-        rod_level = 1 # 仮
         
         battle_data = {
             "user_id": user_id,
@@ -156,17 +156,21 @@ class FishingCog(commands.Cog):
             "hp": fish["max_hp"],
             "base_escape": fish["base_escape"],
             "picks": 0,
-            "rod_power": self.get_rod_power(rod_level),
+            "rod_power": self.get_rod_power(1),
             "biome_id": biome_id
         }
 
-        view = FishingBattleView(battle_data, self)
-        await interaction.edit_original_response(
-            content=f"🎣 **格闘開始！** \n出現: **{fish['name']}** (⭐{fish['rarity']})",
-            view=view
+        embed = discord.Embed(
+            title="⚔️ 格闘開始！",
+            description=f"**{fish['name']}** (⭐{fish['rarity']}) が掛かった！\n`Pick!`を連打して釣り上げろ！",
+            color=0xe67e22
         )
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        
+        view = FishingBattleView(battle_data, self)
+        await interaction.edit_original_response(embed=embed, view=view)
 
-# --- View: 待機用 (メインメッセージ) ---
+# --- View: 待機用 ---
 class WaitingView(discord.ui.View):
     def __init__(self, user_id, cog):
         super().__init__(timeout=None)
@@ -176,23 +180,22 @@ class WaitingView(discord.ui.View):
     @discord.ui.button(label="竿を揺らす", style=discord.ButtonStyle.secondary)
     async def shake(self, interaction: discord.Interaction, button: discord.ui.Button):
         if str(interaction.user.id) != self.user_id:
-            await interaction.response.defer()
+            await interaction.response.send_message("他人の竿は触れません。", ephemeral=True)
             return
 
         if self.user_id in self.cog.active_sessions:
-            # 内部的に短縮
-            self.cog.active_sessions[self.user_id]["end_time"] -= random.randint(1, 4)
+            self.cog.active_sessions[self.user_id]["end_time"] -= random.randint(2, 6)
             await interaction.response.defer()
 
     @discord.ui.button(label="中止", style=discord.ButtonStyle.danger)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
         if str(interaction.user.id) != self.user_id:
-            await interaction.response.defer()
+            await interaction.response.send_message("自分以外は中止できません。", ephemeral=True)
             return
         self.cog.active_sessions.pop(self.user_id, None)
-        await interaction.response.edit_message(content="釣りを中止しました。", view=None)
+        await interaction.response.edit_message(content="釣りを中止しました。", embed=None, view=None)
 
-# --- View: ヒット確認用 (別枠メッセージ) ---
+# --- View: ヒット確認用 ---
 class HitConfirmView(discord.ui.View):
     def __init__(self, user_id, cog):
         super().__init__(timeout=5)
@@ -202,14 +205,13 @@ class HitConfirmView(discord.ui.View):
     @discord.ui.button(label="あわせる！", style=discord.ButtonStyle.success, emoji="🎣")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if str(interaction.user.id) != self.user_id:
-            await interaction.response.defer()
+            await interaction.response.send_message("あなたの魚ではありません。", ephemeral=True)
             return
         
-        # インタラクションを完了させ、Cog側のバトル開始処理を呼ぶ
         await interaction.response.defer()
         await self.cog.start_battle(self.user_id, interaction.message)
 
-# --- View: バトル用 (メインメッセージ) ---
+# --- View: バトル用 ---
 class FishingBattleView(discord.ui.View):
     def __init__(self, session, cog):
         super().__init__(timeout=60)
@@ -219,7 +221,7 @@ class FishingBattleView(discord.ui.View):
     @discord.ui.button(label="Pick!", style=discord.ButtonStyle.primary)
     async def pick(self, interaction: discord.Interaction, button: discord.ui.Button):
         if str(interaction.user.id) != self.s["user_id"]:
-            await interaction.response.defer()
+            await interaction.response.send_message("横取りはいけません。", ephemeral=True)
             return
 
         self.s["picks"] += 1
@@ -227,28 +229,32 @@ class FishingBattleView(discord.ui.View):
         self.s["hp"] -= damage
 
         hp_ratio = max(0, self.s["hp"]) / self.s["max_hp"]
-        # P = (BaseRarity * (Picks^1.5)) * (CurrentHP / MaxHP)
         escape_prob = (self.s["base_escape"] * (self.s["picks"] ** 1.5)) * hp_ratio
 
         if random.random() < escape_prob and self.s["hp"] > 0:
-            await self._finish(interaction, f"**{self.s['fish_name']}** は逃げてしまった...", success=False)
+            await self._finish(interaction, "逃げられてしまった...", success=False)
             return
 
         if self.s["hp"] <= 0:
-            # 保存処理などをここに実装
-            await self._finish(interaction, f"成功！ **{self.s['fish_name']}** を釣り上げた！", success=True)
+            await self._finish(interaction, f"**{self.s['fish_name']}** を釣り上げた！", success=True)
         else:
             gauge = "■" * round(10 * hp_ratio) + "□" * (10 - round(10 * hp_ratio))
-            await interaction.response.edit_message(
-                content=f"格闘中... HP: {max(0, self.s['hp'])}/{self.s['max_hp']}\n`{gauge}`"
-            )
+            embed = interaction.message.embeds[0]
+            embed.set_field_at(0, name="体力", value=f"`{gauge}` ({max(0, self.s['hp'])}/{self.s['max_hp']})", inline=False) if embed.fields else embed.add_field(name="体力", value=f"`{gauge}` ({max(0, self.s['hp'])}/{self.s['max_hp']})")
+            
+            await interaction.response.edit_message(embed=embed)
 
     async def _finish(self, interaction, text, success):
         self.cog.active_sessions.pop(self.s["user_id"], None)
+        color = discord.Color.gold() if success else discord.Color.light_grey()
+        
+        embed = discord.Embed(title="結果", description=text, color=color)
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        
         view = RetryView(self.s["user_id"], self.s["biome_id"], self.cog)
-        await interaction.response.edit_message(content=text, view=view)
+        await interaction.response.edit_message(embed=embed, view=view)
 
-# --- View: リトライ用 (メインメッセージ) ---
+# --- View: リトライ用 ---
 class RetryView(discord.ui.View):
     def __init__(self, user_id, biome_id, cog):
         super().__init__(timeout=60)
@@ -259,8 +265,16 @@ class RetryView(discord.ui.View):
     @discord.ui.button(label="もう一度釣る", style=discord.ButtonStyle.success)
     async def retry(self, interaction: discord.Interaction, button: discord.ui.Button):
         if str(interaction.user.id) != str(self.user_id):
-            await interaction.response.defer()
+            await interaction.response.send_message("本人のみ再試行できます。", ephemeral=True)
             return
+        
+        # 古いメッセージを削除
+        try:
+            await interaction.message.delete()
+        except:
+            pass
+
+        # interaction.response を使って新しく開始
         await self.cog._start_waiting_phase(interaction, self.biome_id)
 
 async def setup(bot):
