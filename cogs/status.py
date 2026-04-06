@@ -21,7 +21,6 @@ class Status(commands.Cog):
             res = supabase.table("users").select("coins, p_rank").eq("discord_id", user_id).execute()
             
             if not res.data:
-                # データがない場合の初期登録（必要に応じて）
                 await interaction.response.send_message("データが見つかりませんでした。先にゲームに参加してください。", ephemeral=True)
                 return
 
@@ -36,14 +35,15 @@ class Status(commands.Cog):
                 timestamp=discord.utils.utcnow()
             )
             
-            # ユーザーのアイコンをサムネイルに
-            embed.set_thumbnail(url=interaction.user.display_name if interaction.user.avatar else None)
+            # ユーザーのアイコンをサムネイルに設定
+            embed.set_thumbnail(url=interaction.user.display_avatar.url)
             
             # フィールドの追加
             embed.add_field(name="所持金", value=f"**{coins:,}** コイン", inline=True)
             embed.add_field(name="Pランク", value=f"**{p_rank}**", inline=True)
             
-            embed.set_footer(text="Play Hub System", icon_url=self.bot.user.avatar.url if self.bot.user.avatar else None)
+            # フッターの設定
+            embed.set_footer(text="Play Hub System")
 
             await interaction.response.send_message(embed=embed)
 
