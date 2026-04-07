@@ -2,11 +2,11 @@ import discord
 from discord.ext import commands
 import asyncio
 import random
-import os
-from groq import Groq
 
-# ===== このファイルの設定をそのまま利用 =====
-from your_config_file import supabase, GROQ_API_KEY
+from groq import Groq
+from supabase import create_client, Client
+
+import config  # ★ここが変更点
 
 # =========================
 # AI Cog
@@ -15,8 +15,17 @@ class ReplyAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-        # Groq初期化（グローバル変数使用）
-        self.groq = Groq(api_key=GROQ_API_KEY)
+        # ===== API初期化（config経由）=====
+        self.groq_client = Groq(api_key=config.GROQ_API_KEY)
+
+        if config.SUPABASE_URL and config.SUPABASE_KEY:
+            self.supabase: Client = create_client(
+                config.SUPABASE_URL,
+                config.SUPABASE_KEY
+            )
+        else:
+            self.supabase = None
+            print("⚠ Supabase未設定")
 
         # ===== 状態管理 =====
         self.cooldown = 3
@@ -24,21 +33,13 @@ class ReplyAI(commands.Cog):
 
         self.channel_state = {}   # ON/OFF（初期OFF）
         self.channel_prob = {}    # 返信確率（デフォ0.3）
-
         self.default_prob = 0.3
 
-        # ===== AI設定 =====
+        # ===== AI人格 =====
         self.system_prompt = (
-            "一文で短く返答。日本語。"
-            "軽い煽り・皮肉を少し含めてもよい。"
-            "長文は禁止。"
+            "自然な日本語で短く返答。"
+            "タメ口で軽く返す。長文禁止。"
         )
-
-        self.templates = [
-            "それ普通に想定内だな",
-            "よくあるやつだな",
-            "特に驚きないな"
-        ]
 
     # =========================
     # util
@@ -67,7 +68,7 @@ class ReplyAI(commands.Cog):
     # LLM
     # =========================
     def _generate(self, text: str):
-        res = self.groq.chat.completions.create(
+        res = self.groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": self.system_prompt},
@@ -83,7 +84,7 @@ class ReplyAI(commands.Cog):
         return await loop.run_in_executor(None, self._generate, text)
 
     # =========================
-    # ON/OFFスイッチ
+    # ON/OFF
     # =========================
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -93,7 +94,7 @@ class ReplyAI(commands.Cog):
 
         channel_id = message.channel.id
 
-        # ===== !oo スイッチ =====
+        # ===== スイッチ =====
         if message.content.strip() == "!oo":
             state = not self.channel_state.get(channel_id, False)
             self.channel_state[channel_id] = state
@@ -105,11 +106,11 @@ class ReplyAI(commands.Cog):
             )
             return
 
-        # ===== 初期OFF（完全停止）=====
+        # ===== 初期OFF =====
         if self.channel_state.get(channel_id) != True:
             return
 
-        # ===== 確率判定（デフォ0.3）=====
+        # ===== 返信確率 =====
         if random.random() > self._get_prob(channel_id):
             return
 
@@ -117,7 +118,6 @@ class ReplyAI(commands.Cog):
         if not self._cooldown_ok(message.author.id):
             return
 
-        # ===== メッセージ整形 =====
         text = self._clean(message.content, self.bot.user)
         if not text:
             text = "無言"
@@ -130,14 +130,13 @@ class ReplyAI(commands.Cog):
                 )
 
                 if not reply:
-                    reply = random.choice(self.templates)
+                    reply = "うまく返せなかった"
 
             except asyncio.TimeoutError:
-                reply = random.choice(self.templates)
-
+                reply = "考えるの遅いわｗ"
             except Exception as e:
                 print(f"[ReplyAI Error] {e}")
-                reply = "ごめんｗエラーで返せなかったｗ"
+                reply = "エラーで無理だった"
 
         await message.reply(
             reply[:120],
