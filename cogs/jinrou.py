@@ -153,7 +153,7 @@ class JinrouCog(commands.Cog):
         game.masai_evasion = {}
 
         view = RecruitView(game, timeout=wait_minutes * 60)
-        await interaction.response.send_message(f"人狼ゲーム募集開始。募集時間: {wait_minutes}分", view=view)
+        await interaction.response.send_message(f"<a:POYOPOYO:1490724627805110392>人狼ゲーム募集開始。募集時間: {wait_minutes}分", view=view)
         
         for _ in range(wait_minutes * 60):
             await asyncio.sleep(1)
@@ -175,7 +175,7 @@ class JinrouCog(commands.Cog):
         """役職割当・ゲームループの共通処理。jinrou コマンドと run_from_hub の両方から呼ばれる。"""
         if len(game.players) < 5:
             game.is_running = False
-            await channel.send("参加者が5人未満のため、ゲームを中止します。")
+            await channel.send("<:failed:1490986584676368535>参加者が5人未満のため、ゲームを中止します。")
             return
 
         game.alive_players = game.players.copy()
@@ -190,7 +190,7 @@ class JinrouCog(commands.Cog):
         roles_list = " / ".join(set(roles_for_display))
 
         await channel.send(
-            f"{mentions}\nゲーム開始。今回の役職内訳: {roles_list}\n下のボタンで自分の役職を確認してください。",
+            f"<:success:1490985168100659322>{mentions}\nゲーム開始。今回の役職内訳: {roles_list}\n下のボタンで自分の役職を確認してください。",
             view=RoleCheckView(game, self)
         )
 
@@ -359,7 +359,7 @@ class JinrouCog(commands.Cog):
             game.alive_players = [p for p in game.alive_players if p.id != int(target_id)]
             await self.mute_member(target_m)
             if game.roles.get(int(target_id)) == "ハゲ":
-                await game.game_channel.send("ハゲが追放された。ハゲの勝利です。")
+                await game.game_channel.send("<:f8cc0b1b5e501838:1491033609929490492>ハゲが追放された。ハゲの勝利です。")
                 game.is_running = False
 
 # ======================================================
@@ -479,7 +479,7 @@ class ActionSelectView(discord.ui.View):
             # マサイ族の真偽を隠蔽
             if r in ["人狼", "デカ狼"]:
                 self.game.masai_evasion[p_id] = True
-            await interaction.response.send_message("対象の観察を完了しました。人狼であれば回避の準備を整える。", ephemeral=True)
+            await interaction.response.send_message("<:MASAI:1490254590757572758>対象の観察を完了しました。人狼であれば回避の準備を整える。", ephemeral=True)
         else:
             await interaction.response.send_message("完了。", ephemeral=True)
 
@@ -487,7 +487,7 @@ class RecruitView(discord.ui.View):
     def __init__(self, game, timeout: int):
         super().__init__(timeout=timeout)
         self.game = game
-    @discord.ui.button(label="参加する", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="<:371a91fa080947ca:1490254586575851621>参加する", style=discord.ButtonStyle.success)
     async def join(self, interaction, button):
         if interaction.user not in self.game.players:
             self.game.players.append(interaction.user)
@@ -512,7 +512,7 @@ class PublicVoteView(discord.ui.View):
             return await interaction.response.send_message("既に投票済みです。意志を何度も変えることはできません。", ephemeral=True)
 
         self.game.voted_count[p_id] = self.children[0].values[0]
-        await interaction.response.send_message(f"{interaction.user.display_name} さんが投票を完了しました。")
+        await interaction.response.send_message(f"<:success:1490985168100659322>{interaction.user.display_name} さんが投票を完了しました。")
 
 async def setup(bot):
     await bot.add_cog(JinrouCog(bot))
