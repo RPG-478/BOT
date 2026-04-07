@@ -4,8 +4,8 @@ from discord.ext import commands
 import datetime
 from datetime import timedelta
 
-# config.py から初期化済みの supabase クライアントをインポート
-from config import supabase
+# config.py から必要な要素をインポート
+from config import supabase, JST
 
 class React(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -14,35 +14,31 @@ class React(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        """リアクションを検知してDBに保存"""
-        # DB未設定またはボット自身のリアクションは無視
+        """リアルタイムのリアクションをDBに保存"""
         if supabase is None or payload.user_id == self.bot.user.id:
             return
 
         try:
-            # メッセージ情報を取得（投稿者を特定するため）
             channel = self.bot.get_channel(payload.channel_id) or await self.bot.fetch_channel(payload.channel_id)
             message = await channel.fetch_message(payload.message_id)
 
-            # Supabaseに保存
             data = {
                 "guild_id": payload.guild_id,
                 "channel_id": payload.channel_id,
                 "message_id": payload.message_id,
-                "user_id": payload.user_id,    # 押した人
-                "author_id": message.author.id, # もらった人（ランキング対象）
+                "user_id": payload.user_id,
+                "author_id": message.author.id,
                 "emoji": str(payload.emoji)
             }
             supabase.table("reaction_logs").insert(data).execute()
-        except Exception as e:
-            print(f"Error saving reaction: {e}")
+        except Exception:
+            pass
 
     @app_commands.command(name="rank", description="リアクション受領数ランキングを表示します")
     @app_commands.choices(
         scope=[
             app_commands.Choice(name="サーバー別", value="guild"),
             app_commands.Choice(name="チャンネル別", value="channel"),
-            app_commands.Choice(name="総合", value="all"),
         ],
         period=[
             app_commands.Choice(name="1日", value="1"),
@@ -51,68 +47,72 @@ class React(commands.Cog):
         ]
     )
     async def rank(self, interaction: discord.Interaction, scope: str, period: str):
-        """ランキング表示コマンド"""
-        if supabase is None:
-            await interaction.response.send_message("データベースが設定されていません。", ephemeral=True)
-            return
-
+        """ランキング表示（DBにない場合は直接取得）"""
         await interaction.response.defer()
 
-        # 基本クエリ
-        query = supabase.table("reaction_logs").select("author_id")
-
-        # 範囲(scope)による絞り込み
-        scope_label = ""
-        if scope == "guild":
-            query = query.eq("guild_id", interaction.guild_id)
-            scope_label = "サーバー別"
-        elif scope == "channel":
-            query = query.eq("channel_id", interaction.channel_id)
-            scope_label = "チャンネル別"
-        else:
-            scope_label = "総合"
-
-        # 期間(period)による絞り込み
         days = int(period)
-        now = datetime.datetime.now(datetime.timezone.utc)
-        start_date = now - timedelta(days=days)
-        query = query.gte("created_at", start_date.isoformat())
+        # 比較用（UTC）
+        after_date = datetime.datetime.now(datetime.timezone.utc) - timedelta(days=days)
         
-        period_label = f"過去{period}日間"
+        stats = {}
+        scope_label = "サーバー別" if scope == "guild" else "チャンネル別"
 
-        # データ取得
-        response = query.execute()
-        logs = response.data
+        # 1. まずはDBからデータを取得してみる
+        if supabase:
+            query = supabase.table("reaction_logs").select("author_id")
+            if scope == "guild":
+                query = query.eq("guild_id", interaction.guild_id)
+            else:
+                query = query.eq("channel_id", interaction.channel_id)
+            
+            query = query.gte("created_at", after_date.isoformat())
+            res = query.execute()
+            
+            if res.data:
+                for log in res.data:
+                    aid = log.get('author_id')
+                    stats[aid] = stats.get(aid, 0) + 1
 
-        if not logs:
-            await interaction.followup.send(f"{period_label}のデータが見つかりませんでした。")
+        # 2. DBにデータが少ない、または過去分を補完する場合（直接取得）
+        # ※DBのデータが0件の場合のみ実行する安全策
+        if not stats:
+            target_channels = []
+            if scope == "guild":
+                target_channels = [c for c in interaction.guild.text_channels 
+                                   if c.permissions_for(interaction.guild.me).read_message_history]
+            else:
+                target_channels = [interaction.channel]
+
+            for ch in target_channels:
+                try:
+                    async for msg in ch.history(after=after_date, limit=2000): # 負荷軽減のため上限設定
+                        if msg.reactions:
+                            total_reactions = sum(r.count for r in msg.reactions)
+                            stats[msg.author.id] = stats.get(msg.author.id, 0) + total_reactions
+                except:
+                    continue
+
+        if not stats:
+            await interaction.followup.send("期間内にリアクションデータが見つかりませんでした。")
             return
 
-        # 集計
-        stats = {}
-        for log in logs:
-            aid = log['author_id']
-            stats[aid] = stats.get(aid, 0) + 1
-
-        # ソート（降順・上位10名）
+        # ソート
         sorted_stats = sorted(stats.items(), key=lambda x: x[1], reverse=True)[:10]
 
-        # 表示用テキスト作成
-        ranking_text = ""
-        for i, (user_id, count) in enumerate(sorted_stats, 1):
-            ranking_text += f"**{i}位** | <@{user_id}> : `{count}` pts\n"
+        # 表示作成
+        rank_desc = ""
+        for i, (u_id, count) in enumerate(sorted_stats, 1):
+            rank_desc += f"**{i}位** | <@{u_id}> - `{count}` pts\n"
 
-        # Embedの作成（白色）
         embed = discord.Embed(
-            title=f"リアクションランキング（{scope_label}）",
-            description=f"統計期間: {period_label}\n\n{ranking_text}",
+            title=f"リアクションランキング ({scope_label})",
+            description=f"統計期間: 過去{period}日間\n\n{rank_desc}",
             color=0xFFFFFF,
-            timestamp=datetime.datetime.now()
+            timestamp=datetime.datetime.now(JST)
         )
 
-        # 最終レスポンス
-        success_msg = f"{self.success_emoji}{interaction.user.display_name}が{scope_label}ランキングを表示しました"
-        await interaction.followup.send(content=success_msg, embed=embed)
+        success_text = f"{self.success_emoji}{interaction.user.display_name}が{scope_label}ランキングを表示しました"
+        await interaction.followup.send(content=success_text, embed=embed)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(React(bot))
