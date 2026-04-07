@@ -4,8 +4,8 @@ from discord.ext import commands
 from supabase import create_client
 
 # Supabase設定
-url = "YOUR_SUPABASE_URL"
-key = "YOUR_SUPABASE_KEY"
+url = "SUPABASE_URL"
+key = "SUPABASE_KEY"
 supabase = create_client(url, key)
 
 class Status(commands.Cog):
