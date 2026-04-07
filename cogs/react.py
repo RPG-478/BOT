@@ -4,6 +4,8 @@ from discord.ext import commands
 from supabase import create_client, Client
 import datetime
 from datetime import timedelta
+from config import SUPABASE_URL, SUPABASE_KEY
+
 
 # Supabaseの設定
 SUPABASE_URL = "SUPABASE_URL"
