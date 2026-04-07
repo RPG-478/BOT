@@ -1,144 +1,122 @@
-#cogsに入れてるからcogs形式で頼むぞ〜
-
-import os
-import time
-import random
 import discord
 from discord.ext import commands
-from openai import OpenAI
+import os
+import asyncio
+import random
+from groq import Groq
+from dotenv import load_dotenv
 
-# =========================
-# LLM
-# =========================
-llm = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# =========================
-# 設定
-# =========================
-COOLDOWN = 3
-REPLY_PROBABILITY = 0.3
-
-PREFIXES = ["うおｗ", "どわーｗ", "かっこよｗ"]
-ENDINGS = ["なｗ", "だなｗ", "って感じｗ"]
-
-STRONG_WORDS = ["殺す", "死ね", "消えろ", "うざい", "きもい"]
-
-TEMPLATES = [
-    "よくある小さな達成だな",
-    "ありがちな流れそのままだな",
-    "想定内すぎて語ること少ないな"
-]
-
-SYSTEM_PROMPT = """
-一文のみ。20〜30文字。
-必ず「うおｗ系」で開始し「なｗ系」で終了。
-嘲笑寄り短文。
-"""
-
-# =========================
-# util
-# =========================
-def clean(text, bot):
-    return (
-        text.replace(f"<@{bot.id}>", "")
-            .replace(f"<@!{bot.id}>", "")
-            .strip()
-    )
-
-def make_reply(prefix, text):
-    msg = f"{prefix} {text}"
-    msg = msg.replace("まあ", "")
-
-    if not any(msg.endswith(e) for e in ENDINGS):
-        msg = msg.rstrip("。、！？!? ") + random.choice(ENDINGS)
-
-    return msg[:30].rstrip("。、！？!? ")
+load_dotenv()
 
 
-# =========================
-# Cog
-# =========================
-class AICog(commands.Cog):
+class ReplyAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.channel_state = {}   # ON/OFF（チャンネル単位）
-        self.last_used = {}       # クールダウン（チャンネル単位）
 
+        # ===== LLM =====
+        self.groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+        # ===== 設定 =====
+        self.cooldown = 3
+        self.last_used = {}
+
+        self.system_prompt = (
+            "一文で短く返答。日本語。"
+            "軽い煽り・皮肉を少し含めてもよい。"
+            "長文は禁止。"
+        )
+
+        self.templates = [
+            "それ普通に想定内だな",
+            "よくあるやつだな",
+            "特に驚きないな"
+        ]
+
+    # =========================
+    # util
+    # =========================
+    def _cooldown_ok(self, key: int):
+        now = asyncio.get_event_loop().time()
+        if now - self.last_used.get(key, 0) < self.cooldown:
+            return False
+        self.last_used[key] = now
+        return True
+
+    def _clean(self, text: str, bot: discord.ClientUser):
+        return (
+            text.replace(f"<@{bot.id}>", "")
+                .replace(f"<@!{bot.id}>", "")
+                .strip()
+        )
+
+    # =========================
+    # LLM
+    # =========================
+    def _generate(self, user_text: str):
+        res = self.groq.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": user_text}
+            ],
+            temperature=0.7,
+            max_tokens=120
+        )
+
+        return res.choices[0].message.content.strip()
+
+    async def _run_llm(self, text: str):
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._generate, text)
+
+    # =========================
+    # main listener
+    # =========================
     @commands.Cog.listener()
-    async def on_message(self, message):
+    async def on_message(self, message: discord.Message):
 
         if message.author.bot:
             return
 
-        channel_id = message.channel.id
-
-        # =====================
-        # ON / OFF
-        # =====================
-        if message.content.strip() == "!oo":
-            state = not self.channel_state.get(channel_id, False)
-            self.channel_state[channel_id] = state
-
-            await message.channel.send(
-                "クールアゴbot、起動。" if state else "クールアゴbot、停止。"
-            )
+        # メンション限定（既存botと干渉しにくい）
+        if self.bot.user not in message.mentions:
             return
 
-        if not self.channel_state.get(channel_id, False):
+        # クールダウン（ユーザー単位）
+        if not self._cooldown_ok(message.author.id):
             return
 
-        # メンション判定（安全版）
-        if not any(m.id == self.bot.user.id for m in message.mentions):
-            return
-
-        # 確率
-        if random.random() > REPLY_PROBABILITY:
-            return
-
-        # クールダウン
-        now = time.time()
-        if now - self.last_used.get(channel_id, 0) < COOLDOWN:
-            return
-        self.last_used[channel_id] = now
-
-        user_text = clean(message.content, self.bot.user)
+        user_text = self._clean(message.content, self.bot.user)
         if not user_text:
             user_text = "無言"
 
-        # =====================
-        # 生成
-        # =====================
-        if any(w in user_text for w in STRONG_WORDS):
-            text = random.choice(TEMPLATES)
-
-        else:
-            text = random.choice(TEMPLATES)
+        async with message.channel.typing():
             try:
-                res = llm.responses.create(
-                    model="gpt-5.3",
-                    input=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_text}
-                    ],
-                    max_output_tokens=80
+                # LLM
+                try:
+                    reply = await asyncio.wait_for(
+                        self._run_llm(user_text),
+                        timeout=8.0
+                    )
+                except asyncio.TimeoutError:
+                    reply = random.choice(self.templates)
+
+                # 安全フォールバック
+                if not reply:
+                    reply = random.choice(self.templates)
+
+                await message.reply(
+                    reply[:120],
+                    allowed_mentions=discord.AllowedMentions.none()
                 )
 
-                if getattr(res, "output", None) and res.output[0].content:
-                    text = res.output[0].content[0].text.strip()
+            except Exception as e:
+                print(f"[ReplyAI Error] {e}")
+                await message.channel.send("エラーで返せなかった")
 
-            except Exception:
-                pass
-
-        reply = f"{random.choice(PREFIXES)} {text}"
-
-        if not any(reply.endswith(e) for e in ENDINGS):
-            reply = reply.rstrip("。、！？!? ") + random.choice(ENDINGS)
-
-        await message.channel.send(reply)
-        
 
 # =========================
 # setup
 # =========================
 async def setup(bot):
-    await bot.add_cog(AICog(bot))
+    await bot.add_cog(ReplyAI(bot))
