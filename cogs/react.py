@@ -81,95 +81,87 @@ class React(commands.Cog):
         return "-"
 
     async def create_card(self, user, guild, stats, ranks):
-        """Statbot風ダークモード凝縮レイアウト"""
-        # --- キャンバスサイズと色の設定 ---
-        # 情報を凝縮させるため、縦幅を詰める
-        W, H = 1000, 500
-        # image_2.pngに近いダークグレー基調
-        bg_main = (30, 33, 36)    # 外側背景
-        bg_card = (36, 39, 43)    # カード背景
-        bg_group = (41, 44, 48)   # グループ背景
-        txt_main = (255, 255, 255) # メイン文字
-        txt_sub = (150, 150, 150)  # サブ文字
-        accent = (88, 101, 242)    # アクセント（Discordブルー）
+        """視認性最優先・爆大凝縮レイアウト"""
+        # --- キャンバスサイズと色の設定 (ギュッと凝縮) ---
+        W, H = 700, 480 # ギュッと詰め込む
+        bg_main = (30, 33, 36)
+        bg_card = (36, 39, 43)
+        bg_group = (41, 44, 48)
+        txt_main = (255, 255, 255)
+        txt_sub = (150, 150, 150)
+        accent = (114, 137, 218) # 少し明るいDiscordブルー（視認性向上）
 
         img = Image.new("RGBA", (W, H), bg_main)
         draw = ImageDraw.Draw(img)
 
-        # --- フォント設定 (凝縮させるため小さめに) ---
+        # フォント設定 (特大サイズ)
         sys_pf = platform.system()
-        # ボールドフォント推奨
-        f_path_base = "C:/Windows/Fonts/msjhbd.ttc" if sys_pf == "Windows" else "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf"
+        # ボールド推奨
+        f_p = "C:/Windows/Fonts/msgothic.ttc" if sys_pf == "Windows" else "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.otf"
         
         def f(size):
-            try: return ImageFont.truetype(f_path_base, size)
+            try: return ImageFont.truetype(f_p, size)
             except: return ImageFont.load_default()
 
-        f_name = f(40)
-        f_serv = f(20)
-        f_head = f(16)
-        f_label = f(14)
-        f_val = f(22)
-        f_rank = f(18)
+        # フォントサイズを爆大に設定
+        f_name = f(50)  # 大
+        f_serv = f(22)  # 中
+        f_val = f(55)   # 爆大 (Msg/React数値)
+        f_rank = f(45)  # 爆大 (Rank数値)
+        f_label = f(18) # 小 (Msg/Reactラベル)
+        f_rank_label = f(16) # 極小 (rankラベル)
 
-        # --- 1. ヘッダー (凝縮レイアウト) ---
+        # --- 1. ヘッダー (余白を削り取り、凝縮) ---
         u_av = await self.get_image(user.display_avatar.url)
-        # ユーザーアイコン (四角に変更し、角を少し丸く)
         if u_av:
-            u_av = u_av.resize((60, 60), Image.LANCZOS)
-            u_mask = Image.new("L", (60, 60), 0)
-            ImageDraw.Draw(u_mask).rounded_rectangle((0, 0, 60, 60), radius=10, fill=255)
-            img.paste(u_av, (30, 30), u_mask)
+            u_av = u_av.resize((80, 80), Image.LANCZOS) # アイコンも少し大きく
+            u_mask = Image.new("L", (80, 80), 0)
+            ImageDraw.Draw(u_mask).rounded_rectangle((0, 0, 80, 80), radius=15, fill=255)
+            img.paste(u_av, (20, 20), u_mask)
 
-        # 名前とサーバー名 (余白を詰め、情報をグループ化)
-        draw.text((105, 30), f"{user.display_name}", font=f_name, fill=txt_main)
+        draw.text((115, 25), f"{user.display_name}", font=f_name, fill=txt_main)
         g_av = await self.get_image(guild.icon.url) if guild.icon else None
         if g_av:
-            g_av = g_av.resize((20, 20), Image.LANCZOS)
-            img.paste(g_av, (105, 75))
-        draw.text((130, 77), f"{guild.name}", font=f_serv, fill=txt_sub)
+            g_av = g_av.resize((24, 24), Image.LANCZOS)
+            img.paste(g_av, (115, 78))
+        draw.text((145, 80), f"{guild.name}", font=f_serv, fill=txt_sub)
 
-        # --- 2. 統計ブロック (左右2列、3期間) ---
+        # --- 2. 統計ブロック (左右2列、3期間。余白を詰める) ---
         periods_label = ["1d", "7d", "31d"]
-        group_h = 130 # 各期間ブロックの高さ
+        group_h = 110 # 高さを詰め、凝縮させる
+        start_y = 120
 
         for i, (label_p, s, r) in enumerate(zip(periods_label, stats, ranks)):
-            y = 120 + (i * (group_h + 15)) # 15pxの隙間
+            y = start_y + (i * (group_h + 10)) # 隙間を詰める
 
             # 背景カード (角丸、少し明るいダークグレー)
-            draw.rounded_rectangle([30, y, W-30, y + group_h], radius=15, fill=bg_card, outline=(50,53,56), width=2)
+            draw.rounded_rectangle([20, y, W-20, y + group_h], radius=15, fill=bg_card, outline=(50,53,56), width=2)
             
-            # --- 各期間の見出し ---
-            # Statbot風のヘッダーバー
-            draw.rounded_rectangle([30, y, W-30, y + 25], radius=15, fill=bg_group)
-            draw.text((45, y + 5), f"{label_p} Server Ranks", font=f_head, fill=accent)
+            # --- 左側: 数値情報 (爆大フォント) ---
+            x_left = 40
+            # Messages数值
+            draw.text((x_left, y + 25), "Messages", font=f_label, fill=txt_sub)
+            draw.text((x_left, y + 50), f"{s['msg']}", font=f_val, fill=txt_main)
             
-            # --- 左側: 数値情報 ---
-            x_left = 50
-            # Messages数値ブロック
-            draw.rounded_rectangle([x_left, y + 35, x_left + 430, y + 120], radius=10, fill=bg_group)
-            draw.text((x_left + 15, y + 40), "Messages", font=f_label, fill=txt_sub)
-            draw.text((x_left + 15, y + 65), f"{s['msg']}", font=f_val, fill=txt_main)
-            draw.text((x_left + 15, y + 90), "total messages", font=f_label, fill=txt_sub)
-            
-            # Reactions数値ブロック (Messagesの右隣)
-            draw.rounded_rectangle([x_left + 220, y + 35, x_left + 430, y + 120], radius=10, fill=bg_group)
-            draw.text((x_left + 235, y + 40), "Reactions", font=f_label, fill=txt_sub)
-            draw.text((x_left + 235, y + 65), f"{s['react']}", font=f_val, fill=txt_main)
-            draw.text((x_left + 235, y + 90), "total reactions", font=f_label, fill=txt_sub)
+            # Reactions数值
+            x_react = x_left + 150
+            draw.text((x_react, y + 25), "Reactions", font=f_label, fill=txt_sub)
+            draw.text((x_react, y + 50), f"{s['react']}", font=f_val, fill=txt_main)
 
-            # --- 右側: ランク情報 ---
-            x_right = 520
-            # Statbot風のランク表示
-            draw.rounded_rectangle([x_right, y + 35, W - 50, y + 120], radius=10, fill=bg_group)
+            # --- 右側: ランク情報 (爆大フォント、Statbot風レイアウト) ---
+            x_right = 360
+            draw.rounded_rectangle([x_right, y + 10, W - 30, y + group_h - 10], radius=10, fill=bg_group)
             
             # Message Rank
-            draw.text((x_right + 15, y + 40), "Message", font=f_label, fill=txt_main)
-            draw.text((x_right + 150, y + 40), f"#{r['msg']}", font=f_rank, fill=accent)
+            draw.text((x_right + 15, y + 20), f"{label_p} Message", font=f_rank_label, fill=txt_sub)
+            draw.text((x_right + 15, y + 45), f"Rank:", font=f_label, fill=txt_main)
+            draw.text((x_right + 70, y + 40), f"#{r['msg']}", font=f_rank, fill=accent)
             
             # Reaction Rank
-            draw.text((x_right + 15, y + 75), "Reaction", font=f_label, fill=txt_main)
-            draw.text((x_right + 150, y + 75), f"#{r['react']}", font=f_rank, fill=accent)
+            x_rank_react = x_right + 160
+            draw.text((x_rank_react, y + 20), f"{label_p} Reaction", font=f_rank_label, fill=txt_sub)
+            draw.text((x_rank_react, y + 45), f"Rank:", font=f_label, fill=txt_main)
+            draw.text((x_rank_react, y + 70), f"#{r['react']}", font=f_rank, fill=accent)
 
         # バッファ変換
         buffer = io.BytesIO()
