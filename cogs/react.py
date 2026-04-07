@@ -3,64 +3,63 @@ from discord import app_commands
 from discord.ext import commands
 from supabase import create_client, Client
 import datetime
+from datetime import timedelta
 
 # Supabaseの設定
-SUPABASE_URL = "YOUR_SUPABASE_URL"
-SUPABASE_KEY = "YOUR_SUPABASE_ANON_KEY"
+SUPABASE_URL = "SUPABASE_URL"
+SUPABASE_KEY = "SUPABASE_KEY"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 class React(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # 便乗リアクションをしたい特定の絵文字だけここに残す（任意）
-        self.thinking_emojis = ['🤔', '🧐']
         self.success_emoji = "<:success:1490985168100659322>"
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        """全てのリアクションを検知してDBに保存"""
-        # ボット自身のリアクションはカウントしない
+        """全てのリアクションを検知してDBに保存（便乗なし）"""
         if payload.user_id == self.bot.user.id:
             return
 
-        emoji_str = str(payload.emoji)
-        
         try:
-            # メッセージ情報を取得
             channel = self.bot.get_channel(payload.channel_id) or await self.bot.fetch_channel(payload.channel_id)
             message = await channel.fetch_message(payload.message_id)
 
-            # Supabaseに保存（全ての絵文字を対象）
             data = {
                 "guild_id": payload.guild_id,
                 "channel_id": payload.channel_id,
                 "message_id": payload.message_id,
-                "user_id": payload.user_id,    # 押した人
-                "author_id": message.author.id, # もらった人
-                "emoji": emoji_str
+                "user_id": payload.user_id,
+                "author_id": message.author.id,
+                "emoji": str(payload.emoji)
             }
             supabase.table("reaction_logs").insert(data).execute()
-            
-            # 特定の絵文字（Thinkingなど）にはボットも便乗する
-            if emoji_str in self.thinking_emojis:
-                await message.add_reaction(emoji_str)
-
         except Exception as e:
             print(f"Error saving reaction: {e}")
 
     @app_commands.command(name="ranking", description="リアクション受領数ランキングを表示します")
-    @app_commands.choices(type=[
-        app_commands.Choice(name="サーバー別", value="guild"),
-        app_commands.Choice(name="チャンネル別", value="channel"),
-        app_commands.Choice(name="総合", value="all"),
-    ])
-    async def ranking(self, interaction: discord.Interaction, type: str):
-        """ランキング表示コマンド"""
+    @app_commands.choices(
+        type=[
+            app_commands.Choice(name="サーバー別", value="guild"),
+            app_commands.Choice(name="チャンネル別", value="channel"),
+            app_commands.Choice(name="総合", value="all"),
+        ],
+        period=[
+            app_commands.Choice(name="過去24時間", value="day"),
+            app_commands.Choice(name="過去1週間", value="week"),
+            app_commands.Choice(name="過去1ヶ月", value="month"),
+            app_commands.Choice(name="全期間", value="forever"),
+        ]
+    )
+    async def ranking(self, interaction: discord.Interaction, type: str, period: str):
+        """ランキング表示コマンド (期間指定対応)"""
         await interaction.response.defer()
 
-        # 全てのリアクションログを取得
+        # 基本クエリ
         query = supabase.table("reaction_logs").select("author_id")
 
+        # 範囲フィルタリング (type)
+        type_label = ""
         if type == "guild":
             query = query.eq("guild_id", interaction.guild_id)
             type_label = "サーバー別"
@@ -70,11 +69,30 @@ class React(commands.Cog):
         else:
             type_label = "総合"
 
+        # 期間フィルタリング (period)
+        period_label = ""
+        now = datetime.datetime.now(datetime.timezone.utc)
+        
+        if period == "day":
+            target_date = now - timedelta(days=1)
+            query = query.gte("created_at", target_date.isoformat())
+            period_label = "【過去24時間】"
+        elif period == "week":
+            target_date = now - timedelta(weeks=1)
+            query = query.gte("created_at", target_date.isoformat())
+            period_label = "【過去1週間】"
+        elif period == "month":
+            target_date = now - timedelta(days=30)
+            query = query.gte("created_at", target_date.isoformat())
+            period_label = "【過去1ヶ月】"
+        else:
+            period_label = "【全期間】"
+
         response = query.execute()
         logs = response.data
 
         if not logs:
-            await interaction.followup.send("データが見つかりませんでした。")
+            await interaction.followup.send(f"指定された期間（{period_label}）のデータが見つかりませんでした。")
             return
 
         # 集計
@@ -83,16 +101,16 @@ class React(commands.Cog):
             aid = log['author_id']
             stats[aid] = stats.get(aid, 0) + 1
 
-        # ソート（上位10名）
+        # ソート（降順、上位10件）
         sorted_stats = sorted(stats.items(), key=lambda x: x[1], reverse=True)[:10]
 
         description = ""
         for i, (user_id, count) in enumerate(sorted_stats, 1):
-            description += f"{i}位: <@{user_id}> - **{count}** pts\n"
+            description += f"**{i}位** | <@{user_id}> - `{count}` pts\n"
 
         embed = discord.Embed(
-            title=f"リアクション受領ランキング（{type_label}）",
-            description=description,
+            title=f"リアクションランキング {type_label}",
+            description=f"{period_label}\n\n{description}",
             color=0xFFFFFF,
             timestamp=datetime.datetime.now()
         )
