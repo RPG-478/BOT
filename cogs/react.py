@@ -126,20 +126,39 @@ class React(commands.Cog):
 
     @app_commands.command(name="rank", description="ステータスカードを表示します")
     async def rank(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        """DBから集計して画像を出力"""
+        # 3秒ルールを回避するために最初に応答を保留
+        await interaction.response.defer(thinking=True)
 
-        user_id = interaction.user.id
-        now = datetime.datetime.now(datetime.timezone.utc)
-        results = []
+        try:
+            user_id = interaction.user.id
+            now = datetime.datetime.now(datetime.timezone.utc)
+            results = []
 
-        for d in [1, 7, 14]:
-            target_date = (now - timedelta(days=d)).isoformat()
-            m_res = supabase.table("message_logs").select("*", count="exact").eq("author_id", user_id).gte("created_at", target_date).execute()
-            r_res = supabase.table("reaction_logs").select("*", count="exact").eq("author_id", user_id).gte("created_at", target_date).execute()
-            results.append({"msg": m_res.count, "react": r_res.count})
+            # 1. データベース集計セクション
+            for d in [1, 7, 14]:
+                target_date = (now - timedelta(days=d)).isoformat()
+                
+                # ここでタイムアウトやエラーが起きやすいので注意
+                m_res = supabase.table("message_logs").select("*", count="exact").eq("author_id", user_id).gte("created_at", target_date).execute()
+                r_res = supabase.table("reaction_logs").select("*", count="exact").eq("author_id", user_id).gte("created_at", target_date).execute()
+                
+                results.append({"msg": m_res.count, "react": r_res.count})
 
-        file = await self.create_card(interaction.user.display_name, results[0], results[1], results[2])
-        await interaction.followup.send(content=f"{self.success_emoji} **{interaction.user.display_name}** の統計を生成しました", file=file)
+            # 2. 画像生成セクション
+            file = await self.create_card(interaction.user.display_name, results[0], results[1], results[2])
+            
+            # 3. 最終応答の送信 (followupを使用)
+            await interaction.followup.send(
+                content=f"{self.success_emoji} **{interaction.user.display_name}** の統計を生成しました", 
+                file=file
+            )
+
+        except Exception as e:
+            # エラー内容をターミナルに出力
+            print(f"Error in rank command: {e}")
+            # ユーザーにもエラーを通知
+            await interaction.followup.send("データの取得中または画像生成中にエラーが発生しました。コンソールを確認してください。")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(React(bot))
