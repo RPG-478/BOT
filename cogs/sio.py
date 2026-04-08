@@ -196,3 +196,5 @@ class Voice(commands.Cog):
         if len(text) > 1900:
             text = text[-1900:]
         await ctx.send(f"```\n{text}\n```")
+async def setup(bot):
+    await bot.add_cog(Voice(bot))
