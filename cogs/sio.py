@@ -3,6 +3,7 @@ from discord.ext import commands
 import asyncio
 import time
 import logging
+import io
 
 
 class Voice(commands.Cog):
@@ -149,34 +150,57 @@ class Voice(commands.Cog):
     # =====================
     @commands.command()
     async def play(self, ctx):
-            vc = ctx.voice_client
-            if vc is None:
-                await ctx.send("先に !join してください。")
+        vc = ctx.voice_client
+        if vc is None:
+            await ctx.send("先に !join してください。")
+            return
+
+        if not ctx.message.attachments:
+            await ctx.send("音声ファイルまたはPLSファイルを添付してください。")
+            return
+
+        attachment = ctx.message.attachments[0]
+        url = attachment.url
+
+        # PLSファイルの場合の処理
+        if attachment.filename.endswith('.pls'):
+            try:
+                # ファイルをメモリ上に読み込む
+                content = await attachment.read()
+                # configparserで解析するために文字列に変換
+                pls_text = content.decode('utf-8')
+                
+                config = configparser.ConfigParser()
+                # PLSは[playlist]セクションから始まる
+                config.read_string(pls_text)
+                
+                # File1 (最初の曲) のURLを取得
+                if 'playlist' in config and 'File1' in config['playlist']:
+                    url = config['playlist']['File1']
+                else:
+                    await ctx.send("PLSファイルの解析に失敗しました。フォーマットを確認してください。")
+                    return
+            except Exception as e:
+                await ctx.send(f"PLS読み込みエラー: {e}")
                 return
 
-            if not ctx.message.attachments:
-                await ctx.send("音声ファイルを添付してください。")
-                return
+        # 再生処理
+        if vc.is_playing():
+            vc.stop()
 
-            attachment = ctx.message.attachments[0]
-            url = attachment.url
+        before_options = "-re" 
+        audio_filters = f" -af {self.eq_filter}" if self.eq_filter else ""
+        options = f"{audio_filters} -ar 48000 -bufsize 4096k"
 
-            if vc.is_playing():
-                vc.stop()
-
-            # -re: 入力をリアルタイム速度で読み込む
-            # -ar 48000: サンプリングレートを固定
-            # -bufsize: バッファサイズを指定して安定させる
-            before_options = "-re" 
-            audio_filters = f" -af {self.eq_filter}" if self.eq_filter else ""
-            options = f"{audio_filters} -ar 48000 -bufsize 4096k"
-
+        try:
             vc.play(discord.FFmpegPCMAudio(
                 url,
                 before_options=before_options,
                 options=options
             ))
             await ctx.send(f"再生開始: {attachment.filename}")
+        except Exception as e:
+            await ctx.send(f"再生エラー: {e}")
     # =====================
     # システム情報
     # =====================
