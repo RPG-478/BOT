@@ -1,8 +1,13 @@
-import os
 import discord
 from discord.ext import commands
+import os
+import asyncio
+from datetime import datetime, timezone
 from supabase import create_client, Client
 from groq import Groq
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class ReplyAI(commands.Cog):
     def __init__(self, bot: commands.Bot):
