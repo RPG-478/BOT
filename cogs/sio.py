@@ -179,25 +179,37 @@ class Voice(commands.Cog):
             await ctx.send(f"再生開始: {attachment.filename}")
     @commands.command()
     async def tts(self, ctx, *, text: str):
-        """ライブラリ不要。Googleの公開APIを直接叩いて再生します。"""
         vc = ctx.voice_client
-        if vc is None: return
+        if vc is None:
+            await ctx.send("先に !join してください。")
+            return
 
         if vc.is_playing():
             vc.stop()
 
-        # URLエンコードしてGoogleのTTS URLを作成
         from urllib.parse import quote
         encoded_text = quote(text)
         url = f"https://translate.google.com/translate_tts?ie=UTF-8&q={encoded_text}&tl=ja&client=tw-ob"
 
-        # FFmpegはURLを直接読み込めます
-        # 倍速防止の -re と -ar 48000 を付与
-        options = "-re -ar 48000"
-        
-        vc.play(discord.FFmpegPCMAudio(url, options=options))
-        await ctx.send(f"TTS再生: {text}")
+        # --- 修正ポイント ---
+        # 1. reconnectオプション: ネットワークの一時的な切断対策
+        # 2. -probesize / -analyzeduration: ストリーム解析を早めて起動を速くする
+        # 3. -ar 48000: Discord推奨レートに固定してエラーを防ぐ
+        before_opts = (
+            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+            "-probesize 32 -analyzeduration 0"
+        )
+        opts = "-af volume=1.0 -ar 48000 -ac 2 -f s16le"
 
+        try:
+            vc.play(discord.FFmpegPCMAudio(
+                url, 
+                before_options=before_opts, 
+                options=opts
+            ))
+            await ctx.send(f"再生中: {text}")
+        except Exception as e:
+            await ctx.send(f"再生エラーが発生しました: {e}")
     # =====================
     # システム情報
     # =====================
