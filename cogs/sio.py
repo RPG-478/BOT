@@ -75,6 +75,24 @@ class Voice(commands.Cog):
 
         await vc.disconnect()
         await ctx.send("切断しました。")
+    #イコライザーコマンド
+    @commands.command()
+    async def eq(self, ctx, mode: str = "flat"):
+        #プリセット
+        eq_settings = {
+            "bass": "bass=g=10",
+            "treble": "treble=g=8",
+            "vocal": "equalizer=f=1000:width_type=o:width=2:g=5",
+            "flat": None
+        }
+
+        if mode not in eq_settings:
+            await ctx.send("mode: bass / treble / vocal / flat")
+            return
+
+        self.eq_filter = eq_settings[mode]
+
+        await ctx.send(f"EQ設定を {mode} にしました")
 
     # =====================
     # ノイズ
@@ -133,7 +151,10 @@ class Voice(commands.Cog):
         if vc.is_playing():
             vc.stop()
 
-        vc.play(discord.FFmpegPCMAudio(url))
+        vc.play(discord.FFmpegPCMAudio(
+            url,
+            options=f"-af {self.eq_filter}" if self.eq_filter else None
+        ))
         await ctx.send("再生開始")
 
     # =====================
