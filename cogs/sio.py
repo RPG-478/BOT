@@ -156,60 +156,45 @@ class Voice(commands.Cog):
     async def play(self, ctx):
         vc = ctx.voice_client
         if vc is None:
-            await ctx.send("先に !join してください。")
-            return
+            return await ctx.send("先に !join してください。")
 
         if not ctx.message.attachments:
-            await ctx.send("音声ファイルまたはPLSファイルを添付してください。")
-            return
+            return await ctx.send("音声ファイルまたはPLSファイルを添付してください。")
 
+        self.current_ctx = ctx
         attachment = ctx.message.attachments[0]
         url = attachment.url
+        filename = attachment.filename
 
-        # PLSファイルの場合の処理
-        if attachment.filename.endswith('.pls'):
+        # PLSファイル解析
+        if filename.endswith('.pls'):
             try:
-                # ファイルをメモリ上に読み込む
                 content = await attachment.read()
-                # configparserで解析するために文字列に変換
-                pls_text = content.decode('utf-8')
-                
                 config = configparser.ConfigParser()
-                # PLSは[playlist]セクションから始まる
-                config.read_string(pls_text)
-                
-                # File1 (最初の曲) のURLを取得
+                config.read_string(content.decode('utf-8'))
                 if 'playlist' in config and 'File1' in config['playlist']:
                     url = config['playlist']['File1']
                 else:
-                    await ctx.send("PLSファイルの解析に失敗しました。フォーマットを確認してください。")
-                    return
+                    return await ctx.send("PLS解析失敗: File1が見つかりません。")
             except Exception as e:
-                await ctx.send(f"PLS読み込みエラー: {e}")
-                return
+                return await ctx.send(f"PLS読み込みエラー: {e}")
 
-        # 再生処理
-        if vc.is_playing():
-            vc.stop()
+        # キューに追加
+        await self.queue.put((url, filename))
 
-        # 修正後のパラメータ
-        before_options = "-re -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-        audio_filters = f" -af {self.eq_filter}" if self.eq_filter else ""
+        # 何も再生していなければ再生開始
+        if not vc.is_playing():
+            await self.check_queue()
+        else:
+            await ctx.send(f"キューに追加しました: {filename} (現在 {self.queue.qsize()} 件待ち)")
 
-        # -vn (ビデオ無し), -sn (字幕無し) を追加して負荷を下げ、安定性を高めます
-        options = f"{audio_filters} -vn -sn -ar 48000"
-
-
-
-        try:
-            vc.play(discord.FFmpegPCMAudio(
-                url,
-                before_options=before_options,
-                options=options
-            ))
-            await ctx.send(f"再生開始: {attachment.filename}")
-        except Exception as e:
-            await ctx.send(f"再生エラー: {e}")
+    @commands.command()
+    async def skip(self, ctx):
+        """現在の曲をスキップ"""
+        vc = ctx.voice_client
+        if vc and vc.is_playing():
+            vc.stop() # これで自動的に after=play_next が呼ばれる
+            await ctx.send("スキップしました。")
     # =====================
     # システム情報
     # =====================
