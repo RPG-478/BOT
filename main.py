@@ -8,7 +8,7 @@ import config
 import defining as df    
 from keep_alive import keep_alive
 import logging
-from logbuffer import LogBuffer
+
 
 NOTIFY_CHANNEL_ID = 1476170098673717414
 DEBUG_CHANNEL_ID = 1476946191362166894
