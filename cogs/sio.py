@@ -1,7 +1,40 @@
 import discord
 from discord.ext import commands
+import time
 
 class Voice(commands.Cog):
+    def get_cpu_usage():
+        def read_cpu():
+            with open("/proc/stat", "r") as f:
+                line = f.readline()
+                values = list(map(int, line.split()[1:]))
+                idle = values[3]
+                total = sum(values)
+                return idle, total
+
+        idle1, total1 = read_cpu()
+        time.sleep(1)
+        idle2, total2 = read_cpu()
+
+        idle_delta = idle2 - idle1
+        total_delta = total2 - total1
+
+        return 100 * (1 - idle_delta / total_delta)
+    def get_mem_usage():
+        meminfo = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                key, value = line.split(":")
+                meminfo[key] = int(value.split()[0])
+    
+        total = meminfo["MemTotal"]
+        free = meminfo["MemAvailable"]
+
+        used = total - free
+        percent = used / total * 100
+
+        return percent, used, total
+        
     def __init__(self, bot):
         self.bot = bot
 
@@ -88,6 +121,18 @@ class Voice(commands.Cog):
         vc.play(discord.FFmpegPCMAudio(url))
 
         await ctx.send("再生開始")
+    @commands.command()
+    async def sysinfo(self, ctx):
+        cpu = get_cpu_usage()
+        mem_percent, used, total = get_mem_usage()
 
+        msg = (
+            f"CPU使用率: {cpu:.1f}%\n"
+            f"メモリ使用率: {mem_percent:.1f}%\n"
+            f"使用中: {used/1024/1024:.2f}GB / {total/1024/1024:.2f}GB"
+        )
+
+    await ctx.send(msg)
+        
 async def setup(bot):
     await bot.add_cog(Voice(bot))
