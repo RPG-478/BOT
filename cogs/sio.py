@@ -1,28 +1,39 @@
 import discord
 from discord.ext import commands
-import asyncio
 
-class vc(commands.Cog):
-        def __init__(self, bot):
-            self.bot = bot
-            voice_client = self.guild.voice_client
+class Voice(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
 
-        @commands.command()
-        async def join(self, ctx):
-            #VCに入っていなかったら弾く
-            if ctx.author.voice is None:
-                await ctx.channel.send("あなたはボイスチャンネルに接続していません。")
-                return
-            #接続する
+    @commands.command()
+    async def join(self, ctx):
+        if ctx.author.voice is None:
+            await ctx.send("あなたはボイスチャンネルに接続していません。")
+            return
+
+        vc = ctx.voice_client
+
+        if vc is None:
             await ctx.author.voice.channel.connect()
+            await ctx.send("接続しました。")
+        else:
+            if vc.channel == ctx.author.voice.channel:
+                await ctx.send("すでに接続しています。")
+            else:
+                await vc.move_to(ctx.author.voice.channel)
+                await ctx.send("チャンネルを移動しました。")
 
-            await ctx.channel.send("接続しました。")
-        @commands.command()
-        async def leave(self, ctx):
-            if ctx.author.voice_client is None:
-                await ctx.channel.send("接続していません")
-                return
-            #切断する
-            await ctx.guild.voice_client.disconnect()
+    @commands.command()
+    async def leave(self, ctx):
+        vc = ctx.voice_client
 
-            await ctx.channel.send("切断しました。")
+        if vc is None:
+            await ctx.send("接続していません。")
+            return
+
+        await vc.disconnect()
+        await ctx.send("切断しました。")
+
+
+async def setup(bot):
+    await bot.add_cog(Voice(bot))
