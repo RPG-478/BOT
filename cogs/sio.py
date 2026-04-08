@@ -13,17 +13,18 @@ class Voice(commands.Cog):
     # =====================
     def get_cpu_usage(self):
         def read_cpu():
+            #procからcpu負荷などを参照
             with open("/proc/stat", "r") as f:
                 line = f.readline()
                 values = list(map(int, line.split()[1:]))
                 idle = values[3]
                 total = sum(values)
                 return idle, total
-
+        
         idle1, total1 = read_cpu()
         time.sleep(1)
         idle2, total2 = read_cpu()
-
+        
         idle_delta = idle2 - idle1
         total_delta = total2 - total1
 
@@ -31,6 +32,7 @@ class Voice(commands.Cog):
 
     def get_mem_usage(self):
         meminfo = {}
+        #procからメモリ使用率を参照
         with open("/proc/meminfo") as f:
             for line in f:
                 key, value = line.split(":")
