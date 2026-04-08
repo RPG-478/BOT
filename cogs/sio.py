@@ -50,7 +50,7 @@ class Voice(commands.Cog):
             
         if vc is None:
             await ctx.send("接続していません。")
-        return
+            return
 
     # 再生していない
     if not vc.is_playing():
