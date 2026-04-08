@@ -192,9 +192,14 @@ class Voice(commands.Cog):
         if vc.is_playing():
             vc.stop()
 
-        before_options = "-re" 
+        # 修正後のパラメータ
+        before_options = "-re -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
         audio_filters = f" -af {self.eq_filter}" if self.eq_filter else ""
-        options = f"{audio_filters} -ar 48000 -bufsize 4096k"
+
+        # -vn (ビデオ無し), -sn (字幕無し) を追加して負荷を下げ、安定性を高めます
+        options = f"{audio_filters} -vn -sn -ar 48000"
+
+
 
         try:
             vc.play(discord.FFmpegPCMAudio(
