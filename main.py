@@ -13,6 +13,16 @@ from collections import deque  # deque のインポートが抜けていたの�
 NOTIFY_CHANNEL_ID = 1476170098673717414
 DEBUG_CHANNEL_ID = 1476946191362166894
 
+# ===== LogBuffer クラスは bot より先に定義する =====
+class LogBuffer(logging.Handler):
+    def __init__(self, maxlen=100):          # self のみ・bot は不要
+        logging.Handler.__init__(self)
+        self.logs = deque(maxlen=maxlen)
+ 
+    def emit(self, record):                  # self を引数に追加
+        log_entry = self.format(record)      # bot→self に修正
+        self.logs.append(log_entry)          # bot→self に修正
+
 class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.all() 
@@ -63,6 +73,18 @@ class MyBot(commands.Bot):
             self.updated_notified = True 
 
 bot = MyBot()
+
+# ===== ログ設定 =====
+log_buffer = LogBuffer(maxlen=100)
+log_buffer.setFormatter(logging.Formatter(
+    "[%(levelname)s] %(asctime)s | %(message)s",
+    "%H:%M:%S"
+))
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+logger.addHandler(log_buffer)
+bot.log_buffer = log_buffer
+ 
 
 if __name__ == "__main__":
     keep_alive()
