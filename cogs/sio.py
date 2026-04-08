@@ -209,7 +209,7 @@ class Voice(commands.Cog):
             vc.stop()
 
         emoji_sounds = {
-            "🤔": "https://www.myinstants.com/media/sounds/vine-boom.mp3",
+            ":thinking:": "https://www.myinstants.com/media/sounds/vine-boom.mp3",
         }
 
         emoji = str(reaction.emoji)
