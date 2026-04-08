@@ -81,7 +81,7 @@ log_buffer.setFormatter(logging.Formatter(
     "%H:%M:%S"
 ))
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.NOTSET)
 logger.addHandler(log_buffer)
 bot.log_buffer = log_buffer
  
