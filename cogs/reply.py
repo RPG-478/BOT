@@ -111,15 +111,18 @@ class ReplyAI(commands.Cog):
                 if response:
                     clean_res = response.replace("\n", " ")[:100]
                     
-                    # 埋め込み形式での返答
+                    # 使用回数を更新（表示用）
+                    new_used_count = used + 1
+                    
+                    # 埋め込み形式での返答（残り枠数を追加）
                     embed = discord.Embed(
                         title="<:success:1490985168100659322> AGOBOTが返答を行いました",
-                        description=clean_res,
+                        description=f"{clean_res}\n\n**残り枠数: {limit - new_used_count} ({new_used_count}/{limit})**",
                         color=0xFFFFFF # 白色
                     )
                     await message.reply(embed=embed, allowed_mentions=discord.AllowedMentions.none())
                     
-                    self.update_usage(message.guild.id, used + 1)
+                    self.update_usage(message.guild.id, new_used_count)
             
             except asyncio.TimeoutError:
                 pass 
