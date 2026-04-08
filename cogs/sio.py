@@ -3,9 +3,7 @@ from discord.ext import commands
 import asyncio
 import time
 import logging
-import io
 import configparser
-
 
 class Voice(commands.Cog):
 
@@ -13,11 +11,10 @@ class Voice(commands.Cog):
         self.bot = bot
         self.reaction_enabled = {}
         self.emoji_sounds = {}  # guildごと
-        self.log_buffer = bot.log_buffer  # ← ここ追加
-        self.eq_filter = "flat"
+        self.log_buffer = bot.log_buffer
+        self.eq_filter = None  # 初期値はNone
         self.queue = asyncio.Queue()  # 再生待ち行列
         self.current_ctx = None
-    
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx, error):
@@ -29,7 +26,6 @@ class Voice(commands.Cog):
     # =====================
     def get_cpu_usage(self):
         def read_cpu():
-            #procからcpu負荷などを参照
             with open("/proc/stat", "r") as f:
                 line = f.readline()
                 values = list(map(int, line.split()[1:]))
@@ -48,7 +44,6 @@ class Voice(commands.Cog):
 
     def get_mem_usage(self):
         meminfo = {}
-        #procからメモリ使用率を参照
         with open("/proc/meminfo") as f:
             for line in f:
                 key, value = line.split(":")
@@ -63,7 +58,7 @@ class Voice(commands.Cog):
         return percent, used, total
 
     # =====================
-    # VC
+    # VC 制御
     # =====================
     @commands.command()
     async def join(self, ctx):
@@ -72,7 +67,6 @@ class Voice(commands.Cog):
             return
 
         vc = ctx.voice_client
-
         if vc is None:
             await ctx.author.voice.channel.connect()
             await ctx.send("接続しました。")
@@ -86,18 +80,18 @@ class Voice(commands.Cog):
     @commands.command()
     async def leave(self, ctx):
         vc = ctx.voice_client
-
         if vc is None:
             await ctx.send("接続していません。")
             return
 
         await vc.disconnect()
+        # キューをクリア
+        while not self.queue.empty():
+            self.queue.get_nowait()
         await ctx.send("切断しました。")
 
-    #イコライザーコマンド
     @commands.command()
     async def eq(self, ctx, mode: str = "flat"):
-        #プリセット
         eq_settings = {
             "bass": "bass=g=10",
             "treble": "treble=g=8",
@@ -110,50 +104,15 @@ class Voice(commands.Cog):
             return
 
         self.eq_filter = eq_settings[mode]
-
         await ctx.send(f"EQ設定を {mode} にしました")
 
     # =====================
-    # ノイズ
+    # 再生ロジック (キュー機能)
     # =====================
-    @commands.command()
-    async def noise(self, ctx, noisetype: str = "brown"):
-        vc = ctx.voice_client
-
-        if vc is None:
-            await ctx.send("先に !join してください。")
-            return
-
-        if vc.is_playing():
-            vc.stop()
-
-        vc.play(discord.FFmpegPCMAudio(
-            f"anoisesrc=color={noisetype}:sample_rate=48000",
-            before_options="-f lavfi"
-        ))
-
-        await ctx.send(f"{noisetype}ノイズ再生開始")
-
-    @commands.command()
-    async def stop(self, ctx):
-        vc = ctx.voice_client
-
-        if vc is None:
-            await ctx.send("接続していません。")
-            return
-
-        if not vc.is_playing():
-            await ctx.send("現在再生していません。")
-            return
-
-        vc.stop()
-        await ctx.send("再生を停止しました。")
-
-    # キュー
     def play_next(self, error=None):
         if error:
             logging.error(f"FFmpeg error: {error}")
-        # 再生終了後にキューを確認
+        # 非同期ループでキューの確認を実行
         asyncio.run_coroutine_threadsafe(self.check_queue(), self.bot.loop)
 
     async def check_queue(self):
@@ -168,18 +127,20 @@ class Voice(commands.Cog):
         url, filename = await self.queue.get()
 
         # ストリーミングと通常のファイル両方に対応する安定設定
-        # -re を維持しつつ、再接続とエージェント偽装を追加
+        # -re を維持し、再接続オプションとUser-Agentを設定
         before_options = (
             "-re -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
             "-user_agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'"
         )
         
         audio_filters = f" -af {self.eq_filter}" if self.eq_filter else ""
-        # 安定性を高めるためのバッファ設定
-        options = f"{audio_filters} -vn -sn -dn -ar 48000 -probesize 10M -analyzeduration 10M"
+        # 終了コード8対策: probesize/analyzedurationを標準的な値(2M)に設定
+        options = f"{audio_filters} -vn -sn -dn -ar 48000 -probesize 2000000 -analyzeduration 2000000"
 
         try:
-            # URLをシングルクォートで囲むことで特殊文字によるエラーを防ぐ
+            # プロセス競合回避のための微小待機
+            await asyncio.sleep(0.5)
+            
             source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
             vc.play(source, after=self.play_next)
             await self.current_ctx.send(f"再生中: **{filename}**")
@@ -195,7 +156,7 @@ class Voice(commands.Cog):
             return await ctx.send("先に !join してください。")
 
         if not ctx.message.attachments:
-            return await ctx.send("ファイルを添付してください。")
+            return await ctx.send("音声ファイルまたはPLSファイルを添付してください。")
 
         self.current_ctx = ctx
         attachment = ctx.message.attachments[0]
@@ -213,7 +174,7 @@ class Voice(commands.Cog):
                 if 'playlist' in config and 'File1' in config['playlist']:
                     url = config['playlist']['File1']
                 else:
-                    return await ctx.send("PLSファイル内に有効なURLが見つかりませんでした。")
+                    return await ctx.send("PLSファイル内にFile1(URL)が見つかりませんでした。")
             except Exception as e:
                 return await ctx.send(f"PLS解析エラー: {e}")
 
@@ -230,23 +191,58 @@ class Voice(commands.Cog):
     async def skip(self, ctx):
         vc = ctx.voice_client
         if vc and vc.is_playing():
-            vc.stop()
+            vc.stop() # これにより after=play_next が走り次が再生される
             await ctx.send("スキップしました。")
+
+    @commands.command()
+    async def stop(self, ctx):
+        vc = ctx.voice_client
+        if vc is None:
+            await ctx.send("接続していません。")
+            return
+
+        # キューを空にする
+        while not self.queue.empty():
+            self.queue.get_nowait()
+        
+        if vc.is_playing():
+            vc.stop()
+            await ctx.send("再生を停止し、キューをクリアしました。")
+        else:
+            await ctx.send("現在再生していません。")
+
+    @commands.command()
+    async def noise(self, ctx, noisetype: str = "brown"):
+        vc = ctx.voice_client
+        if vc is None:
+            await ctx.send("先に !join してください。")
+            return
+
+        if vc.is_playing():
+            vc.stop()
+
+        # ノイズ再生（キューとは別枠の即時再生）
+        vc.play(discord.FFmpegPCMAudio(
+            f"anoisesrc=color={noisetype}:sample_rate=48000",
+            before_options="-f lavfi"
+        ))
+        await ctx.send(f"{noisetype}ノイズ再生開始")
+
     # =====================
-    # システム情報
+    # システム情報 & ログ
     # =====================
     @commands.command()
     async def sysinfo(self, ctx):
         cpu = self.get_cpu_usage()
         mem_percent, used, total = self.get_mem_usage()
-
         msg = (
             f"CPU使用率: {cpu:.1f}%\n"
             f"メモリ使用率: {mem_percent:.1f}%\n"
             f"使用中: {used/1024/1024:.2f}GB / {total/1024/1024:.2f}GB"
         )
         await ctx.send(msg)
-    @commands.command()          # ← クラス内に戻す（インデント修正）
+
+    @commands.command()
     async def logs(self, ctx, lines: int = 10):
         log_buffer = self.bot.log_buffer
         logs = list(log_buffer.logs)[-lines:]
@@ -260,15 +256,12 @@ class Voice(commands.Cog):
 
     @commands.command()
     async def stats(self, ctx):
-        guild_count = len(ctx.bot.guilds)
-        user_count = sum(g.member_count for g in ctx.bot.guilds if g.member_count)
-
-        embed = discord.Embed(
-            title="stats"
-        )
-        embed.add_field(name="総サーバー数",value=f"{guild_count}")
-        embed.add_field(name="総ユーザー数",value=f"{user_count}")
-        
+        guild_count = len(self.bot.guilds)
+        user_count = sum(g.member_count for g in self.bot.guilds if g.member_count)
+        embed = discord.Embed(title="stats")
+        embed.add_field(name="総サーバー数", value=f"{guild_count}")
+        embed.add_field(name="総ユーザー数", value=f"{user_count}")
         await ctx.send(embed=embed)
+
 async def setup(bot):
     await bot.add_cog(Voice(bot))
