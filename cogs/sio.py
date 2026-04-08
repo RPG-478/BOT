@@ -178,19 +178,19 @@ class Voice(commands.Cog):
             ))
             await ctx.send(f"再生開始: {attachment.filename}")
     @commands.command()
-    async def zunda(self, ctx, *, text: str):
-        """外部インストール不要：ずんだもん（VOICEVOX）で読み上げ"""
+    async def talk(self, ctx, *, text: str):
         vc = ctx.voice_client
         if not vc: return
 
-        import urllib.parse
-        encoded_text = urllib.parse.quote(text)
-        # 有志公開のAPIエンドポイント（speaker=3がずんだもん）
-        url = f"https://voicevox.mochizuki.moe/api/tts?text={encoded_text}&speaker=3"
-        
-        # 共有サーバーは応答が少し遅いことがあるので、reconnectは必須
-        before_opts = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-        vc.play(discord.FFmpegPCMAudio(url, before_options=before_opts, options="-ar 48000"))
+        # FFmpeg内部で合成音声を生成する特殊な書き方
+        # 英語がメインですが、追加インストールなしで動く唯一の「内蔵」手段です
+        options = "-ar 48000"
+        vc.play(discord.FFmpegPCMAudio(
+            f'flite=text="{text}"', 
+            before_options="-f lavfi", 
+            options=options
+        ))
+        await ctx.send(f"内蔵エンジンで再生中: {text}")
     # =====================
     # システム情報
     # =====================
