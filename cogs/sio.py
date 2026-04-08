@@ -14,6 +14,7 @@ class Voice(commands.Cog):
         self.reaction_enabled = {}
         self.emoji_sounds = {}  # guildごと
         self.log_buffer = bot.log_buffer  # ← ここ追加
+        self.eq_filter = flat
     
 
     @commands.Cog.listener()
