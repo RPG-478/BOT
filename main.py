@@ -79,16 +79,16 @@ logger.addHandler(log_buffer)
 bot.log_buffer = log_buffer
 
 
-class LogBuffer(logging.Handler):
-    def __init__(bot, maxlen=100):
+class LogBuffer(self, logging.Handler):
+    def __init__(self, bot, maxlen=100):
         commands.Cog.__init__(self)
         logging.Handler.__init__(self)
 
         self.logs = deque(maxlen=maxlen)
 
     def emit(record):
-        log_entry = bot.format(record)
-        bot.logs.append(log_entry)
+        log_entry = self.format(record)
+        self.logs.append(log_entry)
 
 
 
