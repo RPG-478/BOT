@@ -197,7 +197,6 @@ class Voice(commands.Cog):
         if guild is None:
             return
 
-        # ← ここ追加（OFFなら終了）
         if not self.reaction_enabled.get(guild.id, False):
             return
 
@@ -209,7 +208,7 @@ class Voice(commands.Cog):
             vc.stop()
 
         emoji_sounds = {
-            ":thinking:": "https://www.myinstants.com/media/sounds/vine-boom.mp3",
+            "🤔": "https://www.myinstants.com/media/sounds/vine-boom.mp3",
         }
 
         emoji = str(reaction.emoji)
@@ -219,6 +218,7 @@ class Voice(commands.Cog):
 
         vc.play(discord.FFmpegPCMAudio(
             emoji_sounds[emoji],
+            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
             options=f"-af {self.eq_filter}" if self.eq_filter else None
         ))
 
