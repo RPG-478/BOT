@@ -177,42 +177,6 @@ class Voice(commands.Cog):
                 options=options
             ))
             await ctx.send(f"再生開始: {attachment.filename}")
-    @commands.command()
-    async def talk(self, ctx, *, text: str):
-        vc = ctx.voice_client
-        if not vc: return
-
-        if vc.is_playing():
-            vc.stop()
-
-        # --- 安定化 & 音質向上フィルターチェーン ---
-        # 1. flite: 音声生成
-        # 2. realtime: 処理速度を実時間に強制同期（速度変化を防止）
-        # 3. asetnsamples: Discordに送るデータパケットのサイズを均一化（音飛び防止）
-        # 4. highpass: 低音ノイズカット
-        # 5. firequalizer: 高音ブースト（こもり解消）
-        # 6. aresample: 48000Hz固定（Discord規格）
-        
-        audio_filter = (
-            f"flite=text='{text}',"
-            "realtime,"
-            "asetnsamples=n=1024,"
-            "highpass=f=200,"
-            "firequalizer=gain='if(gte(f,3000), 10, 0)',"
-            "volume=1.5,"
-            "aresample=48000"
-        )
-
-        try:
-            # -re オプションを入力前につけることで、さらに読み込み速度を安定化
-            vc.play(discord.FFmpegPCMAudio(
-                "lavfi",
-                before_options="-f lavfi -re",
-                options=f'-i "{audio_filter}"'
-            ))
-            await ctx.send(f"読み上げ中: `{text}`")
-        except Exception as e:
-            await ctx.send(f"エラーが発生しました: {e}")
     # =====================
     # システム情報
     # =====================
