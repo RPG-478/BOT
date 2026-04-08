@@ -194,7 +194,7 @@ class Voice(commands.Cog):
             await ctx.send("音声ファイルを添付してください。")
             return
 
-         attachment = ctx.message.attachments[0]
+        attachment = ctx.message.attachments[0]
 
         # 添付のCDN URL
         url = attachment.url
@@ -206,7 +206,7 @@ class Voice(commands.Cog):
         self.emoji_sounds[gid][emoji] = url
 
         await ctx.send(f"{emoji} に音声URLを割り当てました")
-   @commands.Cog.listener()
+    @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload):
         if payload.member.bot:
             return
