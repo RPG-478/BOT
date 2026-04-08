@@ -196,5 +196,14 @@ class Voice(commands.Cog):
         if len(text) > 1900:
             text = text[-1900:]
         await ctx.send(f"```\n{text}\n```")
+
+    @commands.command()
+    async def stats(self, ctx):
+        guild_count = len(ctx.bot.guilds)
+        user_count = sum(g.member_count for g in ctx.bot.guilds if g.member_count)
+
+        await ctx.send(
+            f"サーバー数: {guild_count}\nユーザー数: {user_count}"
+        )
 async def setup(bot):
     await bot.add_cog(Voice(bot))
