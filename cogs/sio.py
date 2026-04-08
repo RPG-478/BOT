@@ -185,14 +185,14 @@ class Voice(commands.Cog):
             f"使用中: {used/1024/1024:.2f}GB / {total/1024/1024:.2f}GB"
         )
         await ctx.send(msg)
-    @commands.command()
-        async def logs(self, ctx, lines: int = 10):
-            log_buffer = self.bot.log_buffer          # bot経由でLogBufferを取得
-            logs = list(log_buffer.logs)[-lines:]     # .logsはLogBuffer側のdeque
-            if not logs:
-                await ctx.send("ログはありません。")
-                return
-            text = "\n".join(logs)
-            if len(text) > 1900:
-                text = text[-1900:]
-                await ctx.send(f"```\n{text}\n```")       # send が抜けていたので追加
+    @commands.command()          # ← クラス内に戻す（インデント修正）
+    async def logs(self, ctx, lines: int = 10):
+        log_buffer = self.bot.log_buffer
+        logs = list(log_buffer.logs)[-lines:]
+        if not logs:
+            await ctx.send("ログはありません。")
+            return
+        text = "\n".join(logs)
+        if len(text) > 1900:
+            text = text[-1900:]
+        await ctx.send(f"```\n{text}\n```")
