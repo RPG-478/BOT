@@ -53,12 +53,12 @@ class Voice(commands.Cog):
             return
 
     # 再生していない
-    if not vc.is_playing():
-        await ctx.send("現在再生していません。")
-        return
+        if not vc.is_playing():
+            await ctx.send("現在再生していません。")
+            return
 
-    vc.stop()
-    await ctx.send("再生を停止しました。")
+        vc.stop()
+        await ctx.send("再生を停止しました。")
 
 async def setup(bot):
     await bot.add_cog(Voice(bot))
