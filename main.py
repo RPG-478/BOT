@@ -7,6 +7,8 @@ import traceback
 import config
 import defining as df    
 from keep_alive import keep_alive
+import logging
+from logbuffer import LogBuffer
 
 NOTIFY_CHANNEL_ID = 1476170098673717414
 DEBUG_CHANNEL_ID = 1476946191362166894
@@ -59,6 +61,20 @@ class MyBot(commands.Bot):
                 except Exception as e:
                     print(df.format_log(f"Notification error: {e}"))
             self.updated_notified = True 
+
+# ===== ログ設定 =====
+log_buffer = LogBuffer(maxlen=100)
+
+log_buffer.setFormatter(logging.Formatter(
+    "[%(levelname)s] %(asctime)s | %(message)s",
+    "%H:%M:%S"
+))
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+logger.addHandler(log_buffer)
+
+bot.log_buffer = log_buffer
 
 bot = MyBot()
 
