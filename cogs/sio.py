@@ -78,6 +78,18 @@ class Voice(commands.Cog):
 
         await vc.disconnect()
         await ctx.send("切断しました。")
+    @commands.command()
+    async def reaction(self, ctx, mode: str = None):
+        if mode not in ["on", "off"]:
+            await ctx.send("使い方: !reaction on / off")
+            return
+
+        if mode == "on":
+            self.reaction_enabled[ctx.guild.id] = True
+            await ctx.send("リアクション音: ON")
+        else:
+            self.reaction_enabled[ctx.guild.id] = False
+            await ctx.send("リアクション音: OFF")
     #イコライザーコマンド
     @commands.command()
     async def eq(self, ctx, mode: str = "flat"):
@@ -175,6 +187,40 @@ class Voice(commands.Cog):
         )
 
         await ctx.send(msg)
+
+    @commands.Cog.listener()
+    async def on_reaction_add(self, reaction, user):
+        if user.bot:
+            return
+
+        guild = reaction.message.guild
+        if guild is None:
+            return
+
+        # ← ここ追加（OFFなら終了）
+        if not self.reaction_enabled.get(guild.id, False):
+            return
+
+        vc = guild.voice_client
+        if vc is None:
+            return
+
+        if vc.is_playing():
+            vc.stop()
+
+        emoji_sounds = {
+            "🤔": "https://www.myinstants.com/media/sounds/vine-boom.mp3",
+        }
+
+        emoji = str(reaction.emoji)
+
+        if emoji not in emoji_sounds:
+            return
+
+        vc.play(discord.FFmpegPCMAudio(
+            emoji_sounds[emoji],
+            options=f"-af {self.eq_filter}" if self.eq_filter else None
+        ))
 
 
 async def setup(bot):
