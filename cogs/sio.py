@@ -187,17 +187,15 @@ class Voice(commands.Cog):
         
     @commands.command()
     async def logs(self, ctx, lines: int = 10):
-        logs = list(self.logs)[-lines:]
-
+        log_buffer = self.bot.log_buffer          # bot経由でLogBufferを取得
+        logs = list(log_buffer.logs)[-lines:]     # .logsはLogBuffer側のdeque
         if not logs:
             await ctx.send("ログはありません。")
             return
-
         text = "\n".join(logs)
-
         if len(text) > 1900:
             text = text[-1900:]
-
-        await ctx.send(f"```{text}```")
+        await ctx.send(f"```\n{text}\n```")       # send が抜けていたので追加
+            await ctx.send(f"```{text}```")
 async def setup(bot):
     await bot.add_cog(Voice(bot))
