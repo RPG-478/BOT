@@ -1,4 +1,4 @@
-import discord  # 小文字に修正
+import discord
 from discord.ext import commands
 import os
 import asyncio
@@ -20,16 +20,17 @@ class ReplyAI(commands.Cog):
         
         # システムプロンプト
         self.system_prompt = "自然な日本語で、親しみやすいタメ語で短く返答してください。"
+        
+        # 自動返答が有効なチャンネルIDを保持するセット
+        self.active_channels = set()
 
     def get_guild_data(self, guild_id: int):
         """Supabaseからデータを取得。日付が変わっていたらリセット。"""
-        # APIを叩く際にエラーが出ても止まらないようtry-except推奨
         try:
             res = self.supabase.table("usage_limits").select("*").eq("guild_id", guild_id).execute()
             today = datetime.now(timezone.utc).date().isoformat()
 
             if not res.data:
-                # 新規サーバー用初期設定
                 data = {
                     "guild_id": guild_id,
                     "used_count": 0,
@@ -42,7 +43,6 @@ class ReplyAI(commands.Cog):
                 return data
             
             data = res.data[0]
-            # 日付が変わっていれば使用回数を0にリセット
             if data.get("last_reset_date") != today:
                 data["used_count"] = 0
                 data["last_reset_date"] = today
@@ -54,7 +54,7 @@ class ReplyAI(commands.Cog):
             return data
         except Exception as e:
             print(f"Supabase Select Error: {e}")
-            return {"used_count": 999, "max_limit": 0} # エラー時は安全のため制限状態にする
+            return {"used_count": 999, "max_limit": 0}
 
     def update_usage(self, guild_id: int, new_count: int):
         """使用回数を更新"""
@@ -64,45 +64,67 @@ class ReplyAI(commands.Cog):
             print(f"Supabase Update Error: {e}")
 
     @commands.command(name="ask")
-    async def ask_command(self, ctx, *, question: str = None):
-        """!ask [質問] でAIが確定応答"""
-        # 実行時にコンソールで確認するためのログ
-        print(f"DEBUG: !ask received: {question} (Server: {ctx.guild.name})")
+    async def toggle_ask(self, ctx):
+        """チャンネル毎に自動返答のオンオフを切り替え"""
+        channel_id = ctx.channel.id
+        embed = discord.Embed(color=0xFFFFFF) # 白色
+        
+        if channel_id in self.active_channels:
+            self.active_channels.remove(channel_id)
+            embed.description = "<:success:1490985168100659322> ask機能をオフにしました"
+            await ctx.send(embed=embed)
+        else:
+            self.active_channels.add(channel_id)
+            embed.description = "<:success:1490985168100659322> ask機能をオンにしました"
+            await ctx.send(embed=embed)
 
-        if not question:
-            return await ctx.send("質問を入力してね。例: `!ask 今日は何の日？`")
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        """メッセージ受信時の処理"""
+        if message.author.bot or message.content.startswith(self.bot.command_prefix):
+            return
 
-        # 1. データの取得と制限チェック
-        data = self.get_guild_data(ctx.guild.id)
+        if message.channel.id not in self.active_channels:
+            return
+
+        data = self.get_guild_data(message.guild.id)
         used = data["used_count"]
         limit = data["max_limit"]
 
         if used >= limit:
-            return await ctx.send(f"今日の制限（{used}/{limit}）に達しました。日付が変わるのを待つか、別のサーバーにこのボットを導入し、/inviteで招待コードを処理すると1日1回のみ無料枠を100枠増やすことができます。招待するサーバーが条件を満たしている場合のみです")
+            # 制限に達した際の販促メッセージを白色Embedで送信
+            promo_embed = discord.Embed(
+                description=f"今日の制限（{used}/{limit}）に達しました。日付が変わるのを待つか、別のサーバーにこのボットを導入し、/inviteで招待コードを処理すると1日1回のみ無料枠を100枠増やすことができます。招待するサーバーが条件を満たしている場合のみです",
+                color=0xFFFFFF
+            )
+            await message.channel.send(embed=promo_embed)
+            return 
 
-        # 2. 応答生成
-        async with ctx.typing():
+        async with message.channel.typing():
             try:
-                # Groq APIの呼び出しを非同期実行
                 loop = asyncio.get_event_loop()
                 response = await asyncio.wait_for(
-                    loop.run_in_executor(None, self._get_groq_response, question),
+                    loop.run_in_executor(None, self._get_groq_response, message.content),
                     timeout=10.0
                 )
                 
                 if response:
-                    # 応答を整形して返信
-                    clean_res = response.replace("\n", " ")[:100] # 文字制限を少し緩和
-                    await ctx.reply(clean_res, allowed_mentions=discord.AllowedMentions.none())
+                    clean_res = response.replace("\n", " ")[:100]
                     
-                    # 3. カウントアップ
-                    self.update_usage(ctx.guild.id, used + 1)
+                    # 埋め込み形式での返答
+                    embed = discord.Embed(
+                        title="<:success:1490985168100659322> AGOBOTが返答を行いました",
+                        description=clean_res,
+                        color=0xFFFFFF # 白色
+                    )
+                    await message.reply(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                    
+                    self.update_usage(message.guild.id, used + 1)
             
             except asyncio.TimeoutError:
-                await ctx.send("ごめん、AIが考えるのに時間がかかりすぎちゃった。")
+                pass 
             except Exception as e:
                 print(f"Groq API Error: {e}")
-                await ctx.send("ごめん、エラーで答えられなかった。")
 
     def _get_groq_response(self, user_text):
         """Groq APIを使用して返答生成"""
