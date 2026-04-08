@@ -99,19 +99,30 @@ class Voice(commands.Cog):
 
     @commands.command()
     async def eq(self, ctx, mode: str = "flat"):
+        """
+        高度な音響設定
+        modes: bass, echo, hall, vocal, superbass, flat
+        """
         eq_settings = {
-            "bass": "bass=g=10",
-            "treble": "treble=g=8",
-            "vocal": "equalizer=f=1000:width_type=o:width=2:g=5",
+            # 低音強調 + 音量正規化
+            "bass": "bass=g=10,dynaudnorm", 
+            # 山びこエフェクト (遅延200ms)
+            "echo": "aecho=0.8:0.8:200:0.4", 
+            # コンサートホール風 (短い残響 + ステレオ幅拡張)
+            "hall": "aecho=0.8:0.88:60:0.4,extrastereo=m=2.5", 
+            # 高度なイコライザー (中音域/人の声を強調)
+            "vocal": "firequalizer=gain_entry='entry(100, -5); entry(400, 0); entry(1000, 5); entry(4000, 5); entry(8000, 0)'",
+            # 超低域 (31Hz-62Hz) をピンポイントで爆上げ
+            "superbass": "firequalizer=gain_entry='entry(31, 15); entry(62, 10); entry(125, 5); entry(250, 0)'",
             "flat": None
         }
 
         if mode not in eq_settings:
-            await ctx.send("利用可能なモード: bass, treble, vocal, flat")
+            await ctx.send("利用可能なモード: bass, echo, hall, vocal, superbass, flat")
             return
 
         self.eq_filter = eq_settings[mode]
-        await ctx.send(f"EQ設定を {mode} に変更しました。")
+        await ctx.send(f"音響エフェクトを `{mode}` に変更しました。(次曲から適用)")
 
     # =====================
     # Playback Logic
@@ -153,7 +164,7 @@ class Voice(commands.Cog):
         audio_filters = f" -af {self.eq_filter}" if self.eq_filter else ""
         options = (
             f"{audio_filters} -vn -sn -dn -ar 48000 -ac 2 "
-            "-probesize 32 -analyzeduration 0 -loglevel warning"
+            "-probesize 32M -analyzeduration 32M -loglevel warning"
         )
 
         try:
