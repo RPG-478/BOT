@@ -5,8 +5,10 @@ import os
 import asyncio
 import traceback
 import config
-import defining as df    
+import defining as df
 from keep_alive import keep_alive
+import logging
+from collections import deque  # deque のインポートが抜けていたので追加
 
 NOTIFY_CHANNEL_ID = 1476170098673717414
 DEBUG_CHANNEL_ID = 1476946191362166894
