@@ -36,10 +36,15 @@ class Voice(commands.Cog):
         await vc.disconnect()
         await ctx.send("切断しました。")
     @commands.command()
-    async def noise(self, ctx):
+    async def noise(self, ctx, type: str):
+        noisetype = ""
+        if type is None:
+            noisetype = "brown"
+        else:
+            noisetype = type
         vc = ctx.voice_client
         vc.play(discord.FFmpegPCMAudio(
-            "anoisesrc=color=brown:sample_rate=48000",
+            f"anoisesrc=color={noisetype}:sample_rate=48000",
             before_options="-f lavfi"
         ))
     @commands.command()
