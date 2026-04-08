@@ -42,6 +42,23 @@ class Voice(commands.Cog):
             "anoisesrc=color=brown:sample_rate=48000",
             before_options="-f lavfi"
         ))
+    @commands.command()
+    async def stop(self, ctx):
+        vc = ctx.voice_client
+
+        # VC未接続
+            
+        if vc is None:
+            await ctx.send("接続していません。")
+        return
+
+    # 再生していない
+    if not vc.is_playing():
+        await ctx.send("現在再生していません。")
+        return
+
+    vc.stop()
+    await ctx.send("再生を停止しました。")
 
 async def setup(bot):
     await bot.add_cog(Voice(bot))
