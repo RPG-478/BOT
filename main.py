@@ -7,8 +7,6 @@ import traceback
 import config
 import defining as df    
 from keep_alive import keep_alive
-import logging
-
 
 NOTIFY_CHANNEL_ID = 1476170098673717414
 DEBUG_CHANNEL_ID = 1476946191362166894
@@ -63,36 +61,6 @@ class MyBot(commands.Bot):
             self.updated_notified = True 
 
 bot = MyBot()
-
-# ===== ログ設定 =====
-log_buffer = LogBuffer(maxlen=100)
-
-log_buffer.setFormatter(logging.Formatter(
-    "[%(levelname)s] %(asctime)s | %(message)s",
-    "%H:%M:%S"
-))
-
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-logger.addHandler(log_buffer)
-
-bot.log_buffer = log_buffer
-
-
-class LogBuffer(self, logging.Handler):
-    def __init__(self, bot, maxlen=100):
-        commands.Cog.__init__(self)
-        logging.Handler.__init__(self)
-
-        self.logs = deque(maxlen=maxlen)
-
-    def emit(record):
-        log_entry = self.format(record)
-        self.logs.append(log_entry)
-
-
-
-
 
 if __name__ == "__main__":
     keep_alive()
