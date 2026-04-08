@@ -149,6 +149,45 @@ class Voice(commands.Cog):
         vc.stop()
         await ctx.send("再生を停止しました。")
 
+    # キュー
+
+    def play_next(self, error=None):
+        """再生終了時に呼ばれるコールバック"""
+        if error:
+            logging.error(f"Player error: {error}")
+        
+        # 同期関数の中から非同期のcheck_queueを安全に呼び出す
+        asyncio.run_coroutine_threadsafe(self.check_queue(), self.bot.loop)
+
+    async def check_queue(self):
+        """キューを確認して再生する"""
+        vc = self.current_ctx.voice_client
+        if vc is None or self.queue.empty():
+            return
+
+        # キューから次の曲を取得
+        url, filename = await self.queue.get()
+
+        # ストリーミングの安定性を高める設定
+        # -user_agent を追加してサーバー拒否を防ぐ
+        before_options = (
+            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+            "-user_agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'"
+        )
+        audio_filters = f" -af {self.eq_filter}" if self.eq_filter else ""
+        options = f"{audio_filters} -vn -sn -dn -ar 48000"
+
+        try:
+            vc.play(discord.FFmpegPCMAudio(
+                url,
+                before_options=before_options,
+                options=options
+            ), after=self.play_next)
+            await self.current_ctx.send(f"再生中: **{filename}**")
+        except Exception as e:
+            await self.current_ctx.send(f"再生エラー: {e}")
+            self.play_next() # エラー時は次へ
+
     # =====================
     # 添付再生
     # =====================
