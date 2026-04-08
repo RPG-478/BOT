@@ -177,6 +177,47 @@ class Voice(commands.Cog):
                 options=options
             ))
             await ctx.send(f"再生開始: {attachment.filename}")
+    @commands.command()
+    async def tts(self, ctx, *, text: str):
+        """
+        追加のライブラリなしで簡易的に合成音声を作成し再生します。
+        Linuxのespeakコマンドを利用する例です。
+        """
+        vc = ctx.voice_client
+        if vc is None:
+            await ctx.send("先に `!join` してください。")
+            return
+
+        if vc.is_playing():
+            vc.stop()
+
+        # FFmpegのlavfiフィルター（flite）を使用する例
+        # ※システムに libflite が入っている必要があります。
+        # 入っていない場合は、OSのコマンドで音声ファイルを作ってから再生します。
+        
+        # 最も汎用的な方法：
+        # 1. サーバー内の音声合成コマンド(espeak等)でwav出力
+        # 2. それをFFmpegで再生
+        import subprocess
+        import os
+
+        filename = f"tts_{ctx.guild.id}.wav"
+        
+        try:
+            # Linux標準のespeakを利用（日本語は espeak -v ja）
+            # もしインストールされていなければ 'sudo apt install espeak' が必要です
+            subprocess.run(["espeak", "-v", "ja", "-w", filename, text], check=True)
+            
+            # 再生設定（倍速防止の -re と -ar 48000 を適用）
+            options = "-ar 48000"
+            vc.play(discord.FFmpegPCMAudio(filename, options=options), 
+                    after=lambda e: os.remove(filename) if os.path.exists(filename) else None)
+            
+            await ctx.send(f"読み上げ中: `{text}`")
+
+        except Exception as e:
+            await ctx.send(f"合成音声の生成に失敗しました。サーバーに `espeak` が入っているか確認してください。")
+            logging.error(f"TTS Error: {e}")
 
     # =====================
     # システム情報
