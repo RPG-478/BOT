@@ -62,6 +62,8 @@ class MyBot(commands.Bot):
                     print(df.format_log(f"Notification error: {e}"))
             self.updated_notified = True 
 
+bot = MyBot()
+
 # ===== ログ設定 =====
 log_buffer = LogBuffer(maxlen=100)
 
@@ -76,7 +78,6 @@ logger.addHandler(log_buffer)
 
 bot.log_buffer = log_buffer
 
-bot = MyBot()
 
 if __name__ == "__main__":
     keep_alive()
