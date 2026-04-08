@@ -181,16 +181,31 @@ class Voice(commands.Cog):
     async def talk(self, ctx, *, text: str):
         vc = ctx.voice_client
         if not vc: return
+        if vc.is_playing(): vc.stop()
 
-        # FFmpeg内部で合成音声を生成する特殊な書き方
-        # 英語がメインですが、追加インストールなしで動く唯一の「内蔵」手段です
-        options = "-ar 48000"
-        vc.play(discord.FFmpegPCMAudio(
-            f'flite=text="{text}"', 
-            before_options="-f lavfi", 
-            options=options
-        ))
-        await ctx.send(f"内蔵エンジンで再生中: {text}")
+        # --- 日本語対応 & 安定化フィルター ---
+        # voice=ja: 日本語を指定
+        # speed=150: 読み上げ速度を自然に
+        audio_filter = (
+            f"espeak=text='{text}':voice=ja,"
+            "realtime,"
+            "asetnsamples=n=1024,"
+            "highpass=f=200,"
+            "firequalizer=gain='if(gte(f,3000), 10, 0)',"
+            "volume=1.8,"
+            "aresample=48000"
+        )
+
+        try:
+            vc.play(discord.FFmpegPCMAudio(
+                "lavfi",
+                before_options="-f lavfi -re",
+                options=f'-i "{audio_filter}"'
+            ))
+            await ctx.send(f"日本語読み上げ中: `{text}`")
+        except Exception as e:
+            # espeakフィルターが使えない場合のフォールバック案
+            await ctx.send("お使いのFFmpegは日本語(espeak)フィルターをサポートしていないようです。")
     # =====================
     # システム情報
     # =====================
