@@ -8,6 +8,7 @@ class Voice(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.reaction_enabled = {}
+        self.emoji_sounds = {}  # guildごと
 
     # =====================
     # CPU / メモリ
@@ -187,13 +188,30 @@ class Voice(commands.Cog):
         )
 
         await ctx.send(msg)
-
-    @commands.Cog.listener()
-    async def on_reaction_add(self, reaction, user):
-        if user.bot:
+    @commands.command()
+    async def setreaction(self, ctx, emoji: str):
+        if not ctx.message.attachments:
+            await ctx.send("音声ファイルを添付してください。")
             return
 
-        guild = reaction.message.guild
+         attachment = ctx.message.attachments[0]
+
+        # 添付のCDN URL
+        url = attachment.url
+
+        gid = str(ctx.guild.id)
+        if gid not in self.emoji_sounds:
+            self.emoji_sounds[gid] = {}
+
+        self.emoji_sounds[gid][emoji] = url
+
+        await ctx.send(f"{emoji} に音声URLを割り当てました")
+   @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload):
+        if payload.member.bot:
+            return
+
+        guild = self.bot.get_guild(payload.guild_id)
         if guild is None:
             return
 
@@ -204,20 +222,19 @@ class Voice(commands.Cog):
         if vc is None:
             return
 
+        emoji = str(payload.emoji)
+
+        guild_data = self.emoji_sounds.get(str(guild.id), {})
+        if emoji not in guild_data:
+            return
+
+        url = guild_data[emoji]
+
         if vc.is_playing():
             vc.stop()
 
-        emoji_sounds = {
-            "🤔": "https://www.myinstants.com/media/sounds/vine-boom.mp3",
-        }
-
-        emoji = str(reaction.emoji)
-
-        if emoji not in emoji_sounds:
-            return
-
         vc.play(discord.FFmpegPCMAudio(
-            emoji_sounds[emoji],
+            url,
             before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
             options=f"-af {self.eq_filter}" if self.eq_filter else None
         ))
