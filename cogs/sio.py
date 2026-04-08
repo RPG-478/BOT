@@ -3,7 +3,7 @@ from discord.ext import commands
 import time
 
 class Voice(commands.Cog):
-    def get_cpu_usage():
+    def get_cpu_usage(self):
         def read_cpu():
             with open("/proc/stat", "r") as f:
                 line = f.readline()
@@ -20,7 +20,7 @@ class Voice(commands.Cog):
         total_delta = total2 - total1
 
         return 100 * (1 - idle_delta / total_delta)
-    def get_mem_usage():
+    def get_mem_usage(self):
         meminfo = {}
         with open("/proc/meminfo") as f:
             for line in f:
@@ -132,7 +132,7 @@ class Voice(commands.Cog):
             f"使用中: {used/1024/1024:.2f}GB / {total/1024/1024:.2f}GB"
         )
 
-    await ctx.send(msg)
+        await ctx.send(msg)
         
 async def setup(bot):
     await bot.add_cog(Voice(bot))
