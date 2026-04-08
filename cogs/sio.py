@@ -1,8 +1,16 @@
 import discord
 from discord.ext import commands
+import asyncio
 import time
 
 class Voice(commands.Cog):
+
+    def __init__(self, bot):
+        self.bot = bot
+
+    # =====================
+    # CPU / メモリ
+    # =====================
     def get_cpu_usage(self):
         def read_cpu():
             with open("/proc/stat", "r") as f:
@@ -20,13 +28,14 @@ class Voice(commands.Cog):
         total_delta = total2 - total1
 
         return 100 * (1 - idle_delta / total_delta)
+
     def get_mem_usage(self):
         meminfo = {}
         with open("/proc/meminfo") as f:
             for line in f:
                 key, value = line.split(":")
                 meminfo[key] = int(value.split()[0])
-    
+
         total = meminfo["MemTotal"]
         free = meminfo["MemAvailable"]
 
@@ -34,23 +43,21 @@ class Voice(commands.Cog):
         percent = used / total * 100
 
         return percent, used, total
-        
-    def __init__(self, bot):
-        self.bot = bot
 
+    # =====================
+    # VC
+    # =====================
     @commands.command()
     async def join(self, ctx):
-        #接続していない場合をはじく
         if ctx.author.voice is None:
             await ctx.send("あなたはボイスチャンネルに接続していません。")
             return
 
         vc = ctx.voice_client
-        #接続する
+
         if vc is None:
             await ctx.author.voice.channel.connect()
             await ctx.send("接続しました。")
-        #既に接続していない場合などの処理
         else:
             if vc.channel == ctx.author.voice.channel:
                 await ctx.send("すでに接続しています。")
@@ -61,70 +68,81 @@ class Voice(commands.Cog):
     @commands.command()
     async def leave(self, ctx):
         vc = ctx.voice_client
-        #接続していない場合
+
         if vc is None:
             await ctx.send("接続していません。")
             return
-        #切断処理
+
         await vc.disconnect()
         await ctx.send("切断しました。")
+
+    # =====================
+    # ノイズ
+    # =====================
     @commands.command()
-    async def noise(self, ctx, type: str):
-        noisetype = ""
-        if type is None:
-            noisetype = "brown"
-        else:
-            noisetype = type
+    async def noise(self, ctx, noisetype: str = "brown"):
         vc = ctx.voice_client
+
+        if vc is None:
+            await ctx.send("先に !join してください。")
+            return
+
+        if vc.is_playing():
+            vc.stop()
+
         vc.play(discord.FFmpegPCMAudio(
             f"anoisesrc=color={noisetype}:sample_rate=48000",
             before_options="-f lavfi"
         ))
+
+        await ctx.send(f"{noisetype}ノイズ再生開始")
+
     @commands.command()
     async def stop(self, ctx):
         vc = ctx.voice_client
 
-        # VC未接続
-            
         if vc is None:
             await ctx.send("接続していません。")
             return
 
-    # 再生していない
         if not vc.is_playing():
             await ctx.send("現在再生していません。")
             return
 
         vc.stop()
         await ctx.send("再生を停止しました。")
+
+    # =====================
+    # 添付再生
+    # =====================
     @commands.command()
     async def play(self, ctx):
         vc = ctx.voice_client
 
-        # VC未接続
         if vc is None:
             await ctx.send("先に !join してください。")
             return
 
-        # 添付ファイルがない
         if not ctx.message.attachments:
             await ctx.send("音声ファイルを添付してください。")
             return
 
         attachment = ctx.message.attachments[0]
-        url = attachment.url  # ← これが重要
+        url = attachment.url
 
-        # 再生中チェック
         if vc.is_playing():
             vc.stop()
 
         vc.play(discord.FFmpegPCMAudio(url))
-
         await ctx.send("再生開始")
+
+    # =====================
+    # システム情報
+    # =====================
     @commands.command()
     async def sysinfo(self, ctx):
-        cpu = get_cpu_usage()
-        mem_percent, used, total = get_mem_usage()
+        cpu = self.get_cpu_usage()
+        mem_percent, used, total = self.get_mem_usage()
 
         msg = (
             f"CPU使用率: {cpu:.1f}%\n"
@@ -133,6 +151,7 @@ class Voice(commands.Cog):
         )
 
         await ctx.send(msg)
-        
+
+
 async def setup(bot):
     await bot.add_cog(Voice(bot))
