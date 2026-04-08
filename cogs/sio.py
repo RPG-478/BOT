@@ -35,7 +35,13 @@ class Voice(commands.Cog):
         #切断処理
         await vc.disconnect()
         await ctx.send("切断しました。")
-
+    @commands.command()
+    async def noise(self, ctx):
+        vc = ctx.voice_client
+        vc.play(discord.FFmpegPCMAudio(
+            "anoisesrc=color=brown:sample_rate=48000",
+            before_options="-f lavfi"
+        ))
 
 async def setup(bot):
     await bot.add_cog(Voice(bot))
