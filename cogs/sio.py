@@ -187,7 +187,7 @@ class Voice(commands.Cog):
         
     @commands.command()
     async def logs(self, ctx, lines: int = 10):
-        logs = list(self.log_buffer.logs)[-lines:]
+        logs = list(self.logs)[-lines:]
 
         if not logs:
             await ctx.send("ログはありません。")
@@ -199,7 +199,5 @@ class Voice(commands.Cog):
             text = text[-1900:]
 
         await ctx.send(f"```{text}```")
-        await ctx.send(msg)
-
 async def setup(bot):
     await bot.add_cog(Voice(bot))
