@@ -178,7 +178,6 @@ class Voice(commands.Cog):
             ))
             await ctx.send(f"再生開始: {attachment.filename}")
     @commands.command()
-    @commands.command()
     async def talk(self, ctx, *, text: str):
         """Open JTalkのWeb APIを利用して再生します"""
         vc = ctx.voice_client
