@@ -79,6 +79,21 @@ logger.addHandler(log_buffer)
 bot.log_buffer = log_buffer
 
 
+class LogBuffer(logging.Handler):
+    def __init__(bot, maxlen=100):
+        commands.Cog.__init__(self)
+        logging.Handler.__init__(self)
+
+        self.logs = deque(maxlen=maxlen)
+
+    def emit(record):
+        log_entry = bot.format(record)
+        bot.logs.append(log_entry)
+
+
+
+
+
 if __name__ == "__main__":
     keep_alive()
     print("DEBUG: Keep-alive server initiated.")
