@@ -2,6 +2,8 @@ import discord
 from discord.ext import commands
 import asyncio
 import time
+import logging
+
 
 class Voice(commands.Cog):
 
@@ -9,6 +11,13 @@ class Voice(commands.Cog):
         self.bot = bot
         self.reaction_enabled = {}
         self.emoji_sounds = {}  # guildごと
+        self.log_buffer = bot.log_buffer  # ← ここ追加
+    
+
+    @commands.Cog.listener()
+    async def on_command_error(self, ctx, error):
+        logging.exception("Command error")
+        await ctx.send(f"エラー: {error}")
 
     # =====================
     # CPU / メモリ
@@ -79,18 +88,7 @@ class Voice(commands.Cog):
 
         await vc.disconnect()
         await ctx.send("切断しました。")
-    @commands.command()
-    async def reaction(self, ctx, mode: str = None):
-        if mode not in ["on", "off"]:
-            await ctx.send("使い方: !reaction on / off")
-            return
 
-        if mode == "on":
-            self.reaction_enabled[ctx.guild.id] = True
-            await ctx.send("リアクション音: ON")
-        else:
-            self.reaction_enabled[ctx.guild.id] = False
-            await ctx.send("リアクション音: OFF")
     #イコライザーコマンド
     @commands.command()
     async def eq(self, ctx, mode: str = "flat"):
@@ -186,59 +184,22 @@ class Voice(commands.Cog):
             f"メモリ使用率: {mem_percent:.1f}%\n"
             f"使用中: {used/1024/1024:.2f}GB / {total/1024/1024:.2f}GB"
         )
-
-        await ctx.send(msg)
+        
     @commands.command()
-    async def setreaction(self, ctx, emoji: str):
-        if not ctx.message.attachments:
-            await ctx.send("音声ファイルを添付してください。")
+    async def logs(self, ctx, lines: int = 10):
+        logs = list(self.log_buffer.logs)[-lines:]
+
+        if not logs:
+            await ctx.send("ログはありません。")
             return
 
-        attachment = ctx.message.attachments[0]
+        text = "\n".join(logs)
 
-        # 添付のCDN URL
-        url = attachment.url
+        if len(text) > 1900:
+            text = text[-1900:]
 
-        gid = str(ctx.guild.id)
-        if gid not in self.emoji_sounds:
-            self.emoji_sounds[gid] = {}
-
-        self.emoji_sounds[gid][emoji] = url
-
-        await ctx.send(f"{emoji} に音声URLを割り当てました")
-    @commands.Cog.listener()
-    async def on_raw_reaction_add(self, payload):
-        if payload.member.bot:
-            return
-
-        guild = self.bot.get_guild(payload.guild_id)
-        if guild is None:
-            return
-
-        if not self.reaction_enabled.get(guild.id, False):
-            return
-
-        vc = guild.voice_client
-        if vc is None:
-            return
-
-        emoji = str(payload.emoji)
-
-        guild_data = self.emoji_sounds.get(str(guild.id), {})
-        if emoji not in guild_data:
-            return
-
-        url = guild_data[emoji]
-
-        if vc.is_playing():
-            vc.stop()
-
-        vc.play(discord.FFmpegPCMAudio(
-            url,
-            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-            options=f"-af {self.eq_filter}" if self.eq_filter else None
-        ))
-
+        await ctx.send(f"```{text}```")
+        await ctx.send(msg)
 
 async def setup(bot):
     await bot.add_cog(Voice(bot))
