@@ -185,7 +185,7 @@ class Voice(commands.Cog):
             f"使用中: {used/1024/1024:.2f}GB / {total/1024/1024:.2f}GB"
         )
         
-    @commands.command()
+@commands.command()
     async def logs(self, ctx, lines: int = 10):
         log_buffer = self.bot.log_buffer          # bot経由でLogBufferを取得
         logs = list(log_buffer.logs)[-lines:]     # .logsはLogBuffer側のdeque
@@ -196,6 +196,3 @@ class Voice(commands.Cog):
         if len(text) > 1900:
             text = text[-1900:]
         await ctx.send(f"```\n{text}\n```")       # send が抜けていたので追加
-            await ctx.send(f"```{text}```")
-async def setup(bot):
-    await bot.add_cog(Voice(bot))
