@@ -4,6 +4,7 @@ import asyncio
 import time
 import logging
 import io
+import configparser
 
 
 class Voice(commands.Cog):
