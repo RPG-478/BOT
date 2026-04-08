@@ -64,6 +64,30 @@ class Voice(commands.Cog):
 
         vc.stop()
         await ctx.send("再生を停止しました。")
+    @commands.command()
+    async def play(self, ctx):
+        vc = ctx.voice_client
+
+        # VC未接続
+        if vc is None:
+            await ctx.send("先に !join してください。")
+            return
+
+        # 添付ファイルがない
+        if not ctx.message.attachments:
+            await ctx.send("音声ファイルを添付してください。")
+            return
+
+        attachment = ctx.message.attachments[0]
+        url = attachment.url  # ← これが重要
+
+        # 再生中チェック
+        if vc.is_playing():
+            vc.stop()
+
+        vc.play(discord.FFmpegPCMAudio(url))
+
+        await ctx.send("再生開始")
 
 async def setup(bot):
     await bot.add_cog(Voice(bot))
