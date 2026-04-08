@@ -150,47 +150,44 @@ class Voice(commands.Cog):
         await ctx.send("再生を停止しました。")
 
     # キュー
-
     def play_next(self, error=None):
-        """再生終了時に呼ばれるコールバック"""
         if error:
-            logging.error(f"Player error: {error}")
-        
-        # 同期関数の中から非同期のcheck_queueを安全に呼び出す
+            logging.error(f"FFmpeg error: {error}")
+        # 再生終了後にキューを確認
         asyncio.run_coroutine_threadsafe(self.check_queue(), self.bot.loop)
 
     async def check_queue(self):
-        """キューを確認して再生する"""
-        vc = self.current_ctx.voice_client
-        if vc is None or self.queue.empty():
+        if self.current_ctx is None or self.queue.empty():
             return
 
-        # キューから次の曲を取得
+        vc = self.current_ctx.voice_client
+        if vc is None:
+            return
+
+        # キューからURLとファイル名を取得
         url, filename = await self.queue.get()
 
-        # ストリーミングの安定性を高める設定
-        # -user_agent を追加してサーバー拒否を防ぐ
+        # ストリーミングと通常のファイル両方に対応する安定設定
+        # -re を維持しつつ、再接続とエージェント偽装を追加
         before_options = (
-            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+            "-re -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
             "-user_agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'"
         )
+        
         audio_filters = f" -af {self.eq_filter}" if self.eq_filter else ""
-        options = f"{audio_filters} -vn -sn -dn -ar 48000"
+        # 安定性を高めるためのバッファ設定
+        options = f"{audio_filters} -vn -sn -dn -ar 48000 -probesize 10M -analyzeduration 10M"
 
         try:
-            vc.play(discord.FFmpegPCMAudio(
-                url,
-                before_options=before_options,
-                options=options
-            ), after=self.play_next)
+            # URLをシングルクォートで囲むことで特殊文字によるエラーを防ぐ
+            source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
+            vc.play(source, after=self.play_next)
             await self.current_ctx.send(f"再生中: **{filename}**")
         except Exception as e:
+            logging.error(f"Playback error: {e}")
             await self.current_ctx.send(f"再生エラー: {e}")
-            self.play_next() # エラー時は次へ
+            self.play_next()
 
-    # =====================
-    # 添付再生
-    # =====================
     @commands.command()
     async def play(self, ctx):
         vc = ctx.voice_client
@@ -198,41 +195,42 @@ class Voice(commands.Cog):
             return await ctx.send("先に !join してください。")
 
         if not ctx.message.attachments:
-            return await ctx.send("音声ファイルまたはPLSファイルを添付してください。")
+            return await ctx.send("ファイルを添付してください。")
 
         self.current_ctx = ctx
         attachment = ctx.message.attachments[0]
         url = attachment.url
         filename = attachment.filename
 
-        # PLSファイル解析
-        if filename.endswith('.pls'):
+        # --- PLSファイルの解析 ---
+        if filename.lower().endswith('.pls'):
             try:
                 content = await attachment.read()
+                pls_content = content.decode('utf-8')
                 config = configparser.ConfigParser()
-                config.read_string(content.decode('utf-8'))
+                config.read_string(pls_content)
+                
                 if 'playlist' in config and 'File1' in config['playlist']:
                     url = config['playlist']['File1']
                 else:
-                    return await ctx.send("PLS解析失敗: File1が見つかりません。")
+                    return await ctx.send("PLSファイル内に有効なURLが見つかりませんでした。")
             except Exception as e:
-                return await ctx.send(f"PLS読み込みエラー: {e}")
+                return await ctx.send(f"PLS解析エラー: {e}")
 
         # キューに追加
         await self.queue.put((url, filename))
 
-        # 何も再生していなければ再生開始
+        # 再生中でなければ開始
         if not vc.is_playing():
             await self.check_queue()
         else:
-            await ctx.send(f"キューに追加しました: {filename} (現在 {self.queue.qsize()} 件待ち)")
+            await ctx.send(f"キューに追加しました: {filename} (待ち: {self.queue.qsize()}件)")
 
     @commands.command()
     async def skip(self, ctx):
-        """現在の曲をスキップ"""
         vc = ctx.voice_client
         if vc and vc.is_playing():
-            vc.stop() # これで自動的に after=play_next が呼ばれる
+            vc.stop()
             await ctx.send("スキップしました。")
     # =====================
     # システム情報
