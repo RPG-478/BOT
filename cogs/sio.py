@@ -15,6 +15,8 @@ class Voice(commands.Cog):
         self.emoji_sounds = {}  # guildごと
         self.log_buffer = bot.log_buffer  # ← ここ追加
         self.eq_filter = "flat"
+        self.queue = asyncio.Queue()  # 再生待ち行列
+        self.current_ctx = None
     
 
     @commands.Cog.listener()
