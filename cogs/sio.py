@@ -178,18 +178,19 @@ class Voice(commands.Cog):
             ))
             await ctx.send(f"再生開始: {attachment.filename}")
     @commands.command()
-    async def talk(self, ctx, *, text: str):
-        """Open JTalkのWeb APIを利用して再生します"""
+    async def zunda(self, ctx, *, text: str):
+        """外部インストール不要：ずんだもん（VOICEVOX）で読み上げ"""
         vc = ctx.voice_client
-        if vc is None: return
+        if not vc: return
 
         import urllib.parse
         encoded_text = urllib.parse.quote(text)
-        # 簡易的なAPIエンドポイントの例
-        url = f"https://api.voicetext.jp/v1/tts" # ※要認証のものが多いので注意
+        # 有志公開のAPIエンドポイント（speaker=3がずんだもん）
+        url = f"https://voicevox.mochizuki.moe/api/tts?text={encoded_text}&speaker=3"
         
-        # 代わりに、一番安定するのは「AITalk」のデモ用URLなどがありますが、
-        # 規約的に厳しいことが多いため、基本はGoogleかVOICEVOXの二択になります。
+        # 共有サーバーは応答が少し遅いことがあるので、reconnectは必須
+        before_opts = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+        vc.play(discord.FFmpegPCMAudio(url, before_options=before_opts, options="-ar 48000"))
     # =====================
     # システム情報
     # =====================
