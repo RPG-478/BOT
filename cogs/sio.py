@@ -149,27 +149,34 @@ class Voice(commands.Cog):
     # =====================
     @commands.command()
     async def play(self, ctx):
-        vc = ctx.voice_client
+            vc = ctx.voice_client
+            if vc is None:
+                await ctx.send("先に !join してください。")
+                return
 
-        if vc is None:
-            await ctx.send("先に !join してください。")
-            return
+            if not ctx.message.attachments:
+                await ctx.send("音声ファイルを添付してください。")
+                return
 
-        if not ctx.message.attachments:
-            await ctx.send("音声ファイルを添付してください。")
-            return
+            attachment = ctx.message.attachments[0]
+            url = attachment.url
 
-        attachment = ctx.message.attachments[0]
-        url = attachment.url
+            if vc.is_playing():
+                vc.stop()
 
-        if vc.is_playing():
-            vc.stop()
+            # -re: 入力をリアルタイム速度で読み込む
+            # -ar 48000: サンプリングレートを固定
+            # -bufsize: バッファサイズを指定して安定させる
+            before_options = "-re" 
+            audio_filters = f" -af {self.eq_filter}" if self.eq_filter else ""
+            options = f"{audio_filters} -ar 48000 -bufsize 4096k"
 
-        vc.play(discord.FFmpegPCMAudio(
-            url,
-            options=f"-af {self.eq_filter}" if self.eq_filter else None
-        ))
-        await ctx.send("再生開始")
+            vc.play(discord.FFmpegPCMAudio(
+                url,
+                before_options=before_options,
+                options=options
+            ))
+            await ctx.send(f"再生開始: {attachment.filename}")
 
     # =====================
     # システム情報
