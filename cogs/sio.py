@@ -354,7 +354,7 @@ class Voice(commands.Cog):
         else:
             await ctx.send("有効なIDが見つかりませんでした。")
             
-@commands.command()
+    @commands.command()
     async def save_plist(self, ctx, name: str):
         """添付されたJSONを名前を付けてSupabaseに保存"""
         if not self.bot.supabase: return await ctx.send("DB未設定です。")
