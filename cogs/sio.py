@@ -5,6 +5,7 @@ import time
 import logging
 import configparser
 
+
 class Voice(commands.Cog):
 
     def __init__(self, bot):
@@ -62,6 +63,18 @@ class Voice(commands.Cog):
             return percent, used, total
         except Exception:
             return 0, 0, 0
+            
+    async def get_attachment_by_id(self, channel, message_id: int):
+        """メッセージIDから添付ファイルのURLとファイル名を取得する"""
+        try:
+            msg = await channel.fetch_message(message_id)
+            if msg.attachments:
+                # 最初のアタッチメントを返す
+                return msg.attachments[0].url, msg.attachments[0].filename
+            return None, None
+        except Exception as e:
+            logging.error(f"ID:{message_id} の取得に失敗: {e}")
+            return None, None
 
     # =====================
     # VC Control
@@ -250,6 +263,38 @@ class Voice(commands.Cog):
             await ctx.send("再生を停止し、キューをクリアしました。")
         else:
             await ctx.send("キューをクリアしました。")
+
+    @commands.command()
+    async def plist(self, ctx, *, ids_str: str):
+        """
+        メッセージIDを並べてプレイリストとして再生
+        例: !plist 123456789, 987654321
+        """
+        vc = ctx.voice_client
+        if vc is None:
+            return await ctx.send("先に !join してください。")
+
+        # カンマやスペースで区切られたIDをリスト化
+        ids = [i.strip() for i in ids_str.replace(',', ' ').split() if i.strip().isdigit()]
+        
+        if not ids:
+            return await ctx.send("有効なメッセージIDが見つかりませんでした。")
+
+        self.current_ctx = ctx
+        count = 0
+
+        for m_id in ids:
+            url, filename = await self.get_attachment_by_id(ctx.channel, int(m_id))
+            if url:
+                await self.queue.put((url, filename))
+                count += 1
+            else:
+                await ctx.send(f"警告: ID `{m_id}` に添付ファイルが見つからないか、取得できませんでした。")
+
+        await ctx.send(f"{count} 件の音声をキューに追加しました。")
+
+        if not vc.is_playing() and not self.is_processing_queue:
+            await self.check_queue()
 
     # =====================
     # Stats / Diagnostics
