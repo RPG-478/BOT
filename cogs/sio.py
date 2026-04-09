@@ -120,14 +120,22 @@ class Voice(commands.Cog):
 
 
             
-    async def get_attachment_info(self, channel, m_id_b62: str):
-        """62進数IDから添付ファイル情報を取得"""
+    async def get_attachment_info(self, b62_id: str):
+        """統合された62進数IDから添付ファイル情報を取得 (他サーバー対応)"""
         try:
-            real_id = decode_base62(m_id_b62)
-            msg = await channel.fetch_message(real_id)
+            guild_id, channel_id, message_id = decode_full_id(b62_id)
+            
+            # ギルドの取得
+            guild = self.bot.get_guild(guild_id) or await self.bot.fetch_guild(guild_id)
+            # チャンネルの取得
+            channel = guild.get_channel(channel_id) or await guild.fetch_channel(channel_id)
+            # メッセージの取得
+            msg = await channel.fetch_message(message_id)
+            
             if msg.attachments:
                 return msg.attachments[0].url, msg.attachments[0].filename
-        except Exception:
+        except Exception as e:
+            logging.error(f"Universal ID取得エラー ({b62_id}): {e}")
             return None, None
         return None, None
 
