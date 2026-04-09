@@ -7,6 +7,7 @@ import configparser
 import string
 import subprocess
 import json
+import io
 
 # BASE62の定義
 BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
@@ -43,15 +44,15 @@ class Voice(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.reaction_enabled = {}
-        self.emoji_sounds = {}  # Per guild
+        self.emoji_sounds = {}
         self.log_buffer = bot.log_buffer
-        self.eq_filter = None  # Default is None
-        self.queue = asyncio.Queue()  # Playback queue
+        self.eq_filter = None
+        self.queue = asyncio.Queue()
         self.current_ctx = None
-        self.is_processing_queue = False # Guard to prevent concurrent queue checks
-        self.current_track = None  # (url, filename, total_duration)
-        self.start_time = 0        # 再生開始時刻の記録
-        self.elapsed_offset = 0    # 再生済みの秒数
+        self.is_processing_queue = False
+        self.current_track = None  # (url, filename, total_duration, b62_id)
+        self.start_time = 0
+        self.elapsed_offset = 0
         self.retry_count = 0
         self.MAX_RETRIES = 3
         self.supabase = getattr(bot, "supabase", None)
@@ -59,8 +60,7 @@ class Voice(commands.Cog):
     @commands.Cog.listener()
     async def on_command_error(self, ctx, error):
         logging.exception("Command error")
-        embed = we(f"エラー: {error}")
-        await ctx.send(embed=embed)
+        await ctx.send(embed=we(f"エラー: {error}"))
     
     async def get_duration(self, url):
         """ffprobeを使用して音声の長さを取得"""
@@ -75,12 +75,11 @@ class Voice(commands.Cog):
             stdout, _ = await proc.communicate()
             data = json.loads(stdout)
             return float(data['format']['duration'])
-        except Exception as e:
-            logging.error(f"Duration取得エラー: {e}")
+        except Exception:
             return 0
 
     # =====================
-    # CPU / Memory Info
+    # CPU / Memory Info (省略せず保持)
     # =====================
     def get_cpu_usage(self):
         def read_cpu():
@@ -88,111 +87,86 @@ class Voice(commands.Cog):
                 with open("/proc/stat", "r") as f:
                     line = f.readline()
                     values = list(map(int, line.split()[1:]))
-                    idle = values[3]
-                    total = sum(values)
-                    return idle, total
-            except Exception:
-                return 0, 1
-        
-        idle1, total1 = read_cpu()
+                    return values[3], sum(values)
+            except: return 0, 1
+        i1, t1 = read_cpu()
         time.sleep(0.5)
-        idle2, total2 = read_cpu()
-        
-        idle_delta = idle2 - idle1
-        total_delta = total2 - total1
-        if total_delta == 0: return 0
-        return 100 * (1 - idle_delta / total_delta)
+        i2, t2 = read_cpu()
+        if t2 - t1 == 0: return 0
+        return 100 * (1 - (i2 - i1) / (t2 - t1))
 
     def get_mem_usage(self):
         try:
-            meminfo = {}
+            mem = {}
             with open("/proc/meminfo") as f:
                 for line in f:
                     parts = line.split(":")
-                    if len(parts) == 2:
-                        key, value = parts
-                        meminfo[key] = int(value.split()[0])
-            total = meminfo.get("MemTotal", 1)
-            free = meminfo.get("MemAvailable", meminfo.get("MemFree", 0))
-            used = total - free
-            percent = (used / total) * 100
-            return percent, used, total
-        except Exception:
-            return 0, 0, 0
-
-
-
+                    if len(parts) == 2: mem[parts[0]] = int(parts[1].split()[0])
+            total = mem.get("MemTotal", 1)
+            used = total - mem.get("MemAvailable", mem.get("MemFree", 0))
+            return (used / total) * 100, used, total
+        except: return 0, 0, 0
             
     async def get_attachment_info(self, b62_id: str):
-        """統合された62進数IDから添付ファイル情報を取得 (他サーバー対応)"""
+        """ユニバーサルIDから情報を取得"""
         try:
             guild_id, channel_id, message_id = decode_full_id(b62_id)
-            
-            # ギルドの取得
             guild = self.bot.get_guild(guild_id) or await self.bot.fetch_guild(guild_id)
-            # チャンネルの取得
             channel = guild.get_channel(channel_id) or await guild.fetch_channel(channel_id)
-            # メッセージの取得
             msg = await channel.fetch_message(message_id)
-            
             if msg.attachments:
                 return msg.attachments[0].url, msg.attachments[0].filename
         except Exception as e:
-            logging.error(f"Universal ID取得エラー ({b62_id}): {e}")
-            return None, None
+            logging.error(f"Universal ID error ({b62_id}): {e}")
         return None, None
 
-
     # =====================
-    # VC Control
+    # VC Control & 3D EQ
     # =====================
     @commands.command()
     async def join(self, ctx):
         if ctx.author.voice is None:
-            await ctx.send(embed=we("あなたはボイスチャンネルに接続していません。"))
-            return
-
+            return await ctx.send(embed=we("ボイスチャンネルに接続してください。"))
         vc = ctx.voice_client
         if vc is None:
             await ctx.author.voice.channel.connect(timeout=20.0, reconnect=True)
             await ctx.send(embed=we("接続しました。"))
         else:
-            if vc.channel == ctx.author.voice.channel:
-                await ctx.send(embed=we("すでに接続しています。"))
-            else:
-                await vc.move_to(ctx.author.voice.channel)
-                await ctx.send(embed=we("チャンネルを移動しました。"))
+            await vc.move_to(ctx.author.voice.channel)
+            await ctx.send(embed=we("移動しました。"))
 
     @commands.command()
     async def leave(self, ctx):
         vc = ctx.voice_client
-        if vc is None:
-            await ctx.send(embed=we("接続していません。"))
-            return
-
-        # Clear queue and stop
-        while not self.queue.empty():
-            self.queue.get_nowait()
-        
-        await vc.disconnect()
-        await ctx.send(embed=we("切断しました。"))
+        if vc:
+            while not self.queue.empty(): self.queue.get_nowait()
+            await vc.disconnect()
+            await ctx.send(embed=we("切断しました。"))
 
     @commands.command()
     async def eq(self, ctx, mode: str = "flat"):
-        """音響エフェクト設定 (bass/echo/hall/vocal/superbass/flat)"""
+        """
+        音響エフェクト設定 (3D拡張版)
+        立体音響: live(ライブ会場), rotate(8D), back(背後定位)
+        通常: bass, echo, hall, vocal, superbass, flat
+        """
         eq_settings = {
+            # 標準
             "bass": "bass=g=10,dynaudnorm",
             "echo": "aecho=0.8:0.8:200:0.4",
             "hall": "extrastereo=m=2.5",
             "vocal": "firequalizer=gain_entry='entry(100, -5); entry(1000, 5); entry(4000, 5); entry(8000, 0)'",
             "superbass": "firequalizer=gain_entry='entry(31, 15); entry(62, 10); entry(125, 5)'",
+            # 3D立体音響拡張
+            "live": "aecho=0.8:0.88:60:0.4,lowpass=f=15000,surround,extrastereo=m=1.5",
+            "rotate": "apulsator=hz=0.125:amount=1",
+            "back": "lowpass=f=4000,asubboost=cutoff=100:feedback=0.4",
             "flat": None
         }
         if mode not in eq_settings:
-            return await ctx.send(embed=we("利用可能なモード: bass, echo, hall, vocal, superbass, flat"))
+            return await ctx.send(embed=we(f"利用可能: {', '.join(eq_settings.keys())}"))
         self.eq_filter = eq_settings[mode]
         await ctx.send(embed=we(f"エフェクトを `{mode}` に変更しました。"))
-
 
     # =====================
     # Playback Logic
@@ -204,24 +178,20 @@ class Voice(commands.Cog):
 
         if self.current_track is None:
             if self.queue.empty(): return
-            # キューから3つの値を受け取る
             url, filename, b62_id = await self.queue.get() 
             duration = await self.get_duration(url)
-            # 内部保持用。exportで使うために b62_id も保持
             self.current_track = (url, filename, duration, b62_id) 
             self.elapsed_offset = 0
             self.retry_count = 0
         
         url, filename, duration, b62_id = self.current_track
-        
-        url, filename, duration = self.current_track
         self.is_processing_queue = True
 
         before_options = (
             f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-            f"-ss {self.elapsed_offset} "
-            f"-headers 'User-Agent: Mozilla/5.0'"
+            f"-ss {self.elapsed_offset} -headers 'User-Agent: Mozilla/5.0'"
         )
+        # 3D音響のためにサンプリングレート48k/ステレオ2chを固定
         af = f" -af {self.eq_filter}" if self.eq_filter else ""
         options = f"{af} -vn -sn -dn -ar 48000 -ac 2 -probesize 32M -analyzeduration 32M"
 
@@ -233,8 +203,6 @@ class Voice(commands.Cog):
             
             if self.elapsed_offset == 0:
                 await self.current_ctx.send(embed=we(f"再生開始: **{filename}** ({int(duration)}s)"))
-            else:
-                await self.current_ctx.send(embed=we(f"再開({self.retry_count}): **{filename}** {int(self.elapsed_offset)}s付近"))
         except Exception as e:
             logging.error(f"Playback error: {e}")
             self.is_processing_queue = False
@@ -245,13 +213,13 @@ class Voice(commands.Cog):
         actual_played = time.time() - self.start_time
         self.elapsed_offset += actual_played
         
-        url, filename, duration = self.current_track if self.current_track else (None, None, 0)
+        _, filename, duration, _ = self.current_track if self.current_track else (None, None, 0, None)
         is_interrupted = (duration - self.elapsed_offset) > 5
         self.is_processing_queue = False
 
         if is_interrupted and self.retry_count < self.MAX_RETRIES and self.current_track:
             self.retry_count += 1
-            logging.warning(f"再生中断検知: {filename} を再開します。")
+            logging.warning(f"再開: {filename} ({self.retry_count})")
             asyncio.run_coroutine_threadsafe(self.check_queue(), self.bot.loop)
         else:
             self.current_track = None
@@ -261,45 +229,19 @@ class Voice(commands.Cog):
             
     @commands.command()
     async def play(self, ctx):
-        vc = ctx.voice_client
-        if vc is None:
-            return await ctx.send(embed=we("先に !join してください。"))
-
-        if not ctx.message.attachments:
-            return await ctx.send(embed=we("音声ファイルを添付してコマンドを実行してください。"))
+        if not ctx.voice_client: return await ctx.send(embed=we("先に !join してください。"))
+        if not ctx.message.attachments: return await ctx.send(embed=we("ファイルを添付してください。"))
 
         self.current_ctx = ctx
         attachment = ctx.message.attachments[0]
-        url = attachment.url
-        filename = attachment.filename
-        
-        # IDを生成して、(url, filename, id) のタプルでキューに入れる
+        url, filename = attachment.url, attachment.filename
         b62_id = encode_full_id(ctx.guild.id, ctx.channel.id, ctx.message.id)
-        await self.queue.put((url, filename, b62_id)) # IDを追加
 
-        # Support PLS playlist files as single source
-        if filename.lower().endswith('.pls'):
-            try:
-                content = await attachment.read()
-                pls_content = content.decode('utf-8')
-                config = configparser.ConfigParser()
-                config.read_string(pls_content)
-                
-                if 'playlist' in config and 'File1' in config['playlist']:
-                    url = config['playlist']['File1']
-                else:
-                    return await ctx.send(embed=we("PLSファイル内に有効なURLが見つかりませんでした。"))
-            except Exception as e:
-                return await ctx.send(embed=we(f"PLS解析エラー: {e}"))
-
-        # Add to queue
-        await self.queue.put((url, filename))
-
-        # Start playback if nothing is playing
-        if not vc.is_playing() and not self.is_processing_queue:
+        await self.queue.put((url, filename, b62_id))
+        if not ctx.voice_client.is_playing() and not self.is_processing_queue:
             await self.check_queue()
         else:
-            await ctx.send(embed=we(f"キューに追加しました: {filename} (待ち: {self.queue.qsize()}件)"))
+            await ctx.send(embed=we(f"追加: {filename}"))
 
     @commands.command()
     async def stop(self, ctx):
@@ -308,7 +250,7 @@ class Voice(commands.Cog):
             self.current_track = None
             while not self.queue.empty(): self.queue.get_nowait()
             vc.stop()
-            await ctx.send(embed=we("再生を停止し、キューをクリアしました。"))
+            await ctx.send(embed=we("停止しました。"))
 
     @commands.command()
     async def skip(self, ctx):
@@ -318,162 +260,69 @@ class Voice(commands.Cog):
             vc.stop()
             await ctx.send(embed=we("スキップしました。"))
 
-# --- 3. クラス内の list, id, plist コマンドを置き換え ---
     @commands.command()
     async def list(self, ctx, limit: int = 20):
-        """このチャンネルの音声をスキャンし、他サーバーでも使える統合IDを表示"""
-        embed = discord.Embed(title="チャンネル内音声リスト", color=0xFFFFFF)
-        description = "これらのIDは全サーバー共通で利用可能です\n" + "─" * 20 + "\n"
-        found = False
-        async for message in ctx.channel.history(limit=limit):
-            if message.attachments:
-                found = True
-                # ギルド・チャンネル・メッセージを統合したIDを生成
-                b62_id = encode_full_id(ctx.guild.id, ctx.channel.id, message.id)
-                filename = message.attachments[0].filename
-                description += f"`{b62_id}` : **{filename}**\n"
-        
-        if not found: description = "音声が見つかりませんでした。"
-        embed.description = description
+        embed = we(title="チャンネル内音声リスト")
+        desc = "ユニバーサルID（全サーバー共通）\n" + "─" * 20 + "\n"
+        async for msg in ctx.channel.history(limit=limit):
+            if msg.attachments:
+                b62 = encode_full_id(ctx.guild.id, ctx.channel.id, msg.id)
+                desc += f"`{b62}` : **{msg.attachments[0].filename}**\n"
+        embed.description = desc
         await ctx.send(embed=embed)
 
     @commands.command()
     async def id(self, ctx):
-        """直近の音声のユニバーサルIDを表示"""
-        async for message in ctx.channel.history(limit=10):
-            if message.attachments:
-                b62 = encode_full_id(ctx.guild.id, ctx.channel.id, message.id)
-                embed = discord.Embed(title="ユニバーサルID発行", color=0xFFFFFF)
-                embed.add_field(name="ファイル", value=message.attachments[0].filename, inline=False)
-                embed.add_field(name="ID (全サーバー共通)", value=f"`{b62}`", inline=False)
-                embed.set_footer(text="このIDをコピーして他サーバーの !plist で使用できます")
+        async for msg in ctx.channel.history(limit=10):
+            if msg.attachments:
+                b62 = encode_full_id(ctx.guild.id, ctx.channel.id, msg.id)
+                embed = we(title="ユニバーサルID発行")
+                embed.add_field(name="ファイル", value=msg.attachments[0].filename)
+                embed.add_field(name="ID", value=f"`{b62}`")
                 return await ctx.send(embed=embed)
-        await ctx.send(embed=we("添付ファイルが見つかりませんでした。"))
 
     @commands.command()
     async def plist(self, ctx):
-        """
-        JSONファイルを読み込んで再生。
-        JSONファイル（例: ["id1", "id2"]）を添付して !plist と入力してください。
-        """
-        if not ctx.voice_client: 
-            return await ctx.send(embed=we("先に !join してください。"))
-        
-        # 添付ファイルのチェック
-        if not ctx.message.attachments:
-            return await ctx.send(embed=we("JSONファイルを添付してコマンドを実行してください。"))
-        
-        attachment = ctx.message.attachments[0]
-        if not attachment.filename.endswith('.json'):
-            return await ctx.send(embed=we("添付されたファイルがJSON形式ではありません。"))
-
-        self.current_ctx = ctx
+        if not ctx.voice_client or not ctx.message.attachments:
+            return await ctx.send(embed=we("接続状況または添付ファイルを確認してください。"))
         
         try:
-            # 添付ファイルを読み込んでデコード
-            file_content = await attachment.read()
-            data = json.loads(file_content.decode('utf-8'))
-            
-            if isinstance(data, list):
-                tokens = [str(item) for item in data]
-            else:
-                return await ctx.send(embed=we("JSONの形式が正しくありません。`[\"ID1\", \"ID2\"]` のような配列形式にしてください。"))
-                
-        except Exception as e:
-            logging.error(f"JSON読み込みエラー: {e}")
-            return await ctx.send(embed=we(f"JSONファイルの解析に失敗しました: {e}"))
-
-        if not tokens:
-            return await ctx.send(embed=we("ファイル内に再生可能なIDが見つかりませんでした。"))
-
-        added = 0
-        await ctx.send(embed=we("ファイルを解析中..."))
-        
-        for token in tokens:
-            url, fname = await self.get_attachment_info(token)
-            if url:
-                # ここでも ID (token) を一緒に保存
-                await self.queue.put((url, fname, token))
-                added += 1
-        
-        if added > 0:
-            await ctx.send(embed=we(f"{added} 件の音声をキューに追加しました。"))
+            content = await ctx.message.attachments[0].read()
+            tokens = json.loads(content.decode('utf-8'))
+            self.current_ctx = ctx
+            added = 0
+            for t in tokens:
+                url, fname = await self.get_attachment_info(t)
+                if url:
+                    await self.queue.put((url, fname, t))
+                    added += 1
+            await ctx.send(embed=we(f"{added} 件追加しました。"))
             if not ctx.voice_client.is_playing() and not self.is_processing_queue:
                 await self.check_queue()
-        else:
-            await ctx.send(embed=we("有効な音声が見つかりませんでした。IDが正しいか確認してください。"))
+        except Exception as e:
+            await ctx.send(embed=we(f"JSONエラー: {e}"))
             
     @commands.command()
     async def export_json(self, ctx):
-        """現在のキューにあるIDをJSONファイルとして書き出します"""
         ids = []
-        
-        # 現在再生中の曲のIDをリストに追加
-        if self.current_track:
-            ids.append(self.current_track[3]) # b62_id
-
-        # キューの中身を一時的に取り出してIDを回収
-        temp_items = []
+        if self.current_track: ids.append(self.current_track[3])
+        temp = []
         while not self.queue.empty():
             item = await self.queue.get()
-            temp_items.append(item)
-            ids.append(item[2]) # キュー内の b62_id
-
-        # 取り出したアイテムをキューに戻す
-        for item in temp_items:
-            await self.queue.put(item)
-
-        if not ids:
-            return await ctx.send(embed=we("キューが空です。"))
-
-        # JSONを作成
-        json_str = json.dumps(ids, indent=4)
+            temp.append(item)
+            ids.append(item[2])
+        for i in temp: await self.queue.put(i)
         
-        # メモリ上のバイナリとしてDiscordに送信
-        import io
-        file_data = io.BytesIO(json_str.encode('utf-8'))
-        await ctx.send(
-            embed=we(f"現在のキュー（{len(ids)}件）を書き出しました。"),
-            file=discord.File(file_data, filename="playlist.json")
-        )
+        if not ids: return await ctx.send(embed=we("キューが空です。"))
+        file_data = io.BytesIO(json.dumps(ids, indent=4).encode('utf-8'))
+        await ctx.send(file=discord.File(file_data, filename="playlist.json"))
 
-
-    # =====================
-    # Stats / Diagnostics
-    # =====================
     @commands.command()
     async def sysinfo(self, ctx):
         cpu = self.get_cpu_usage()
-        mem_percent, used, total = self.get_mem_usage()
-        description = (
-            f"**システム情報**\n"
-            f"CPU使用率: `{cpu:.1f}%` \n"
-            f"メモリ使用率: `{mem_percent:.1f}%` \n"
-            f"使用量: `{used/10.24/102.4:.1f}MB / {total/10.24/102.4:.1f}MB`"
-        )
-        await ctx.send(embed=we(description))
-
-    @commands.command()
-    async def logs(self, ctx, lines: int = 10):
-        log_buffer = self.bot.log_buffer
-        logs = list(log_buffer.logs)[-lines:]
-        if not logs:
-            await ctx.send(embed=we("表示するログがありません。"))
-            return
-        text = "\n".join(logs)
-        if len(text) > 1900:
-            text = text[-1900:]
-        embed = discord.Embed(description=f"```\n{text}\n```", color=0xFFFFFF)
-        await ctx.send(embed=embed)
-
-    @commands.command()
-    async def stats(self, ctx):
-        guild_count = len(self.bot.guilds)
-        total_members = sum(g.member_count for g in self.bot.guilds if g.member_count)
-        embed = discord.Embed(title="Bot 稼働統計", color=0xFFFFFF)
-        embed.add_field(name="サーバー数", value=f"{guild_count}", inline=True)
-        embed.add_field(name="総ユーザー数", value=f"{total_members}", inline=True)
-        await ctx.send(embed=embed)
+        m_p, used, total = self.get_mem_usage()
+        desc = f"CPU: `{cpu:.1f}%` / Mem: `{m_p:.1f}%` ({used/1024:.0f}/{total/1024:.0f}MB)"
+        await ctx.send(embed=we(desc))
 
 async def setup(bot):
     await bot.add_cog(Voice(bot))
