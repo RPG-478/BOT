@@ -178,7 +178,7 @@ class Voice(commands.Cog):
         eq_settings = {
             "bass": "bass=g=10,dynaudnorm",
             "echo": "aecho=0.8:0.8:200:0.4",
-            "hall": "aecho=0.8:0.88:60:0.4,extrastereo=m=2.5",
+            "hall": "extrastereo=m=2.5",
             "vocal": "firequalizer=gain_entry='entry(100, -5); entry(1000, 5); entry(4000, 5); entry(8000, 0)'",
             "superbass": "firequalizer=gain_entry='entry(31, 15); entry(62, 10); entry(125, 5)'",
             "flat": None
