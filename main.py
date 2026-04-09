@@ -17,8 +17,8 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 client = discord.Client(intents=discord.Intents.default())
 client.supabase = supabase  # ★ 重要：Cogが自動でこれを取得します
-NOTIFY_CHANNEL_ID = 1476170098673717414
-DEBUG_CHANNEL_ID = 1476946191362166894
+NOTIFY_CHANNEL_ID = 1407389497016193177
+DEBUG_CHANNEL_ID = 1407389497016193177
 
 # ===== LogBuffer クラスは bot より先に定義する =====
 class LogBuffer(logging.Handler):
