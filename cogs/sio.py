@@ -6,6 +6,7 @@ import logging
 import configparser
 import string
 
+BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
 
 def encode_base62(num: int) -> str:
     if num == 0: return BASE62[0]
@@ -83,7 +84,7 @@ class Voice(commands.Cog):
         except Exception:
             return 0, 0, 0
 
-    BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
+
 
             
     async def get_attachment_info(self, channel, m_id_b62: str):
