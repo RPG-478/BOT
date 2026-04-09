@@ -199,11 +199,15 @@ class Voice(commands.Cog):
 
         if self.current_track is None:
             if self.queue.empty(): return
-            url, filename = await self.queue.get()
+            # キューから3つの値を受け取る
+            url, filename, b62_id = await self.queue.get() 
             duration = await self.get_duration(url)
-            self.current_track = (url, filename, duration)
+            # 内部保持用。exportで使うために b62_id も保持
+            self.current_track = (url, filename, duration, b62_id) 
             self.elapsed_offset = 0
             self.retry_count = 0
+        
+        url, filename, duration, b62_id = self.current_track
         
         url, filename, duration = self.current_track
         self.is_processing_queue = True
@@ -263,6 +267,10 @@ class Voice(commands.Cog):
         attachment = ctx.message.attachments[0]
         url = attachment.url
         filename = attachment.filename
+        
+        # IDを生成して、(url, filename, id) のタプルでキューに入れる
+        b62_id = encode_full_id(ctx.guild.id, ctx.channel.id, ctx.message.id)
+        await self.queue.put((url, filename, b62_id)) # IDを追加
 
         # Support PLS playlist files as single source
         if filename.lower().endswith('.pls'):
@@ -379,7 +387,8 @@ class Voice(commands.Cog):
         for token in tokens:
             url, fname = await self.get_attachment_info(token)
             if url:
-                await self.queue.put((url, fname))
+                # ここでも ID (token) を一緒に保存
+                await self.queue.put((url, fname, token))
                 added += 1
         
         if added > 0:
@@ -388,6 +397,40 @@ class Voice(commands.Cog):
                 await self.check_queue()
         else:
             await ctx.send("有効な音声が見つかりませんでした。IDが正しいか確認してください。")
+            
+    @commands.command()
+    async def export_json(self, ctx):
+        """現在のキューにあるIDをJSONファイルとして書き出します"""
+        ids = []
+        
+        # 現在再生中の曲のIDをリストに追加
+        if self.current_track:
+            ids.append(self.current_track[3]) # b62_id
+
+        # キューの中身を一時的に取り出してIDを回収
+        temp_items = []
+        while not self.queue.empty():
+            item = await self.queue.get()
+            temp_items.append(item)
+            ids.append(item[2]) # キュー内の b62_id
+
+        # 取り出したアイテムをキューに戻す
+        for item in temp_items:
+            await self.queue.put(item)
+
+        if not ids:
+            return await ctx.send("キューが空です。")
+
+        # JSONを作成
+        json_str = json.dumps(ids, indent=4)
+        
+        # メモリ上のバイナリとしてDiscordに送信
+        import io
+        file_data = io.BytesIO(json_str.encode('utf-8'))
+        await ctx.send(
+            f"✅ 現在のキュー（{len(ids)}件）を書き出しました。",
+            file=discord.File(file_data, filename="playlist.json")
+        )
 
 
     # =====================
