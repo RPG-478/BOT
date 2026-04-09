@@ -307,45 +307,53 @@ class Voice(commands.Cog):
             vc.stop()
             await ctx.send("スキップしました。")
 
-    @commands.command()
-    async def plist(self, ctx, *, ids_str: str):
-        """62進数IDを並べて再生 (例: !plist aB12 dE34)"""
-        if not ctx.voice_client: return await ctx.send("先に !join してください。")
-        self.current_ctx = ctx
-        tokens = ids_str.replace(',', ' ').split()
-        added = 0
-        for token in tokens:
-            url, fname = await self.get_attachment_info(ctx.channel, token)
-            if url:
-                await self.queue.put((url, fname))
-                added += 1
-        await ctx.send(f"{added} 件の音声をキューに追加しました。")
-        if not ctx.voice_client.is_playing() and not self.is_processing_queue:
-            await self.check_queue()
+# --- 3. クラス内の list, id, plist コマンドを置き換え ---
     @commands.command()
     async def list(self, ctx, limit: int = 20):
-        """チャンネル内の添付ファイルをスキャンしてID一覧を表示"""
-        embed = discord.Embed(title="🎵 登録済み音声一覧", color=discord.Color.blue())
-        description = "IDを `!plist ID ID ...` で再生できます\n" + "─" * 20 + "\n"
+        """このチャンネルの音声をスキャンし、他サーバーでも使える統合IDを表示"""
+        embed = discord.Embed(title="🎵 チャンネル内音声リスト", color=discord.Color.blue())
+        description = "これらのIDは全サーバー共通で利用可能です\n" + "─" * 20 + "\n"
         found = False
         async for message in ctx.channel.history(limit=limit):
             if message.attachments:
                 found = True
-                b62_id = encode_base62(message.id)
+                # ギルド・チャンネル・メッセージを統合したIDを生成
+                b62_id = encode_full_id(ctx.guild.id, ctx.channel.id, message.id)
                 filename = message.attachments[0].filename
                 description += f"`{b62_id}` : **{filename}**\n"
+        
         if not found: description = "音声が見つかりませんでした。"
         embed.description = description
         await ctx.send(embed=embed)
 
     @commands.command()
     async def id(self, ctx):
-        """直近の添付ファイル付きメッセージのIDを表示"""
-        async for message in ctx.channel.history(limit=5):
+        """直近の音声のユニバーサルIDを表示"""
+        async for message in ctx.channel.history(limit=10):
             if message.attachments:
-                b62 = encode_base62(message.id)
-                return await ctx.send(f"ファイル: **{message.attachments[0].filename}**\nID: `{b62}`")
-        await ctx.send("近くに添付ファイルが見つかりませんでした。")
+                b62 = encode_full_id(ctx.guild.id, ctx.channel.id, message.id)
+                embed = discord.Embed(title="🆔 ユニバーサルID発行", color=discord.Color.green())
+                embed.add_field(name="ファイル", value=message.attachments[0].filename, inline=False)
+                embed.add_field(name="ID (全サーバー共通)", value=f"`{b62}`", inline=False)
+                embed.set_footer(text="このIDをコピーして他サーバーの !plist で使用できます")
+                return await ctx.send(embed=embed)
+        await ctx.send("添付ファイルが見つかりませんでした。")
+
+    @commands.command()
+    async def plist(self, ctx, *, ids_str: str):
+        """統合IDを並べて再生 (サーバーを跨いで利用可能)"""
+        if not ctx.voice_client: return await ctx.send("先に !join してください。")
+        self.current_ctx = ctx
+        tokens = ids_str.replace(',', ' ').split()
+        added = 0
+        for token in tokens:
+            url, fname = await self.get_attachment_info(token)
+            if url:
+                await self.queue.put((url, fname))
+                added += 1
+        await ctx.send(f"{added} 件の音声をキューに追加しました。")
+        if not ctx.voice_client.is_playing() and not self.is_processing_queue:
+            await self.check_queue()
 
 
     # =====================
