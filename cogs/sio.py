@@ -262,7 +262,7 @@ class Voice(commands.Cog):
             f"**システム情報**\n"
             f"CPU使用率: `{cpu:.1f}%` \n"
             f"メモリ使用率: `{mem_percent:.1f}%` \n"
-            f"使用量: `{used/10.24/10.24:.1f}MB / {total/10.24/10.24:.1f}MB`"
+            f"使用量: `{used/10.24/102.4:.1f}MB / {total/10.24/102.4:.1f}MB`"
         )
         await ctx.send(msg)
 
