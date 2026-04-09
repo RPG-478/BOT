@@ -159,6 +159,7 @@ class Voice(commands.Cog):
             "superbass": "firequalizer=gain_entry='entry(31, 15); entry(62, 10); entry(125, 5)'",
             # 3D立体音響拡張
             "live": "aecho=0.8:0.88:60:0.4,lowpass=f=15000,surround,extrastereo=m=1.5",
+            "supersurround": "aecho=0.8:0.88:60:0.4,lowpass=f=15000,surround,extrastereo=m=1.5,apulsator=hz=0.125:amount=1",
             "rotate": "apulsator=hz=0.125:amount=1",
             "back": "lowpass=f=4000,asubboost=cutoff=100:feedback=0.4",
             "flat": None
