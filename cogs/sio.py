@@ -274,30 +274,21 @@ class Voice(commands.Cog):
             await ctx.send(f"キューに追加しました: {filename} (待ち: {self.queue.qsize()}件)")
 
     @commands.command()
+    async def stop(self, ctx):
+        vc = ctx.voice_client
+        if vc:
+            self.current_track = None
+            while not self.queue.empty(): self.queue.get_nowait()
+            vc.stop()
+            await ctx.send("再生を停止し、キューをクリアしました。")
+
+    @commands.command()
     async def skip(self, ctx):
         vc = ctx.voice_client
         if vc and vc.is_playing():
-            vc.stop() # This triggers 'after=play_next'
-            await ctx.send("スキップしました。")
-        else:
-            await ctx.send("現在再生中ではありません。")
-
-    @commands.command()
-    async def stop(self, ctx):
-        vc = ctx.voice_client
-        if vc is None:
-            await ctx.send("ボイスチャンネルに接続していません。")
-            return
-
-        # Clear queue
-        while not self.queue.empty():
-            self.queue.get_nowait()
-        
-        if vc.is_playing():
+            self.current_track = None
             vc.stop()
-            await ctx.send("再生を停止し、キューをクリアしました。")
-        else:
-            await ctx.send("キューをクリアしました。")
+            await ctx.send("スキップしました。")
 
     @commands.command()
     async def plist(self, ctx, *, ids_str: str):
