@@ -16,7 +16,7 @@ class GoogleSearch(commands.Cog):
         
         # Embedの作成 (色は白色: 0xFFFFFF)
         embed = discord.Embed(
-            description=f"<:success:1490985168100659322> **ggrksを使用しました**\n[次からは自分でggrks]({google_url})",
+            description=f"**ggrksを使用しました**\n[次からは自分でggrks]({google_url})",
             color=0xFFFFFF
         )
 

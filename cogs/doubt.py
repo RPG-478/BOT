@@ -4,6 +4,10 @@ from discord.ext import commands
 import asyncio
 import random
 
+def we(description: str = None, title: str = None) -> discord.Embed:
+    """白色embedを生成するヘルパー"""
+    return discord.Embed(title=title, description=description, color=0xFFFFFF)
+
 class DoubtEngine:
     def __init__(self, player_ids):
         self.players = player_ids
@@ -14,16 +18,13 @@ class DoubtEngine:
         self.last_player_id = None
         self.is_accepting_doubt = False
         self.last_panel_msg = None 
-        # 次に宣言すべき数字を管理
         self.next_required_num = 1
-        # パスした人数をカウント
         self.pass_count = 0
         
         self._setup_game()
 
     def _setup_game(self):
         suits = ["S", "H", "D", "C"]
-        # 1-13のカード + ジョーカー2枚を作成
         deck = [f"[{s}-{r}]" for s in suits for r in range(1, 14)]
         deck.extend(["[JK-1]", "[JK-2]"])
         random.shuffle(deck)
@@ -31,7 +32,6 @@ class DoubtEngine:
         per_player = len(deck) // len(self.players)
         for i, p_id in enumerate(self.players):
             start = i * per_player
-            # 余ったカードは最後の人に配分
             end = (i + 1) * per_player if i != len(self.players) - 1 else len(deck)
             self.hands[p_id] = sorted(deck[start:end])
 
@@ -55,7 +55,7 @@ class CardSelect(discord.ui.Select):
         user_id = interaction.user.id
         
         if user_id != game.current_player_id:
-            return await interaction.response.send_message("あなたのターンではありません", ephemeral=True)
+            return await interaction.response.send_message(embed=we("あなたのターンではありません"), ephemeral=True)
         
         claimed_num = game.next_required_num
         
@@ -66,10 +66,9 @@ class CardSelect(discord.ui.Select):
             game.last_player_id = user_id
             game.pass_count = 0 
             
-            await interaction.response.send_message(f"**{selected_card}** を「**{claimed_num}**」として出しました。", ephemeral=True)
-            await interaction.channel.send(f"<@{user_id}> が「**{claimed_num}**」を宣言してカードを置きました。5秒間ダウト受付中。")
+            await interaction.response.send_message(embed=we(f"**{selected_card}** を「**{claimed_num}**」として出しました。"), ephemeral=True)
+            await interaction.channel.send(embed=we(f"<@{user_id}> が「**{claimed_num}**」を宣言してカードを置きました。5秒間ダウト受付中。"))
             
-            # 次の数字をセット（13の次は1）
             game.next_required_num = 1 if claimed_num == 13 else claimed_num + 1
             
             game.is_accepting_doubt = True
@@ -90,7 +89,7 @@ class GameControlView(discord.ui.View):
     @discord.ui.button(label="手札確認", style=discord.ButtonStyle.grey)
     async def check_hand(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id not in self.game_engine.hands:
-            return await interaction.response.send_message("あなたはゲームに参加していません。", ephemeral=True)
+            return await interaction.response.send_message(embed=we("あなたはゲームに参加していません。"), ephemeral=True)
             
         hand = self.game_engine.hands.get(interaction.user.id, [])
         hand_str = " ".join(hand) if hand else "手札がありません"
@@ -100,14 +99,14 @@ class GameControlView(discord.ui.View):
     @discord.ui.button(label="カードを置く", style=discord.ButtonStyle.red)
     async def play(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id not in self.game_engine.hands:
-            return await interaction.response.send_message("あなたはゲームに参加していません。", ephemeral=True)
+            return await interaction.response.send_message(embed=we("あなたはゲームに参加していません。"), ephemeral=True)
             
         if interaction.user.id != self.game_engine.current_player_id:
-            return await interaction.response.send_message("あなたのターンではありません", ephemeral=True)
+            return await interaction.response.send_message(embed=we("あなたのターンではありません"), ephemeral=True)
         
         view = discord.ui.View()
         view.add_item(CardSelect(self.game_engine.hands[interaction.user.id], self.game_engine, self.cog))
-        await interaction.response.send_message(f"どのカードを「{self.game_engine.next_required_num}」として出しますか？", view=view, ephemeral=True)
+        await interaction.response.send_message(embed=we(f"どのカードを「{self.game_engine.next_required_num}」として出しますか？"), view=view, ephemeral=True)
 
 class DoubtJoinView(discord.ui.View):
     def __init__(self, host_id):
@@ -118,9 +117,9 @@ class DoubtJoinView(discord.ui.View):
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id not in self.players:
             self.players.append(interaction.user.id)
-            await interaction.response.send_message(f"参加しました (現在: {len(self.players)}名)", ephemeral=True)
+            await interaction.response.send_message(embed=we(f"参加しました (現在: {len(self.players)}名)"), ephemeral=True)
         else:
-            await interaction.response.send_message("既に参加しています", ephemeral=True)
+            await interaction.response.send_message(embed=we("既に参加しています"), ephemeral=True)
 
 class Doubt(commands.Cog):
     def __init__(self, bot):
@@ -150,11 +149,11 @@ class Doubt(commands.Cog):
         await asyncio.sleep(60)
         
         if len(player_ids) < 3:
-            return await channel.send("人数不足（3名以上必要）のため、ダウトを開始できませんでした。")
+            return await channel.send(embed=we("人数不足（3名以上必要）のため、ダウトを開始できませんでした。"))
         
         engine = DoubtEngine(player_ids)
         self.games[channel.id] = engine
-        await channel.send("3名以上の参加を確認。カードを配り、ゲームを開始します！")
+        await channel.send(embed=we("3名以上の参加を確認。カードを配り、ゲームを開始します！"))
         await self.send_main_screen(channel, engine)
 
     @commands.command(name="doubt")
@@ -162,7 +161,7 @@ class Doubt(commands.Cog):
         view = DoubtJoinView(ctx.author.id)
         embed = discord.Embed(
             title="ダウト参加者募集", 
-            description="ボタンを押して参加してください\n**※3名以上で開始します**（募集時間: 60秒）", 
+            description="ボタンを押して参加してください\n**3名以上で開始します**（募集時間: 60秒）", 
             color=0xFFFFFF
         )
         await ctx.send(embed=embed, view=view)
@@ -174,19 +173,17 @@ class Doubt(commands.Cog):
         game = self.games.get(message.channel.id)
         if not game: return
 
-        # パス処理
         if message.author.id == game.current_player_id and message.content == "パス":
             game.pass_count += 1
             if game.pass_count >= len(game.players):
                 game.next_required_num = 1
                 game.pass_count = 0
-                await message.channel.send("全員がパスしたため、数字が1に戻ります。")
+                await message.channel.send(embed=we("全員がパスしたため、数字が1に戻ります。"))
             
             game.next_turn()
             await self.send_main_screen(message.channel, game)
             return
 
-        # ダウト宣言の処理
         elif "ダウト" in message.content and game.is_accepting_doubt:
             if message.author.id not in game.hands:
                 return
@@ -194,7 +191,6 @@ class Doubt(commands.Cog):
             game.is_accepting_doubt = False
             last_player, actual_card = game.field[-1]
             
-            # ジョーカー判定：カード名に "JK" が含まれていれば、常に宣言通りの数字として扱う
             if "JK" in actual_card:
                 is_lie = False
             else:
@@ -204,9 +200,7 @@ class Doubt(commands.Cog):
                     actual_num = 0
                 is_lie = (actual_num != game.last_claimed_num)
             
-            # 結果に応じた色の設定（成功: 緑, 失敗: 赤）
-            embed_color = 0x00FF00 if is_lie else 0xFF0000
-            embed = discord.Embed(title="審議結果", color=embed_color)
+            embed = discord.Embed(title="審議結果", color=0xFFFFFF)
             embed.add_field(name="宣言された数字", value=f"{game.last_claimed_num}")
             embed.add_field(name="実際のカード", value=f"{actual_card}")
             
@@ -222,14 +216,12 @@ class Doubt(commands.Cog):
             game.hands[penalty_user].sort()
             game.field.clear()
             
-            # 数字のリセットは行わず、そのままループを継続する
-            
             await message.channel.send(embed=embed)
             
             for p_id in game.players:
                 if len(game.hands.get(p_id, [])) == 0:
                     win_embed = discord.Embed(title="Game Set!", description=f"勝者: <@{p_id}>", color=0xFFFFFF)
-                    await message.channel.send(win_embed)
+                    await message.channel.send(embed=win_embed)
                     if message.channel.id in self.games:
                         del self.games[message.channel.id]
                     return

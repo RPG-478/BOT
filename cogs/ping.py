@@ -15,25 +15,22 @@ class System(commands.Cog):
         # 誤差の絶対値を計算
         diff = abs(guess - latency)
 
-        # 判定ロジックと色の設定
+        # 判定ロジック
         if diff == 0:
-            result_title = "🎯 ジャストミート！完全一致です！"
-            result_color = discord.Color.gold()
+            result_title = "ジャストミート！完全一致です！"
             description = f"神がかってますね！ピッタリ **{latency}ms** でした！"
         elif diff <= 3:
-            result_title = "✨ 惜しい！あと一歩！"
-            result_color = discord.Color.green()
+            result_title = "惜しい！あと一歩！"
             description = f"非常に近いです！誤差はわずか **{diff}ms** でした。"
         else:
-            result_title = "❌ 残念..."
-            result_color = discord.Color.red()
+            result_title = "残念..."
             description = f"もっと修行が必要です。誤差は **{diff}ms** でした。"
 
-        # Embedの作成
+        # Embedの作成（白色統一）
         embed = discord.Embed(
             title=result_title,
             description=description,
-            color=result_color
+            color=0xFFFFFF
         )
         embed.add_field(name="あなたの予想", value=f"{guess} ms", inline=True)
         embed.add_field(name="実際のPing", value=f"{latency} ms", inline=True)
@@ -46,4 +43,3 @@ class System(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(System(bot))
-

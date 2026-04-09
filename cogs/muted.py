@@ -109,7 +109,8 @@ class Muted(commands.Cog):
         # 1. 管理ロール設定
         if admin_role:
             if not interaction.user.guild_permissions.manage_roles:
-                return await interaction.response.send_message("権限が不足しています。", ephemeral=True)
+                embed = discord.Embed(description="権限が不足しています。", color=self.embed_color)
+                return await interaction.response.send_message(embed=embed, ephemeral=True)
             self.admin_roles[interaction.guild_id] = admin_role.id
             embed = discord.Embed(description=f"管理ロールを {admin_role.mention} に設定しました。", color=self.embed_color)
             return await interaction.response.send_message(embed=embed, ephemeral=True)

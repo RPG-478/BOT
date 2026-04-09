@@ -23,7 +23,7 @@ def get_options_from_list(items, filter_type=None):
 
 def make_embed(game):
     p, c = game.players["p1"], game.players["cpu"]
-    embed = discord.Embed(title="Pault 盤面", color=0x2f3136)
+    embed = discord.Embed(title="Pault 盤面", color=0xFFFFFF)
     embed.add_field(name="ターン", value=f"第 {game.turn} ターン", inline=True)
     embed.add_field(name="ログ", value=game.logs, inline=False)
     
@@ -49,17 +49,13 @@ def make_embed(game):
     return embed
 
 class PaultGame:
-    # play.py から user オブジェクト1つで呼ばれる場合と、
-    # 従来通り (channel_id, user_id, user_name) で呼ばれる場合の両方に対応
     def __init__(self, user_or_channel_id, user_id=None, user_name=None):
         if user_id is None:
-            # user オブジェクトとして受け取る (play.py からの呼び出し)
             user = user_or_channel_id
             self.channel_id = 0
             uid = user.id
             uname = user.display_name
         else:
-            # 従来の (channel_id, user_id, user_name) 呼び出し
             self.channel_id = user_or_channel_id
             uid = user_id
             uname = user_name
@@ -137,16 +133,14 @@ def execute_attack(attacker_card, defender_list, attacker_hand, is_main=False, m
                 if t_type == "sub": defender_list.remove(card)
                 any_destroyed = True
                 logs.append(f"{card['name']}撃破")
-                # イーター能力: 撃破したカードを手札に加える
                 if attacker_card["name"] == "イーター":
                     new_card = card.copy()
-                    new_card["face_down"] = False # 手札に戻る際は解除
+                    new_card["face_down"] = False
                     attacker_hand.append(new_card)
                     logs.append("捕食成功！")
             else:
                 logs.append(f"{card['name']}に防御された")
 
-    # アーチャーの貫通判定
     if attacker_card["name"] == "アーチャー" and any_destroyed and defender_list:
         second_card = defender_list[-1]
         if second_card.get("face_down"):
@@ -167,14 +161,12 @@ async def cpu_turn_logic(i, game):
     if game.deck: cpu["hand"].append(game.deck.pop(0))
     cpu_logs = []
     
-    # CPU配置
     for idx, c in enumerate(cpu["hand"][:]):
         if c["type"] == "戦闘":
             card = game.apply_passive(cpu["hand"].pop(idx))
             if len(cpu["left"]) < 2: cpu["left"].append(card)
             elif len(cpu["right"]) < 2: cpu["right"].append(card)
             
-    # CPU攻撃
     if game.turn >= 2:
         for side in ["left", "right"]:
             if cpu[side] and not cpu[side][0].get("face_down"):
@@ -188,7 +180,6 @@ async def cpu_turn_logic(i, game):
                     if win: p1["main"] = None
                     cpu_logs.append(f"CPU({side}): 城攻撃成功")
                 
-                # ランナー能力: 攻撃後に列の最後尾に戻る
                 if atk_card["name"] == "ランナー":
                     cpu[side].append(atk_card)
                 break
@@ -257,7 +248,6 @@ class AtkPosButton(discord.ui.Button):
             if win: cpu["main"] = None
             self.game.logs = f"攻撃({self.side}): 城攻撃成功"
         
-        # ランナー能力: 攻撃後に列の最後尾に戻る
         if atk_card["name"] == "ランナー":
             p1[self.side].append(atk_card)
             
@@ -269,88 +259,94 @@ class MainMenuView(discord.ui.View):
     async def attack(self, i, b):
         if self.game.turn <= 2: return await i.response.send_message("準備期間中不可", ephemeral=True)
         v = discord.ui.View(); [v.add_item(AtkPosButton(self.game, s)) for s in ["left", "right"]]
-        v.add_item(CancelButton(self.game)); await i.response.edit_message(content="攻撃列選択", view=v)
-    @discord.ui.button(label="ドロー", style=discord.ButtonStyle.primary)
-    async def draw(self, i, b):
-        if not self.game.deck: return await i.response.send_message("山札なし", ephemeral=True)
-        c = self.game.deck.pop(0); await i.response.edit_message(content=f"【{c['name']}】入手", embed=make_embed(self.game), view=DrawResultView(self.game, c))
-    @discord.ui.button(label="配置", style=discord.ButtonStyle.secondary)
+        v.add_item(CancelButton(self.game))
+        await i.response.edit_message(content="攻撃列選択", view=v)
+
+    @discord.ui.button(label="配置", style=discord.ButtonStyle.success)
     async def deploy(self, i, b):
-        v = discord.ui.View(); [v.add_item(DeployPosButton(self.game, s)) for s in ["main", "left", "right"]]
-        v.add_item(CancelButton(self.game)); await i.response.edit_message(content="配置先選択", view=v)
-    @discord.ui.button(label="サポート", style=discord.ButtonStyle.success)
+        opts = get_options_from_list(self.game.players["p1"]["hand"], "戦闘")
+        if not opts: return await i.response.send_message("戦闘カードなし", ephemeral=True)
+        v = discord.ui.View(); s = discord.ui.Select(options=opts); s.callback = self.make_deploy_cb(s); v.add_item(s); v.add_item(CancelButton(self.game))
+        await i.response.edit_message(content="配置カード選択", view=v)
+
+    def make_deploy_cb(self, sel):
+        async def _cb(it):
+            idx = int(sel.values[0]); card = self.game.players["p1"]["hand"].pop(idx)
+            v = discord.ui.View()
+            for side in ["main", "left", "right"]:
+                btn = discord.ui.Button(label=side.upper()); btn.callback = self.make_pos_cb(card, side); v.add_item(btn)
+            v.add_item(CancelButton(self.game))
+            await it.response.edit_message(content=f"{card['name']} の配置先", view=v)
+        return _cb
+
+    def make_pos_cb(self, card, pos):
+        async def _cb(it):
+            p1 = self.game.players["p1"]
+            if pos == "main":
+                if p1["main"]: p1["hand"].append(p1["main"])
+                p1["main"] = self.game.apply_passive(card)
+            else:
+                if len(p1[pos]) >= 2: return await it.response.send_message("満員", ephemeral=True)
+                p1[pos].append(self.game.apply_passive(card))
+            self.game.logs = f"{card['name']}を{pos}に配置"
+            await it.response.defer(); await cpu_turn_logic(it, self.game)
+        return _cb
+
+    @discord.ui.button(label="サポート", style=discord.ButtonStyle.primary)
     async def support(self, i, b):
-        hand = self.game.players["p1"]["hand"]; opts = get_options_from_list(hand, "サポート")
-        if not opts: return await i.response.send_message("なし", ephemeral=True)
-        v = discord.ui.View(); sel = discord.ui.Select(options=opts, placeholder="サポート選択")
-        async def cb(it): await process_support_logic(it, self.game, hand.pop(int(it.data['values'][0])))
-        sel.callback = cb; v.add_item(sel); v.add_item(CancelButton(self.game)); await i.response.edit_message(content="サポート選択", view=v)
-    @discord.ui.button(label="終了", style=discord.ButtonStyle.secondary)
-    async def quit(self, i, b): await i.response.edit_message(content="終了", embed=None, view=None)
+        opts = get_options_from_list(self.game.players["p1"]["hand"], "サポート")
+        if not opts: return await i.response.send_message("サポートカードなし", ephemeral=True)
+        v = discord.ui.View(); s = discord.ui.Select(options=opts); s.callback = self.make_sup_cb(s); v.add_item(s); v.add_item(CancelButton(self.game))
+        await i.response.edit_message(content="サポートカード選択", view=v)
 
-class DeployPosButton(discord.ui.Button):
-    def __init__(self, game, side): super().__init__(label=f"{side.upper()}配置", style=discord.ButtonStyle.secondary); self.game, self.side = game, side
-    async def callback(self, i):
-        hand = self.game.players["p1"]["hand"]; opts = get_options_from_list(hand, "戦闘")
-        if not opts: return await i.response.send_message("なし", ephemeral=True)
-        view = discord.ui.View(); select = discord.ui.Select(options=opts)
-        async def cb(it):
-            c = self.game.apply_passive(hand.pop(int(it.data['values'][0])))
-            if self.side == "main": self.game.players["p1"]["main"] = c
-            else: self.game.players["p1"][self.side].append(c)
-            self.game.logs = f"{self.side.upper()}に配置"; await it.response.defer(); await cpu_turn_logic(it, self.game)
-        select.callback = cb; view.add_item(select); view.add_item(CancelButton(self.game)); await i.response.edit_message(content="配置選択", view=view)
+    def make_sup_cb(self, sel):
+        async def _cb(it):
+            idx = int(sel.values[0]); card = self.game.players["p1"]["hand"].pop(idx)
+            await process_support_logic(it, self.game, card)
+        return _cb
 
-class DrawResultView(discord.ui.View):
-    def __init__(self, game, card):
-        super().__init__(); self.game, self.card = game, card
-        if card["type"] == "戦闘":
-            btn = discord.ui.Button(label="即配置", style=discord.ButtonStyle.success); btn.callback = self.deploy_flow; self.add_item(btn)
-        else:
-            btn = discord.ui.Button(label="即使用", style=discord.ButtonStyle.success); btn.callback = self.use_immediately; self.add_item(btn)
-        keep = discord.ui.Button(label="手札へ", style=discord.ButtonStyle.secondary); keep.callback = self.keep_flow; self.add_item(keep)
-    async def deploy_flow(self, i):
-        v = discord.ui.View()
-        for s in ["main", "left", "right"]:
-            b = discord.ui.Button(label=s.upper())
-            def mk(side):
-                async def _c(it):
-                    c = self.game.apply_passive(self.card)
-                    if side == "main": self.game.players["p1"]["main"] = c
-                    else: self.game.players["p1"][side].append(c)
-                    self.game.logs = f"ドロー後{side.upper()}配置"; await it.response.defer(); await cpu_turn_logic(it, self.game)
-                return _c
-            b.callback = mk(s); v.add_item(b)
-        await i.response.edit_message(content="配置先", view=v)
-    async def use_immediately(self, i): await process_support_logic(i, self.game, self.card)
-    async def keep_flow(self, i): self.game.players["p1"]["hand"].append(self.card); self.game.logs = "ドローを手札へ"; await i.response.defer(); await cpu_turn_logic(i, self.game)
-
-class InitialSetupView(discord.ui.View):
-    def __init__(self, game): super().__init__(timeout=180); self.game, self.step = game, "main"; self.update_select()
-    def update_select(self):
-        self.clear_items(); hand = self.game.players["p1"]["hand"]; opts = get_options_from_list(hand, "戦闘")
-        conf = {"main": ("城", 1, 1), "left": ("L(最大3)", 1, min(3, len(opts))), "right": ("R(最大3)", 1, min(3, len(opts)))}
-        p, mi, ma = conf[self.step]; sel = discord.ui.Select(placeholder=p, min_values=mi, max_values=ma, options=opts)
-        sel.callback = self.handle_selection; self.add_item(sel)
-    async def handle_selection(self, i):
-        idxs = sorted([int(v) for v in i.data['values']], reverse=True); hand = self.game.players["p1"]["hand"]
-        sld = [self.game.apply_passive(hand.pop(x)) for x in idxs]
-        if self.step == "main": self.game.players["p1"]["main"] = sld[0]; self.step = "left"
-        elif self.step == "left": self.game.players["p1"]["left"].extend(sld); self.step = "right"
-        else: self.game.players["p1"]["right"].extend(sld); self.game.logs = "ゲーム開始"; await i.response.edit_message(content="開始", embed=make_embed(self.game), view=MainMenuView(self.game)); return
-        self.update_select(); await i.response.edit_message(embed=make_embed(self.game), view=self)
+    @discord.ui.button(label="パス", style=discord.ButtonStyle.secondary)
+    async def skip(self, i, b):
+        self.game.logs = "パスしました"
+        await i.response.defer(); await cpu_turn_logic(i, self.game)
 
 class CancelButton(discord.ui.Button):
-    def __init__(self, game): super().__init__(label="戻る", style=discord.ButtonStyle.gray); self.game = game
-    async def callback(self, i): await i.response.edit_message(content="メニュー", embed=make_embed(self.game), view=MainMenuView(self.game))
+    def __init__(self, game): super().__init__(label="キャンセル", style=discord.ButtonStyle.secondary); self.game = game
+    async def callback(self, i): await i.response.edit_message(content="メニュー", view=MainMenuView(self.game))
 
-# play.py から SetupView として参照できるようにエイリアスを定義
-SetupView = InitialSetupView
+class SetupView(discord.ui.View):
+    def __init__(self, game): super().__init__(timeout=None); self.game = game
+    @discord.ui.button(label="メイン配置", style=discord.ButtonStyle.primary)
+    async def set_main(self, i, b):
+        opts = get_options_from_list(self.game.players["p1"]["hand"], "戦闘")
+        v = discord.ui.View(); s = discord.ui.Select(options=opts); s.callback = self.make_cb(s); v.add_item(s)
+        await i.response.edit_message(content="メインカード選択", view=v)
+    def make_cb(self, sel):
+        async def _cb(it):
+            idx = int(sel.values[0]); card = self.game.players["p1"]["hand"].pop(idx)
+            self.game.players["p1"]["main"] = self.game.apply_passive(card)
+            await it.response.edit_message(content="サブ(L)配置中...", view=SubSetupView(self.game, "left"))
+        return _cb
 
-class Pault(commands.Cog):
-    def __init__(self, bot): self.bot = bot
-    async def pault(self, interaction: discord.Interaction):
-        game = PaultGame(interaction.channel_id, interaction.user.id, interaction.user.display_name)
-        await interaction.response.send_message(embed=make_embed(game), view=InitialSetupView(game))
-
-async def setup(bot): await bot.add_cog(Pault(bot))
+class SubSetupView(discord.ui.View):
+    def __init__(self, game, side): super().__init__(timeout=None); self.game, self.side = game, side
+    @discord.ui.button(label="サブ配置(1枚目)", style=discord.ButtonStyle.primary)
+    async def set_sub(self, i, b):
+        opts = get_options_from_list(self.game.players["p1"]["hand"], "戦闘")
+        v = discord.ui.View(); s = discord.ui.Select(options=opts); s.callback = self.make_cb(s); v.add_item(s)
+        await i.response.edit_message(content=f"サブ({self.side}) 1枚目選択", view=v)
+    def make_cb(self, sel):
+        async def _cb(it):
+            idx = int(sel.values[0]); card = self.game.players["p1"]["hand"].pop(idx)
+            self.game.players["p1"][self.side].append(self.game.apply_passive(card))
+            v = discord.ui.View(); opts = get_options_from_list(self.game.players["p1"]["hand"], "戦闘")
+            s = discord.ui.Select(options=opts); s.callback = self.make_cb2(s); v.add_item(s)
+            await it.response.edit_message(content=f"サブ({self.side}) 2枚目選択", view=v)
+        return _cb
+    def make_cb2(self, sel):
+        async def _cb(it):
+            idx = int(sel.values[0]); card = self.game.players["p1"]["hand"].pop(idx)
+            self.game.players["p1"][self.side].append(self.game.apply_passive(card))
+            if self.side == "left": await it.response.edit_message(content="サブ(R)配置中...", view=SubSetupView(self.game, "right"))
+            else: await it.response.edit_message(content="ゲーム開始！", embed=make_embed(self.game), view=MainMenuView(self.game))
+        return _cb

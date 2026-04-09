@@ -15,6 +15,10 @@ def generate_random_code():
     """5桁の英数字コードを生成"""
     return "SVR-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=5))
 
+def white_embed(description: str) -> discord.Embed:
+    """白色embedを生成するヘルパー"""
+    return discord.Embed(description=description, color=0xFFFFFF)
+
 class InviteModal(discord.ui.Modal, title="紹介コード入力"):
     code_input = discord.ui.TextInput(
         label="紹介元のサーバーコード",
@@ -29,49 +33,49 @@ class InviteModal(discord.ui.Modal, title="紹介コード入力"):
 
         res_b = supabase.table("usage_limits").select("*").eq("guild_id", guild_b.id).execute()
         if not res_b.data:
-            return await interaction.response.send_message("サーバーデータが見つかりません。", ephemeral=True)
+            return await interaction.response.send_message(embed=white_embed("サーバーデータが見つかりません。"), ephemeral=True)
         
         data_b = res_b.data[0]
 
         # 判定1: 24時間以内
         joined_at_str = data_b.get("joined_at")
         if not joined_at_str:
-            return await interaction.response.send_message("導入日時データがありません。", ephemeral=True)
+            return await interaction.response.send_message(embed=white_embed("導入日時データがありません。"), ephemeral=True)
         joined_at = datetime.fromisoformat(joined_at_str.replace('Z', '+00:00'))
         if datetime.now(timezone.utc) > joined_at + timedelta(hours=24):
-            return await interaction.response.send_message("期限切れです（導入から24時間経過）。", ephemeral=True)
+            return await interaction.response.send_message(embed=white_embed("期限切れです（導入から24時間経過）。"), ephemeral=True)
 
         # 判定2: 新規判定
         if data_b.get("is_promoted"):
-            return await interaction.response.send_message("既に報酬受取済みです。", ephemeral=True)
+            return await interaction.response.send_message(embed=white_embed("既に報酬受取済みです。"), ephemeral=True)
 
         # 判定3: 作成から1ヶ月
         one_month_ago = datetime.now(timezone.utc) - timedelta(days=30)
         if guild_b.created_at > one_month_ago:
-            return await interaction.response.send_message("作成から1ヶ月以上経過している必要があります。", ephemeral=True)
+            return await interaction.response.send_message(embed=white_embed("作成から1ヶ月以上経過している必要があります。"), ephemeral=True)
 
         # 判定4: 15人以上
         if guild_b.member_count < 15:
-            return await interaction.response.send_message(f"15人以上必要です（現在: {guild_b.member_count}人）。", ephemeral=True)
+            return await interaction.response.send_message(embed=white_embed(f"15人以上必要です（現在: {guild_b.member_count}人）。"), ephemeral=True)
 
         # A鯖チェック
         res_a = supabase.table("usage_limits").select("*").eq("promo_code", input_code).execute()
         if not res_a.data:
-            return await interaction.response.send_message("無効なコードです。", ephemeral=True)
+            return await interaction.response.send_message(embed=white_embed("無効なコードです。"), ephemeral=True)
         
         data_a = res_a.data[0]
         if data_a["guild_id"] == guild_b.id:
-            return await interaction.response.send_message("自サーバーのコードは無効です。", ephemeral=True)
+            return await interaction.response.send_message(embed=white_embed("自サーバーのコードは無効です。"), ephemeral=True)
 
         today = datetime.now(timezone.utc).date().isoformat()
         if data_a.get("last_reward_at") == today:
-            return await interaction.response.send_message("紹介元は本日の上限に達しています。", ephemeral=True)
+            return await interaction.response.send_message(embed=white_embed("紹介元は本日の上限に達しています。"), ephemeral=True)
 
         # 報酬付与
         supabase.table("usage_limits").update({"is_promoted": True, "max_limit": (data_b.get("max_limit") or 0) + 100}).eq("guild_id", guild_b.id).execute()
         supabase.table("usage_limits").update({"max_limit": (data_a.get("max_limit") or 0) + 100, "last_reward_at": today}).eq("guild_id", data_a["guild_id"]).execute()
 
-        await interaction.response.send_message("認証成功。双方に100枠追加しました。", ephemeral=False)
+        await interaction.response.send_message(embed=white_embed("認証成功。双方に100枠追加しました。"), ephemeral=False)
 
 class InviteView(discord.ui.View):
     def __init__(self):
@@ -107,7 +111,7 @@ class InviteView(discord.ui.View):
             else:
                 code = res.data[0]["promo_code"]
 
-            await interaction.response.send_message(f"このサーバーのコード: `{code}`", ephemeral=True)
+            await interaction.response.send_message(embed=white_embed(f"このサーバーのコード: `{code}`"), ephemeral=True)
         
         elif select.values[0] == "input":
             await interaction.response.send_modal(InviteModal())
@@ -129,7 +133,8 @@ class Invite(commands.Cog):
 
     @app_commands.command(name="invite", description="招待プログラムの利用")
     async def invite_cmd(self, interaction: discord.Interaction):
-        await interaction.response.send_message("メニューを選択してください", view=InviteView(), ephemeral=True)
+        embed = discord.Embed(description="メニューを選択してください", color=0xFFFFFF)
+        await interaction.response.send_message(embed=embed, view=InviteView(), ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(Invite(bot))

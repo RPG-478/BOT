@@ -28,13 +28,14 @@ class ReplyAI(commands.Cog):
         state = not self.channel_state.get(channel_id, False)
         self.channel_state[channel_id] = state
 
-        await ctx.send(
-            "うおｗAIモードONｗ" if state else "AIモードOFF"
-        )
+        msg = "AIモードON" if state else "AIモードOFF"
+        embed = discord.Embed(description=msg, color=0xFFFFFF)
+        await ctx.send(embed=embed)
 
     @commands.command(name="test")
     async def test(self, ctx: commands.Context):
-        await ctx.send("動いてるぞｗ")
+        embed = discord.Embed(description="動いてるぞ", color=0xFFFFFF)
+        await ctx.send(embed=embed)
 
 async def setup(bot: commands.Bot):
     # main.py の setup_hook から呼び出される

@@ -220,16 +220,16 @@ def d_open_chest(uid, supabase):
     roll = random.random()
     if roll < 0.5:
         coins = random.randint(50, 300)
-        return f"🟨 宝箱！ コイン **+{coins}** 枚", coins
+        return f"宝箱！ コイン **+{coins}** 枚", coins
     elif roll < 0.8:
         bread = random.randint(3, 15)
-        return f"🟨 宝箱！ レアパン **+{bread}** 個", 0
+        return f"宝箱！ レアパン **+{bread}** 個", 0
     elif roll < 0.95:
         boxes = random.randint(1, 3)
-        return f"🟨 宝箱！ 宝箱 **+{boxes}** 個", 0
+        return f"宝箱！ 宝箱 **+{boxes}** 個", 0
     else:
         chips = random.randint(100, 500)
-        return f"🟨 宝箱！ チップ **+{chips}** 枚", 0
+        return f"宝箱！ チップ **+{chips}** 枚", 0
 
 def d_trigger_trap(uid):
     """罠を発動"""
@@ -237,17 +237,17 @@ def d_trigger_trap(uid):
     roll = random.random()
     if roll < 0.4:
         loss = random.randint(30, 150)
-        return f"🟥 罠！ コイン **-{loss}** 枚", -loss
+        return f"罠！ コイン **-{loss}** 枚", -loss
     elif roll < 0.7:
         dmg = random.randint(10, 30)
         p["hp"] = max(0, p["hp"] - dmg)
-        return f"🟥 罠！ HP **-{dmg}**", 0
+        return f"罠！ HP **-{dmg}**", 0
     elif roll < 0.85:
         loss = random.randint(1, 5)
-        return f"🟥 罠！ レアパン **-{loss}** 個", 0
+        return f"罠！ レアパン **-{loss}** 個", 0
     else:
         loss = random.randint(50, 200)
-        return f"🟥 罠！ チップ **-{loss}** 枚", 0
+        return f"罠！ チップ **-{loss}** 枚", 0
 
 def d_do_mine(uid):
     """採掘する"""
@@ -634,10 +634,10 @@ class DungeonStatusView(View):
     
     def _embed(self):
         p = d_get_player(self.uid)
-        em = discord.Embed(title="🗺 ダンジョン ステータス", color=0x8B4513)
+        em = discord.Embed(title="ダンジョン ステータス", color=0xFFFFFF)
         em.add_field(name="現在位置", value=f"フロア **{self.floor}** ({self.x}, {self.y})", inline=False)
         em.add_field(name="HP", value=f"{d_hpbar(p['hp'], p['max_hp'])} {p['hp']}/{p['max_hp']}", inline=False)
-        em.add_field(name="ステータス", value=f"⚔️{p['atk']} 🛡️{p['def_']} 🏃{p['spd']} 💥{int(p['crit']*100)}%", inline=False)
+        em.add_field(name="ステータス", value=f"ATK:{p['atk']} DEF:{p['def_']} SPD:{p['spd']} CRIT:{int(p['crit']*100)}%", inline=False)
         return em
 
 class DungeonStairsView(View):
@@ -651,7 +651,7 @@ class DungeonStairsView(View):
         self.supabase = supabase
     
     def _embed(self, msg=""):
-        em = discord.Embed(title="🔺 階段がある", color=0x00ff88, description=msg)
+        em = discord.Embed(title="階段がある", color=0xFFFFFF, description=msg)
         em.set_image(url="attachment://map.png")
         return em
     
@@ -669,7 +669,7 @@ class DungeonStairsView(View):
             map_file = d_render_pillow(self.uid, p["floor"], p["x"], p["y"])
             await i.edit_original_response(embed=mv._embed(f"フロア {self.floor + 1}へ到達！"), view=mv, attachments=[map_file])
         else:
-            await i.edit_original_response(embed=discord.Embed(title="🏁 ゴール！", description="ダンジョンをクリアしました！", color=0x00ff88))
+            await i.edit_original_response(embed=discord.Embed(title="ゴール！", description="ダンジョンをクリアしました！", color=0xFFFFFF))
     
     @discord.ui.button(label="⬅️ 戻る", style=discord.ButtonStyle.grey)
     async def back(self, i, b):
@@ -689,7 +689,7 @@ class DungeonMineView(View):
         self.supabase = supabase
     
     def _embed(self, msg=""):
-        em = discord.Embed(title="⛏ 鉱山", color=0xC0C0C0, description=msg)
+        em = discord.Embed(title="鉱山", color=0xFFFFFF, description=msg)
         em.set_image(url="attachment://map.png")
         return em
     
@@ -701,7 +701,7 @@ class DungeonMineView(View):
         await dg_save_map(self.floor, self.supabase)
         mv = DungeonMainView(self.uid, self.floor, self.x, self.y, self.supabase)
         map_file = d_render_pillow(self.uid, self.floor, self.x, self.y)
-        await i.edit_original_response(embed=mv._embed(f"💰 採掘！ **+{gain}** コイン"), view=mv, attachments=[map_file])
+        await i.edit_original_response(embed=mv._embed(f"採掘！ **+{gain}** コイン"), view=mv, attachments=[map_file])
     
     @discord.ui.button(label="⬅️ 戻る", style=discord.ButtonStyle.grey)
     async def back(self, i, b):
@@ -732,15 +732,15 @@ class DungeonCombatView(View):
         etype = e.get("type", "normal")
         type_text = {"normal": "通常", "elite": "精鋭", "boss": "ボス"}[etype]
 
-        em = discord.Embed(title=f"⚔️ {e['name']}（{type_text}）が現れた！", color=color)
+        em = discord.Embed(title=f"{e['name']}（{type_text}）が現れた！", color=0xFFFFFF)
         em.set_image(url="attachment://map.png")
 
         em.add_field(name="あなた",
-            value=f"`{d_hpbar(p['hp'],p['max_hp'])}`{p['hp']}/{p['max_hp']}\n⚔️{p['atk']} 🛡️{p['def_']}",
+            value=f"`{d_hpbar(p['hp'],p['max_hp'])}`{p['hp']}/{p['max_hp']}\nATK:{p['atk']} DEF:{p['def_']}",
             inline=True)
 
         em.add_field(name=e["name"],
-            value=f"`{d_hpbar(e['hp'],e['max_hp'])}`{e['hp']}/{e['max_hp']}\n⚔️{e['atk']} 🛡️{e['def_']}",
+            value=f"`{d_hpbar(e['hp'],e['max_hp'])}`{e['hp']}/{e['max_hp']}\nATK:{e['atk']} DEF:{e['def_']}",
             inline=True)
 
         if self.log:
@@ -769,17 +769,17 @@ class DungeonCombatView(View):
             dmg, crit = self._calculate_damage(e, p, self.defending)
             dmg = int(dmg * 1.4)
             p["hp"] = max(0, p["hp"] - dmg)
-            log_msg = f"🔥 **{e['name']}の強攻撃！！** {dmg} ダメージ"
+            log_msg = f"**{e['name']}の強攻撃！！** {dmg} ダメージ"
         elif action == "heal":
             heal_amt = int(e["max_hp"] * 0.15)
             e["hp"] = min(e["max_hp"], e["hp"] + heal_amt)
-            log_msg = f"💚 {e['name']}は傷口を舐めて {heal_amt} 回復した"
+            log_msg = f"{e['name']}は傷口を舐めて {heal_amt} 回復した"
         elif action == "wait":
-            log_msg = f"💤 {e['name']}は様子を伺っている..."
+            log_msg = f"{e['name']}は様子を伺っている..."
         else:
             dmg, crit = self._calculate_damage(e, p, self.defending)
             p["hp"] = max(0, p["hp"] - dmg)
-            c_msg = "⚠️ **CRITICAL!!** " if crit else ""
+            c_msg = "**CRITICAL!!** " if crit else ""
             log_msg = f"{c_msg}{e['name']}の攻撃：{dmg} ダメージ"
 
         self.defending = False
@@ -787,7 +787,7 @@ class DungeonCombatView(View):
 
     async def _win(self, i):
         e = self.enemy
-        msg = f"🎉 勝利！ +{e['reward_coins']}コイン +{e['reward_xp']}XP"
+        msg = f"勝利！ +{e['reward_coins']}コイン +{e['reward_xp']}XP"
         if e["reward_box"] > 0:
             msg += f" +宝箱{e['reward_box']}個"
         self.log.append(msg)
@@ -819,7 +819,7 @@ class DungeonCombatView(View):
         if p_first:
             dmg, crit = self._calculate_damage(p, e)
             e["hp"] = max(0, e["hp"] - dmg)
-            self.log.append(f"{'💥 **CRIT!!** ' if crit else ''}{dmg} ダメージ！")
+            self.log.append(f"{'**CRIT!!** ' if crit else ''}{dmg} ダメージ！")
             if e["hp"] <= 0:
                 await self._win(i)
                 return
@@ -831,7 +831,7 @@ class DungeonCombatView(View):
                 return
             dmg, crit = self._calculate_damage(p, e)
             e["hp"] = max(0, e["hp"] - dmg)
-            self.log.append(f"{'💥 **CRIT!!** ' if crit else ''}{dmg} ダメージ！")
+            self.log.append(f"{'**CRIT!!** ' if crit else ''}{dmg} ダメージ！")
 
         if e["hp"] <= 0:
             await self._win(i)
@@ -847,7 +847,7 @@ class DungeonCombatView(View):
     async def defend(self, i, b):
         await i.response.defer()
         self.defending = True
-        self.log.append(f"🛡 防御体制！\n{self._enemy_turn()}")
+        self.log.append(f"防御体制！\n{self._enemy_turn()}")
         if d_get_player(self.uid)["hp"] <= 0:
             await self._lose(i)
             return
@@ -890,7 +890,7 @@ class DungeonMainView(View):
     def _embed(self, msg="", has_image=True, image_url=None):
         p = d_get_player(self.uid)
         bname, _, _, _, _ = d_get_biome(self.floor)
-        em = discord.Embed(title=f"🗺 フロア {self.floor} ({bname})", color=0x8B4513)
+        em = discord.Embed(title=f"フロア {self.floor} ({bname})", color=0xFFFFFF)
         if has_image and image_url:
             em.set_image(url=image_url)
         em.add_field(name="位置", value=f"({p['x']}, {p['y']})", inline=True)
@@ -908,13 +908,13 @@ class DungeonMainView(View):
         # 境界チェック
         if not (0 <= nx < D_MAP_W and 0 <= ny < D_MAP_H):
             map_file = d_render_pillow(self.uid, self.floor, p["x"], p["y"])
-            await i.edit_original_response(embed=self._embed("🔲 壁！進めない"), attachments=[map_file], view=self)
+            await i.edit_original_response(embed=self._embed("壁！進めない"), attachments=[map_file], view=self)
             return
         
         ct = d_get_cell(self.floor, nx, ny)
         if ct == D_WALL:
             map_file = d_render_pillow(self.uid, self.floor, p["x"], p["y"])
-            await i.edit_original_response(embed=self._embed("🔲 壁！進めない"), attachments=[map_file], view=self)
+            await i.edit_original_response(embed=self._embed("壁！進めない"), attachments=[map_file], view=self)
             return
         
         # 座標更新
@@ -926,7 +926,7 @@ class DungeonMainView(View):
         if ct == D_STAIRS:
             sv = DungeonStairsView(self.uid, self.floor, p["x"], p["y"], self.supabase)
             map_file = d_render_pillow(self.uid, self.floor, p["x"], p["y"])
-            await i.edit_original_response(embed=self._embed("🔺 階段がある。どうする？"), attachments=[map_file], view=sv)
+            await i.edit_original_response(embed=self._embed("階段がある。どうする？"), attachments=[map_file], view=sv)
             return
 
         elif ct == D_CHEST:
@@ -942,7 +942,7 @@ class DungeonMainView(View):
         elif ct == D_MINE:
             mv = DungeonMineView(self.uid, self.floor, p["x"], p["y"], self.supabase)
             map_file = d_render_pillow(self.uid, self.floor, p["x"], p["y"])
-            await i.edit_original_response(embed=mv._embed("⛏ 鉱山を発見！"), attachments=[map_file], view=mv)
+            await i.edit_original_response(embed=mv._embed("鉱山を発見！"), attachments=[map_file], view=mv)
             return
 
         else:
@@ -1092,7 +1092,7 @@ class DungeonCog(Cog):
             if self.supabase:
                 await dg_save_map(fl, self.supabase)
         
-        em = discord.Embed(title="✅ リセット完了", description="マップを再生成しました！", color=0x00ff88)
+        em = discord.Embed(title="リセット完了", description="マップを再生成しました！", color=0xFFFFFF)
         await interaction.followup.send(embed=em)
 
     @tasks.loop(hours=1)

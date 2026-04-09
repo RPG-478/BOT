@@ -71,11 +71,11 @@ class ReplyAI(commands.Cog):
         
         if channel_id in self.active_channels:
             self.active_channels.remove(channel_id)
-            embed.description = "<:success:1490985168100659322> ask機能をオフにしました"
+            embed.description = "ask機能をオフにしました"
             await ctx.send(embed=embed)
         else:
             self.active_channels.add(channel_id)
-            embed.description = "<:success:1490985168100659322> ask機能をオンにしました"
+            embed.description = "ask機能をオンにしました"
             await ctx.send(embed=embed)
 
     @commands.Cog.listener()
@@ -116,7 +116,7 @@ class ReplyAI(commands.Cog):
                     
                     # 埋め込み形式での返答（残り枠数を追加）
                     embed = discord.Embed(
-                        title="<:success:1490985168100659322> AGOBOTが返答を行いました",
+                        title="AGOBOTが返答を行いました",
                         description=f"{clean_res}\n\n**残り枠数: {limit - new_used_count} ({new_used_count}/{limit})**",
                         color=0xFFFFFF # 白色
                     )

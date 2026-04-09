@@ -194,10 +194,13 @@ class React(commands.Cog):
                 })
 
             file = await self.create_card(interaction.user, interaction.guild, stats, ranks)
-            await interaction.followup.send(file=file)
+            embed = discord.Embed(title=f"{interaction.user.display_name} のランクカード", color=0xFFFFFF)
+            embed.set_image(url="attachment://rank_card.png")
+            await interaction.followup.send(embed=embed, file=file)
         except Exception as e:
             print(f"Error: {e}")
-            await interaction.followup.send("集計エラーが発生しました。")
+            embed = discord.Embed(description="集計エラーが発生しました。", color=0xFFFFFF)
+            await interaction.followup.send(embed=embed)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(React(bot))

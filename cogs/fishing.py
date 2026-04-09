@@ -11,19 +11,19 @@ from typing import Dict, Any, Optional
 BIOMES = {
     "sea": {
         "name": "Sea",
-        "color": 0x3498db,
+        "color": 0xFFFFFF,
         "wait_range": (45, 120),
         "fish_pool": ["mackerel", "tuna", "seabass"]
     },
     "river": {
         "name": "River",
-        "color": 0x1abc9c,
+        "color": 0xFFFFFF,
         "wait_range": (15, 60),
         "fish_pool": ["sweetfish", "salmon", "char"]
     },
     "pond": {
         "name": "Pond",
-        "color": 0x2ecc71,
+        "color": 0xFFFFFF,
         "wait_range": (1, 15),
         "fish_pool": ["medaka", "koi", "crucian"]
     }
@@ -55,6 +55,10 @@ SHOP_ITEMS = {
         "type": "upgrade"
     }
 }
+
+def we(description: str = None, title: str = None) -> discord.Embed:
+    """白色embedを生成するヘルパー"""
+    return discord.Embed(title=title, description=description, color=0xFFFFFF)
 
 class FishingCog(commands.Cog):
     def __init__(self, bot):
@@ -98,13 +102,11 @@ class FishingCog(commands.Cog):
                 session["task"].cancel()
             if "hit_event" in session:
                 session["hit_event"].set()
-            # session自体を削除
             self.active_sessions.pop(user_id, None)
 
     @app_commands.command(name="fish", description="Open the fishing menu")
     async def fish(self, interaction: discord.Interaction):
         user_id = interaction.user.id
-        # 新しく起動した場合、既存のセッション（待機・バトル等）があれば強制終了
         if user_id in self.active_sessions:
             await self.delete_last_message(user_id)
             await self.cleanup_session(user_id)
@@ -114,7 +116,7 @@ class FishingCog(commands.Cog):
     async def _show_main_menu(self, interaction: discord.Interaction):
         user_id = interaction.user.id
         profile = await self.load_user_data(user_id)
-        embed = discord.Embed(title="FISHING STATUS", color=0x7289da)
+        embed = discord.Embed(title="FISHING STATUS", color=0xFFFFFF)
         embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
         embed.add_field(name="Coins", value=f"{profile['coins']}", inline=True)
         embed.add_field(name="Rod Power", value=f"{self.get_rod_power(profile)} (Lv.{profile['level']})", inline=True)
@@ -122,7 +124,6 @@ class FishingCog(commands.Cog):
         
         view = MainMenuView(user_id, self)
         
-        # 既存のインタラクションに応答済みか確認
         if interaction.response.is_done():
             msg = await interaction.followup.send(embed=embed, view=view)
         else:
@@ -139,7 +140,6 @@ class FishingCog(commands.Cog):
         wait_seconds = random.randint(*biome["wait_range"])
         hit_event = asyncio.Event()
 
-        # パネル更新のため古いメッセージは削除
         await self.delete_last_message(user_id)
         
         if user_id in self.active_sessions:
@@ -157,12 +157,11 @@ class FishingCog(commands.Cog):
 
         embed = discord.Embed(
             title="WAITING...",
-            description=f"Area: {biome['name']}\n<a:POYOPOYO:1490724627805110392>Waiting for a bite...",
-            color=biome["color"]
+            description=f"Area: {biome['name']}\nWaiting for a bite...",
+            color=0xFFFFFF
         )
         view = WaitingView(user_id, self)
         
-        # 新しいメッセージを送信
         if interaction.response.is_done():
             msg = await interaction.followup.send(embed=embed, view=view)
         else:
@@ -193,10 +192,12 @@ class FishingCog(commands.Cog):
 
         try:
             view = HitConfirmView(user_id, self)
-            hit_msg = await interaction.channel.send(
-                content=f"HIT! {interaction.user.mention} A fish bit the bait! Press [Hook] within 10s!",
-                view=view
+            hit_embed = discord.Embed(
+                title="HIT!",
+                description=f"{interaction.user.mention} A fish bit the bait! Press [Hook] within 10s!",
+                color=0xFFFFFF
             )
+            hit_msg = await interaction.channel.send(embed=hit_embed, view=view)
             session["last_msg"] = hit_msg
             
             try:
@@ -204,7 +205,11 @@ class FishingCog(commands.Cog):
                 await self.start_battle(user_id, interaction)
             except asyncio.TimeoutError:
                 await self.cleanup_session(user_id)
-                await hit_msg.edit(content=f"LOST: {interaction.user.mention} The fish got away...", view=None)
+                lost_embed = discord.Embed(
+                    description=f"LOST: {interaction.user.mention} The fish got away...",
+                    color=0xFFFFFF
+                )
+                await hit_msg.edit(content=None, embed=lost_embed, view=None)
         except Exception as e:
             print(f"Error in hit: {e}")
 
@@ -233,7 +238,7 @@ class FishingCog(commands.Cog):
         }
         session["status"] = "battling"
         
-        embed = discord.Embed(title="BATTLE", description="Preparing battle...", color=0xe67e22)
+        embed = discord.Embed(title="BATTLE", description="Preparing battle...", color=0xFFFFFF)
         msg = await interaction.channel.send(embed=embed)
         session["last_msg"] = msg
         
@@ -248,7 +253,7 @@ class FishingCog(commands.Cog):
         hp_bar = "[" + "#" * round(15 * hp_ratio) + "-" * (15 - round(15 * hp_ratio)) + "]"
         t_bar = "!" * min(5, math.ceil(tension_val / 5)) + "." * (5 - min(5, math.ceil(tension_val / 5)))
         
-        embed = discord.Embed(title="BATTLE", color=0xe67e22)
+        embed = discord.Embed(title="BATTLE", color=0xFFFFFF)
         embed.add_field(name="Target", value=f"**{s['fish_name']}** ({s['weight']}kg)", inline=False)
         embed.add_field(name="Fish HP", value=f"`{hp_bar}` {s['hp']}/{s['max_hp']}", inline=True)
         embed.add_field(name="Tension", value=f"`{t_bar}`", inline=True)
@@ -256,92 +261,111 @@ class FishingCog(commands.Cog):
         view = BattleView(user_id, self)
         await session["last_msg"].edit(embed=embed, view=view)
 
+    async def do_pull(self, user_id, interaction: discord.Interaction):
+        session = self.active_sessions.get(user_id)
+        if not session or session["status"] != "battling": return
+        s = session["battle"]
+        s["picks"] += 1
+        dmg = int(s["power"] * random.uniform(0.8, 1.2))
+        s["hp"] -= dmg
+        
+        hp_ratio = max(0, s["hp"]) / s["max_hp"]
+        tension_val = (s["base_escape"] * (s["picks"]**1.4) * (hp_ratio + 0.2)) * 100
+        
+        if s["hp"] <= 0:
+            await self._finish_catch(user_id, interaction)
+        elif random.random() < (tension_val / 100):
+            await self._lose_fish(user_id, interaction)
+        else:
+            await self._update_battle_ui(user_id, interaction)
+
+    async def _finish_catch(self, user_id, interaction: discord.Interaction):
+        session = self.active_sessions.get(user_id)
+        s = session["battle"]
+        profile = await self.load_user_data(user_id)
+        
+        fish_obj = {"name": s["fish_name"], "weight": s["weight"], "rarity": s["rarity"]}
+        profile["inventory"].append(fish_obj)
+        await self.save_user_data(user_id, profile)
+        
+        embed = discord.Embed(
+            title="CAUGHT!",
+            description=f"Success! {interaction.user.mention} caught a **{s['fish_name']}** ({s['weight']}kg)!",
+            color=0xFFFFFF
+        )
+        await session["last_msg"].edit(embed=embed, view=None)
+        await self.cleanup_session(user_id)
+
+    async def _lose_fish(self, user_id, interaction: discord.Interaction):
+        session = self.active_sessions.get(user_id)
+        embed = discord.Embed(
+            title="SNAP!",
+            description=f"Oh no! The line snapped and the fish got away...",
+            color=0xFFFFFF
+        )
+        await session["last_msg"].edit(embed=embed, view=None)
+        await self.cleanup_session(user_id)
+
 class MainMenuView(discord.ui.View):
     def __init__(self, user_id, cog):
-        super().__init__(timeout=120)
+        super().__init__(timeout=60)
         self.user_id = user_id
         self.cog = cog
 
     @discord.ui.button(label="Go Fishing", style=discord.ButtonStyle.primary)
-    async def go(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def go_fish(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id: return
         view = BiomeSelectView(self.user_id, self.cog)
-        await interaction.response.edit_message(content="Select area:", embed=None, view=view)
+        embed = discord.Embed(title="SELECT AREA", description="Choose where to fish:", color=0xFFFFFF)
+        await interaction.response.edit_message(embed=embed, view=view)
 
-    @discord.ui.button(label="Exchange", style=discord.ButtonStyle.success)
-    async def exchange(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Sell All Fish", style=discord.ButtonStyle.success)
+    async def sell_all(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id: return
         profile = await self.cog.load_user_data(self.user_id)
-        if not profile["inventory"]:
-            await interaction.response.send_message("Bag is empty.", ephemeral=True)
-            return
-        total = 0
-        for f in profile["inventory"]:
-            total += int(10 * (1 + f["rarity"] * 0.5) * math.sqrt(f["weight"] + 0.5))
-        profile["coins"] += total
+        total_price = 0
+        for fish in profile["inventory"]:
+            # Find base price
+            for k, v in FISH_DATA.items():
+                if v["name"] == fish["name"]:
+                    total_price += v["price"]
+                    break
+        
+        profile["coins"] += total_price
+        count = len(profile["inventory"])
         profile["inventory"] = []
         await self.cog.save_user_data(self.user_id, profile)
-        await interaction.response.send_message(f"Sold for {total} Coins.", ephemeral=True)
-        # メインメニューはedit_original_responseで更新するように修正
+        
+        embed = discord.Embed(description=f"Sold {count} fish for {total_price} coins!", color=0xFFFFFF)
+        await interaction.response.edit_message(embed=embed, view=None)
+        await asyncio.sleep(3)
         await self.cog._show_main_menu(interaction)
-
-    @discord.ui.button(label="Shop", style=discord.ButtonStyle.secondary)
-    async def shop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id: return
-        view = ShopView(self.user_id, self.cog)
-        await interaction.response.edit_message(content="Shop:", embed=None, view=view)
 
 class BiomeSelectView(discord.ui.View):
     def __init__(self, user_id, cog):
         super().__init__(timeout=60)
         self.user_id = user_id
         self.cog = cog
+        for bid, bdata in BIOMES.items():
+            btn = discord.ui.Button(label=bdata["name"], custom_id=bid)
+            btn.callback = self.make_callback(bid)
+            self.add_item(btn)
 
-    @discord.ui.select(placeholder="Area?", options=[discord.SelectOption(label=v["name"], value=k) for k, v in BIOMES.items()])
-    async def select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        if interaction.user.id != self.user_id: return
-        await self.cog.start_waiting(interaction, select.values[0])
-
-class ShopView(discord.ui.View):
-    def __init__(self, user_id, cog):
-        super().__init__(timeout=60)
-        self.user_id = user_id
-        self.cog = cog
-
-    @discord.ui.select(placeholder="Buy...", options=[discord.SelectOption(label=f"{v['name']} ({v['price']}c)", value=k) for k, v in SHOP_ITEMS.items()])
-    async def buy(self, interaction: discord.Interaction, select: discord.ui.Select):
-        if interaction.user.id != self.user_id: return
-        profile = await self.cog.load_user_data(self.user_id)
-        item = SHOP_ITEMS[select.values[0]]
-        if profile["coins"] < item["price"]:
-            await interaction.response.send_message("No coins!", ephemeral=True)
-            return
-        profile["coins"] -= item["price"]
-        if item["type"] == "buff": profile["items"].append(select.values[0])
-        else: profile["stats_power"] += 15; profile["level"] += 1
-        await self.cog.save_user_data(self.user_id, profile)
-        await interaction.response.send_message(f"Bought {item['name']}", ephemeral=True)
-        # 購入後にステータス更新を伴うメインメニューへ戻す
-        await self.cog.delete_last_message(self.user_id)
-        await self.cog._show_main_menu(interaction)
-
-    @discord.ui.button(label="Back", style=discord.ButtonStyle.danger)
-    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id: return
-        # 修正箇所: Shopパネルを削除してからメインメニューを表示
-        await self.cog.delete_last_message(self.user_id)
-        await self.cog._show_main_menu(interaction)
+    def make_callback(self, biome_id):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.user_id: return
+            await self.cog.start_waiting(interaction, biome_id)
+        return callback
 
 class WaitingView(discord.ui.View):
     def __init__(self, user_id, cog):
-        super().__init__(timeout=3000)
+        super().__init__(timeout=None)
         self.user_id = user_id
         self.cog = cog
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id: return
-        await self.cog.delete_last_message(self.user_id)
         await self.cog.cleanup_session(self.user_id)
         await self.cog._show_main_menu(interaction)
 
@@ -351,107 +375,25 @@ class HitConfirmView(discord.ui.View):
         self.user_id = user_id
         self.cog = cog
 
-    @discord.ui.button(label="Hook!", style=discord.ButtonStyle.success)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Hook!", style=discord.ButtonStyle.danger)
+    async def hook(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id: return
         session = self.cog.active_sessions.get(self.user_id)
         if session and session["status"] == "hit_pending":
             session["hit_event"].set()
-            if not interaction.response.is_done(): await interaction.response.defer()
+            await interaction.response.defer()
 
 class BattleView(discord.ui.View):
     def __init__(self, user_id, cog):
-        super().__init__(timeout=120)
+        super().__init__(timeout=30)
         self.user_id = user_id
         self.cog = cog
 
-class BattleView(discord.ui.View):
-    def __init__(self, user_id, cog):
-        super().__init__(timeout=120)
-        self.user_id = user_id
-        self.cog = cog
-        self.restarted = False
-
-    async def auto_restart(self, interaction: discord.Interaction, biome_id: str):
-        await asyncio.sleep(5)
-        # セッションがまだ有効で、かつ再開処理が走っていないか確認
-        if not self.restarted and self.user_id in self.cog.active_sessions:
-            self.restarted = True
-            await self.cog.start_waiting(interaction, biome_id)
-
-    @discord.ui.button(label="PULL", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Pull!", style=discord.ButtonStyle.primary)
     async def pull(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.user_id: return
-        session = self.cog.active_sessions.get(self.user_id)
-        if not session or "battle" not in session: return
-        if not interaction.response.is_done(): await interaction.response.defer()
+        await interaction.response.defer()
+        await self.cog.do_pull(self.user_id, interaction)
 
-        s = session["battle"]
-        s["picks"] += 1
-        s["hp"] -= random.randint(int(s["power"] * 0.7), s["power"])
-        hp_ratio = max(0, s["hp"]) / s["max_hp"]
-
-        # LOST判定
-        if random.random() < (s["base_escape"] * (s["picks"]**1.4) * (hp_ratio + 0.2)) and s["hp"] > 0:
-            # 案内メッセージを表示し、UIを消去
-            await session["last_msg"].edit(content="LOST: Line snapped! Auto-casting in 5 seconds...", embed=None, view=None)
-            
-            # 5秒後に自動再開するタスクをスケジュール
-            biome_id = s["biome_id"]
-            task = asyncio.create_task(self.auto_restart(interaction, biome_id))
-            session["task"] = task
-            return
-
-        # SUCCESS判定
-        if s["hp"] <= 0:
-            profile = await self.cog.load_user_data(self.user_id)
-            profile["inventory"].append({"name": s["fish_name"], "weight": s["weight"], "rarity": s["rarity"]})
-            await self.cog.save_user_data(self.user_id, profile)
-            
-            embed = discord.Embed(title="SUCCESS", description=f"You caught a **{s['fish_name']}**!", color=0x2ecc71)
-            embed.add_field(name="Weight", value=f"{s['weight']} kg")
-            embed.add_field(name="Rarity", value="*" * s["rarity"])
-            embed.set_footer(text="Auto-casting in 5 seconds...")
-            
-            view = SuccessView(self.user_id, self.cog, s["biome_id"])
-            await session["last_msg"].edit(embed=embed, view=view)
-            
-            task = asyncio.create_task(view.auto_restart(interaction))
-            session["task"] = task
-        else:
-            # UI更新
-            await self.cog._update_battle_ui(self.user_id, interaction)
-
-class SuccessView(discord.ui.View):
-    def __init__(self, user_id, cog, biome_id):
-        super().__init__(timeout=120)
-        self.user_id = user_id
-        self.cog = cog
-        self.biome_id = biome_id
-        self.restarted = False
-
-    async def auto_restart(self, interaction: discord.Interaction):
-        await asyncio.sleep(5)
-        if not self.restarted and self.user_id in self.cog.active_sessions:
-            self.restarted = True
-            await self.cog.start_waiting(interaction, self.biome_id)
-
-    @discord.ui.button(label="Cast Again Now", style=discord.ButtonStyle.success)
-    async def cast_again(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id: return
-        if not self.restarted:
-            self.restarted = True
-            session = self.cog.active_sessions.get(self.user_id)
-            if session and "task" in session:
-                session["task"].cancel()
-            await self.cog.start_waiting(interaction, self.biome_id)
-
-    @discord.ui.button(label="Menu", style=discord.ButtonStyle.secondary)
-    async def menu(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id: return
-        self.restarted = True
-        await self.cog.delete_last_message(self.user_id)
-        await self.cog.cleanup_session(self.user_id)
-        await self.cog._show_main_menu(interaction)
-
-async def setup(bot): await bot.add_cog(FishingCog(bot))
+async def setup(bot):
+    await bot.add_cog(FishingCog(bot))

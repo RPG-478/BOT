@@ -31,7 +31,8 @@ class ZogoCog(commands.Cog):
         if not config["active"]:
             config["pool"] = []
             
-        await ctx.send(f"🤖 このチャンネルの自動造語モードを **{state}** にしました。")
+        embed = discord.Embed(description=f"このチャンネルの自動造語モードを **{state}** にしました。", color=0xFFFFFF)
+        await ctx.send(embed=embed)
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -82,7 +83,8 @@ class ZogoCog(commands.Cog):
             random.shuffle(zogo_parts)
             zogo = "".join(zogo_parts)
             
-            await message.channel.send(f"**{zogo}**")
+            embed = discord.Embed(description=f"**{zogo}**", color=0xFFFFFF)
+            await message.channel.send(embed=embed)
             
             # このチャンネルのプールだけリセット
             config["pool"] = []

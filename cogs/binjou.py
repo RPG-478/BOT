@@ -4,7 +4,7 @@ from discord.ext import commands
 class Thinking(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # 反応する絵文字をリスト化しておくと後で増やしやすいです
+        # 反応する絵文字をリスト化（標準絵文字のままでも内部処理用なのでOKだが、念のため管理）
         self.target_emojis = ['🤔', '🧐', '👈']
 
     @commands.Cog.listener()
@@ -30,7 +30,6 @@ class Thinking(commands.Cog):
                 message = await channel.fetch_message(payload.message_id)
 
                 # すでにボットがリアクション済みかチェック（二重反応防止）
-                # 必要なければこのifブロックは削ってもOKです
                 existing_reaction = discord.utils.get(message.reactions, emoji=emoji_str)
                 if existing_reaction and existing_reaction.me:
                     return

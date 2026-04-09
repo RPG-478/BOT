@@ -98,18 +98,20 @@ class JinrouCog(commands.Cog):
     async def kill(self, interaction: discord.Interaction):
         game = self.get_game(interaction.channel_id)
         if not game.is_running:
-            return await interaction.response.send_message("このチャンネルで実行中のゲームはありません。", ephemeral=True)
+            embed = discord.Embed(description="このチャンネルで実行中のゲームはありません。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
         
         game.is_running = False
         await self.reset_mutes(game)
-        await interaction.response.send_message("管理者によりゲームが強制終了されました。")
+        embed = discord.Embed(description="管理者によりゲームが強制終了されました。", color=0xFFFFFF)
+        await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="jinrou_help", description="各役職の詳細な説明を表示します")
     async def jinrou_help(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="人狼ゲーム 役職説明書",
-            description="各役職の役割と特徴の一覧です。絵文字はありません。真面目に読みなさい。",
-            color=discord.Color.dark_gray()
+            description="各役職の役割と特徴の一覧です。真面目に読みなさい。",
+            color=0xFFFFFF
         )
         roles_info = {
             "一般通過あごむに": "空気。存在しているだけで偉い。特に何もしない。",
@@ -138,7 +140,8 @@ class JinrouCog(commands.Cog):
     async def jinrou(self, interaction: discord.Interaction, wait_minutes: int = 1):
         game = self.get_game(interaction.channel_id)
         if game.is_running:
-            return await interaction.response.send_message("このチャンネルでは既にゲームが進行中です。", ephemeral=True)
+            embed = discord.Embed(description="このチャンネルでは既にゲームが進行中です。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         wait_minutes = max(1, min(wait_minutes, 1440))
         
@@ -161,7 +164,6 @@ class JinrouCog(commands.Cog):
 
         await self._start_game_loop(game, interaction.channel)
 
-    # --- play.py の GameSelectView から呼ばれるゲーム開始メソッド ---
     async def run_from_hub(self, game: JinrouGame, channel):
         """RecruitView 表示後 60 秒待機してゲームループを開始する。play.py から create_task で呼ぶ。"""
         await asyncio.sleep(60)
@@ -276,7 +278,7 @@ class JinrouCog(commands.Cog):
             # マサイ族の回避判定
             if game.roles.get(wolves_target) == "マサイ族" and game.masai_evasion.get(wolves_target):
                 if random.random() < 0.5:
-                    await game.game_channel.send("<:MASAI:1490254590757572758>マサイ族はジャンプ力が高いので襲撃を回避しました。")
+                    await game.game_channel.send("<:MASAI:1490254590757572758>マサイ族は襲撃を回避しました。")
                 else:
                     dead_ids.add(wolves_target)
             else:
@@ -338,17 +340,14 @@ class JinrouCog(commands.Cog):
         if not game.voted_count: 
             return await game.game_channel.send("投票なし。")
         
-        # 投票集計（skipを考慮）
         counts = Counter(game.voted_count.values())
         most = counts.most_common()
         
-        # 最多得票が同数の場合、または誰も投票していない場合
         if len(most) > 1 and most[0][1] == most[1][1]:
             return await game.game_channel.send("同数票のため追放なし。")
         
         target_id = most[0][0]
         
-        # スキップ判定の修正: skipが最多得票ならスキップメッセージを出す
         if target_id == "skip":
             return await game.game_channel.send("投票の結果、スキップされました。追放はありません。")
             
@@ -374,7 +373,8 @@ class RoleCheckView(discord.ui.View):
     async def check(self, interaction, button):
         real_role = self.game.roles.get(interaction.user.id)
         if real_role is None:
-            return await interaction.response.send_message("あなたはゲームに参加していません。", ephemeral=True)
+            embed = discord.Embed(description="あなたはゲームに参加していません。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
             
         display_role = real_role
         if real_role == "タフむに": display_role = "一般通過あごむに"
@@ -412,7 +412,7 @@ class RoleCheckView(discord.ui.View):
         embed = discord.Embed(
             title=f"あなたの役職は 【{display_role}】 です",
             description=descs.get(real_role, "詳細なし"),
-            color=discord.Color.blue()
+            color=0xFFFFFF
         )
 
         filename = role_image_map.get(real_role)
@@ -435,24 +435,28 @@ class NightActionView(discord.ui.View):
         p_id = interaction.user.id
         if p_id not in [p.id for p in self.game.alive_players]: return
         
-        # 二重アクション防止チェック
         if p_id in self.game.night_actions:
-            return await interaction.response.send_message("アクションは既に完了しています。欲張らないでください。", ephemeral=True)
+            embed = discord.Embed(description="アクションは既に完了しています。欲張らないでください。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         role = self.game.roles.get(p_id)
         
-        # あごむに破道砲の制限チェック(修正箇所: 3日目(day_count=3)の夜から打てるように)
         if role == "あごむに破道砲" and self.game.day_count < 3:
-            return await interaction.response.send_message(f"あごむに破道砲は第3夜からしか使用できません。(現在は第{self.game.day_count}夜)", ephemeral=True)
+            embed = discord.Embed(description=f"あごむに破道砲は第3夜からしか使用できません。(現在は第{self.game.day_count}夜)", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        # 夜に行動がない役職の判定
         passive_roles = ["一般通過あごむに", "霊媒師", "狂人", "ハゲ", "メンヘラ", "パン屋", "入狼", "タフむに", "狂信者"]
         if role in passive_roles:
-            return await interaction.response.send_message("お前は寝てろ。明日の朝までじっとしてなさい。", ephemeral=True)
+            embed = discord.Embed(description="お前は寝てろ。明日の朝までじっとしてなさい。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
             
         opts = [discord.SelectOption(label=p.display_name, value=str(p.id)) for p in self.game.alive_players if p.id != p_id]
-        if not opts: return await interaction.response.send_message("対象がいません。", ephemeral=True)
-        await interaction.response.send_message("対象を選択:", view=ActionSelectView(self.game, opts, role), ephemeral=True)
+        if not opts:
+            embed = discord.Embed(description="対象がいません。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        embed = discord.Embed(description="対象を選択してください：", color=0xFFFFFF)
+        await interaction.response.send_message(embed=embed, view=ActionSelectView(self.game, opts, role), ephemeral=True)
 
 class ActionSelectView(discord.ui.View):
     def __init__(self, game, options, role):
@@ -463,9 +467,9 @@ class ActionSelectView(discord.ui.View):
         self.add_item(s)
     async def callback(self, interaction):
         p_id = interaction.user.id
-        # 二重アクション防止（セレクトボックス経由）
         if p_id in self.game.night_actions:
-            return await interaction.response.send_message("既にアクションは受理されています。", ephemeral=True)
+            embed = discord.Embed(description="既にアクションは受理されています。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         t_id = int(self.children[0].values[0])
         self.game.night_actions[p_id] = t_id
@@ -473,21 +477,23 @@ class ActionSelectView(discord.ui.View):
         if self.role == "占い師":
             r = self.game.roles.get(t_id)
             res = "人狼" if r in ["人狼", "入狼", "ワンころ"] else "人間"
-            await interaction.response.send_message(f"<:URANAI:1490255412837093568>結果: 【{res}】", ephemeral=True)
+            embed = discord.Embed(description=f"<:URANAI:1490255412837093568>結果: 【{res}】", color=0xFFFFFF)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         elif self.role == "マサイ族":
             r = self.game.roles.get(t_id)
-            # マサイ族の真偽を隠蔽
             if r in ["人狼", "デカ狼"]:
                 self.game.masai_evasion[p_id] = True
-            await interaction.response.send_message("<:MASAI:1490254590757572758>対象の観察を完了しました。人狼であれば回避の準備を整える。", ephemeral=True)
+            embed = discord.Embed(description="<:MASAI:1490254590757572758>対象の観察を完了しました。人狼であれば回避の準備を整える。", color=0xFFFFFF)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
-            await interaction.response.send_message("完了。", ephemeral=True)
+            embed = discord.Embed(description="完了。", color=0xFFFFFF)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 class RecruitView(discord.ui.View):
     def __init__(self, game, timeout: int):
         super().__init__(timeout=timeout)
         self.game = game
-    @discord.ui.button(label="<:371a91fa080947ca:1490254586575851621>参加する", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="参加する", style=discord.ButtonStyle.success)
     async def join(self, interaction, button):
         if interaction.user not in self.game.players:
             self.game.players.append(interaction.user)
@@ -502,17 +508,16 @@ class PublicVoteView(discord.ui.View):
         self.add_item(s)
     async def callback(self, interaction):
         p_id = interaction.user.id
-        
-        # 生存確認
         if p_id not in [p.id for p in self.game.alive_players]:
-            return await interaction.response.send_message("死人に口なし。墓場で大人しくしていなさい。", ephemeral=True)
+            embed = discord.Embed(description="死人に口なし。墓場で大人しくしていなさい。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
             
-        # 二重投票確認
         if p_id in self.game.voted_count:
-            return await interaction.response.send_message("既に投票済みです。意志を何度も変えることはできません。", ephemeral=True)
+            embed = discord.Embed(description="既に投票済みです。意志を何度も変えることはできません。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         self.game.voted_count[p_id] = self.children[0].values[0]
-        await interaction.response.send_message(f"<:success:1490985168100659322>{interaction.user.display_name} さんが投票を完了しました。")
+        await interaction.response.send_message(f"<u:success:1490985168100659322>{interaction.user.display_name} さんが投票を完了しました。")
 
 async def setup(bot):
     await bot.add_cog(JinrouCog(bot))

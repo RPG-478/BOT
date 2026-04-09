@@ -20,6 +20,10 @@ async def send_debug_log(bot, message: str):
     else:
         print(f"Debug channel not found: {message}")
 
+def we(description: str = None, title: str = None) -> discord.Embed:
+    """白色embedを生成するヘルパー"""
+    return discord.Embed(title=title, description=description, color=0xFFFFFF)
+
 class DoubtJoinView(discord.ui.View):
     def __init__(self, host_id):
         super().__init__(timeout=60)
@@ -29,9 +33,9 @@ class DoubtJoinView(discord.ui.View):
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id not in self.players:
             self.players.append(interaction.user.id)
-            await interaction.response.send_message(f"参加しました (現在: {len(self.players)}名)", ephemeral=True)
+            await interaction.response.send_message(embed=we(f"参加しました (現在: {len(self.players)}名)"), ephemeral=True)
         else:
-            await interaction.response.send_message("既に参加しています", ephemeral=True)
+            await interaction.response.send_message(embed=we("既に参加しています"), ephemeral=True)
 
 class WordWolfGenreView(discord.ui.View):
     def __init__(self, bot):
@@ -53,7 +57,7 @@ class WordWolfGenreView(discord.ui.View):
             
             if not cog:
                 await send_debug_log(self.bot, "エラー: CustomWordWolf Cogが見つかりません。")
-                await interaction.response.edit_message(content="エラー: Cogが見つかりません。", view=None)
+                await interaction.response.edit_message(embed=we("エラー: Cogが見つかりません。"), view=None)
                 return
 
             cog.game_running = False
@@ -100,7 +104,7 @@ class GameSelectView(discord.ui.View):
             elif game_value == "doubt":
                 cog = self.bot.get_cog("Doubt")
                 if not cog:
-                    await interaction.response.edit_message(content="エラー: Doubtモジュールがロードされていません。", view=None)
+                    await interaction.response.edit_message(embed=we("エラー: Doubtモジュールがロードされていません。"), view=None)
                     await send_debug_log(self.bot, "エラー: Doubt Cogが見つかりません。")
                     return
                 
@@ -151,7 +155,7 @@ class GameSelectView(discord.ui.View):
 
                 wait_time = 60
                 join_view = god_field.JoinView(timeout=wait_time)
-                embed = discord.Embed(title="⚡ God Field 参加者募集", description="参戦ボタンを押してください。", color=0xFFFFFF)
+                embed = discord.Embed(title="God Field 参加者募集", description="参戦ボタンを押してください。", color=0xFFFFFF)
                 await interaction.response.edit_message(content=None, embed=embed, view=join_view)
                 
                 self.bot.loop.create_task(cog.start_from_hub(interaction.channel, join_view))

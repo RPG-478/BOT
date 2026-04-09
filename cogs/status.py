@@ -21,17 +21,21 @@ class Status(commands.Cog):
             res = supabase.table("users").select("coins, p_rank").eq("discord_id", user_id).execute()
             
             if not res.data:
-                await interaction.response.send_message("データが見つかりませんでした。先にゲームに参加してください。", ephemeral=True)
+                embed = discord.Embed(
+                    description="データが見つかりませんでした。先にゲームに参加してください。",
+                    color=0xFFFFFF
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
 
             data = res.data[0]
             coins = data.get("coins", 0)
             p_rank = data.get("p_rank", "N/A")
 
-            # Embedの作成
+            # Embedの作成（白色統一）
             embed = discord.Embed(
                 title=f"{interaction.user.display_name} のステータス",
-                color=discord.Color.gold(),
+                color=0xFFFFFF,
                 timestamp=discord.utils.utcnow()
             )
             
@@ -49,7 +53,11 @@ class Status(commands.Cog):
 
         except Exception as e:
             print(f"Error fetching status: {e}")
-            await interaction.response.send_message("データの取得中にエラーが発生しました。", ephemeral=True)
+            embed = discord.Embed(
+                description="データの取得中にエラーが発生しました。",
+                color=0xFFFFFF
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(Status(bot))
