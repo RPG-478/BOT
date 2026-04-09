@@ -4,6 +4,7 @@ import asyncio
 import time
 import logging
 import configparser
+import string
 
 
 class Voice(commands.Cog):
@@ -63,18 +64,38 @@ class Voice(commands.Cog):
             return percent, used, total
         except Exception:
             return 0, 0, 0
+
+    BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
+
+    def encode_base62(num: int) -> str:
+        if num == 0: return BASE62[0]
+        arr = []
+        base = len(BASE62)
+        while num:
+            num, rem = divmod(num, base)
+            arr.append(BASE62[rem])
+        arr.reverse()
+        return ''.join(arr)
+
+    def decode_base62(string: str) -> int:
+        base = len(BASE62)
+        num = 0
+        for idx, char in enumerate(string[::-1]):
+            num += BASE62.index(char) * (base ** idx)
+        return num
+
             
-    async def get_attachment_by_id(self, channel, message_id: int):
-        """メッセージIDから添付ファイルのURLとファイル名を取得する"""
+    async def get_attachment_info(self, channel, m_id_b62: str):
+        """62進数IDから添付ファイル情報を取得"""
         try:
-            msg = await channel.fetch_message(message_id)
+            real_id = decode_base62(m_id_b62)
+            msg = await channel.fetch_message(real_id)
             if msg.attachments:
-                # 最初のアタッチメントを返す
                 return msg.attachments[0].url, msg.attachments[0].filename
+        except Exception:
             return None, None
-        except Exception as e:
-            logging.error(f"ID:{message_id} の取得に失敗: {e}")
-            return None, None
+        return None, None
+
 
     # =====================
     # VC Control
@@ -112,30 +133,20 @@ class Voice(commands.Cog):
 
     @commands.command()
     async def eq(self, ctx, mode: str = "flat"):
-        """
-        高度な音響設定
-        modes: bass, echo, hall, vocal, superbass, flat
-        """
+        """音響エフェクト設定 (bass/echo/hall/vocal/superbass/flat)"""
         eq_settings = {
-            # 低音強調 + 音量正規化
-            "bass": "bass=g=10,dynaudnorm", 
-            # 山びこエフェクト (遅延200ms)
-            "echo": "aecho=0.8:0.8:200:0.4", 
-            # コンサートホール風 (短い残響 + ステレオ幅拡張)
-            "hall": "aecho=0.8:0.88:60:0.4,extrastereo=m=2.5", 
-            # 高度なイコライザー (中音域/人の声を強調)
-            "vocal": "firequalizer=gain_entry='entry(100, -5); entry(400, 0); entry(1000, 5); entry(4000, 5); entry(8000, 0)'",
-            # 超低域 (31Hz-62Hz) をピンポイントで爆上げ
-            "superbass": "firequalizer=gain_entry='entry(31, 15); entry(62, 10); entry(125, 5); entry(250, 0)'",
+            "bass": "bass=g=10,dynaudnorm",
+            "echo": "aecho=0.8:0.8:200:0.4",
+            "hall": "aecho=0.8:0.88:60:0.4,extrastereo=m=2.5",
+            "vocal": "firequalizer=gain_entry='entry(100, -5); entry(1000, 5); entry(4000, 5); entry(8000, 0)'",
+            "superbass": "firequalizer=gain_entry='entry(31, 15); entry(62, 10); entry(125, 5)'",
             "flat": None
         }
-
         if mode not in eq_settings:
-            await ctx.send("利用可能なモード: bass, echo, hall, vocal, superbass, flat")
-            return
-
+            return await ctx.send("利用可能なモード: bass, echo, hall, vocal, superbass, flat")
         self.eq_filter = eq_settings[mode]
-        await ctx.send(f"音響エフェクトを `{mode}` に変更しました。(次曲から適用)")
+        await ctx.send(f"エフェクトを `{mode}` に変更しました。")
+
 
     # =====================
     # Playback Logic
@@ -266,35 +277,44 @@ class Voice(commands.Cog):
 
     @commands.command()
     async def plist(self, ctx, *, ids_str: str):
-        """
-        メッセージIDを並べてプレイリストとして再生
-        例: !plist 123456789, 987654321
-        """
-        vc = ctx.voice_client
-        if vc is None:
-            return await ctx.send("先に !join してください。")
-
-        # カンマやスペースで区切られたIDをリスト化
-        ids = [i.strip() for i in ids_str.replace(',', ' ').split() if i.strip().isdigit()]
-        
-        if not ids:
-            return await ctx.send("有効なメッセージIDが見つかりませんでした。")
-
+        """62進数IDを並べて再生 (例: !plist aB12 dE34)"""
+        if not ctx.voice_client: return await ctx.send("先に !join してください。")
         self.current_ctx = ctx
-        count = 0
-
-        for m_id in ids:
-            url, filename = await self.get_attachment_by_id(ctx.channel, int(m_id))
+        tokens = ids_str.replace(',', ' ').split()
+        added = 0
+        for token in tokens:
+            url, fname = await self.get_attachment_info(ctx.channel, token)
             if url:
-                await self.queue.put((url, filename))
-                count += 1
-            else:
-                await ctx.send(f"警告: ID `{m_id}` に添付ファイルが見つからないか、取得できませんでした。")
-
-        await ctx.send(f"{count} 件の音声をキューに追加しました。")
-
-        if not vc.is_playing() and not self.is_processing_queue:
+                await self.queue.put((url, fname))
+                added += 1
+        await ctx.send(f"{added} 件の音声をキューに追加しました。")
+        if not ctx.voice_client.is_playing() and not self.is_processing_queue:
             await self.check_queue()
+    @commands.command()
+    async def list(self, ctx, limit: int = 20):
+        """チャンネル内の添付ファイルをスキャンしてID一覧を表示"""
+        embed = discord.Embed(title="🎵 登録済み音声一覧", color=discord.Color.blue())
+        description = "IDを `!plist ID ID ...` で再生できます\n" + "─" * 20 + "\n"
+        found = False
+        async for message in ctx.channel.history(limit=limit):
+            if message.attachments:
+                found = True
+                b62_id = encode_base62(message.id)
+                filename = message.attachments[0].filename
+                description += f"`{b62_id}` : **{filename}**\n"
+        if not found: description = "音声が見つかりませんでした。"
+        embed.description = description
+        await ctx.send(embed=embed)
+
+    @commands.command()
+    async def id(self, ctx):
+        """直近の添付ファイル付きメッセージのIDを表示"""
+        async for message in ctx.channel.history(limit=5):
+            if message.attachments:
+                b62 = encode_base62(message.id)
+                return await ctx.send(f"ファイル: **{message.attachments[0].filename}**\nID: `{b62}`")
+        await ctx.send("近くに添付ファイルが見つかりませんでした。")
+
 
     # =====================
     # Stats / Diagnostics
