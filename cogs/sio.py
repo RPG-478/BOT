@@ -50,6 +50,7 @@ class Voice(commands.Cog):
         self.elapsed_offset = 0    # 再生済みの秒数
         self.retry_count = 0
         self.MAX_RETRIES = 3
+        self.supabase = getattr(bot, "supabase", None)
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx, error):
