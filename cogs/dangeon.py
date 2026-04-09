@@ -1,36 +1,52 @@
 # -*- coding: utf-8 -*-
 """
-ダンジョンシステム Cog
+ダンジョンシステム Cog（スタンドアロン版）
 dungeon.py - Discord.py Cog形式
 
-依存関係:
-  - discord.py, Pillow, supabase
-  - constants.py (D_FLOORS, D_BIOMES, D_ENCOUNTER_RATES, JST等)
-  - 親ボットの supabase クライアント, user_cache, client, 関数 (load_user, save_user, get_user_cache, add_xp, dg_save_*, d_*, ENEMY_STATS_MASTER等)
-
-使用方法:
-  - main.py の on_ready内で await dg_load_all()
-  - main.py の on_ready内で if not dungeon_task.is_running(): dungeon_task.start()
+【必須設定】
+  .env:
+    DUNGEON_IMG_CHANNEL_ID=画像投稿チャンネルID
+  
+  Supabase テーブル:
+    - dungeon_maps (floor, grid, used_coords, start_pos)
+    - dungeon_players (user_id, floor, x, y, hp, max_hp, atk, def_, spd, crit)
+    - dungeon_bases (user_id, floor, x, y)
+  
+  main.py:
+    await bot.load_extension('cogs.dungeon')
 """
 
-import os, discord, json, random, asyncio, io, datetime
-from discord.ui import View, Button
+import os
+import discord
+import json
+import random
+import asyncio
+import io
+import datetime
+from discord.ui import View
 from discord import app_commands, Interaction
 from discord.ext import commands, tasks
 from discord.ext.commands import Cog
 from PIL import Image, ImageDraw
-from dotenv import load_dotenv
+from zoneinfo import ZoneInfo
 
 # ============================================================
-#  定数・アセット（constants.pyから複製される想定）
+#  タイムゾーン
 # ============================================================
+JST = ZoneInfo("Asia/Tokyo")
+
+# ============================================================
+#  定数（ダンジョンシステム用）
+# ============================================================
+
+# マップ定義
 D_MAP_W = 101
 D_MAP_H = 101
 D_FLOORS = 40
 D_VIEW_R = 5
 TILE = 32
 
-# タイルタイプ定義
+# タイルタイプ
 D_WALL = "wall"
 D_FLOOR = "floor"
 D_START = "start"
@@ -39,7 +55,6 @@ D_CHEST = "chest"
 D_TRAP = "trap"
 D_SHOP = "shop"
 D_BASE = "base"
-D_LOBY = "loby"
 D_MINE = "mine"
 
 I_WALL = "i_wall"
@@ -52,14 +67,7 @@ I_BAKERY = "i_bakery"
 I_DOUBLE = "i_double"
 I_SLOT = "i_slot"
 
-# バイオームごとのエンカウント率（constants.pyから引用）
-D_ENCOUNTER_RATES = {
-    "洞窟":     0.05,
-    "森":       0.20,
-    "氷雪地帯": 0.07,
-    "砂漠地帯": 0.13,
-}
-
+# バイオーム定義 (フロア範囲, 名前, 壁emoji, 床emoji, 霧emoji, 色)
 D_BIOMES = [
     (range(1,  10),  "洞窟",     "⬜", "⬛", "🌫️", 0x5C4033),
     (range(10,  20),  "森",       "🟫", "🟩", "🌫️", 0x2D5A1B),
@@ -67,7 +75,15 @@ D_BIOMES = [
     (range(30, 40),  "砂漠地帯", "🟧", "🟨", "🌫️", 0xC8600A),
 ]
 
-# タイルカラー定義
+# エンカウント率
+D_ENCOUNTER_RATES = {
+    "洞窟":     0.05,
+    "森":       0.20,
+    "氷雪地帯": 0.07,
+    "砂漠地帯": 0.13,
+}
+
+# タイルカラー (RGB)
 TILE_COLORS = {
     D_WALL:   {"洞窟": (80,60,50),    "森": (40,60,20),   "氷雪地帯": (200,220,240), "砂漠地帯": (120,80,30)},
     D_FLOOR:  {"洞窟": (40,30,25),    "森": (60,100,30),  "氷雪地帯": (100,160,200), "砂漠地帯": (200,160,60)},
@@ -93,21 +109,22 @@ ASSET_CONFIG = {
     ("砂漠地帯", D_WALL): "Y_k.png",
     ("砂漠地帯", D_FLOOR): "Y_y.png",
 }
-_ASSET_CACHE = {}
 
-# 敵データ
+# 敵データベース
 D_ENEMY_NAMES = {
     "洞窟":     ["コウモリ","ゴブリン","岩石スライム"],
     "森":       ["オオカミ","毒キノコ","トレント"],
     "氷雪地帯": ["雪男","アイスゴーレム","白熊"],
     "砂漠地帯": ["サソリ","砂蛇","炎トカゲ"],
 }
+
 D_SUPERENEMY_NAMES = {
     "洞窟":     ["セミオートキラーマシン"],
     "森":       ["邪蛇"],
     "氷雪地帯": ["雪女"],
     "砂漠地帯": ["鬼"],
 }
+
 D_BOSS_NAMES = {
     "洞窟":     ["ドラゴン"],
     "森":       ["ヌシ","ぱすた"],
@@ -134,14 +151,18 @@ ENEMY_STATS_MASTER = {
     "default":        {"hp_m": 1.0, "atk_m": 1.0, "def_m": 1.0, "spd": 10, "crit": 0.05, "ai": ["attack"], "coin_m": 1.0, "xp_m": 1.0, "boxes": 0}
 }
 
-# グローバルメモリキャッシュ
-dg_maps    = {}
-dg_players = {}
-dg_starts  = {}
-dg_used    = {}
-dg_bases   = {}
+# ============================================================
+#  グローバルメモリキャッシュ
+# ============================================================
 
-# 環境変数から取得（main.py で設定される想定）
+dg_maps    = {}  # {floor: [[...], [...]]}
+dg_players = {}  # {uid: {floor, x, y, hp, max_hp, atk, def_, spd, crit}}
+dg_starts  = {}  # {floor: (x, y)}
+dg_used    = {}  # {floor: set((x, y), ...)}
+dg_bases   = {}  # {uid: (floor, x, y)}
+_ASSET_CACHE = {}
+
+# 環境変数
 DUNGEON_IMG_CHANNEL_ID = int(os.environ.get("DUNGEON_IMG_CHANNEL_ID", 0))
 
 # ============================================================
@@ -154,25 +175,6 @@ def d_get_biome(floor):
         if floor in r:
             return name, wall_e, floor_e, fog_e, color
     return "洞窟", "⬜", "⬛", "🌫️", 0x5C4033
-
-def load_all_assets():
-    """Assetsフォルダから画像を読み込みキャッシュする"""
-    global _ASSET_CACHE
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    assets_dir = os.path.join(base_dir, "Assets")
-    
-    _ASSET_CACHE = {}
-    for (biome, tid), fname in ASSET_CONFIG.items():
-        path = os.path.join(assets_dir, fname)
-        if os.path.isfile(path):
-            try:
-                img = Image.open(path).convert("RGBA").resize((TILE, TILE), Image.Resampling.NEAREST)
-                _ASSET_CACHE[(biome, tid)] = img
-                print(f"✓ {fname} を正常に読み込みました: {path}")
-            except Exception as e:
-                print(f"❌ {fname} ロード失敗: {e}")
-        else:
-            print(f"⚠ {fname} が見つかりません: {path}")
 
 def d_ensure_map(floor):
     """フロアのマップが存在しなければ生成"""
@@ -213,59 +215,43 @@ def d_hpbar(hp, max_hp, width=10):
     filled = int(width * hp / max(max_hp, 1))
     return "█" * filled + "░" * (width - filled)
 
-def d_open_chest(uid):
+def d_open_chest(uid, supabase):
     """宝箱を開く"""
-    # 親ボットの get_user_cache を想定
-    from main import get_user_cache  # 実際には適切にインポート
-    u = get_user_cache(uid)
     roll = random.random()
     if roll < 0.5:
         coins = random.randint(50, 300)
-        u["coins"] = u.get("coins", 0) + coins
-        return f"🟨 宝箱！ コイン **+{coins}** 枚"
+        return f"🟨 宝箱！ コイン **+{coins}** 枚", coins
     elif roll < 0.8:
         bread = random.randint(3, 15)
-        u["bread_count"] = u.get("bread_count", 0) + bread
-        return f"🟨 宝箱！ レアパン **+{bread}** 個"
+        return f"🟨 宝箱！ レアパン **+{bread}** 個", 0
     elif roll < 0.95:
         boxes = random.randint(1, 3)
-        u["boxes"] = u.get("boxes", 0) + boxes
-        return f"🟨 宝箱！ 宝箱 **+{boxes}** 個"
+        return f"🟨 宝箱！ 宝箱 **+{boxes}** 個", 0
     else:
         chips = random.randint(100, 500)
-        u["chips"] = u.get("chips", 0) + chips
-        return f"🟨 宝箱！ チップ **+{chips}** 枚"
+        return f"🟨 宝箱！ チップ **+{chips}** 枚", 0
 
 def d_trigger_trap(uid):
     """罠を発動"""
-    # 親ボットの get_user_cache, d_get_player を想定
-    from main import get_user_cache
-    u = get_user_cache(uid)
     p = d_get_player(uid)
     roll = random.random()
     if roll < 0.4:
         loss = random.randint(30, 150)
-        u["coins"] = max(0, u.get("coins", 0) - loss)
-        return f"🟥 罠！ コイン **-{loss}** 枚"
+        return f"🟥 罠！ コイン **-{loss}** 枚", -loss
     elif roll < 0.7:
         dmg = random.randint(10, 30)
         p["hp"] = max(0, p["hp"] - dmg)
-        return f"🟥 罠！ HP **-{dmg}**"
+        return f"🟥 罠！ HP **-{dmg}**", 0
     elif roll < 0.85:
         loss = random.randint(1, 5)
-        u["bread_count"] = max(0, u.get("bread_count", 0) - loss)
-        return f"🟥 罠！ レアパン **-{loss}** 個"
+        return f"🟥 罠！ レアパン **-{loss}** 個", 0
     else:
         loss = random.randint(50, 200)
-        u["chips"] = max(0, u.get("chips", 0) - loss)
-        return f"🟥 罠！ チップ **-{loss}** 枚"
+        return f"🟥 罠！ チップ **-{loss}** 枚", 0
 
 def d_do_mine(uid):
     """採掘する"""
-    from main import get_user_cache
-    u = get_user_cache(uid)
     gain = random.randint(30, 200)
-    u["coins"] = u.get("coins", 0) + gain
     return gain
 
 def d_make_enemy(floor, forced_name=None):
@@ -301,8 +287,7 @@ def d_make_enemy(floor, forced_name=None):
     rank_def_mul = 1.5 if etype == "elite" else (2.0 if etype == "boss" else 1.0)
 
     # ステータス確定
-    m_hp_m  = m.get("hp_m")
-    hp = int((base_hp + random.randint(-3, 3)) * m_hp_m * rank_hp_mul)
+    hp = int((base_hp + random.randint(-3, 3)) * m.get("hp_m") * rank_hp_mul)
     atk = int((base_atk + random.randint(-1, 1)) * m.get("atk_m", 1.0) * rank_atk_mul)
     defe = int(base_def * m.get("def_m", 1.0) * rank_def_mul)
     
@@ -429,19 +414,25 @@ def d_gen_floor(floor):
     
     return grid
 
-# ============================================================
-#  Pillow マップ描画
-# ============================================================
+def load_all_assets():
+    """Assetsフォルダから画像を読み込みキャッシュする"""
+    global _ASSET_CACHE
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    assets_dir = os.path.join(base_dir, "..", "Assets")
+    
+    _ASSET_CACHE = {}
+    for (biome, tid), fname in ASSET_CONFIG.items():
+        path = os.path.join(assets_dir, fname)
+        if os.path.isfile(path):
+            try:
+                img = Image.open(path).convert("RGBA").resize((TILE, TILE), Image.Resampling.NEAREST)
+                _ASSET_CACHE[(biome, tid)] = img
+                print(f"✓ {fname} を読み込みました")
+            except Exception as e:
+                print(f"❌ {fname} ロード失敗: {e}")
 
 def _draw_tile(draw, img, x, y, cell, biome, is_player=False, is_fog=False):
     """タイルを描画"""
-    global _ASSET_CACHE
-    if not _ASSET_CACHE:
-        try:
-            load_all_assets()
-        except Exception as e:
-            print(f"! load_all_assets fallback error: {e}")
-
     px, py = x * TILE, y * TILE
     if is_fog:
         draw.rectangle([px, py, px+TILE-1, py+TILE-1], fill=(0, 0, 0))
@@ -473,7 +464,6 @@ def _draw_tile(draw, img, x, y, cell, biome, is_player=False, is_fog=False):
         col = col_src
     draw.rectangle([px, py, px+TILE-1, py+TILE-1], fill=col)
     
-    # アイコン的な印をつける
     if cell == D_CHEST:
         margin = 8
         draw.rectangle([px+margin, py+margin, px+TILE-margin-1, py+TILE-margin-1],
@@ -517,27 +507,27 @@ def d_render_pillow(uid, floor, px, py, radius=D_VIEW_R):
     buf.seek(0)
     return discord.File(fp=buf, filename="map.png")
 
-async def d_render_image(uid, floor, px, py, radius=D_VIEW_R, client=None):
+async def d_render_image(uid, floor, px, py, bot, radius=D_VIEW_R):
     """マップを画像として生成しDiscordにアップロード、URLを返す"""
     img = d_build_map_image(uid, floor, px, py, radius)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
     try:
-        if not client:
-            from main import client  # 親ボットから取得
-        ch = client.get_channel(DUNGEON_IMG_CHANNEL_ID) or \
-             await client.fetch_channel(DUNGEON_IMG_CHANNEL_ID)
+        ch = bot.get_channel(DUNGEON_IMG_CHANNEL_ID) or \
+             await bot.fetch_channel(DUNGEON_IMG_CHANNEL_ID)
         msg = await ch.send(file=discord.File(buf, filename="map.png"))
         return msg.attachments[0].url
     except Exception as e:
         print(f"画像アップロード失敗: {e}")
         return None
 
-# DB保存関数（親ボットのsupabaseクライアントを利用）
-async def dg_load_all():
+# ============================================================
+#  DB 操作
+# ============================================================
+
+async def dg_load_all(supabase):
     """Supabaseから全ダンジョンデータを読み込む"""
-    from main import supabase
     global dg_maps, dg_players, dg_starts, dg_used, dg_bases
     
     try:
@@ -548,9 +538,9 @@ async def dg_load_all():
             dg_used[floor] = set(tuple(p) for p in json.loads(row.get("used_coords", "[]")))
             if "start_pos" in row and row["start_pos"]:
                 dg_starts[floor] = tuple(row["start_pos"])
-        print(f"ダンジョンマップ読み込み完了: {len(dg_maps)}フロア")
+        print(f"✓ ダンジョンマップ読み込み完了: {len(dg_maps)}フロア")
     except Exception as e:
-        print(f"ダンジョンマップ読み込み失敗: {e}")
+        print(f"❌ ダンジョンマップ読み込み失敗: {e}")
     
     try:
         res = supabase.table("dungeon_players").select("*").execute()
@@ -566,21 +556,20 @@ async def dg_load_all():
                 "spd": row.get("spd", 10),
                 "crit": row.get("crit", 0.05),
             }
-        print(f"ダンジョンプレイヤー読み込み完了: {len(dg_players)}人")
+        print(f"✓ ダンジョンプレイヤー読み込み完了: {len(dg_players)}人")
     except Exception as e:
-        print(f"ダンジョンプレイヤー読み込み失敗: {e}")
+        print(f"❌ ダンジョンプレイヤー読み込み失敗: {e}")
     
     try:
         res = supabase.table("dungeon_bases").select("*").execute()
         for row in res.data:
             dg_bases[row["user_id"]] = (row["floor"], row["x"], row["y"])
-        print(f"ダンジョン拠点読み込み完了: {len(dg_bases)}個")
+        print(f"✓ ダンジョン拠点読み込み完了: {len(dg_bases)}個")
     except Exception as e:
-        print(f"ダンジョン拠点読み込み失敗: {e}")
+        print(f"❌ ダンジョン拠点読み込み失敗: {e}")
 
-async def dg_save_map(floor):
+async def dg_save_map(floor, supabase):
     """フロアマップをSupabaseに保存"""
-    from main import supabase
     if floor not in dg_maps:
         return
     try:
@@ -596,9 +585,8 @@ async def dg_save_map(floor):
     except Exception as e:
         print(f"dg_save_map失敗 floor={floor}: {e}")
 
-async def dg_save_player(uid):
+async def dg_save_player(uid, supabase):
     """プレイヤーのダンジョンデータをSupabaseに保存"""
-    from main import supabase
     if uid not in dg_players:
         return
     try:
@@ -618,9 +606,8 @@ async def dg_save_player(uid):
     except Exception as e:
         print(f"dg_save_player失敗 uid={uid}: {e}")
 
-async def dg_save_base(uid, floor, x, y):
+async def dg_save_base(uid, floor, x, y, supabase):
     """プレイヤーの拠点をSupabaseに保存"""
-    from main import supabase
     dg_bases[uid] = (floor, x, y)
     try:
         supabase.table("dungeon_bases").upsert({
@@ -633,11 +620,11 @@ async def dg_save_base(uid, floor, x, y):
         print(f"dg_save_base失敗 uid={uid}: {e}")
 
 # ============================================================
-#  ビューとコマンド（Cog化）
+#  Views
 # ============================================================
 
 class DungeonStatusView(View):
-    """ステータス表示View"""
+    """ステータス表示"""
     def __init__(self, uid, floor, x, y):
         super().__init__(timeout=60)
         self.uid = uid
@@ -646,24 +633,22 @@ class DungeonStatusView(View):
         self.y = y
     
     def _embed(self):
-        from main import get_user_cache, supabase
         p = d_get_player(self.uid)
-        u = get_user_cache(self.uid)
         em = discord.Embed(title="🗺 ダンジョン ステータス", color=0x8B4513)
         em.add_field(name="現在位置", value=f"フロア **{self.floor}** ({self.x}, {self.y})", inline=False)
         em.add_field(name="HP", value=f"{d_hpbar(p['hp'], p['max_hp'])} {p['hp']}/{p['max_hp']}", inline=False)
         em.add_field(name="ステータス", value=f"⚔️{p['atk']} 🛡️{p['def_']} 🏃{p['spd']} 💥{int(p['crit']*100)}%", inline=False)
-        em.add_field(name="所持品", value=f"💰{u.get('coins',0):,} 🟩{u.get('bread_count',0)} 📦{u.get('boxes',0)}", inline=False)
         return em
 
 class DungeonStairsView(View):
     """階段View"""
-    def __init__(self, uid, floor, x, y):
+    def __init__(self, uid, floor, x, y, supabase):
         super().__init__(timeout=180)
         self.uid = uid
         self.floor = floor
         self.x = x
         self.y = y
+        self.supabase = supabase
     
     def _embed(self, msg=""):
         em = discord.Embed(title="🔺 階段がある", color=0x00ff88, description=msg)
@@ -676,11 +661,11 @@ class DungeonStairsView(View):
         if self.floor < D_FLOORS:
             p = d_get_player(self.uid)
             p["floor"] = self.floor + 1
-            p["hp"] = p["max_hp"]  # HP回復
+            p["hp"] = p["max_hp"]
             start_pos = dg_starts.get(self.floor + 1, (1, 1))
             p["x"], p["y"] = start_pos
-            await dg_save_player(self.uid)
-            mv = DungeonMainView(self.uid, p["floor"], p["x"], p["y"])
+            await dg_save_player(self.uid, self.supabase)
+            mv = DungeonMainView(self.uid, p["floor"], p["x"], p["y"], self.supabase)
             map_file = d_render_pillow(self.uid, p["floor"], p["x"], p["y"])
             await i.edit_original_response(embed=mv._embed(f"フロア {self.floor + 1}へ到達！"), view=mv, attachments=[map_file])
         else:
@@ -689,18 +674,19 @@ class DungeonStairsView(View):
     @discord.ui.button(label="⬅️ 戻る", style=discord.ButtonStyle.grey)
     async def back(self, i, b):
         await i.response.defer()
-        mv = DungeonMainView(self.uid, self.floor, self.x, self.y)
+        mv = DungeonMainView(self.uid, self.floor, self.x, self.y, self.supabase)
         map_file = d_render_pillow(self.uid, self.floor, self.x, self.y)
         await i.edit_original_response(embed=mv._embed(""), view=mv, attachments=[map_file])
 
 class DungeonMineView(View):
     """採掘View"""
-    def __init__(self, uid, floor, x, y):
+    def __init__(self, uid, floor, x, y, supabase):
         super().__init__(timeout=60)
         self.uid = uid
         self.floor = floor
         self.x = x
         self.y = y
+        self.supabase = supabase
     
     def _embed(self, msg=""):
         em = discord.Embed(title="⛏ 鉱山", color=0xC0C0C0, description=msg)
@@ -712,23 +698,21 @@ class DungeonMineView(View):
         await i.response.defer()
         gain = d_do_mine(self.uid)
         d_consume(self.floor, self.x, self.y)
-        await asyncio.create_task(dg_save_map(self.floor))
-        from main import save_user
-        await save_user(self.uid)
-        mv = DungeonMainView(self.uid, self.floor, self.x, self.y)
+        await dg_save_map(self.floor, self.supabase)
+        mv = DungeonMainView(self.uid, self.floor, self.x, self.y, self.supabase)
         map_file = d_render_pillow(self.uid, self.floor, self.x, self.y)
         await i.edit_original_response(embed=mv._embed(f"💰 採掘！ **+{gain}** コイン"), view=mv, attachments=[map_file])
     
     @discord.ui.button(label="⬅️ 戻る", style=discord.ButtonStyle.grey)
     async def back(self, i, b):
         await i.response.defer()
-        mv = DungeonMainView(self.uid, self.floor, self.x, self.y)
+        mv = DungeonMainView(self.uid, self.floor, self.x, self.y, self.supabase)
         map_file = d_render_pillow(self.uid, self.floor, self.x, self.y)
         await i.edit_original_response(embed=mv._embed(""), view=mv, attachments=[map_file])
 
 class DungeonCombatView(View):
     """戦闘View"""
-    def __init__(self, uid, floor, x, y, enemy):
+    def __init__(self, uid, floor, x, y, enemy, supabase):
         super().__init__(timeout=180)
         self.uid = uid
         self.floor = floor
@@ -737,6 +721,7 @@ class DungeonCombatView(View):
         self.enemy = enemy
         self.log = []
         self.defending = False
+        self.supabase = supabase
     
     def _embed(self):
         p = d_get_player(self.uid)
@@ -750,12 +735,10 @@ class DungeonCombatView(View):
         em = discord.Embed(title=f"⚔️ {e['name']}（{type_text}）が現れた！", color=color)
         em.set_image(url="attachment://map.png")
 
-        p_crit_display = int(p.get("crit", 0.05) * 100)
         em.add_field(name="あなた",
             value=f"`{d_hpbar(p['hp'],p['max_hp'])}`{p['hp']}/{p['max_hp']}\n⚔️{p['atk']} 🛡️{p['def_']}",
             inline=True)
 
-        e_crit_display = int(e.get("crit", 0.05) * 100)
         em.add_field(name=e["name"],
             value=f"`{d_hpbar(e['hp'],e['max_hp'])}`{e['hp']}/{e['max_hp']}\n⚔️{e['atk']} 🛡️{e['def_']}",
             inline=True)
@@ -803,24 +786,14 @@ class DungeonCombatView(View):
         return log_msg
 
     async def _win(self, i):
-        from main import get_user_cache, save_user, add_xp
         e = self.enemy
-        u = get_user_cache(self.uid)
-        u["coins"] = u.get("coins", 0) + e["reward_coins"]
-        if e["reward_box"] > 0:
-            u["boxes"] = u.get("boxes", 0) + e["reward_box"]
-        leveled = add_xp(self.uid, e["reward_xp"])
         msg = f"🎉 勝利！ +{e['reward_coins']}コイン +{e['reward_xp']}XP"
         if e["reward_box"] > 0:
             msg += f" +宝箱{e['reward_box']}個"
-        if leveled:
-            lv = get_user_cache(self.uid)["level"]
-            msg += f"\n⬆️ レベルアップ！ Lv.**{lv}**"
         self.log.append(msg)
-        await save_user(self.uid)
-        await dg_save_player(self.uid)
+        await dg_save_player(self.uid, self.supabase)
         self.stop()
-        mv = DungeonMainView(self.uid, self.floor, self.x, self.y)
+        mv = DungeonMainView(self.uid, self.floor, self.x, self.y, self.supabase)
         map_file = d_render_pillow(self.uid, self.floor, self.x, self.y)
         await i.edit_original_response(embed=mv._embed(msg), view=mv, attachments=[map_file])
 
@@ -830,9 +803,9 @@ class DungeonCombatView(View):
         p["floor"] = 1
         p["x"], p["y"] = dg_starts.get(1, (1, 1))
         self.log.append("敗北… スタート地点へ送還された")
-        await dg_save_player(self.uid)
+        await dg_save_player(self.uid, self.supabase)
         self.stop()
-        mv = DungeonMainView(self.uid, 1, p["x"], p["y"])
+        mv = DungeonMainView(self.uid, 1, p["x"], p["y"], self.supabase)
         map_file = d_render_pillow(self.uid, 1, p["x"], p["y"])
         await i.edit_original_response(embed=mv._embed("敗北して戻された…"), view=mv, attachments=[map_file])
 
@@ -895,7 +868,7 @@ class DungeonCombatView(View):
         escape_rate = 0.2 if self.enemy.get("type") == "elite" else 0.5
         if random.random() < escape_rate:
             self.stop()
-            mv = DungeonMainView(self.uid, self.floor, self.x, self.y)
+            mv = DungeonMainView(self.uid, self.floor, self.x, self.y, self.supabase)
             await i.edit_original_response(embed=mv._embed("逃走成功"), view=mv, attachments=[d_render_pillow(self.uid, self.floor, self.x, self.y)])
         else:
             self.log.append("逃げ失敗！\n" + self._enemy_turn())
@@ -906,12 +879,13 @@ class DungeonCombatView(View):
 
 class DungeonMainView(View):
     """ダンジョンメインView"""
-    def __init__(self, uid, floor, x, y):
+    def __init__(self, uid, floor, x, y, supabase):
         super().__init__(timeout=600)
         self.uid = uid
         self.floor = floor
         self.x = x
         self.y = y
+        self.supabase = supabase
     
     def _embed(self, msg="", has_image=True, image_url=None):
         p = d_get_player(self.uid)
@@ -927,7 +901,6 @@ class DungeonMainView(View):
 
     async def _move(self, i, dx, dy):
         await i.response.defer()
-        from main import get_user_cache, save_user
         
         p = d_get_player(self.uid)
         nx, ny = p["x"] + dx, p["y"] + dy
@@ -947,31 +920,27 @@ class DungeonMainView(View):
         # 座標更新
         p["x"], p["y"] = nx, ny
         
-        # Supabase への保存処理
-        explored_list = [list(c) for c in []]  # 簡略版
         msg = ""
 
         # 特殊タイル判定
         if ct == D_STAIRS:
-            sv = DungeonStairsView(self.uid, self.floor, p["x"], p["y"])
+            sv = DungeonStairsView(self.uid, self.floor, p["x"], p["y"], self.supabase)
             map_file = d_render_pillow(self.uid, self.floor, p["x"], p["y"])
             await i.edit_original_response(embed=self._embed("🔺 階段がある。どうする？"), attachments=[map_file], view=sv)
             return
 
         elif ct == D_CHEST:
-            msg = d_open_chest(self.uid)
+            msg, coins_gain = d_open_chest(self.uid, self.supabase)
             d_consume(self.floor, p["x"], p["y"])
-            await save_user(self.uid)
-            await dg_save_map(self.floor)
+            await dg_save_map(self.floor, self.supabase)
 
         elif ct == D_TRAP:
-            msg = d_trigger_trap(self.uid)
+            msg, coins_loss = d_trigger_trap(self.uid)
             d_consume(self.floor, p["x"], p["y"])
-            await save_user(self.uid)
-            await dg_save_map(self.floor)
+            await dg_save_map(self.floor, self.supabase)
 
         elif ct == D_MINE:
-            mv = DungeonMineView(self.uid, self.floor, p["x"], p["y"])
+            mv = DungeonMineView(self.uid, self.floor, p["x"], p["y"], self.supabase)
             map_file = d_render_pillow(self.uid, self.floor, p["x"], p["y"])
             await i.edit_original_response(embed=mv._embed("⛏ 鉱山を発見！"), attachments=[map_file], view=mv)
             return
@@ -981,7 +950,7 @@ class DungeonMainView(View):
             rate = D_ENCOUNTER_RATES.get(bname, 0.10)
             if random.random() < rate:
                 enemy = d_make_enemy(self.floor)
-                cv = DungeonCombatView(self.uid, self.floor, p["x"], p["y"], enemy)
+                cv = DungeonCombatView(self.uid, self.floor, p["x"], p["y"], enemy, self.supabase)
                 map_file = d_render_pillow(self.uid, self.floor, p["x"], p["y"])
                 await i.edit_original_response(embed=cv._embed(), attachments=[map_file], view=cv)
                 return
@@ -995,45 +964,36 @@ class DungeonMainView(View):
             msg += "\n力尽きた… スタート地点へ戻された"
 
         # 最終的な画面更新
-        await dg_save_player(self.uid)
+        await dg_save_player(self.uid, self.supabase)
         map_file = d_render_pillow(self.uid, self.floor, p["x"], p["y"])
         await i.edit_original_response(embed=self._embed(msg), attachments=[map_file], view=self)
 
     @discord.ui.button(label="↖️", style=discord.ButtonStyle.grey, row=0, custom_id="dg_lu")
-    async def leftup(self, i, b):
-        await self._move(i, -1, -1)
+    async def leftup(self, i, b): await self._move(i, -1, -1)
     
     @discord.ui.button(label="⬆️", style=discord.ButtonStyle.grey, row=0, custom_id="dg_u")
-    async def up(self, i, b):
-        await self._move(i, 0, -1)
+    async def up(self, i, b): await self._move(i, 0, -1)
     
     @discord.ui.button(label="↗️", style=discord.ButtonStyle.grey, row=0, custom_id="dg_ru")
-    async def rightup(self, i, b):
-        await self._move(i, 1, -1)
+    async def rightup(self, i, b): await self._move(i, 1, -1)
     
     @discord.ui.button(label="⬅️", style=discord.ButtonStyle.grey, row=1, custom_id="dg_l")
-    async def left(self, i, b):
-        await self._move(i, -1, 0)
+    async def left(self, i, b): await self._move(i, -1, 0)
     
     @discord.ui.button(label="☑️", style=discord.ButtonStyle.grey, row=1, custom_id="dg_c")
-    async def check(self, i, b):
-        await self._move(i, 0, 0)
+    async def check(self, i, b): await self._move(i, 0, 0)
     
     @discord.ui.button(label="➡️", style=discord.ButtonStyle.grey, row=1, custom_id="dg_r")
-    async def right(self, i, b):
-        await self._move(i, 1, 0)
+    async def right(self, i, b): await self._move(i, 1, 0)
     
     @discord.ui.button(label="↙️", style=discord.ButtonStyle.grey, row=2, custom_id="dg_ld")
-    async def leftdown(self, i, b):
-        await self._move(i, -1, 1)
+    async def leftdown(self, i, b): await self._move(i, -1, 1)
     
     @discord.ui.button(label="⬇️", style=discord.ButtonStyle.grey, row=2, custom_id="dg_d")
-    async def down(self, i, b):
-        await self._move(i, 0, 1)
+    async def down(self, i, b): await self._move(i, 0, 1)
     
     @discord.ui.button(label="↘️", style=discord.ButtonStyle.grey, row=2, custom_id="dg_rd")
-    async def rightdown(self, i, b):
-        await self._move(i, 1, 1)
+    async def rightdown(self, i, b): await self._move(i, 1, 1)
 
     @discord.ui.button(label="STATUS", style=discord.ButtonStyle.green, row=3, custom_id="dg_status")
     async def status(self, i, b):
@@ -1043,24 +1003,42 @@ class DungeonMainView(View):
         await i.edit_original_response(embed=status_embed, attachments=[], view=sv)
 
 
+# ============================================================
+#  Cog クラス
+# ============================================================
+
 class DungeonCog(Cog):
     """ダンジョンシステムCog"""
     def __init__(self, bot):
         self.bot = bot
-        self.dungeon_task.start()
+        self.supabase = None
     
+    async def cog_load(self):
+        """Cog読み込み時"""
+        # 親botのsupabaseを取得
+        if hasattr(self.bot, 'supabase'):
+            self.supabase = self.bot.supabase
+            await dg_load_all(self.supabase)
+        
+        # アセットを読み込み
+        load_all_assets()
+        
+        # タスク開始
+        if not self.dungeon_monthly_task.is_running():
+            self.dungeon_monthly_task.start()
+
     def cog_unload(self):
-        self.dungeon_task.cancel()
+        """Cog アンロード時"""
+        if self.dungeon_monthly_task.is_running():
+            self.dungeon_monthly_task.cancel()
 
     @app_commands.command(name="dungeon", description="ダンジョンに入ります")
     async def dungeon_enter(self, interaction: Interaction):
         """ダンジョンコマンド"""
         await interaction.response.defer()
-        from main import load_user, client
         uid = str(interaction.user.id)
         
-        # ユーザーデータのロード
-        await load_user(uid)
+        # プレイヤーデータ取得
         p = d_get_player(uid)
         floor, x, y = p["floor"], p["x"], p["y"]
         
@@ -1073,30 +1051,25 @@ class DungeonCog(Cog):
             x, y = sx, sy
             p["x"] = x
             p["y"] = y
-            await dg_save_player(uid)
+            if self.supabase:
+                await dg_save_player(uid, self.supabase)
 
         # Viewの作成
-        mv = DungeonMainView(uid, floor, x, y)
+        mv = DungeonMainView(uid, floor, x, y, self.supabase)
         
         # 初期表示用のマップ画像を生成
-        map_url = await d_render_image(uid, floor, x, y, client=client)
+        map_url = await d_render_image(uid, floor, x, y, self.bot)
 
         # Embedの生成
         em = mv._embed("ダンジョンへようこそ！", has_image=True, image_url=map_url)
 
-        # followup.send で送信
+        # 送信
         await interaction.followup.send(embed=em, view=mv)
 
-    @app_commands.command(name="dungeon_reset", description="ダンジョンマップをリセットします（モデレーターのみ）")
+    @app_commands.command(name="dungeon_reset", description="ダンジョンマップをリセット（管理者のみ）")
+    @app_commands.checks.has_permissions(administrator=True)
     async def dungeon_reset(self, interaction: Interaction):
-        """ダンジョンリセットコマンド（モデレーターのみ）"""
-        from main import supabase, moderators, embed_error, embed_success
-        
-        if str(interaction.user.id) not in moderators:
-            await interaction.response.send_message(
-                embed=embed_error("権限エラー", "権限がありません"), ephemeral=True)
-            return
-        
+        """ダンジョンリセットコマンド"""
         await interaction.response.defer()
         global dg_maps, dg_players, dg_starts, dg_used, dg_bases
         dg_maps.clear()
@@ -1106,25 +1079,25 @@ class DungeonCog(Cog):
         dg_bases.clear()
         
         # DBも全消去
-        try:
-            supabase.table("dungeon_maps").delete().neq("floor", 0).execute()
-            supabase.table("dungeon_players").delete().neq("user_id", "").execute()
-            supabase.table("dungeon_bases").delete().neq("user_id", "").execute()
-        except Exception as e:
-            print(f"dungeon_reset DB削除失敗: {e}")
+        if self.supabase:
+            try:
+                self.supabase.table("dungeon_maps").delete().neq("floor", 0).execute()
+                self.supabase.table("dungeon_players").delete().neq("user_id", "").execute()
+                self.supabase.table("dungeon_bases").delete().neq("user_id", "").execute()
+            except Exception as e:
+                print(f"dungeon_reset DB削除失敗: {e}")
         
         for fl in range(1, D_FLOORS+1):
             d_ensure_map(fl)
-            await dg_save_map(fl)
+            if self.supabase:
+                await dg_save_map(fl, self.supabase)
         
-        await interaction.followup.send(embed=embed_success("リセット完了", "マップを再生成しました！"))
+        em = discord.Embed(title="✅ リセット完了", description="マップを再生成しました！", color=0x00ff88)
+        await interaction.followup.send(embed=em)
 
     @tasks.loop(hours=1)
-    async def dungeon_task(self):
-        """月次リセットタスク"""
-        from main import supabase
-        from constants import JST
-        
+    async def dungeon_monthly_task(self):
+        """月次リセットタスク（1日0時）"""
         now = datetime.datetime.now(JST)
         if now.day == 1 and now.hour == 0:
             global dg_maps, dg_players, dg_starts, dg_used, dg_bases
@@ -1134,20 +1107,21 @@ class DungeonCog(Cog):
             dg_used.clear()
             dg_bases.clear()
             
-            try:
-                supabase.table("dungeon_maps").delete().neq("floor", 0).execute()
-                supabase.table("dungeon_players").delete().neq("user_id", "").execute()
-                supabase.table("dungeon_bases").delete().neq("user_id", "").execute()
-            except Exception as e:
-                print(f"dungeon月次リセットDB削除失敗: {e}")
+            if self.supabase:
+                try:
+                    self.supabase.table("dungeon_maps").delete().neq("floor", 0).execute()
+                    self.supabase.table("dungeon_players").delete().neq("user_id", "").execute()
+                    self.supabase.table("dungeon_bases").delete().neq("user_id", "").execute()
+                except Exception as e:
+                    print(f"dungeon月次リセットDB削除失敗: {e}")
+                
+                for fl in range(1, D_FLOORS+1):
+                    d_ensure_map(fl)
+                    await dg_save_map(fl, self.supabase)
             
-            for fl in range(1, D_FLOORS+1):
-                d_ensure_map(fl)
-                await dg_save_map(fl)
-            
-            print("ダンジョン月次リセット完了")
+            print("✓ ダンジョン月次リセット完了")
 
-    @dungeon_task.before_loop
+    @dungeon_monthly_task.before_loop
     async def before_dungeon_task(self):
         await self.bot.wait_until_ready()
 
@@ -1156,4 +1130,4 @@ class DungeonCog(Cog):
 async def setup(bot):
     """Cogをロード"""
     await bot.add_cog(DungeonCog(bot))
-    print("DungeonCog loaded")
+    print("✓ DungeonCog loaded")
