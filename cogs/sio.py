@@ -338,20 +338,56 @@ class Voice(commands.Cog):
         await ctx.send("添付ファイルが見つかりませんでした。")
 
     @commands.command()
-    async def plist(self, ctx, *, ids_str: str):
-        """統合IDを並べて再生 (サーバーを跨いで利用可能)"""
-        if not ctx.voice_client: return await ctx.send("先に !join してください。")
+    async def plist(self, ctx):
+        """
+        JSONファイルを読み込んで再生。
+        JSONファイル（例: ["id1", "id2"]）を添付して !plist と入力してください。
+        """
+        if not ctx.voice_client: 
+            return await ctx.send("先に !join してください。")
+        
+        # 添付ファイルのチェック
+        if not ctx.message.attachments:
+            return await ctx.send("JSONファイルを添付してコマンドを実行してください。")
+        
+        attachment = ctx.message.attachments[0]
+        if not attachment.filename.endswith('.json'):
+            return await ctx.send("添付されたファイルがJSON形式ではありません。")
+
         self.current_ctx = ctx
-        tokens = ids_str.replace(',', ' ').split()
+        
+        try:
+            # 添付ファイルを読み込んでデコード
+            file_content = await attachment.read()
+            data = json.loads(file_content.decode('utf-8'))
+            
+            if isinstance(data, list):
+                tokens = [str(item) for item in data]
+            else:
+                return await ctx.send("JSONの形式が正しくありません。`[\"ID1\", \"ID2\"]` のような配列形式にしてください。")
+                
+        except Exception as e:
+            logging.error(f"JSON読み込みエラー: {e}")
+            return await ctx.send(f"JSONファイルの解析に失敗しました: {e}")
+
+        if not tokens:
+            return await ctx.send("ファイル内に再生可能なIDが見つかりませんでした。")
+
         added = 0
+        await ctx.send("📥 ファイルを解析中...")
+        
         for token in tokens:
             url, fname = await self.get_attachment_info(token)
             if url:
                 await self.queue.put((url, fname))
                 added += 1
-        await ctx.send(f"{added} 件の音声をキューに追加しました。")
-        if not ctx.voice_client.is_playing() and not self.is_processing_queue:
-            await self.check_queue()
+        
+        if added > 0:
+            await ctx.send(f"✅ {added} 件の音声をキューに追加しました。")
+            if not ctx.voice_client.is_playing() and not self.is_processing_queue:
+                await self.check_queue()
+        else:
+            await ctx.send("有効な音声が見つかりませんでした。IDが正しいか確認してください。")
 
 
     # =====================
