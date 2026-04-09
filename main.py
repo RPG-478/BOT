@@ -62,7 +62,19 @@ class MyBot(commands.Bot):
         
         # ロード済みのCogを一覧表示
         print(df.format_log(f"Active Cogs: {list(self.cogs.keys())}"))
-
+        try:
+                await client.load_extension("cogs.dungeon")
+                print("✓ DungeonCog loaded")
+            except Exception as e:
+                print(f"❌ DungeonCog load failed: {e}")
+            
+            # ダンジョンデータベースの読み込み
+            from cogs.dungeon import dg_load_all
+            try:
+                await dg_load_all()
+                print("✓ Dungeon data loaded from Supabase")
+            except Exception as e:
+                print(f"❌ Dungeon data load failed: {e}")
         if not self.updated_notified:
             channel = self.get_channel(NOTIFY_CHANNEL_ID)
             if channel:
