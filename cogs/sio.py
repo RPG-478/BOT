@@ -228,20 +228,39 @@ class Voice(commands.Cog):
             asyncio.run_coroutine_threadsafe(self.check_queue(), self.bot.loop)
             
     @commands.command()
-    async def play(self, ctx):
-        if not ctx.voice_client: return await ctx.send(embed=we("先に !join してください。"))
-        if not ctx.message.attachments: return await ctx.send(embed=we("ファイルを添付してください。"))
+    async def play(self, ctx, *, b62_id: str = None):
+        """ファイルを添付して再生、またはIDを指定して再生"""
+        if not ctx.voice_client: 
+            return await ctx.send("先に !join してください。")
 
         self.current_ctx = ctx
-        attachment = ctx.message.attachments[0]
-        url, filename = attachment.url, attachment.filename
-        b62_id = encode_full_id(ctx.guild.id, ctx.channel.id, ctx.message.id)
+        url, filename, final_id = None, None, None
 
-        await self.queue.put((url, filename, b62_id))
+        # 1. ファイルが添付されている場合
+        if ctx.message.attachments:
+            attachment = ctx.message.attachments[0]
+            url, filename = attachment.url, attachment.filename
+            # このメッセージ自体のIDを生成して保存
+            final_id = encode_full_id(ctx.guild.id, ctx.channel.id, ctx.message.id)
+        
+        # 2. 引数としてIDが渡された場合
+        elif b62_id:
+            url, filename = await self.get_attachment_info(b62_id)
+            final_id = b62_id
+        
+        else:
+            return await ctx.send("音声ファイルを添付するか、IDを入力してください。")
+
+        if not url:
+            return await ctx.send("音声情報の取得に失敗しました。")
+
+        # キューに追加 (url, filename, b62_id)
+        await self.queue.put((url, filename, final_id))
+
         if not ctx.voice_client.is_playing() and not self.is_processing_queue:
             await self.check_queue()
         else:
-            await ctx.send(embed=we(f"追加: {filename}"))
+            await ctx.send(f"✅ キューに追加しました: {filename}")
 
     @commands.command()
     async def stop(self, ctx):
@@ -282,40 +301,96 @@ class Voice(commands.Cog):
                 return await ctx.send(embed=embed)
 
     @commands.command()
-    async def plist(self, ctx):
-        if not ctx.voice_client or not ctx.message.attachments:
-            return await ctx.send(embed=we("接続状況または添付ファイルを確認してください。"))
+    async def plist(self, ctx, *, input_data: str = None):
+        """DB名、JSONファイル、またはIDリストから再生"""
+        if not ctx.voice_client: 
+            return await ctx.send("先に !join してください。")
+
+        self.current_ctx = ctx
+        tokens = []
+
+        # 1. ファイル添付がある場合 (JSONファイルを読み込む)
+        if ctx.message.attachments:
+            attachment = ctx.message.attachments[0]
+            try:
+                content = await attachment.read()
+                tokens = json.loads(content.decode('utf-8'))
+                if not isinstance(tokens, list):
+                    tokens = [str(tokens)]
+            except Exception as e:
+                return await ctx.send(f"JSON解析エラー: {e}")
+
+        # 2. 引数がある場合
+        elif input_data:
+            # DBにその名前のプレイリストがあるか確認
+            if self.bot.supabase:
+                try:
+                    res = self.bot.supabase.table("playlists").select("ids").eq("name", input_data).execute()
+                    if res.data:
+                        tokens = res.data[0]["ids"]
+                    else:
+                        # DBになければIDの羅列(スペース区切り)として扱う
+                        tokens = input_data.replace(',', ' ').split()
+                except Exception:
+                    tokens = input_data.replace(',', ' ').split()
+            else:
+                tokens = input_data.replace(',', ' ').split()
         
-        try:
-            content = await ctx.message.attachments[0].read()
-            tokens = json.loads(content.decode('utf-8'))
-            self.current_ctx = ctx
-            added = 0
-            for t in tokens:
-                url, fname = await self.get_attachment_info(t)
-                if url:
-                    await self.queue.put((url, fname, t))
-                    added += 1
-            await ctx.send(embed=we(f"{added} 件追加しました。"))
+        else:
+            return await ctx.send("プレイリスト名、ID、またはJSONファイルを指定してください。")
+
+        # 再生処理
+        added = 0
+        for token in tokens:
+            url, fname = await self.get_attachment_info(token)
+            if url:
+                await self.queue.put((url, fname, token))
+                added += 1
+        
+        if added > 0:
+            await ctx.send(f"✅ {added} 件をキューに追加しました。")
             if not ctx.voice_client.is_playing() and not self.is_processing_queue:
                 await self.check_queue()
-        except Exception as e:
-            await ctx.send(embed=we(f"JSONエラー: {e}"))
+        else:
+            await ctx.send("有効なIDが見つかりませんでした。")
             
+@commands.command()
+    async def save_plist(self, ctx, name: str):
+        """添付されたJSONを名前を付けてSupabaseに保存"""
+        if not self.bot.supabase: return await ctx.send("DB未設定です。")
+        if not ctx.message.attachments: return await ctx.send("JSONファイルを添付してください。")
+
+        try:
+            content = await ctx.message.attachments[0].read()
+            ids = json.loads(content.decode('utf-8'))
+            self.bot.supabase.table("playlists").upsert({"name": name, "ids": ids}).execute()
+            await ctx.send(f"✅ DBにプレイリスト `{name}` を保存しました。")
+        except Exception as e:
+            await ctx.send(f"エラー: {e}")
+
     @commands.command()
-    async def export_json(self, ctx):
+    async def save_current(self, ctx, name: str):
+        """現在のキューをそのままDBに保存"""
+        if not self.bot.supabase: return await ctx.send("DB未設定です。")
+        
         ids = []
         if self.current_track: ids.append(self.current_track[3])
+        
+        # キューの中身を回収
         temp = []
         while not self.queue.empty():
             item = await self.queue.get()
             temp.append(item)
             ids.append(item[2])
-        for i in temp: await self.queue.put(i)
-        
-        if not ids: return await ctx.send(embed=we("キューが空です。"))
-        file_data = io.BytesIO(json.dumps(ids, indent=4).encode('utf-8'))
-        await ctx.send(file=discord.File(file_data, filename="playlist.json"))
+        for item in temp: await self.queue.put(item)
+
+        if not ids: return await ctx.send("キューが空です。")
+
+        try:
+            self.bot.supabase.table("playlists").upsert({"name": name, "ids": ids}).execute()
+            await ctx.send(f"✅ 現在のキューを `{name}` として保存しました。")
+        except Exception as e:
+            await ctx.send(f"エラー: {e}")
 
     @commands.command()
     async def sysinfo(self, ctx):
