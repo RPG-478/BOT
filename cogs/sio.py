@@ -10,22 +10,31 @@ import json
 
 BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
 
-def encode_base62(num: int) -> str:
-    if num == 0: return BASE62[0]
+def encode_full_id(guild_id: int, channel_id: int, message_id: int) -> str:
+    """サーバー・チャンネル・メッセージの3つのIDを1つの62進数に統合"""
+    # 64bitのIDを3つ並べてパッキング
+    combined = (guild_id << 128) | (channel_id << 64) | message_id
+    
+    if combined == 0: return BASE62[0]
     arr = []
     base = len(BASE62)
-    while num:
-        num, rem = divmod(num, base)
+    while combined:
+        combined, rem = divmod(combined, base)
         arr.append(BASE62[rem])
     arr.reverse()
     return ''.join(arr)
 
-def decode_base62(string: str) -> int:
+def decode_full_id(b62_id: str):
+    """62進数からギルドID, チャンネルID, メッセージIDを復元"""
     base = len(BASE62)
-    num = 0
-    for idx, char in enumerate(string[::-1]):
-        num += BASE62.index(char) * (base ** idx)
-    return num
+    combined = 0
+    for idx, char in enumerate(b62_id[::-1]):
+        combined += BASE62.index(char) * (base ** idx)
+    
+    guild_id = combined >> 128
+    channel_id = (combined >> 64) & ((1 << 64) - 1)
+    message_id = combined & ((1 << 64) - 1)
+    return guild_id, channel_id, message_id
 
 
 class Voice(commands.Cog):
