@@ -49,6 +49,23 @@ class Voice(commands.Cog):
     async def on_command_error(self, ctx, error):
         logging.exception("Command error")
         await ctx.send(f"エラー: {error}")
+    
+    async def get_duration(self, url):
+        """ffprobeを使用して音声の長さを取得"""
+        try:
+            cmd = [
+                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                '-show_format', '-show_streams', url
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            stdout, _ = await proc.communicate()
+            data = json.loads(stdout)
+            return float(data['format']['duration'])
+        except Exception as e:
+            logging.error(f"Duration取得エラー: {e}")
+            return 0
 
     # =====================
     # CPU / Memory Info
