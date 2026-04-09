@@ -39,6 +39,11 @@ class Voice(commands.Cog):
         self.queue = asyncio.Queue()  # Playback queue
         self.current_ctx = None
         self.is_processing_queue = False # Guard to prevent concurrent queue checks
+        self.current_track = None  # (url, filename, total_duration)
+        self.start_time = 0        # 再生開始時刻の記録
+        self.elapsed_offset = 0    # 再生済みの秒数
+        self.retry_count = 0
+        self.MAX_RETRIES = 3
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx, error):
