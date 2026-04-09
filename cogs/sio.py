@@ -177,66 +177,64 @@ class Voice(commands.Cog):
     # =====================
     # Playback Logic
     # =====================
-    def play_next(self, error=None):
-        if error:
-            logging.error(f"FFmpeg play_next error: {error}")
-        
-        self.is_processing_queue = False
-        # Schedule next queue check in the event loop
-        if self.bot.loop.is_running():
-            asyncio.run_coroutine_threadsafe(self.check_queue(), self.bot.loop)
-
     async def check_queue(self):
-        # Prevent multiple instances from running at once
-        if self.is_processing_queue or self.current_ctx is None:
-            return
-
+        if self.is_processing_queue or self.current_ctx is None: return
         vc = self.current_ctx.voice_client
-        if vc is None or not vc.is_connected():
-            return
+        if vc is None or not vc.is_connected(): return
 
-        if self.queue.empty():
-            return
-
+        if self.current_track is None:
+            if self.queue.empty(): return
+            url, filename = await self.queue.get()
+            duration = await self.get_duration(url)
+            self.current_track = (url, filename, duration)
+            self.elapsed_offset = 0
+            self.retry_count = 0
+        
+        url, filename, duration = self.current_track
         self.is_processing_queue = True
 
-        # Get next item
-        url, filename = await self.queue.get()
-
-        # Robust FFmpeg options for streaming stability
-        # -reconnect options help with network hiccups
         before_options = (
-            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-            "-headers 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'"
+            f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
+            f"-ss {self.elapsed_offset} "
+            f"-headers 'User-Agent: Mozilla/5.0'"
         )
-        
-        # Audio filters and standard output settings
-        audio_filters = f" -af {self.eq_filter}" if self.eq_filter else ""
-        options = (
-            f"{audio_filters} -vn -sn -dn -ar 48000 -ac 2 "
-            "-probesize 32M -analyzeduration 32M -loglevel warning"
-        )
+        af = f" -af {self.eq_filter}" if self.eq_filter else ""
+        options = f"{af} -vn -sn -dn -ar 48000 -ac 2 -probesize 32M -analyzeduration 32M"
 
         try:
-            # Short delay to ensure cleanup of previous process
-            await asyncio.sleep(0.3)
-            
-            # Re-check connection before play
-            if not vc.is_connected():
-                await self.current_ctx.send("接続が切断されたため、再生を中断しました。")
-                self.is_processing_queue = False
-                return
-
+            await asyncio.sleep(0.5)
             source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
+            self.start_time = time.time()
             vc.play(source, after=self.play_next)
-            await self.current_ctx.send(f"再生中: **{filename}**")
+            
+            if self.elapsed_offset == 0:
+                await self.current_ctx.send(f"🎵 再生開始: **{filename}** ({int(duration)}s)")
+            else:
+                await self.current_ctx.send(f"🔄 再開({self.retry_count}): **{filename}** {int(self.elapsed_offset)}s付近")
         except Exception as e:
-            logging.error(f"Playback startup error: {e}")
-            await self.current_ctx.send(f"再生開始エラー: {e}")
+            logging.error(f"Playback error: {e}")
             self.is_processing_queue = False
-            # Try next in queue
+            self.current_track = None
             await self.check_queue()
 
+    def play_next(self, error=None):
+        actual_played = time.time() - self.start_time
+        self.elapsed_offset += actual_played
+        
+        url, filename, duration = self.current_track if self.current_track else (None, None, 0)
+        is_interrupted = (duration - self.elapsed_offset) > 5
+        self.is_processing_queue = False
+
+        if is_interrupted and self.retry_count < self.MAX_RETRIES and self.current_track:
+            self.retry_count += 1
+            logging.warning(f"再生中断検知: {filename} を再開します。")
+            asyncio.run_coroutine_threadsafe(self.check_queue(), self.bot.loop)
+        else:
+            self.current_track = None
+            self.elapsed_offset = 0
+            self.retry_count = 0
+            asyncio.run_coroutine_threadsafe(self.check_queue(), self.bot.loop)
+            
     @commands.command()
     async def play(self, ctx):
         vc = ctx.voice_client
