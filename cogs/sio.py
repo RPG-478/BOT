@@ -7,6 +7,24 @@ import configparser
 import string
 
 
+def encode_base62(num: int) -> str:
+    if num == 0: return BASE62[0]
+    arr = []
+    base = len(BASE62)
+    while num:
+        num, rem = divmod(num, base)
+        arr.append(BASE62[rem])
+    arr.reverse()
+    return ''.join(arr)
+
+def decode_base62(string: str) -> int:
+    base = len(BASE62)
+    num = 0
+    for idx, char in enumerate(string[::-1]):
+        num += BASE62.index(char) * (base ** idx)
+    return num
+
+
 class Voice(commands.Cog):
 
     def __init__(self, bot):
@@ -66,23 +84,6 @@ class Voice(commands.Cog):
             return 0, 0, 0
 
     BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
-
-    def encode_base62(num: int) -> str:
-        if num == 0: return BASE62[0]
-        arr = []
-        base = len(BASE62)
-        while num:
-            num, rem = divmod(num, base)
-            arr.append(BASE62[rem])
-        arr.reverse()
-        return ''.join(arr)
-
-    def decode_base62(string: str) -> int:
-        base = len(BASE62)
-        num = 0
-        for idx, char in enumerate(string[::-1]):
-            num += BASE62.index(char) * (base ** idx)
-        return num
 
             
     async def get_attachment_info(self, channel, m_id_b62: str):
