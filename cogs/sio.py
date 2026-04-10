@@ -56,8 +56,8 @@ class Voice(commands.Cog):
         self.retry_count = 0
         self.MAX_RETRIES = 3
         self.supabase = getattr(bot, "supabase", None)
-        self.ir_l_path = "./1 Halls 14 Clear Hall, 48K L.wav"
-        self.ir_r_path = "./1 Halls 14 Clear Hall, 48K R.wav"
+        self.ir_l_path = "1 Halls 14 Clear Hall, 48K L.wav"
+        self.ir_r_path = "1 Halls 14 Clear Hall, 48K R.wav"
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx, error):
