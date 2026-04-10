@@ -392,6 +392,18 @@ class Voice(commands.Cog):
             await ctx.send(f"✅ 現在のキューを `{name}` として保存しました。")
         except Exception as e:
             await ctx.send(f"エラー: {e}")
+            
+    @commands.command()
+    async def logs(self, ctx, lines: int = 10):
+        log_buffer = self.bot.log_buffer
+        logs = list(log_buffer.logs)[-lines:]
+        if not logs:
+            await ctx.send("表示するログがありません。")
+            return
+        text = "\n".join(logs)
+        if len(text) > 1900:
+            text = text[-1900:]
+        await ctx.send(f"```\n{text}\n```")
 
     @commands.command()
     async def sysinfo(self, ctx):
