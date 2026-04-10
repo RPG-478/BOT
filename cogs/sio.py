@@ -196,12 +196,12 @@ class Voice(commands.Cog):
         )
 
         # 変更：フィルタ構成の分岐
+        # フィルタ構成の分岐
         if self.eq_filter == "afir":
-            # [0:a]楽曲, [1:a]左IR, [2:a]右IR
-            # joinでIRをステレオ化し、afirで楽曲と畳み込み演算を行う
+            # パスを ' ' で囲むことでスペース入りのファイル名に対応させます
             options = (
-                f"-i {self.ir_l_path} "
-                f"-i {self.ir_r_path} "
+                f"-i '{self.ir_l_path}' "
+                f"-i '{self.ir_r_path}' "
                 f"-filter_complex \"[1:a][2:a]join=inputs=2:channel_layout=stereo[ir]; "
                 f"[0:a][ir]afir=dry=10:wet=10[out]\" "
                 f"-map \"[out]\" -vn -sn -dn -ar 48000 -ac 2"
