@@ -56,6 +56,8 @@ class Voice(commands.Cog):
         self.retry_count = 0
         self.MAX_RETRIES = 3
         self.supabase = getattr(bot, "supabase", None)
+        self.ir_l_path = "ir_l.wav"
+        self.ir_r_path = "ir_r.wav"
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx, error):
