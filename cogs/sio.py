@@ -147,27 +147,27 @@ class Voice(commands.Cog):
 
     @commands.command()
     async def eq(self, ctx, mode: str = "flat"):
-        """
-        音響エフェクト設定 (3D拡張版)
-        立体音響: live(ライブ会場), rotate(8D), back(背後定位)
-        通常: bass, echo, hall, vocal, superbass, flat
-        """
+        """音響エフェクト設定"""
         eq_settings = {
-            # 標準
             "bass": "bass=g=10,dynaudnorm",
             "echo": "aecho=0.8:0.8:200:0.4",
             "hall": "extrastereo=m=2.5",
             "vocal": "firequalizer=gain_entry='entry(100, -5); entry(1000, 5); entry(4000, 5); entry(8000, 0)'",
             "superbass": "firequalizer=gain_entry='entry(31, 15); entry(62, 10); entry(125, 5)'",
-            # 3D立体音響拡張
             "live": "aecho=0.8:0.88:60:0.4,lowpass=f=15000,surround,extrastereo=m=1.5",
-            "supersurround": "aecho=0.8:0.88:60:0.4,lowpass=f=15000,apulsator=hz=0.125:amount=1,surround,extrastereo=m=1.5",
             "rotate": "apulsator=hz=0.125:amount=1",
-            "back": "lowpass=f=4000,asubboost=cutoff=100:feedback=0.4",
+            "reverb": "afir", # 内部処理用フラグ
             "flat": None
         }
         if mode not in eq_settings:
             return await ctx.send(embed=we(f"利用可能: {', '.join(eq_settings.keys())}"))
+
+        # 追加：reverb選択時のファイルチェック
+        if mode == "reverb":
+            import os
+            if not (os.path.exists(self.ir_l_path) and os.path.exists(self.ir_r_path)):
+                return await ctx.send(embed=we(f"エラー: `{self.ir_l_path}` または `{self.ir_r_path}` が見つかりません。"))
+
         self.eq_filter = eq_settings[mode]
         await ctx.send(embed=we(f"エフェクトを `{mode}` に変更しました。"))
 
