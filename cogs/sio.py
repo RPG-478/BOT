@@ -194,15 +194,27 @@ class Voice(commands.Cog):
             f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
             f"-ss {self.elapsed_offset} -headers 'User-Agent: Mozilla/5.0'"
         )
-        # 3D音響のためにサンプリングレート48k/ステレオ2chを固定
-        af = f" -af {self.eq_filter}" if self.eq_filter else ""
-        options = f"{af} -vn -sn -dn -ar 48000 -ac 2 -probesize 32M -analyzeduration 32M"
+
+        # 変更：フィルタ構成の分岐
+        if self.eq_filter == "afir":
+            # [0:a]楽曲, [1:a]左IR, [2:a]右IR
+            # joinでIRをステレオ化し、afirで楽曲と畳み込み演算を行う
+            options = (
+                f"-i {self.ir_l_path} "
+                f"-i {self.ir_r_path} "
+                f"-filter_complex \"[1:a][2:a]join=inputs=2:channel_layout=stereo[ir]; "
+                f"[0:a][ir]afir=dry=10:wet=10[out]\" "
+                f"-map \"[out]\" -vn -sn -dn -ar 48000 -ac 2"
+            )
+        else:
+            # 通常エフェクト
+            af = f" -af {self.eq_filter}" if self.eq_filter else ""
+            options = f"{af} -vn -sn -dn -ar 48000 -ac 2 -probesize 32M -analyzeduration 32M"
 
         try:
             await asyncio.sleep(0.5)
+            # FFmpegPCMAudioは第1引数のurlを入力[0]として扱う
             source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
-            self.start_time = time.time()
-            vc.play(source, after=self.play_next)
             
             if self.elapsed_offset == 0:
                 await self.current_ctx.send(embed=we(f"再生開始: **{filename}** ({int(duration)}s)"))
