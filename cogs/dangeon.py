@@ -15,7 +15,6 @@ dungeon.py - Discord.py Cog形式
   main.py:
     await bot.load_extension('cogs.dungeon')
 """
-
 import os
 import discord
 import json
@@ -29,6 +28,7 @@ from discord.ext import commands, tasks
 from discord.ext.commands import Cog
 from PIL import Image, ImageDraw
 from zoneinfo import ZoneInfo
+from discord import FFmpegPCMAudio # 追加
 
 # ============================================================
 #  タイムゾーン
@@ -1012,7 +1012,32 @@ class DungeonCog(Cog):
     def __init__(self, bot):
         self.bot = bot
         self.supabase = None
-    
+    # --- BGM関連のメソッド ---
+    async def play_dungeon_bgm(self, interaction: Interaction):
+        """ユーザーがVCにいる場合、ボットを接続してBGMをループ再生する"""
+        if not interaction.user.voice:
+            return # VCにいない場合は何もしない
+
+        voice_channel = interaction.user.voice.channel
+        
+        # すでに他のVCに接続しているか確認、なければ接続
+        vc = interaction.guild.voice_client
+        if vc:
+            if vc.channel != voice_channel:
+                await vc.move_to(voice_channel)
+        else:
+            vc = await voice_channel.connect()
+
+        # BGM再生 (ループ再生用の関数)
+        def repeat_bgm(error):
+            if error:
+                print(f"BGM再生エラー: {error}")
+            if vc.is_connected():
+                # 再帰的に自分を呼び出してループさせる
+                vc.play(FFmpegPCMAudio("Assets/dungeon_bgm.mp3"), after=repeat_bgm)
+
+        if not vc.is_playing():
+            vc.play(FFmpegPCMAudio("Assets/dungeon_bgm.mp3"), after=repeat_bgm)
     async def cog_load(self):
         """Cog読み込み時"""
         # 親botのsupabaseを取得
@@ -1036,6 +1061,14 @@ class DungeonCog(Cog):
     async def dungeon_enter(self, interaction: Interaction):
         """ダンジョンコマンド"""
         await interaction.response.defer()
+        
+        # --- BGM再生処理を追加 ---
+        try:
+            await self.play_dungeon_bgm(interaction)
+        except Exception as e:
+            print(f"BGM開始失敗: {e}")
+        # ----------------------
+
         uid = str(interaction.user.id)
         
         # プレイヤーデータ取得
