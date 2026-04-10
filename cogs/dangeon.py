@@ -1034,10 +1034,10 @@ class DungeonCog(Cog):
                 print(f"BGM再生エラー: {error}")
             if vc.is_connected():
                 # 再帰的に自分を呼び出してループさせる
-                vc.play(FFmpegPCMAudio("Assets/dungeon_bgm.mp3"), after=repeat_bgm)
+                vc.play(FFmpegPCMAudio("Assets/BGM.m4a"), after=repeat_bgm)
 
         if not vc.is_playing():
-            vc.play(FFmpegPCMAudio("Assets/dungeon_bgm.mp3"), after=repeat_bgm)
+            vc.play(FFmpegPCMAudio("Assets/BGM.m4a"), after=repeat_bgm)
     async def cog_load(self):
         """Cog読み込み時"""
         # 親botのsupabaseを取得
