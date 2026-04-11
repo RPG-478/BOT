@@ -174,82 +174,82 @@ class Voice(commands.Cog):
     # =====================
     # Playback Logic
     # =====================
-async def check_queue(self):
-    """Qiita/FFmpeg仕様を完全に遵守した入力インデックス構成"""
-    if self.is_processing_queue or self.current_ctx is None:
-        return
+    async def check_queue(self):
+        """Qiita/FFmpeg仕様を完全に遵守した入力インデックス構成"""
+        if self.is_processing_queue or self.current_ctx is None:
+            return
         
-    vc = self.current_ctx.voice_client
-    if vc is None or not vc.is_connected():
-        return
-    if self.current_track is None:
-        if self.queue.empty(): return
-        url, filename, b62_id = await self.queue.get() 
-        duration = await self.get_duration(url)
-        self.current_track = (url, filename, duration, b62_id) 
-        self.elapsed_offset = 0
-        self.retry_count = 0
+        vc = self.current_ctx.voice_client
+        if vc is None or not vc.is_connected():
+            return
+        if self.current_track is None:
+            if self.queue.empty(): return
+            url, filename, b62_id = await self.queue.get() 
+            duration = await self.get_duration(url)
+            self.current_track = (url, filename, duration, b62_id) 
+            self.elapsed_offset = 0
+            self.retry_count = 0
     
-    url, filename, duration, b62_id = self.current_track
-    self.is_processing_queue = True
+        url, filename, duration, b62_id = self.current_track
+        self.is_processing_queue = True
 
-    # ✅ バグ1修正: \r\n を追加してHTTPヘッダーを正しく終端させる
-    headers_val = "User-Agent: Mozilla/5.0\r\n"
-    headers_opt = f'-headers "{headers_val}"'
-    reconnect_opt = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-
-    # ✅ バグ4修正: before_options でシークを行う（入力シーク = 高速）
-    seek_ss = f"-ss {self.elapsed_offset}" if self.elapsed_offset > 0 else ""
-    before_options = f"{reconnect_opt} {headers_opt} {seek_ss}".strip()
-
-    if self.eq_filter == "afir":
-        url_l, _ = await self.get_attachment_info(self.IR_L_ID)
-        url_r, _ = await self.get_attachment_info(self.IR_R_ID)
+        # ✅ バグ1修正: \r\n を追加してHTTPヘッダーを正しく終端させる
+        headers_val = "User-Agent: Mozilla/5.0\r\n"
+        headers_opt = f'-headers "{headers_val}"'
+        reconnect_opt = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
     
-        if not url_l or not url_r:
+        # ✅ バグ4修正: before_options でシークを行う（入力シーク = 高速）
+        seek_ss = f"-ss {self.elapsed_offset}" if self.elapsed_offset > 0 else ""
+        before_options = f"{reconnect_opt} {headers_opt} {seek_ss}".strip()
+
+        if self.eq_filter == "afir":
+            url_l, _ = await self.get_attachment_info(self.IR_L_ID)
+            url_r, _ = await self.get_attachment_info(self.IR_R_ID)
+    
+            if not url_l or not url_r:
+                self.is_processing_queue = False
+                return await self.current_ctx.send("⚠️ IRファイルの取得に失敗しました。")
+
+            seek_f = f",atrim=start={self.elapsed_offset},asetpts=PTS-STARTPTS" if self.elapsed_offset > 0 else ""
+            before_options = f"{reconnect_opt} {headers_opt}"
+
+        # ✅ 修正: amerge → join (channel_layout=stereo を明示)
+        # ✅ 修正: gtype=gn を削除（バージョン非互換）
+        # ✅ 修正: aformat で強制的にステレオ正規化
+            filter_complex = (
+                f"[0:a]aresample=48000,aformat=channel_layouts=stereo{seek_f}[main];"
+                f"[1:a]aresample=48000,aformat=channel_layouts=mono[l];"
+                f"[2:a]aresample=48000,aformat=channel_layouts=mono[r];"
+                f"[l][r]join=inputs=2:channel_layout=stereo[ir];"
+                f"[main][ir]afir=dry=1:wet=1[out]"
+            )
+
+            options = (
+                f"{reconnect_opt} {headers_opt} -i {shlex.quote(url_l)} "
+                f"{reconnect_opt} {headers_opt} -i {shlex.quote(url_r)} "
+                f"-filter_complex {shlex.quote(filter_complex)} "
+                f"-map [out] -vn -ar 48000 -ac 2"
+            )
+        else:
+            # ✅ バグ4修正: -ss は before_options 側に移したので options に不要
+            af = f"-af {shlex.quote(self.eq_filter)}" if self.eq_filter else ""
+            options = f"{af} -vn -ar 48000 -ac 2".strip()
+
+        try:
+            await asyncio.sleep(0.5)
+            source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
+        
+            self.start_time = time.time()
+            vc.play(source, after=lambda e: self.play_next(e))
+        
+            if self.elapsed_offset < 1:
+                await self.current_ctx.send(embed=we(f"🎵 再生開始: **{filename}**"))
+        except Exception as e:
+            logging.error(f"Playback error: {e}")
             self.is_processing_queue = False
-            return await self.current_ctx.send("⚠️ IRファイルの取得に失敗しました。")
-
-        seek_f = f",atrim=start={self.elapsed_offset},asetpts=PTS-STARTPTS" if self.elapsed_offset > 0 else ""
-        before_options = f"{reconnect_opt} {headers_opt}"
-
-    # ✅ 修正: amerge → join (channel_layout=stereo を明示)
-    # ✅ 修正: gtype=gn を削除（バージョン非互換）
-    # ✅ 修正: aformat で強制的にステレオ正規化
-        filter_complex = (
-            f"[0:a]aresample=48000,aformat=channel_layouts=stereo{seek_f}[main];"
-            f"[1:a]aresample=48000,aformat=channel_layouts=mono[l];"
-            f"[2:a]aresample=48000,aformat=channel_layouts=mono[r];"
-            f"[l][r]join=inputs=2:channel_layout=stereo[ir];"
-            f"[main][ir]afir=dry=1:wet=1[out]"
-        )
-
-        options = (
-            f"{reconnect_opt} {headers_opt} -i {shlex.quote(url_l)} "
-            f"{reconnect_opt} {headers_opt} -i {shlex.quote(url_r)} "
-            f"-filter_complex {shlex.quote(filter_complex)} "
-            f"-map [out] -vn -ar 48000 -ac 2"
-        )
-    else:
-        # ✅ バグ4修正: -ss は before_options 側に移したので options に不要
-        af = f"-af {shlex.quote(self.eq_filter)}" if self.eq_filter else ""
-        options = f"{af} -vn -ar 48000 -ac 2".strip()
-
-    try:
-        await asyncio.sleep(0.5)
-        source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
-        
-        self.start_time = time.time()
-        vc.play(source, after=lambda e: self.play_next(e))
-        
-        if self.elapsed_offset < 1:
-            await self.current_ctx.send(embed=we(f"🎵 再生開始: **{filename}**"))
-    except Exception as e:
-        logging.error(f"Playback error: {e}")
-        self.is_processing_queue = False
-        self.current_track = None
-        self.bot.loop.create_task(self.check_queue())
-        
+            self.current_track = None
+            self.bot.loop.create_task(self.check_queue())
+            
     def play_next(self, error=None):
         actual_played = time.time() - self.start_time
         self.elapsed_offset += actual_played
