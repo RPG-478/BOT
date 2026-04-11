@@ -576,23 +576,6 @@ async def dg_load_all(supabase):
     except Exception as e:
         print(f"❌ ダンジョン拠点読み込み失敗: {e}")
 
-async def dg_save_map(floor, supabase):
-    """フロアマップをSupabaseに保存"""
-    if floor not in dg_maps:
-        return
-    try:
-        grid_json = json.dumps(dg_maps[floor], ensure_ascii=False)
-        used_coords = list(dg_used.get(floor, set()))
-        start_pos = dg_starts.get(floor, (1, 1))
-        supabase.table("dungeon_maps").upsert({
-            "floor": floor,
-            "grid": grid_json,
-            "used_coords": json.dumps(used_coords),
-            "start_pos": list(start_pos),
-        }).execute()
-    except Exception as e:
-        print(f"dg_save_map失敗 floor={floor}: {e}")
-
 async def dg_save_player(uid, supabase):
     """プレイヤーのダンジョンデータをSupabaseに保存"""
     if uid not in dg_players:
@@ -1025,6 +1008,13 @@ class DungeonCog(Cog):
         self.bot = bot
         self.supabase = None
     # --- BGM関連のメソッド ---
+    async def cog_load(self):
+        # 起動時に一度だけ差分データをキャッシュに読み込む
+        if self.supabase:
+            res = self.supabase.table("dungeon_chunks").select("*").execute()
+            for row in res.data:
+                dg_chunks_cache[(row["floor"], row["x"], row["y"])] = row["tile_type"]
+
     async def play_dungeon_bgm(self, interaction: Interaction):
         """ユーザーがVCにいる場合、ボットを接続してBGMをループ再生する"""
         if not interaction.user.voice:
@@ -1132,11 +1122,11 @@ class DungeonCog(Cog):
             except Exception as e:
                 print(f"dungeon_reset DB削除失敗: {e}")
         
-        for fl in range(1, D_FLOORS+1):
-            d_ensure_map(fl)
-            if self.supabase:
-                await dg_save_map(fl, self.supabase)
-        
+        dg_chunks_cache.clear() # キャッシュクリア
+        if self.supabase:
+            # 差分テーブル(dungeon_chunks)を空にする
+            self.supabase.table("dungeon_chunks").delete().neq("id", 0).execute()
+
         em = discord.Embed(title="リセット完了", description="マップを再生成しました！", color=0xFFFFFF)
         await interaction.followup.send(embed=em)
 
