@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from discord import FFmpegPCMAudio
 
 # ============================================================
-#  定数と設定
+#  定数と設定 (V2.0 統合版)
 # ============================================================
 JST = ZoneInfo("Asia/Tokyo")
 MAP_SEED = os.environ.get("MAP_SEED", "DEFAULT_DUNGEON_SEED_2024")
@@ -26,17 +26,64 @@ TILE_SIZE = 32
 # タイルタイプ
 D_WALL = "wall"
 D_FLOOR = "floor"
+D_START = "start"
+D_STAIRS = "stairs"
 D_CHEST = "chest"
 D_TRAP = "trap"
-D_STAIRS = "stairs"
+D_SHOP = "shop"
 D_BASE = "base"
+D_MINE = "mine"
 
-# バイオーム設定
-D_BIOMES = {
-    "cave": {"name": "洞窟", "color": 0x5C4033},
-    "forest": {"name": "森", "color": 0x2D5A1B},
-    "ice": {"name": "氷雪", "color": 0x5B9BD5},
-    "desert": {"name": "砂漠", "color": 0xC8600A},
+# バイオーム定義
+D_BIOMES_CONFIG = [
+    (range(1,  10),  "cave",     "洞窟",     0x5C4033),
+    (range(10,  20),  "forest",   "森",       0x2D5A1B),
+    (range(20,  30),  "ice",      "氷雪地帯", 0x5B9BD5),
+    (range(30, 41),  "desert",   "砂漠地帯", 0xC8600A),
+]
+
+# エンカウント率
+D_ENCOUNTER_RATES = {
+    "cave":     0.05,
+    "forest":   0.20,
+    "ice":      0.07,
+    "desert":   0.13,
+}
+
+# 敵データベース (旧コードより継承)
+D_ENEMY_NAMES = {
+    "cave":     ["コウモリ","ゴブリン","岩石スライム"],
+    "forest":   ["オオカミ","毒キノコ","トレント"],
+    "ice":      ["雪男","アイスゴーレム","白熊"],
+    "desert":   ["サソリ","砂蛇","炎トカゲ"],
+}
+D_SUPERENEMY_NAMES = {
+    "cave":     ["セミオートキラーマシン"],
+    "forest":   ["邪蛇"],
+    "ice":      ["雪女"],
+    "desert":   ["鬼"],
+}
+D_BOSS_NAMES = {
+    "cave":     ["ドラゴン"],
+    "forest":   ["ヌシ","ぱすた"],
+    "ice":      ["凍ったコッペパン"],
+    "desert":   ["炎龍"],
+}
+
+ENEMY_STATS_MASTER = {
+    "コウモリ":       {"hp_m": 0.7, "atk_m": 0.5, "def_m": 0.5, "spd": 10, "crit": 0,    "ai": ["attack","wait"], "coin_m": 0.8, "xp_m": 0.8, "boxes": 0},
+    "ゴブリン":       {"hp_m": 1.0, "atk_m": 1.1, "def_m": 0.8, "spd": 15, "crit": 0.08, "ai": ["attack"], "coin_m": 1.0, "xp_m": 1.0, "boxes": 0},
+    "岩石スライム":   {"hp_m": 1.5, "atk_m": 0.8, "def_m": 1.8, "spd": 5,  "crit": 0.02, "ai": ["attack"], "coin_m": 1.2, "xp_m": 1.1, "boxes": 0},
+    "オオカミ":       {"hp_m": 0.9, "atk_m": 1.2, "def_m": 0.7, "spd": 20, "crit": 0.10, "ai": ["attack"], "coin_m": 1.1, "xp_m": 1.2, "boxes": 0},
+    "毒キノコ":       {"hp_m": 1.2, "atk_m": 0.8, "def_m": 1.0, "spd": 5,  "crit": 0.05, "ai": ["attack"], "coin_m": 1.0, "xp_m": 1.0, "boxes": 0},
+    "トレント":       {"hp_m": 2.0, "atk_m": 1.0, "def_m": 1.5, "spd": 3,  "crit": 0.03, "ai": ["attack","attack","heal"], "coin_m": 1.5, "xp_m": 1.5, "boxes": 0},
+    "セミオートキラーマシン": {"hp_m": 4.5, "atk_m": 2.8, "def_m": 1.5, "spd": 22, "crit": 0.25, "ai": ["attack"], "coin_m": 3.0, "xp_m": 5.0, "boxes": 1},
+    "邪蛇":           {"hp_m": 3.0, "atk_m": 3.4, "def_m": 1.2, "spd": 28, "crit": 0.15, "ai": ["attack"], "coin_m": 2.5, "xp_m": 4.0, "boxes": 1},
+    "ヌシ":           {"hp_m": 20.0, "atk_m": 4.5, "def_m": 2.2, "spd": 12, "crit": 0.10, "ai": ["attack"], "coin_m": 10.0, "xp_m": 10.0, "boxes": 5},
+    "ドラゴン":       {"hp_m": 18.0, "atk_m": 5.0, "def_m": 2.5, "spd": 20, "crit": 0,    "ai": ["attack"], "coin_m": 12.0, "xp_m": 12.0, "boxes": 5},
+    "ぱすた":        {"hp_m": 100, "atk_m": 0, "def_m": 10, "spd": 100, "crit": 0,     "ai": ["wait"], "coin_m": 0.1, "xp_m": 0.1, "boxes": 0},
+    "ミミック":       {"hp_m": 2.5, "atk_m": 2.0, "def_m": 1.2, "spd": 8,  "crit": 0.25, "ai": ["attack"], "coin_m": 5.0, "xp_m": 3.0, "boxes": 1},
+    "default":        {"hp_m": 1.0, "atk_m": 1.0, "def_m": 1.0, "spd": 10, "crit": 0.05, "ai": ["attack"], "coin_m": 1.0, "xp_m": 1.0, "boxes": 0}
 }
 
 # ============================================================
@@ -47,100 +94,92 @@ dg_players_cache = {} # {user_id: stats_dict}
 _ASSET_CACHE = {}
 
 # ============================================================
-#  コアロジック: マップ生成
+#  コアロジック: マップ生成 & バイオーム
 # ============================================================
 
+def get_biome_info(floor, x, y):
+    """フロアと座標からバイオームを決定"""
+    # 基本バイオーム (フロア依存)
+    base_id = "cave"
+    base_name = "洞窟"
+    base_color = 0x5C4033
+    for r, b_id, b_name, b_color in D_BIOMES_CONFIG:
+        if floor in r:
+            base_id, base_name, base_color = b_id, b_name, b_color
+            break
+    
+    # 座標による局所的な変化 (300x300単位)
+    bx, by = x // 300, y // 300
+    seed_str = f"biome_{MAP_SEED}_{bx}_{by}"
+    seed_hash = int(hashlib.md5(seed_str.encode()).hexdigest(), 16)
+    random.seed(seed_hash)
+    
+    # 20%の確率で別のバイオームが混ざるなどの拡張も可能だが、一旦シンプルに
+    return base_id, base_name, base_color
+
 def get_deterministic_tile(floor, x, y):
-    """
-    座標とシード値に基づき、決定論的にタイルを決定する。
-    """
-    # 1. キャッシュ（差分データ）を優先
+    """座標とシード値に基づき、決定論的にタイルを決定する。"""
     if (floor, x, y) in dg_chunks_cache:
         return dg_chunks_cache[(floor, x, y)]
 
-    # 2. シード値による計算
     seed_str = f"{MAP_SEED}_{floor}_{x}_{y}"
     seed_hash = int(hashlib.md5(seed_str.encode()).hexdigest(), 16)
     random.seed(seed_hash)
     
     roll = random.random()
     if roll < 0.001: return D_STAIRS
-    if roll < 0.004: return D_CHEST
-    if roll < 0.007: return D_TRAP
-    if roll < 0.307: return D_WALL
+    if roll < 0.005: return D_CHEST
+    if roll < 0.003: return D_TRAP
+    if roll < 0.002: return D_MINE
+    if roll < 0.30: return D_WALL
     return D_FLOOR
-
-def get_biome_at(x, y):
-    """
-    300x300グリッド単位でバイオームを決定する。
-    """
-    bx, by = x // 300, y // 300
-    seed_str = f"biome_{MAP_SEED}_{bx}_{by}"
-    seed_hash = int(hashlib.md5(seed_str.encode()).hexdigest(), 16)
-    random.seed(seed_hash)
-    
-    biomes = list(D_BIOMES.keys())
-    return biomes[random.randint(0, len(biomes) - 1)]
 
 # ============================================================
 #  データベース連携
 # ============================================================
 
 async def db_load_chunks(supabase):
-    """dungeon_chunksテーブルから差分データをロード"""
     global dg_chunks_cache
     try:
         res = supabase.table("dungeon_chunks").select("*").execute()
         dg_chunks_cache = { (r["floor"], r["x"], r["y"]): r["tile_type"] for r in res.data }
-        print(f"[DungeonV2] Loaded {len(dg_chunks_cache)} chunks from DB.")
     except Exception as e:
-        print(f"[DungeonV2] Failed to load chunks: {e}")
+        print(f"[DungeonV2] Load chunks failed: {e}")
 
 async def db_update_chunk(supabase, floor, x, y, tile_type):
-    """差分データをDBとキャッシュに保存"""
     dg_chunks_cache[(floor, x, y)] = tile_type
     try:
-        supabase.table("dungeon_chunks").upsert({
-            "floor": floor, "x": x, "y": y, "tile_type": tile_type
-        }).execute()
+        supabase.table("dungeon_chunks").upsert({"floor": floor, "x": x, "y": y, "tile_type": tile_type}).execute()
     except Exception as e:
-        print(f"[DungeonV2] Failed to update chunk: {e}")
+        print(f"[DungeonV2] Update chunk failed: {e}")
 
 async def db_load_player(supabase, user_id):
-    """プレイヤーデータをDBから取得"""
+    if user_id in dg_players_cache: return dg_players_cache[user_id]
     try:
         res = supabase.table("dungeon_players").select("*").eq("user_id", user_id).execute()
         if res.data:
             dg_players_cache[user_id] = res.data[0]
             return res.data[0]
     except Exception as e:
-        print(f"[DungeonV2] Failed to load player {user_id}: {e}")
+        print(f"[DungeonV2] Load player failed: {e}")
     
-    # デフォルト値
-    default_stats = {
-        "user_id": user_id, "floor": 1, "x": 0, "y": 0,
-        "hp": 100, "max_hp": 100, "atk": 10, "exp": 0
-    }
+    default_stats = {"user_id": user_id, "floor": 1, "x": 0, "y": 0, "hp": 100, "max_hp": 100, "atk": 10, "def_": 3, "spd": 10, "crit": 0.05, "exp": 0}
     dg_players_cache[user_id] = default_stats
     return default_stats
 
 async def db_save_player(supabase, user_id):
-    """プレイヤーデータをDBに保存"""
     if user_id not in dg_players_cache: return
     try:
         supabase.table("dungeon_players").upsert(dg_players_cache[user_id]).execute()
     except Exception as e:
-        print(f"[DungeonV2] Failed to save player {user_id}: {e}")
+        print(f"[DungeonV2] Save player failed: {e}")
 
 # ============================================================
 #  レンダリングエンジン (Pillow)
 # ============================================================
 
 def load_asset(asset_path):
-    """アセットをメモリにキャッシュしてロード"""
-    if asset_path in _ASSET_CACHE:
-        return _ASSET_CACHE[asset_path]
-    
+    if asset_path in _ASSET_CACHE: return _ASSET_CACHE[asset_path]
     full_path = os.path.join("Assets", asset_path)
     if os.path.exists(full_path):
         img = Image.open(full_path).convert("RGBA").resize((TILE_SIZE, TILE_SIZE))
@@ -149,182 +188,228 @@ def load_asset(asset_path):
     return None
 
 def render_dungeon_view(floor, px, py, radius=D_VIEW_R):
-    """プレイヤー中心の5x5マップ画像を生成"""
     size = (radius * 2 + 1) * TILE_SIZE
     img = Image.new("RGBA", (size, size), (0, 0, 0, 255))
     draw = ImageDraw.Draw(img)
     
-    # 描画範囲をループ
     for dy in range(-radius, radius + 1):
         for dx in range(-radius, radius + 1):
             tx, ty = px + dx, py + dy
             tile_type = get_deterministic_tile(floor, tx, ty)
-            biome_id = get_biome_at(tx, ty)
-            biome_info = D_BIOMES[biome_id]
+            biome_id, _, _ = get_biome_info(floor, tx, ty)
             
-            # 描画座標
-            draw_x = (dx + radius) * TILE_SIZE
-            draw_y = (dy + radius) * TILE_SIZE
+            draw_x, draw_y = (dx + radius) * TILE_SIZE, (dy + radius) * TILE_SIZE
             
-            # アセット決定
             asset_map = {
                 D_WALL: "rock.PNG" if biome_id == "cave" else ("mori_kabe.png" if biome_id == "forest" else "Y_k.png"),
                 D_FLOOR: "jimen.png" if biome_id == "cave" else ("mori_yuka.png" if biome_id == "forest" else "Y_y.png"),
-                D_CHEST: "NOMAL.PNG", # 暫定
-                D_TRAP: "jimen.png", # 罠は床に見えるように
-                D_STAIRS: "REIBAI.PNG", # 暫定
+                D_CHEST: "NOMAL.PNG", D_TRAP: "jimen.png", D_STAIRS: "REIBAI.PNG", D_MINE: "AGO.PNG"
             }
             
             asset_img = load_asset(asset_map.get(tile_type, "jimen.png"))
-            if asset_img:
-                img.paste(asset_img, (draw_x, draw_y), asset_img)
-            else:
-                # アセットがない場合のフォールバック（色塗り）
-                color = biome_info["color"] if tile_type == D_FLOOR else (100, 100, 100)
-                draw.rectangle([draw_x, draw_y, draw_x + TILE_SIZE, draw_y + TILE_SIZE], fill=color)
-
-            # プレイヤー（中心）
+            if asset_img: img.paste(asset_img, (draw_x, draw_y), asset_img)
+            
             if dx == 0 and dy == 0:
-                player_asset = load_asset("NOMAL.PNG") # プレイヤー画像
-                if player_asset:
-                    img.paste(player_asset, (draw_x, draw_y), player_asset)
-                else:
-                    draw.ellipse([draw_x+4, draw_y+4, draw_x+TILE_SIZE-4, draw_y+TILE_SIZE-4], fill=(0, 255, 0))
-
-    # バイオーム名などのオーバーレイ
-    # biome_name = D_BIOMES[get_biome_at(px, py)]["name"]
-    # draw.text((5, 5), f"Biome: {biome_name}", fill=(255, 255, 255))
+                p_img = load_asset("NOMAL.PNG")
+                if p_img: img.paste(p_img, (draw_x, draw_y), p_img)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
-    return discord.File(fp=buf, filename="dungeon_view.png")
+    return discord.File(fp=buf, filename="map.png")
 
 # ============================================================
-#  Discord UI (Views)
+#  戦闘ロジック & ヘルパー
 # ============================================================
+
+def d_hpbar(hp, max_hp, width=10):
+    filled = int(width * hp / max(max_hp, 1))
+    return "█" * filled + "░" * (width - filled)
+
+def make_enemy(floor, biome_id):
+    base_hp, base_atk, base_def = 15 + floor * 8, 4 + floor * 2, 1 + floor
+    r = random.random()
+    if r < 0.01: etype, names = "boss", D_BOSS_NAMES
+    elif r < 0.11: etype, names = "elite", D_SUPERENEMY_NAMES
+    else: etype, names = "normal", D_ENEMY_NAMES
+    
+    name = random.choice(names.get(biome_id, ["謎の敵"]))
+    clean_key = name.split()[0].replace("👾", "").strip()
+    m = ENEMY_STATS_MASTER.get(clean_key, ENEMY_STATS_MASTER["default"])
+    
+    mul_hp = 15.0 if etype=="boss" else (4.0 if etype=="elite" else 1.0)
+    mul_atk = 4.0 if etype=="boss" else (2.5 if etype=="elite" else 1.0)
+    
+    hp = int((base_hp + random.randint(-3, 3)) * m["hp_m"] * mul_hp)
+    return {
+        "name": name, "type": etype, "hp": hp, "max_hp": hp,
+        "atk": int((base_atk + random.randint(-1, 1)) * m["atk_m"] * mul_atk),
+        "def_": int(base_def * m["def_m"]), "spd": m["spd"], "crit": m["crit"],
+        "reward_coins": int(random.randint(20, 80) * floor * m["coin_m"] * mul_atk),
+        "reward_xp": int(random.randint(10, 30) * floor * m["xp_m"] * mul_atk),
+        "reward_box": m["boxes"] if etype=="normal" else max(1, m["boxes"])
+    }
+
+# ============================================================
+#  Views
+# ============================================================
+
+class DungeonStatusView(View):
+    def __init__(self, uid):
+        super().__init__(timeout=60)
+        self.uid = uid
+    def _embed(self):
+        p = dg_players_cache[self.uid]
+        em = discord.Embed(title="ステータス", color=0xFFFFFF)
+        em.add_field(name="HP", value=f"{d_hpbar(p['hp'], p['max_hp'])} {p['hp']}/{p['max_hp']}", inline=False)
+        em.add_field(name="能力", value=f"ATK:{p['atk']} DEF:{p['def_']} SPD:{p['spd']} CRIT:{int(p['crit']*100)}%", inline=False)
+        return em
+
+class DungeonCombatView(View):
+    def __init__(self, bot, uid, enemy, supabase):
+        super().__init__(timeout=300)
+        self.bot, self.uid, self.enemy, self.supabase = bot, uid, enemy, supabase
+        self.log = []
+        self.defending = False
+
+    def _embed(self):
+        p, e = dg_players_cache[self.uid], self.enemy
+        em = discord.Embed(title=f"{e['name']}が現れた！", color=0xFF0000)
+        em.add_field(name="あなた", value=f"HP: {p['hp']}/{p['max_hp']}\n{d_hpbar(p['hp'], p['max_hp'])}", inline=True)
+        em.add_field(name=e['name'], value=f"HP: {e['hp']}/{e['max_hp']}\n{d_hpbar(e['hp'], e['max_hp'])}", inline=True)
+        if self.log: em.add_field(name="ログ", value="\n".join(self.log[-5:]), inline=False)
+        em.set_image(url="attachment://map.png")
+        return em
+
+    async def _finish(self, i, win=True):
+        p = dg_players_cache[self.uid]
+        if win:
+            msg = f"勝利！ +{self.enemy['reward_coins']}G +{self.enemy['reward_xp']}XP"
+            self.stop()
+            await db_save_player(self.supabase, self.uid)
+            mv = DungeonMainView(self.bot, self.uid, self.supabase)
+            await i.edit_original_response(embed=mv._embed(msg), view=mv, attachments=[render_dungeon_view(p['floor'], p['x'], p['y'])])
+        else:
+            p['hp'], p['floor'], p['x'], p['y'] = p['max_hp'], 1, 0, 0
+            await db_save_player(self.supabase, self.uid)
+            self.stop()
+            mv = DungeonMainView(self.bot, self.uid, self.supabase)
+            await i.edit_original_response(embed=mv._embed("敗北した..."), view=mv, attachments=[render_dungeon_view(1, 0, 0)])
+
+    @discord.ui.button(label="攻撃", style=discord.ButtonStyle.red)
+    async def attack(self, i, b):
+        p, e = dg_players_cache[self.uid], self.enemy
+        # プレイヤー攻撃
+        dmg = max(1, p['atk'] - e['def_'] + random.randint(-2, 2))
+        e['hp'] = max(0, e['hp'] - dmg)
+        self.log.append(f"あなたの攻撃！ {dmg}ダメージ")
+        if e['hp'] <= 0: return await self._finish(i, True)
+        # 敵攻撃
+        edmg = max(1, e['atk'] - p['def_'] + random.randint(-2, 2))
+        p['hp'] = max(0, p['hp'] - edmg)
+        self.log.append(f"{e['name']}の攻撃！ {edmg}ダメージ")
+        if p['hp'] <= 0: return await self._finish(i, False)
+        await i.response.edit_message(embed=self._embed())
 
 class DungeonMainView(View):
-    def __init__(self, bot, user_id, supabase):
-        super().__init__(timeout=300)
-        self.bot = bot
-        self.user_id = user_id
-        self.supabase = supabase
+    def __init__(self, bot, uid, supabase):
+        super().__init__(timeout=600)
+        self.bot, self.uid, self.supabase = bot, uid, supabase
 
-    def create_embed(self, message=""):
-        player = dg_players_cache[self.user_id]
-        biome_id = get_biome_at(player["x"], player["y"])
-        biome_name = D_BIOMES[biome_id]["name"]
-        
-        embed = discord.Embed(
-            title=f"ダンジョン探索 - Floor {player['floor']}",
-            description=f"**バイオーム:** {biome_name}\n**座標:** ({player['x']}, {player['y']})\n**HP:** {player['hp']}/{player['max_hp']}\n\n{message}",
-            color=D_BIOMES[biome_id]["color"]
-        )
-        embed.set_image(url="attachment://dungeon_view.png")
-        return embed
+    def _embed(self, msg=""):
+        p = dg_players_cache[self.uid]
+        bid, bname, bcolor = get_biome_info(p['floor'], p['x'], p['y'])
+        em = discord.Embed(title=f"Floor {p['floor']} - {bname}", color=bcolor, description=msg)
+        em.add_field(name="座標", value=f"({p['x']}, {p['y']})", inline=True)
+        em.add_field(name="HP", value=f"{p['hp']}/{p['max_hp']}", inline=True)
+        em.set_image(url="attachment://map.png")
+        return em
 
-    async def move(self, interaction: Interaction, dx, dy):
-        player = dg_players_cache[self.user_id]
-        nx, ny = player["x"] + dx, player["y"] + dy
-        
-        tile = get_deterministic_tile(player["floor"], nx, ny)
+    async def _move(self, i, dx, dy):
+        p = dg_players_cache[self.uid]
+        nx, ny = p['x'] + dx, p['y'] + dy
+        tile = get_deterministic_tile(p['floor'], nx, ny)
         
         if tile == D_WALL:
-            await interaction.response.edit_message(embed=self.create_embed("壁があって進めません！"))
-            return
-
-        # 座標更新
-        player["x"], player["y"] = nx, ny
-        message = ""
-
-        # 特殊タイル処理
-        if tile == D_CHEST:
-            gold = random.randint(10, 100)
-            message = f"宝箱を見つけた！ **{gold} G** を手に入れた！"
-            await db_update_chunk(self.supabase, player["floor"], nx, ny, D_FLOOR)
-        elif tile == D_TRAP:
-            dmg = random.randint(5, 15)
-            player["hp"] = max(0, player["hp"] - dmg)
-            message = f"罠を踏んだ！ **{dmg} ダメージ** を受けた！"
-            await db_update_chunk(self.supabase, player["floor"], nx, ny, D_FLOOR)
-        elif tile == D_STAIRS:
-            message = "階段がある。上の階へ進むことができます。"
-
-        # 戦闘判定 (20%の確率)
-        if random.random() < 0.2 and tile == D_FLOOR:
-            # 本来はここでDungeonCombatViewに切り替える
-            message = "敵が現れた！ (戦闘システム実装中)"
-
-        # DB保存
-        await db_save_player(self.supabase, self.user_id)
+            return await i.response.edit_message(embed=self._embed("壁があって進めません"))
         
-        # 再レンダリング
-        file = render_dungeon_view(player["floor"], player["x"], player["y"])
-        await interaction.response.edit_message(embed=self.create_embed(message), attachments=[file], view=self)
+        p['x'], p['y'] = nx, ny
+        msg = ""
+        
+        if tile == D_CHEST:
+            g = random.randint(50, 200)
+            msg = f"宝箱！ {g}G獲得"
+            await db_update_chunk(self.supabase, p['floor'], nx, ny, D_FLOOR)
+        elif tile == D_TRAP:
+            d = random.randint(10, 20)
+            p['hp'] = max(0, p['hp'] - d)
+            msg = f"罠！ {d}ダメージ"
+            await db_update_chunk(self.supabase, p['floor'], nx, ny, D_FLOOR)
+        elif tile == D_STAIRS:
+            p['floor'] += 1
+            p['x'], p['y'] = 0, 0
+            msg = f"階段を登って Floor {p['floor']} へ！"
+        
+        # エンカウント
+        bid, _, _ = get_biome_info(p['floor'], p['x'], p['y'])
+        if random.random() < D_ENCOUNTER_RATES.get(bid, 0.1) and tile == D_FLOOR:
+            enemy = make_enemy(p['floor'], bid)
+            cv = DungeonCombatView(self.bot, self.uid, enemy, self.supabase)
+            return await i.response.edit_message(embed=cv._embed(), view=cv, attachments=[render_dungeon_view(p['floor'], p['x'], p['y'])])
 
-    @discord.ui.button(label="⬆️", style=discord.ButtonStyle.gray, row=0)
-    async def up(self, interaction: Interaction, button: discord.ui.Button):
-        await self.move(interaction, 0, -1)
+        await db_save_player(self.supabase, self.uid)
+        await i.response.edit_message(embed=self._embed(msg), attachments=[render_dungeon_view(p['floor'], p['x'], p['y'])])
 
-    @discord.ui.button(label="⬅️", style=discord.ButtonStyle.gray, row=1)
-    async def left(self, interaction: Interaction, button: discord.ui.Button):
-        await self.move(interaction, -1, 0)
-
-    @discord.ui.button(label="⬇️", style=discord.ButtonStyle.gray, row=1)
-    async def down(self, interaction: Interaction, button: discord.ui.Button):
-        await self.move(interaction, 0, 1)
-
-    @discord.ui.button(label="➡️", style=discord.ButtonStyle.gray, row=1)
-    async def right(self, interaction: Interaction, button: discord.ui.Button):
-        await self.move(interaction, 1, 0)
+    @discord.ui.button(label="⬆️", row=0)
+    async def up(self, i, b): await self._move(i, 0, -1)
+    @discord.ui.button(label="⬅️", row=1)
+    async def left(self, i, b): await self._move(i, -1, 0)
+    @discord.ui.button(label="⬇️", row=1)
+    async def down(self, i, b): await self._move(i, 0, 1)
+    @discord.ui.button(label="➡️", row=1)
+    async def right(self, i, b): await self._move(i, 1, 0)
+    @discord.ui.button(label="STATUS", style=discord.ButtonStyle.green, row=2)
+    async def status(self, i, b):
+        sv = DungeonStatusView(self.uid)
+        await i.response.send_message(embed=sv._embed(), ephemeral=True)
 
 # ============================================================
 #  Cog クラス
 # ============================================================
 
-class DungeonV2(Cog):
+class DungeonCog(Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.supabase = getattr(bot, "supabase", None)
+        self.supabase = getattr(bot, 'supabase', None)
 
     async def cog_load(self):
-        if self.supabase:
-            await db_load_chunks(self.supabase)
-        print("[DungeonV2] Cog loaded.")
+        if self.supabase: await db_load_chunks(self.supabase)
+        self.dungeon_monthly_task.start()
 
-    @app_commands.command(name="dungeon", description="ダンジョン探索を開始します (V2.0)")
+    @app_commands.command(name="dungeon", description="ダンジョン探索 V2.0")
     async def dungeon(self, interaction: Interaction):
         await interaction.response.defer()
-        user_id = str(interaction.user.id)
-        player = await db_load_player(self.supabase, user_id)
+        uid = str(interaction.user.id)
+        p = await db_load_player(self.supabase, uid)
         
-        # BGM再生 (ボイスチャンネル接続時)
+        # BGM再生
         if interaction.user.voice:
             try:
                 vc = await interaction.user.voice.channel.connect()
-                vc.play(FFmpegPCMAudio("Assets/BGM.m4a"), after=lambda e: print(f"BGM finished: {e}"))
-            except Exception as e:
-                print(f"BGM playback failed: {e}")
+                vc.play(FFmpegPCMAudio("Assets/BGM.m4a"))
+            except: pass
 
-        file = render_dungeon_view(player["floor"], player["x"], player["y"])
-        view = DungeonMainView(self.bot, user_id, self.supabase)
-        await interaction.followup.send(embed=view.create_embed("探索を開始します。"), file=file, view=view)
+        view = DungeonMainView(self.bot, uid, self.supabase)
+        await interaction.followup.send(embed=view._embed("探索開始！"), view=view, file=render_dungeon_view(p['floor'], p['x'], p['y']))
 
     @tasks.loop(time=datetime.time(hour=0, minute=0, tzinfo=JST))
     async def dungeon_monthly_task(self):
-        """毎月1日にデータをリセットするタスク"""
         if datetime.datetime.now(JST).day == 1:
-            print("[DungeonV2] Monthly maintenance: Resetting players and chunks.")
             try:
-                # 差分データ削除
                 self.supabase.table("dungeon_chunks").delete().neq("floor", -1).execute()
-                # プレイヤー座標リセット
                 self.supabase.table("dungeon_players").update({"x": 0, "y": 0}).neq("floor", -1).execute()
-                # キャッシュクリア
                 dg_chunks_cache.clear()
-            except Exception as e:
-                print(f"[DungeonV2] Maintenance failed: {e}")
+            except: pass
 
 async def setup(bot):
-    await bot.add_cog(DungeonV2(bot))
+    await bot.add_cog(DungeonCog(bot))
