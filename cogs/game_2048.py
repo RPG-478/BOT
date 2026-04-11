@@ -10,7 +10,7 @@ class Game2048(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="2048", description="Start a game of 2048")
+    @app_commands.command(name="game_2048", description="Start a game of 2048")
     async def start_2048(self, interaction: discord.Interaction):
         """Starts a new 2048 game session."""
         view = Game2048View(interaction.user.id)
