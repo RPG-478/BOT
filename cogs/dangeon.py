@@ -170,12 +170,19 @@ DUNGEON_IMG_CHANNEL_ID = int(os.environ.get("DUNGEON_IMG_CHANNEL_ID", 0))
 #  ヘルパー関数
 # ============================================================
 
-def d_get_biome(floor):
-    """フロアからバイオーム情報を取得"""
-    for r, name, color in D_BIOMES:
-        if floor in r:
-            return name, color
-    return "洞窟", 0x5C4033
+def d_get_biome(x, y):
+    """
+    30〜150マスの範囲でランダムに変化するバイオームを座標から特定する
+    """
+    # 簡易的なグリッド分割によるバイオーム決定
+    # 本格的にはノイズ関数(Perlin等)が望ましいですが、hashでも代用可能
+    grid_x = x // 100 
+    grid_y = y // 100
+    
+    random.seed(hash(f"biome_{grid_x}_{grid_y}_{MAP_SEED}"))
+    biome_id = random.randint(0, len(D_BIOMES) - 1)
+    
+    return D_BIOMES[biome_id] # (名前, 色) を返す
 
 def d_ensure_map(floor):
     """フロアのマップが存在しなければ生成"""
@@ -184,11 +191,20 @@ def d_ensure_map(floor):
         dg_used[floor] = set()
 
 def d_get_cell(floor, x, y):
-    """指定座標のセルタイプを取得"""
-    d_ensure_map(floor)
-    if 0 <= y < D_MAP_H and 0 <= x < D_MAP_W:
-        return dg_maps[floor][y][x]
-    return D_WALL
+    """
+    シード値と座標からその場所のタイルを決定する。
+    """
+    # 1. 破壊・設置されたタイルの差分キャッシュを先にチェック
+    # (後述の差分DB/キャッシュを参照するロジックをここに置く)
+    
+    # 2. シード計算
+    combined_seed = hash(f"{MAP_SEED}_{floor}_{x}_{y}")
+    random.seed(combined_seed)
+    
+    # 基本の壁/床判定 (例: 70%が床)
+    if random.random() < 0.3:
+        return D_WALL
+    return D_FLOOR
 
 def d_consume(floor, x, y):
     """座標を消費（床に変更）"""
