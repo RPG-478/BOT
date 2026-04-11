@@ -5,7 +5,7 @@ from discord.ext import commands
 from discord import app_commands
 import random
 import asyncio
-
+#a
 # --- 定数・スタッツ定義 ---
 BATTLE_STATS = {
     "ソルジャー": [1, 0], "アサシン": [3, 0], "ナイト": [2, 1],
