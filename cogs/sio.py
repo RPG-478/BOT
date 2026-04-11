@@ -175,9 +175,13 @@ class Voice(commands.Cog):
     # Playback Logic
     # =====================
     async def check_queue(self):
-        if self.is_processing_queue or self.current_ctx is None: return
+        """Qiita/FFmpeg仕様を完全に遵守した入力インデックス構成"""
+        if self.is_processing_queue or self.current_ctx is None:
+            return
+            
         vc = self.current_ctx.voice_client
-        if vc is None or not vc.is_connected(): return
+        if vc is None or not vc.is_connected():
+            return
 
         if self.current_track is None:
             if self.queue.empty(): return
@@ -190,39 +194,67 @@ class Voice(commands.Cog):
         url, filename, duration, b62_id = self.current_track
         self.is_processing_queue = True
 
-        before_options = (
-            f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 "
-            f"-ss {self.elapsed_offset} -headers 'User-Agent: Mozilla/5.0'"
-        )
+        # Discordの認証を通すためのヘッダー
+        headers = "-headers \"User-Agent: Mozilla/5.0\""
+        
+        # discord.py は url を [0:a] として `-i url` の形で最初に挿入する
+        # そのため before_options に再接続設定とヘッダーを入れる
+        before_options = f"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 {headers}"
 
-        # 変更：フィルタ構成の分岐
-        # フィルタ構成の分岐
         if self.eq_filter == "afir":
-            # パスを ' ' で囲むことでスペース入りのファイル名に対応させます
+            # ユニバーサルIDからIRのURLを取得
+            url_l, _ = await self.get_attachment_info(self.IR_L_ID)
+            url_r, _ = await self.get_attachment_info(self.IR_R_ID)
+            
+            if not url_l or not url_r:
+                self.is_processing_queue = False
+                return await self.current_ctx.send("⚠️ IRファイルの取得に失敗しました。")
+
+            # メイン曲のシーク処理 (atrim)
+            seek_f = f",atrim=start={self.elapsed_offset},asetpts=PTS-STARTPTS" if self.elapsed_offset > 0 else ""
+
+            # フィルタグラフの構築
+            # [0:a] = 自動挿入されるメイン曲
+            # [1:a] = options内で追加する左IR
+            # [2:a] = options内で追加する右IR
+            filter_complex = (
+                f"[0:a]aresample=48000{seek_f}[main]; "
+                f"[1:a]aresample=48000[l]; "
+                f"[2:a]aresample=48000[r]; "
+                f"[l][r]amerge=inputs=2[ir_stereo]; "
+                f"[main][ir_stereo]afir=dry=1:wet=1:gtype=gn[out]"
+            )
+            
+            # optionsの構成（ここが核心）
+            # -i の前にそれぞれ headers を置かないと403エラーで落ちる
             options = (
-                f"-i '{self.ir_l_path}' "
-                f"-i '{self.ir_r_path}' "
-                f"-filter_complex \"[1:a][2:a]join=inputs=2:channel_layout=stereo[ir]; "
-                f"[0:a][ir]afir=dry=10:wet=10[out]\" "
-                f"-map \"[out]\" -vn -sn -dn -ar 48000 -ac 2"
+                f"{headers} -i \"{url_l}\" "  # これが [1:a] になる
+                f"{headers} -i \"{url_r}\" "  # これが [2:a] になる
+                f"-filter_complex \"{filter_complex}\" "
+                f"-map \"[out]\" -vn -ar 48000 -ac 2"
             )
         else:
-            # 通常エフェクト
-            af = f" -af {self.eq_filter}" if self.eq_filter else ""
-            options = f"{af} -vn -sn -dn -ar 48000 -ac 2 -probesize 32M -analyzeduration 32M"
+            # flatモード（シークを options 側で行うことで安全性を確保）
+            af = f"-af \"{self.eq_filter}\"" if self.eq_filter else ""
+            ss_opt = f"-ss {self.elapsed_offset}" if self.elapsed_offset > 0 else ""
+            options = f"{ss_opt} {af} -vn -ar 48000 -ac 2"
 
         try:
             await asyncio.sleep(0.5)
-            # FFmpegPCMAudioは第1引数のurlを入力[0]として扱う
+            # FFmpegPCMAudioを生成
             source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
             
-            if self.elapsed_offset == 0:
-                await self.current_ctx.send(embed=we(f"再生開始: **{filename}** ({int(duration)}s)"))
+            self.start_time = time.time()
+            # afterコールバックで self.play_next を確実に呼ぶ
+            vc.play(source, after=lambda e: self.play_next(e))
+            
+            if self.elapsed_offset < 1:
+                await self.current_ctx.send(embed=we(f"🎵 再生開始: **{filename}**"))
         except Exception as e:
             logging.error(f"Playback error: {e}")
             self.is_processing_queue = False
             self.current_track = None
-            await self.check_queue()
+            self.bot.loop.create_task(self.check_queue())
 
     def play_next(self, error=None):
         actual_played = time.time() - self.start_time
