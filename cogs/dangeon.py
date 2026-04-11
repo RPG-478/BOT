@@ -68,11 +68,12 @@ I_DOUBLE = "i_double"
 I_SLOT = "i_slot"
 
 # バイオーム定義 (フロア範囲, 名前, 壁emoji, 床emoji, 霧emoji, 色)
+# (フロア範囲, 名前, 色) に簡略化
 D_BIOMES = [
-    (range(1,  10),  "洞窟",     "⬜", "⬛", "🌫️", 0x5C4033),
-    (range(10,  20),  "森",       "🟫", "🟩", "🌫️", 0x2D5A1B),
-    (range(20,  30),  "氷雪地帯", "⬜", "🔹", "🌫️", 0x5B9BD5),
-    (range(30, 40),  "砂漠地帯", "🟧", "🟨", "🌫️", 0xC8600A),
+    (range(1,  10),  "洞窟",     0x5C4033),
+    (range(10,  20),  "森",       0x2D5A1B),
+    (range(20,  30),  "氷雪地帯", 0x5B9BD5),
+    (range(30, 40),  "砂漠地帯", 0xC8600A),
 ]
 
 # エンカウント率
@@ -171,10 +172,10 @@ DUNGEON_IMG_CHANNEL_ID = int(os.environ.get("DUNGEON_IMG_CHANNEL_ID", 0))
 
 def d_get_biome(floor):
     """フロアからバイオーム情報を取得"""
-    for r, name, wall_e, floor_e, fog_e, color in D_BIOMES:
+    for r, name, color in D_BIOMES:
         if floor in r:
-            return name, wall_e, floor_e, fog_e, color
-    return "洞窟", "⬜", "⬛", "🌫️", 0x5C4033
+            return name, color
+    return "洞窟", 0x5C4033
 
 def d_ensure_map(floor):
     """フロアのマップが存在しなければ生成"""
@@ -784,7 +785,9 @@ class DungeonCombatView(View):
 
         self.defending = False
         return log_msg
-
+    async def on_timeout(self):
+        if self.supabase:
+            await dg_save_player(self.uid, self.supabase)
     async def _win(self, i):
         e = self.enemy
         msg = f"勝利！ +{e['reward_coins']}コイン +{e['reward_xp']}XP"
@@ -898,6 +901,9 @@ class DungeonMainView(View):
         if msg:
             em.add_field(name="ログ", value=msg, inline=False)
         return em
+    async def on_timeout(self):
+        if self.supabase:
+            await dg_save_player(self.uid, self.supabase)
 
     async def _move(self, i, dx, dy):
         await i.response.defer()
@@ -964,7 +970,6 @@ class DungeonMainView(View):
             msg += "\n力尽きた… スタート地点へ戻された"
 
         # 最終的な画面更新
-        await dg_save_player(self.uid, self.supabase)
         map_file = d_render_pillow(self.uid, self.floor, p["x"], p["y"])
         await i.edit_original_response(embed=self._embed(msg), attachments=[map_file], view=self)
 
