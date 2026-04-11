@@ -40,9 +40,9 @@ JST = ZoneInfo("Asia/Tokyo")
 # ============================================================
 
 # マップ定義
-D_MAP_W = 101
-D_MAP_H = 101
-D_FLOORS = 40
+D_MAP_W = 2001
+D_MAP_H = 2001
+D_FLOORS = 1
 D_VIEW_R = 5
 TILE = 32
 
@@ -156,12 +156,10 @@ ENEMY_STATS_MASTER = {
 #  グローバルメモリキャッシュ
 # ============================================================
 
-dg_maps    = {}  # {floor: [[...], [...]]}
 dg_players = {}  # {uid: {floor, x, y, hp, max_hp, atk, def_, spd, crit}}
-dg_starts  = {}  # {floor: (x, y)}
-dg_used    = {}  # {floor: set((x, y), ...)}
 dg_bases   = {}  # {uid: (floor, x, y)}
 _ASSET_CACHE = {}
+dg_chunks = {}
 
 # 環境変数
 DUNGEON_IMG_CHANNEL_ID = int(os.environ.get("DUNGEON_IMG_CHANNEL_ID", 0))
@@ -184,24 +182,17 @@ def d_get_biome(x, y):
     
     return D_BIOMES[biome_id] # (名前, 色) を返す
 
-def d_ensure_map(floor):
-    """フロアのマップが存在しなければ生成"""
-    if floor not in dg_maps:
-        dg_maps[floor] = d_gen_floor(floor)
-        dg_used[floor] = set()
-
 def d_get_cell(floor, x, y):
     """
-    シード値と座標からその場所のタイルを決定する。
+    シード値と座標からその場所のタイルを計算で導き出す。
     """
-    # 1. 破壊・設置されたタイルの差分キャッシュを先にチェック
-    # (後述の差分DB/キャッシュを参照するロジックをここに置く)
+    # 1. 差分（破壊された壁など）をチェック
+    # (DBやdg_chunksキャッシュを確認するロジックをここに挿入)
     
-    # 2. シード計算
-    combined_seed = hash(f"{MAP_SEED}_{floor}_{x}_{y}")
-    random.seed(combined_seed)
+    # 2. 計算による生成
+    random.seed(hash(f"{MAP_SEED}_{floor}_{x}_{y}"))
     
-    # 基本の壁/床判定 (例: 70%が床)
+    # 30%の確率で壁、それ以外は床
     if random.random() < 0.3:
         return D_WALL
     return D_FLOOR
