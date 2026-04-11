@@ -205,26 +205,25 @@ async def check_queue(self):
     if self.eq_filter == "afir":
         url_l, _ = await self.get_attachment_info(self.IR_L_ID)
         url_r, _ = await self.get_attachment_info(self.IR_R_ID)
-        
+    
         if not url_l or not url_r:
             self.is_processing_queue = False
             return await self.current_ctx.send("⚠️ IRファイルの取得に失敗しました。")
 
-        # afirモードではbefore_optionsのシークをatrimで行う（filter_complex内）
         seek_f = f",atrim=start={self.elapsed_offset},asetpts=PTS-STARTPTS" if self.elapsed_offset > 0 else ""
-        # before_optionsのシークはafirモードでは除外（filter側で処理）
         before_options = f"{reconnect_opt} {headers_opt}"
 
+    # ✅ 修正: amerge → join (channel_layout=stereo を明示)
+    # ✅ 修正: gtype=gn を削除（バージョン非互換）
+    # ✅ 修正: aformat で強制的にステレオ正規化
         filter_complex = (
-            f"[0:a]aresample=48000{seek_f}[main];"
-            f"[1:a]aresample=48000[l];"
-            f"[2:a]aresample=48000[r];"
-            f"[l][r]amerge=inputs=2[ir_stereo];"
-            f"[main][ir_stereo]afir=dry=1:wet=1:gtype=gn[out]"
+            f"[0:a]aresample=48000,aformat=channel_layouts=stereo{seek_f}[main];"
+            f"[1:a]aresample=48000,aformat=channel_layouts=mono[l];"
+            f"[2:a]aresample=48000,aformat=channel_layouts=mono[r];"
+            f"[l][r]join=inputs=2:channel_layout=stereo[ir];"
+            f"[main][ir]afir=dry=1:wet=1[out]"
         )
 
-        # ✅ バグ2修正: 追加 -i ごとにリコネクト+ヘッダーを付与
-        # ✅ バグ3修正: shlex.quote() で URL を安全にエスケープ
         options = (
             f"{reconnect_opt} {headers_opt} -i {shlex.quote(url_l)} "
             f"{reconnect_opt} {headers_opt} -i {shlex.quote(url_r)} "
