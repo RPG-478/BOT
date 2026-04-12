@@ -7,33 +7,31 @@ import os
 from PIL import Image, ImageDraw
 
 # --- Configuration & Assets ---
-# 部屋と異変画像のパス定義 (フォルダ名が小文字の rooms であることに対応)
+# 実際のファイル名に基づいたアセット構成
+# 0: 通常(default), 1~4: 異変画像として割り当て
 ASSETS_CONFIG = {
     0: {
-        "name": "HOME",
-        "default": "assets/rooms/home_normal.png",
-        "Displacement": "assets/rooms/home_displace.png",
-        "Alternate": "assets/rooms/home_alt.png"
+        "name": "BATHROOM",
+        "default": "assets/rooms/Bath0.png",
+        "Displacement": "assets/rooms/Bath1.png",
+        "Flaw": "assets/rooms/Bath2.png",
+        "Alternate": "assets/rooms/Bath3.png",
+        "Presence": "assets/rooms/Bath4.png"
     },
     1: {
         "name": "BASEMENT",
-        "default": "assets/rooms/basement_normal.png",
-        "Flaw": "assets/rooms/basement_flaw.png"
+        "default": "assets/rooms/Base0.png",
+        "Displacement": "assets/rooms/Base1.png",
+        "Alternate": "assets/rooms/Base2.png"
     },
     2: {
         "name": "LIVING ROOM",
-        "default": "assets/rooms/living_normal.png",
-        "Displacement": "assets/rooms/living_displace.png"
+        "default": "assets/rooms/Living0.png",
+        # Livingに異変画像がない場合は通常画像が表示される(報告は可能)
     },
     3: {
-        "name": "RESTROOM",
-        "default": "assets/rooms/rest_normal.png",
-        "Presence": "assets/rooms/rest_presence.png"
-    },
-    4: {
         "name": "PARKING",
-        "default": "assets/rooms/parking_normal.png",
-        "Alternate": "assets/rooms/parking_alt.png"
+        "default": "assets/rooms/Parking0.png",
     }
 }
 
@@ -63,26 +61,22 @@ class Watch(commands.Cog):
         self.anomaly_generator.cancel()
 
     def play_audio(self, sound_key):
-        """Play SE or Background music via FFmpeg"""
+        """FFmpegを使用してボイスチャンネルで音声を再生"""
         if self.voice_client and self.voice_client.is_connected():
             path = SOUND_ASSETS.get(sound_key)
             if path and os.path.exists(path):
-                # Stop current audio to prioritize SE (except for ambient)
                 if self.voice_client.is_playing() and sound_key != "ambient":
                     self.voice_client.stop()
                 
-                # Use FFmpeg to play audio
                 source = discord.FFmpegPCMAudio(path)
-                # After SE ends, resume ambient loop
                 self.voice_client.play(
                     source, 
                     after=lambda e: self.play_audio("ambient") if sound_key != "ambient" else None
                 )
 
     def generate_noise_gif(self, image_path):
-        """Applies dynamic noise to the specified image and returns a GIF stream for 'Live' feel"""
+        """画像にライブ感のあるノイズ加工を施してGIFを生成"""
         try:
-            # Load the pre-replaced image (no composite needed as per spec)
             base_img = Image.open(image_path).convert("RGBA").resize((640, 360))
         except Exception as e:
             print(f"Image Load Error ({image_path}): {e}")
@@ -94,12 +88,12 @@ class Watch(commands.Cog):
             noise_layer = Image.new("RGBA", frame.size, (0, 0, 0, 0))
             draw = ImageDraw.Draw(noise_layer)
             
-            # Static Pixel Noise
+            # ピクセルノイズ
             for _ in range(1500):
                 x, y = random.randint(0, 639), random.randint(0, 359)
                 draw.point((x, y), fill=(255, 255, 255, random.randint(15, 55)))
             
-            # Static Scanlines
+            # 走査線
             for y in range(0, 360, 4):
                 draw.line([(0, y), (640, y)], fill=(0, 0, 0, 25), width=1)
 
@@ -111,12 +105,12 @@ class Watch(commands.Cog):
         return buffer
 
     async def update_monitor_message(self, interaction=None, overlay_text=None):
-        """Update the Discord message with current camera view and UI"""
+        """監視画面のメッセージを更新"""
         room_id = self.current_room_index
         room_data = ASSETS_CONFIG[room_id]
         anomaly = self.active_anomalies[room_id]
 
-        # Select Image Path: Specific Anomaly Image OR Default
+        # 異変があれば異変用画像、なければ通常画像(default)を使用
         img_path = room_data.get(anomaly, room_data["default"])
         gif_buf = self.generate_noise_gif(img_path)
         
@@ -129,7 +123,7 @@ class Watch(commands.Cog):
             embed.description = f"**{overlay_text}**"
         
         embed.set_image(url="attachment://feed.gif")
-        embed.set_footer(text=f"Anomaly Count: {self.anomaly_count}/{MAX_ANOMALIES} | CAM ID: {room_id:02}")
+        embed.set_footer(text=f"Anomaly Count: {self.anomaly_count}/{MAX_ANOMALIES} | CAM: {room_id}")
 
         view = CameraControlView(self)
         
@@ -146,23 +140,21 @@ class Watch(commands.Cog):
 
     @tasks.loop(seconds=25)
     async def anomaly_generator(self):
-        """Background task to spawn anomalies in off-screen rooms"""
+        """非表示の部屋に異変を発生させるタスク"""
         if self.is_game_over:
             return
 
-        # Filter candidates: Room is not currently watched and has no anomaly
         candidates = [i for i in ASSETS_CONFIG.keys() if i != self.current_room_index and self.active_anomalies[i] is None]
         
         if candidates and random.random() < 0.35:
             room_id = random.choice(candidates)
-            # Find available anomaly types for this specific room
+            # その部屋で定義されている異変タイプを選択
             possible = [k for k in ASSETS_CONFIG[room_id].keys() if k not in ["name", "default"]]
             if possible:
                 self.active_anomalies[room_id] = random.choice(possible)
                 self.anomaly_count += 1
                 self.play_audio("anomaly_spawn")
 
-        # Game Over Check
         if self.anomaly_count >= MAX_ANOMALIES:
             self.is_game_over = True
             self.play_audio("gameover")
@@ -170,17 +162,15 @@ class Watch(commands.Cog):
 
     @commands.command(name="watch")
     async def start_watch(self, ctx):
-        """Starts the surveillance game. Requires Voice Channel connection."""
+        """ゲーム開始。VC接続が必須。"""
         if not ctx.author.voice:
-            return await ctx.send("エラー: 監視を開始するにはボイスチャンネルに入ってください。")
+            return await ctx.send("エラー: ボイスチャンネルに参加してからコマンドを打ってください。")
 
-        # Initialization
         self.current_room_index = 0
         self.active_anomalies = {i: None for i in ASSETS_CONFIG.keys()}
         self.anomaly_count = 0
         self.is_game_over = False
 
-        # Voice Logic
         if ctx.voice_client:
             await ctx.voice_client.move_to(ctx.author.voice.channel)
             self.voice_client = ctx.voice_client
@@ -192,7 +182,6 @@ class Watch(commands.Cog):
         if not self.anomaly_generator.is_running():
             self.anomaly_generator.start()
 
-        # Render Initial View
         room_data = ASSETS_CONFIG[0]
         gif_buf = self.generate_noise_gif(room_data["default"])
         file = discord.File(gif_buf, filename="feed.gif")
@@ -217,7 +206,7 @@ class CameraControlView(discord.ui.View):
     async def report_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.cog.is_game_over: return
         await interaction.response.send_message(
-            "現在のカメラで発生している異変を選択してください:", 
+            "異変の種類を選択:", 
             view=ReportSelectView(self.cog), 
             ephemeral=True
         )
@@ -233,7 +222,7 @@ class ReportSelectView(discord.ui.View):
         super().__init__(timeout=60)
         self.cog = cog
         
-        select = discord.ui.Select(placeholder="異変の種類を選択...")
+        select = discord.ui.Select(placeholder="異変を選択...")
         for a_type in ANOMALY_TYPES:
             select.add_option(label=a_type, value=a_type)
         select.callback = self.on_select
@@ -248,12 +237,11 @@ class ReportSelectView(discord.ui.View):
             self.cog.active_anomalies[room_id] = None
             self.cog.anomaly_count -= 1
             self.cog.play_audio("correct")
-            await self.cog.update_monitor_message(interaction, overlay_text="REPORT SUCCESS: ANOMALY REMOVED")
+            await self.cog.update_monitor_message(interaction, overlay_text="REPORT SUCCESS: SIGNAL RESTORED")
         else:
             self.cog.play_audio("wrong")
             await self.cog.update_monitor_message(interaction, overlay_text="REPORT ERROR: NO ANOMALY DETECTED")
         
-        # Auto-refresh to normal live feed after 4 seconds
         await asyncio.sleep(4)
         if not self.cog.is_game_over:
             await self.cog.update_monitor_message()
