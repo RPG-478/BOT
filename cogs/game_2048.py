@@ -1,4 +1,3 @@
-```python
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -196,5 +195,3 @@ class Game2048View(discord.ui.View):
 
 async def setup(bot):
     await bot.add_cog(Game2048(bot))
-
-```
