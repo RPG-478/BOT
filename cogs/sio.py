@@ -196,21 +196,26 @@ class Voice(commands.Cog):
         before_options = f"{reconnect_opt} {headers_opt} {seek_ss}".strip()
 
         # 【変更】フィルタ構成の分岐
+        # 【変更箇所】afir フィルタの構築
         if self.eq_filter == "afir":
             # ユニバーサルIDからURLを取得
-            url_l, _ = await self.get_attachment_info(self.ir_l_id)
-            url_r, _ = await self.get_attachment_info(self.ir_r_id)
+            url_l, name_l = await self.get_attachment_info(self.ir_l_id)
+            url_r, name_r = await self.get_attachment_info(self.ir_r_id)
             
             if not url_l or not url_r:
                 self.is_processing_queue = False
-                return await self.current_ctx.send("IRファイルの取得に失敗しました。")
+                return await self.current_ctx.send("❌ IRファイルの取得に失敗しました。IDを再確認してください。")
 
-            # IDから取得したURLをFFmpegに渡す
+            # 再生開始時に一度だけ成功メッセージを出す（elapsed_offset == 0 の時）
+            if self.elapsed_offset == 0:
+                await self.current_ctx.send(f"✅ IRファイルの取得に成功: `{name_l}` / `{name_r}` を適用します。")
+
+            # FFmpegオプションの構築
             options = (
                 f"-i \"{url_l}\" "
                 f"-i \"{url_r}\" "
                 f"-filter_complex \"[1:a][2:a]join=inputs=2:channel_layout=stereo[ir]; "
-                f"[0:a][ir]afir=dry=10:wet=10[out]\" "
+                f"[0:a][ir]afir=dry=1:wet=1[out]\" "
                 f"-map \"[out]\" -vn -ar 48000 -ac 2"
             )
         else:
