@@ -168,74 +168,66 @@ class Voice(commands.Cog):
     # Playback Logic
     # =====================
     async def check_queue(self):
-        """Qiita/FFmpeg仕様を完全に遵守した入力インデックス構成"""
         if self.is_processing_queue or self.current_ctx is None:
             return
         
         vc = self.current_ctx.voice_client
         if vc is None or not vc.is_connected():
+            self.is_processing_queue = False
             return
+
         if self.current_track is None:
-            if self.queue.empty(): return
+            if self.queue.empty():
+                self.is_processing_queue = False
+                return
             url, filename, b62_id = await self.queue.get() 
             duration = await self.get_duration(url)
             self.current_track = (url, filename, duration, b62_id) 
             self.elapsed_offset = 0
             self.retry_count = 0
-    
+
         url, filename, duration, b62_id = self.current_track
         self.is_processing_queue = True
 
-        # ✅ バグ1修正: \r\n を追加してHTTPヘッダーを正しく終端させる
         headers_val = "User-Agent: Mozilla/5.0\r\n"
-        headers_opt = f'-headers "{headers_val}"'
-        reconnect_opt = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-    
-        # ✅ バグ4修正: before_options でシークを行う（入力シーク = 高速）
-        seek_ss = f"-ss {self.elapsed_offset}" if self.elapsed_offset > 0 else ""
-        before_options = f"{reconnect_opt} {headers_opt} {seek_ss}".strip()
+        before_options = f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -headers "{headers_val}"'
+        if self.elapsed_offset > 0:
+            before_options += f" -ss {self.elapsed_offset}"
 
-        # 【変更】フィルタ構成の分岐
-        # 【変更箇所】afir フィルタの構築
+        # フィルター構築
         if self.eq_filter == "afir":
-            # ユニバーサルIDからURLを取得
             url_l, name_l = await self.get_attachment_info(self.ir_l_id)
             url_r, name_r = await self.get_attachment_info(self.ir_r_id)
             
             if not url_l or not url_r:
                 self.is_processing_queue = False
-                return await self.current_ctx.send("❌ IRファイルの取得に失敗しました。IDを再確認してください。")
+                return await self.current_ctx.send("❌ IRファイルの取得に失敗しました。")
 
-            # 再生開始時に一度だけ成功メッセージを出す（elapsed_offset == 0 の時）
-            if self.elapsed_offset == 0:
-                await self.current_ctx.send(f"✅ IRファイルの取得に成功: `{name_l}` / `{name_r}` を適用します。")
-
-            # FFmpegオプションの構築
+            # 修正: 入力インデックスを明示的に指定
+            # [0:a]がメイン音声, [1:a]がL-IR, [2:a]がR-IR
             options = (
-                f"-i \"{url_l}\" "
-                f"-i \"{url_r}\" "
+                f"-i \"{url_l}\" -i \"{url_r}\" "
                 f"-filter_complex \"[1:a][2:a]join=inputs=2:channel_layout=stereo[ir]; "
                 f"[0:a][ir]afir=dry=1:wet=1[out]\" "
                 f"-map \"[out]\" -vn -ar 48000 -ac 2"
             )
         else:
             af = f" -af {self.eq_filter}" if self.eq_filter else ""
-            options = f"{af} -vn -sn -dn -ar 48000 -ac 2 -probesize 32M -analyzeduration 32M"
-            
+            options = f"{af} -vn -ar 48000 -ac 2"
+
         try:
-            await asyncio.sleep(0.5)
             source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
-        
             self.start_time = time.time()
-            vc.play(source, after=lambda e: self.play_next(e))
-        
+            # lambda内で自作のplay_nextを呼び出す
+            vc.play(source, after=lambda e: self.bot.loop.call_soon_threadsafe(self.play_next, e))
+            
             if self.elapsed_offset < 1:
                 await self.current_ctx.send(embed=we(f"🎵 再生開始: **{filename}**"))
         except Exception as e:
             logging.error(f"Playback error: {e}")
             self.is_processing_queue = False
             self.current_track = None
-            self.bot.loop.create_task(self.check_queue())
+            await self.check_queue()
             
     def play_next(self, error=None):
         actual_played = time.time() - self.start_time
