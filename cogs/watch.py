@@ -12,26 +12,26 @@ from PIL import Image, ImageDraw
 ASSETS_CONFIG = {
     0: {
         "name": "BATHROOM",
-        "default": "assets/rooms/Bath0.png",
-        "Displacement": "assets/rooms/Bath1.png",
-        "Flaw": "assets/rooms/Bath2.png",
-        "Alternate": "assets/rooms/Bath3.png",
-        "Presence": "assets/rooms/Bath4.png"
+        "default": "assets/rooms/Bath0.PNG",
+        "Displacement": "assets/rooms/Bath1.PNG",
+        "Flaw": "assets/rooms/Bath2.PNG",
+        "Alternate": "assets/rooms/Bath3.PNG",
+        "Presence": "assets/rooms/Bath4.PNG"
     },
     1: {
         "name": "BASEMENT",
-        "default": "assets/rooms/Base0.png",
-        "Displacement": "assets/rooms/Base1.png",
-        "Alternate": "assets/rooms/Base2.png"
+        "default": "assets/rooms/Base0.PNG",
+        "Displacement": "assets/rooms/Base1.PNG",
+        "Alternate": "assets/rooms/Base2.PNG"
     },
     2: {
         "name": "LIVING ROOM",
-        "default": "assets/rooms/Living0.png",
+        "default": "assets/rooms/Living0.PNG",
         # Livingに異変画像がない場合は通常画像が表示される(報告は可能)
     },
     3: {
         "name": "PARKING",
-        "default": "assets/rooms/Parking0.png",
+        "default": "assets/rooms/Parking0.PNG",
     }
 }
 
