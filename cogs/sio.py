@@ -196,17 +196,18 @@ class Voice(commands.Cog):
             before_options += f" -ss {self.elapsed_offset}"
 
         # 2. フィルターと追加入力の構築
+        # 修正後のフィルター構築部分
         if self.eq_filter == "afir":
             url_l, name_l = await self.get_attachment_info(self.ir_l_id)
             url_r, name_r = await self.get_attachment_info(self.ir_r_id)
-        
+    
             if not url_l or not url_r:
                 self.is_processing_queue = False
                 return await self.current_ctx.send("❌ IRファイルの取得に失敗しました。")
 
-            # 【解説】
-            # FFmpegPCMAudio(url, ...) の 'url' が自動的に [0:a] になります。
-            # options に追加する -i は [1:a], [2:a] になります。
+            # [0:a] = メイン音声(url)
+            # [1:a] = url_l
+            # [2:a] = url_r
             options = (
                 f"-i \"{url_l}\" -i \"{url_r}\" "
                 f"-filter_complex \"[1:a][2:a]join=inputs=2:channel_layout=stereo[ir]; "
