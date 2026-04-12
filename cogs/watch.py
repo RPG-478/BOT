@@ -9,39 +9,39 @@ from PIL import Image, ImageDraw
 # --- Configuration & Assets ---
 # 実際のファイル名に基づいたアセット構成
 # 0: 通常(default), 1~4: 異変画像として割り当て
-ASSETS_CONFIG = {
+Assets_CONFIG = {
     0: {
         "name": "BATHROOM",
-        "default": "assets/rooms/Bath0.PNG",
-        "Displacement": "assets/rooms/Bath1.PNG",
-        "Flaw": "assets/rooms/Bath2.PNG",
-        "Alternate": "assets/rooms/Bath3.PNG",
-        "Presence": "assets/rooms/Bath4.PNG"
+        "default": "Assets/rooms/Bath0.PNG",
+        "Displacement": "Assets/rooms/Bath1.PNG",
+        "Flaw": "Assets/rooms/Bath2.PNG",
+        "Alternate": "Assets/rooms/Bath3.PNG",
+        "Presence": "Assets/rooms/Bath4.PNG"
     },
     1: {
         "name": "BASEMENT",
-        "default": "assets/rooms/Base0.PNG",
-        "Displacement": "assets/rooms/Base1.PNG",
-        "Alternate": "assets/rooms/Base2.PNG"
+        "default": "Assets/rooms/Base0.PNG",
+        "Displacement": "Assets/rooms/Base1.PNG",
+        "Alternate": "Assets/rooms/Base2.PNG"
     },
     2: {
         "name": "LIVING ROOM",
-        "default": "assets/rooms/Living0.PNG",
+        "default": "Assets/rooms/Living0.PNG",
         # Livingに異変画像がない場合は通常画像が表示される(報告は可能)
     },
     3: {
         "name": "PARKING",
-        "default": "assets/rooms/Parking0.PNG",
+        "default": "Assets/rooms/Parking0.PNG",
     }
 }
 
 # 音響アセット
-SOUND_ASSETS = {
-    "ambient": "assets/sounds/ambient_loop.mp3",
-    "anomaly_spawn": "assets/sounds/anomaly_detected.mp3",
-    "correct": "assets/sounds/fix_success.mp3",
-    "wrong": "assets/sounds/fix_error.mp3",
-    "gameover": "assets/sounds/game_over.mp3"
+SOUND_Assets = {
+    "ambient": "Assets/sounds/ambient_loop.mp3",
+    "anomaly_spawn": "Assets/sounds/anomaly_detected.mp3",
+    "correct": "Assets/sounds/fix_success.mp3",
+    "wrong": "Assets/sounds/fix_error.mp3",
+    "gameover": "Assets/sounds/game_over.mp3"
 }
 
 ANOMALY_TYPES = ["Displacement", "Flaw", "Alternate", "Presence"]
@@ -51,7 +51,7 @@ class Watch(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.current_room_index = 0
-        self.active_anomalies = {i: None for i in ASSETS_CONFIG.keys()}
+        self.active_anomalies = {i: None for i in Assets_CONFIG.keys()}
         self.anomaly_count = 0
         self.is_game_over = False
         self.voice_client = None
@@ -63,7 +63,7 @@ class Watch(commands.Cog):
     def play_audio(self, sound_key):
         """FFmpegを使用してボイスチャンネルで音声を再生"""
         if self.voice_client and self.voice_client.is_connected():
-            path = SOUND_ASSETS.get(sound_key)
+            path = SOUND_Assets.get(sound_key)
             if path and os.path.exists(path):
                 if self.voice_client.is_playing() and sound_key != "ambient":
                     self.voice_client.stop()
@@ -107,7 +107,7 @@ class Watch(commands.Cog):
     async def update_monitor_message(self, interaction=None, overlay_text=None):
         """監視画面のメッセージを更新"""
         room_id = self.current_room_index
-        room_data = ASSETS_CONFIG[room_id]
+        room_data = Assets_CONFIG[room_id]
         anomaly = self.active_anomalies[room_id]
 
         # 異変があれば異変用画像、なければ通常画像(default)を使用
@@ -144,12 +144,12 @@ class Watch(commands.Cog):
         if self.is_game_over:
             return
 
-        candidates = [i for i in ASSETS_CONFIG.keys() if i != self.current_room_index and self.active_anomalies[i] is None]
+        candidates = [i for i in Assets_CONFIG.keys() if i != self.current_room_index and self.active_anomalies[i] is None]
         
         if candidates and random.random() < 0.35:
             room_id = random.choice(candidates)
             # その部屋で定義されている異変タイプを選択
-            possible = [k for k in ASSETS_CONFIG[room_id].keys() if k not in ["name", "default"]]
+            possible = [k for k in Assets_CONFIG[room_id].keys() if k not in ["name", "default"]]
             if possible:
                 self.active_anomalies[room_id] = random.choice(possible)
                 self.anomaly_count += 1
@@ -167,7 +167,7 @@ class Watch(commands.Cog):
             return await ctx.send("エラー: ボイスチャンネルに参加してからコマンドを打ってください。")
 
         self.current_room_index = 0
-        self.active_anomalies = {i: None for i in ASSETS_CONFIG.keys()}
+        self.active_anomalies = {i: None for i in Assets_CONFIG.keys()}
         self.anomaly_count = 0
         self.is_game_over = False
 
@@ -182,7 +182,7 @@ class Watch(commands.Cog):
         if not self.anomaly_generator.is_running():
             self.anomaly_generator.start()
 
-        room_data = ASSETS_CONFIG[0]
+        room_data = Assets_CONFIG[0]
         gif_buf = self.generate_noise_gif(room_data["default"])
         file = discord.File(gif_buf, filename="feed.gif")
         
@@ -199,7 +199,7 @@ class CameraControlView(discord.ui.View):
     @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
     async def prev_cam(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.cog.is_game_over: return
-        self.cog.current_room_index = (self.cog.current_room_index - 1) % len(ASSETS_CONFIG)
+        self.cog.current_room_index = (self.cog.current_room_index - 1) % len(Assets_CONFIG)
         await self.cog.update_monitor_message(interaction)
 
     @discord.ui.button(label="REPORT", style=discord.ButtonStyle.danger)
@@ -214,7 +214,7 @@ class CameraControlView(discord.ui.View):
     @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
     async def next_cam(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.cog.is_game_over: return
-        self.cog.current_room_index = (self.cog.current_room_index + 1) % len(ASSETS_CONFIG)
+        self.cog.current_room_index = (self.cog.current_room_index + 1) % len(Assets_CONFIG)
         await self.cog.update_monitor_message(interaction)
 
 class ReportSelectView(discord.ui.View):
