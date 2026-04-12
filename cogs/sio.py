@@ -161,13 +161,6 @@ class Voice(commands.Cog):
         }
         if mode not in eq_settings:
             return await ctx.send(embed=we(f"利用可能: {', '.join(eq_settings.keys())}"))
-
-        # 追加：reverb選択時のファイルチェック
-        if mode == "reverb":
-            import os
-            if not (os.path.exists(self.ir_l_path) and os.path.exists(self.ir_r_path)):
-                return await ctx.send(embed=we(f"エラー: `{self.ir_l_path}` または `{self.ir_r_path}` が見つかりません。"))
-
         self.eq_filter = eq_settings[mode]
         await ctx.send(embed=we(f"エフェクトを `{mode}` に変更しました。"))
 
