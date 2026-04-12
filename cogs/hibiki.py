@@ -4,7 +4,8 @@ from discord.ext import commands
 from groq import Groq
 import config  # 前提コード1 (config.py) を参照
 
-class ReplyAI(commands.Cog):
+# クラス名を ReplyAI から AIConfig に変更（機能実態に合わせました）
+class AIConfig(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.channel_state = {}
@@ -14,7 +15,6 @@ class ReplyAI(commands.Cog):
         
         if not groq_key:
             print("ERROR: GROQ_API_KEY が config.py から取得できません。")
-            # 起動を止めないためにダミーをいれるか、Noneのままにする
             self.groq_client = None
         else:
             self.groq_client = Groq(api_key=groq_key)
@@ -22,7 +22,8 @@ class ReplyAI(commands.Cog):
         # config.py で初期化済みの supabase を利用
         self.supabase = config.supabase
 
-    @commands.command(name="oo")
+    # コマンド名を oo から ai_chat に変更（用途が分かりやすくなります）
+    @commands.command(name="ai_chat")
     async def toggle_ai(self, ctx: commands.Context):
         channel_id = ctx.channel.id
         state = not self.channel_state.get(channel_id, False)
@@ -32,11 +33,12 @@ class ReplyAI(commands.Cog):
         embed = discord.Embed(description=msg, color=0xFFFFFF)
         await ctx.send(embed=embed)
 
+    # コマンド名とメソッド名が test で重複していたため、メソッド名を check_status に変更
     @commands.command(name="test")
-    async def test(self, ctx: commands.Context):
+    async def check_status(self, ctx: commands.Context):
         embed = discord.Embed(description="動いてるぞ", color=0xFFFFFF)
         await ctx.send(embed=embed)
 
 async def setup(bot: commands.Bot):
-    # main.py の setup_hook から呼び出される
-    await bot.add_cog(ReplyAI(bot))
+    # 修正したクラス名に合わせて変更
+    await bot.add_cog(AIConfig(bot))
