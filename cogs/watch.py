@@ -1,4 +1,3 @@
-```python
 import discord
 from discord.ext import commands, tasks
 import asyncio
@@ -261,5 +260,3 @@ class ReportSelectView(discord.ui.View):
 
 async def setup(bot):
     await bot.add_cog(Watch(bot))
-
-```
