@@ -195,39 +195,28 @@ class Voice(commands.Cog):
         seek_ss = f"-ss {self.elapsed_offset}" if self.elapsed_offset > 0 else ""
         before_options = f"{reconnect_opt} {headers_opt} {seek_ss}".strip()
 
+        # 【変更】フィルタ構成の分岐
         if self.eq_filter == "afir":
-            url_l, _ = await self.get_attachment_info(self.IR_L_ID)
-            url_r, _ = await self.get_attachment_info(self.IR_R_ID)
-    
+            # ユニバーサルIDからURLを取得
+            url_l, _ = await self.get_attachment_info(self.ir_l_id)
+            url_r, _ = await self.get_attachment_info(self.ir_r_id)
+            
             if not url_l or not url_r:
                 self.is_processing_queue = False
-                return await self.current_ctx.send("⚠️ IRファイルの取得に失敗しました。")
+                return await self.current_ctx.send("IRファイルの取得に失敗しました。")
 
-            seek_f = f",atrim=start={self.elapsed_offset},asetpts=PTS-STARTPTS" if self.elapsed_offset > 0 else ""
-            before_options = f"{reconnect_opt} {headers_opt}"
-
-        # ✅ 修正: amerge → join (channel_layout=stereo を明示)
-        # ✅ 修正: gtype=gn を削除（バージョン非互換）
-        # ✅ 修正: aformat で強制的にステレオ正規化
-            filter_complex = (
-                f"[0:a]aresample=48000,aformat=channel_layouts=stereo{seek_f}[main];"
-                f"[1:a]aresample=48000,aformat=channel_layouts=mono[l];"
-                f"[2:a]aresample=48000,aformat=channel_layouts=mono[r];"
-                f"[l][r]join=inputs=2:channel_layout=stereo[ir];"
-                f"[main][ir]afir=dry=1:wet=1[out]"
-            )
-
+            # IDから取得したURLをFFmpegに渡す
             options = (
-                f"{reconnect_opt} {headers_opt} -i {shlex.quote(url_l)} "
-                f"{reconnect_opt} {headers_opt} -i {shlex.quote(url_r)} "
-                f"-filter_complex {shlex.quote(filter_complex)} "
-                f"-map [out] -vn -ar 48000 -ac 2"
+                f"-i \"{url_l}\" "
+                f"-i \"{url_r}\" "
+                f"-filter_complex \"[1:a][2:a]join=inputs=2:channel_layout=stereo[ir]; "
+                f"[0:a][ir]afir=dry=10:wet=10[out]\" "
+                f"-map \"[out]\" -vn -ar 48000 -ac 2"
             )
         else:
-            # ✅ バグ4修正: -ss は before_options 側に移したので options に不要
-            af = f"-af {shlex.quote(self.eq_filter)}" if self.eq_filter else ""
-            options = f"{af} -vn -ar 48000 -ac 2".strip()
-
+            af = f" -af {self.eq_filter}" if self.eq_filter else ""
+            options = f"{af} -vn -sn -dn -ar 48000 -ac 2 -probesize 32M -analyzeduration 32M"
+            
         try:
             await asyncio.sleep(0.5)
             source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
