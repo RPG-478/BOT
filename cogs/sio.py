@@ -56,8 +56,8 @@ class Voice(commands.Cog):
         self.retry_count = 0
         self.MAX_RETRIES = 3
         self.supabase = getattr(bot, "supabase", None)
-        self.IR_L_ID = "d424KTRkAlaetACCuFZOCjUtFNjho1t5" 
-        self.IR_R_ID = "d424KTRkAlaetACCuFZOCjUtFO0p0TMN"
+        self.ir_l_id = "d424KTRkAlaetACCuFZOCjUtFNjho1t5" 
+        self.ir_r_id = "d424KTRkAlaetACCuFZOCjUtFO0p0TMN"
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx, error):
