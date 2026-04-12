@@ -12,10 +12,10 @@ from PIL import Image, ImageDraw
 Assets_CONFIG = {
     0: {
         "name": "BATHROOM",
-        "default": "Assets/rooms/Bath0.PNG",
+        "default": "Assets/rooms/Bath3.PNG",
         "Displacement": "Assets/rooms/Bath1.PNG",
         "Flaw": "Assets/rooms/Bath2.PNG",
-        "Alternate": "Assets/rooms/Bath3.PNG",
+        "Alternate": "Assets/rooms/Bath0.PNG",
         "Presence": "Assets/rooms/Bath4.PNG"
     },
     1: {
