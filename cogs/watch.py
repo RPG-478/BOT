@@ -16,15 +16,15 @@ Assets_CONFIG = {
         "Displacement": "Assets/rooms/Bath1.PNG",
         "Flaw": "Assets/rooms/Bath2.PNG",
         "Displacement": "Assets/rooms/Bath0.PNG",
-        "Alternate": "Assets/rooms/Bath4.PNG"
+        "Alternate": "Assets/rooms/Bath4.PNG",
     },
     1: {
         "name": "BASEMENT",
         "default": "Assets/rooms/Base0.PNG",
         "Displacement": "Assets/rooms/Base1.PNG",
-        "Flaw": "Assets/rooms/Base2.PNG"
-        "Displacement": "Assets/rooms/Base3.PNG"
-        "Presence": "Assets/rooms/Base4.PNG"
+        "Flaw": "Assets/rooms/Base2.PNG",
+        "Displacement": "Assets/rooms/Base3.PNG",
+        "Presence": "Assets/rooms/Base4.PNG",
     },
     2: {
         "name": "LIVING ROOM",
