@@ -15,14 +15,16 @@ Assets_CONFIG = {
         "default": "Assets/rooms/Bath3.PNG",
         "Displacement": "Assets/rooms/Bath1.PNG",
         "Flaw": "Assets/rooms/Bath2.PNG",
-        "Alternate": "Assets/rooms/Bath0.PNG",
-        "Presence": "Assets/rooms/Bath4.PNG"
+        "Displacement": "Assets/rooms/Bath0.PNG",
+        "Alternate": "Assets/rooms/Bath4.PNG"
     },
     1: {
         "name": "BASEMENT",
         "default": "Assets/rooms/Base0.PNG",
         "Displacement": "Assets/rooms/Base1.PNG",
-        "Alternate": "Assets/rooms/Base2.PNG"
+        "Flaw": "Assets/rooms/Base2.PNG"
+        "Displacement": "Assets/rooms/Base3.PNG"
+        "Presence": "Assets/rooms/Base4.PNG"
     },
     2: {
         "name": "LIVING ROOM",
@@ -237,10 +239,10 @@ class ReportSelectView(discord.ui.View):
             self.cog.active_anomalies[room_id] = None
             self.cog.anomaly_count -= 1
             self.cog.play_audio("correct")
-            await self.cog.update_monitor_message(interaction, overlay_text="REPORT SUCCESS: SIGNAL RESTORED")
+            await self.cog.update_monitor_message(interaction, overlay_text="ANOMALY REMOVED")
         else:
             self.cog.play_audio("wrong")
-            await self.cog.update_monitor_message(interaction, overlay_text="REPORT ERROR: NO ANOMALY DETECTED")
+            await self.cog.update_monitor_message(interaction, overlay_text="ANOMALY NOT FOUND")
         
         await asyncio.sleep(4)
         if not self.cog.is_game_over:
