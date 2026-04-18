@@ -438,12 +438,7 @@ class Voice(commands.Cog):
         m_p, used, total = self.get_mem_usage()
         desc = f"CPU: `{cpu:.1f}%` / Mem: `{m_p:.1f}%` ({used/1024:.0f}/{total/1024:.0f}MB)"
         await ctx.send(embed=we(desc))
-import discord
-from discord.ext import commands
-import asyncio
 
-# 注意: 音声受信(listening)をサポートする拡張ライブラリが必要です
-# 例: pip install discord-ext-voice
 
 class SaitoRelay(commands.Cog):
     def __init__(self, bot):
@@ -517,3 +512,4 @@ class SaitoRelay(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Voice(bot))
+    await bot.add_cog(SaitoRelay(bot))
