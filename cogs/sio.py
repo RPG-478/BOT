@@ -438,6 +438,82 @@ class Voice(commands.Cog):
         m_p, used, total = self.get_mem_usage()
         desc = f"CPU: `{cpu:.1f}%` / Mem: `{m_p:.1f}%` ({used/1024:.0f}/{total/1024:.0f}MB)"
         await ctx.send(embed=we(desc))
+import discord
+from discord.ext import commands
+import asyncio
+
+# 注意: 音声受信(listening)をサポートする拡張ライブラリが必要です
+# 例: pip install discord-ext-voice
+
+class SaitoRelay(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.matching_queue = [] # 待機中の(ctx)
+        self.sessions = {} # 相互リレーのマップ {vc_id: peer_vc_id}
+
+    @commands.command()
+    async def saito(self, ctx):
+        """音声中継マッチング開始"""
+        if not ctx.author.voice:
+            return await ctx.send("VCに参加してから実行してください。")
+
+        if ctx.author.voice.channel.id in self.sessions:
+            return await ctx.send("すでに接続中です。")
+
+        if not self.matching_queue:
+            self.matching_queue.append(ctx)
+            await ctx.send("🔎 相手を探しています...")
+            return
+
+        # マッチング成立
+        peer_ctx = self.matching_queue.pop(0)
+        if peer_ctx.guild.id == ctx.guild.id:
+            # 同じサーバー内なら直接繋げばいいので今回はスキップ
+            self.matching_queue.append(peer_ctx)
+            return await ctx.send("別のサーバーのユーザーを待っています...")
+
+        # 両方のVCに接続
+        vc1 = await ctx.author.voice.channel.connect()
+        vc2 = await peer_ctx.author.voice.channel.connect()
+
+        # セッション登録
+        self.sessions[vc1.session_id] = vc2
+        self.sessions[vc2.session_id] = vc1
+
+        # 音声リレーの開始 (擬似コード)
+        # listen()で受け取ったパケットを相手のvc.send_audio_packet()に流す
+        await self.start_relay(vc1, vc2)
+        await ctx.send("🤝 マッチング成功！通話を開始します。")
+        await peer_ctx.send("🤝 マッチング成功！通話を開始します。")
+
+    async def start_relay(self, vc1, vc2):
+        """双方向に音声を転送するループ"""
+        def relay_callback(vc_source, vc_dest):
+            # 音声パケットを受信した際のコールバック
+            # 実際には discord-ext-voice 等の Sink 機能を利用します
+            while vc_source.is_connected():
+                audio_data = vc_source.receive_audio() # 内部的な受信待ち
+                if audio_data:
+                    vc_dest.send_audio_packet(audio_data)
+
+        # 非同期で双方の転送を開始
+        asyncio.create_task(self.run_transfer(vc1, vc2))
+        asyncio.create_task(self.run_transfer(vc2, vc1))
+
+    async def run_transfer(self, source, dest):
+        try:
+            # ここで実際のパケットループを回します
+            # ※ライブラリの仕様により実装が大きく異なります
+            pass
+        except Exception as e:
+            print(f"Relay Error: {e}")
+
+    @commands.command()
+    async def saito_stop(self, ctx):
+        """通話終了"""
+        if ctx.voice_client:
+            await ctx.voice_client.disconnect()
+            await ctx.send("通話を終了しました。")
 
 async def setup(bot):
     await bot.add_cog(Voice(bot))
