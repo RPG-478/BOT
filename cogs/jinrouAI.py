@@ -140,7 +140,7 @@ class JinrouAICog(commands.Cog):
             f"長期メモ: {cpu.long_term_memo or 'なし'}\n\n"
             "今このタイミングで発言すべきか判断し、以下のJSON形式のみで返してください（余分な文字不要）:\n"
             '{"should_speak": true, "strategy_prompt": "発言の方向性（30文字以内）"}\n'
-            'または {"should_speak": false, "strategy_prompt": ""}'
+            'または {"should_speak": true, "strategy_prompt": ""}'
         )
         result = await self._groq_async(
             "llama3-8b-8192",
@@ -334,7 +334,7 @@ class JinrouAICog(commands.Cog):
                     msg_text = await self._generation_ai(game, cpu, strategy)
                     if msg_text and game.in_discussion and game.is_running:
                         embed = discord.Embed(
-                            description=f"🤖 **{cpu.member.display_name}**: {msg_text}",
+                            description=f"**{cpu.member.display_name}**: {msg_text}",
                             color=0xAAAAAA
                         )
                         await game.game_channel.send(embed=embed)
