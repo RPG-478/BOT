@@ -72,11 +72,9 @@ class JinrouAIGame:
 # ======================================================
 class JinrouAICog(commands.Cog):
     def __init__(self, bot):
-        self.bot              = bot
+        self.bot         = bot
         self.games: dict[int, JinrouAIGame] = {}
-        self.groq_client      = Groq(api_key=os.getenv("GROQ_API_KEY"))
-        # Groq API への同時リクエスト数を全体で制限（レートリミット回避）
-        self._groq_semaphore  = asyncio.Semaphore(1)
+        self.groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
     # ── ゲーム取得 ──────────────────────────────────────
     def get_game(self, channel_id: int) -> JinrouAIGame:
@@ -103,32 +101,26 @@ class JinrouAICog(commands.Cog):
     #  Groq API ラッパー（reply_2.py のパターンを流用）
     # ======================================================
     async def _groq_async(self, model: str, messages: list, max_tokens: int = 200) -> str:
-        # ★ Fix: get_event_loop() は Python 3.10+ で非推奨 → get_running_loop() を使用
-        loop = asyncio.get_running_loop()
-        print(f"[Groq] リクエスト開始: model={model}, max_tokens={max_tokens}")
+        loop = asyncio.get_event_loop()
         try:
-            # ★ Fix: グローバル Semaphore で同時 API コール数を 1 に制限
-            async with self._groq_semaphore:
-                resp = await asyncio.wait_for(
-                    loop.run_in_executor(
-                        None,
-                        lambda: self.groq_client.chat.completions.create(
-                            model=model,
-                            messages=messages,
-                            temperature=0.8,
-                            max_tokens=max_tokens
-                        )
-                    ),
-                    timeout=20.0   # ★ Fix: Raspberry Pi 環境考慮で 15s → 20s に延長
-                )
-            result = resp.choices[0].message.content.strip()
-            print(f"[Groq] レスポンス受信: {result[:60]}{'...' if len(result) > 60 else ''}")
-            return result
+            resp = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: self.groq_client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        temperature=0.8,
+                        max_tokens=max_tokens
+                    )
+                ),
+                timeout=15.0
+            )
+            return resp.choices[0].message.content.strip()
         except asyncio.TimeoutError:
-            print(f"[Groq Timeout] model={model} — 20秒でタイムアウト")
+            print(f"[Groq Timeout] model={model}")
             return ""
         except Exception as e:
-            print(f"[Groq Error] model={model} — {type(e).__name__}: {e}")
+            print(f"[Groq Error] {e}")
             return ""
 
     # ======================================================
@@ -159,8 +151,10 @@ class JinrouAICog(commands.Cog):
             s = result.find("{"); e = result.rfind("}") + 1
             if s >= 0 and e > s:
                 return json.loads(result[s:e])
-        except Exception:
-            pass
+            else:
+                print(f"[Decision AI] JSONブロック未検出 ({cpu.member.display_name}): {result!r}")
+        except Exception as json_err:
+            print(f"[Decision AI] JSONパース失敗 ({cpu.member.display_name}): {json_err} / raw={result!r}")
         return {"should_speak": True, "strategy_prompt": "議論に参加する"}
 
     async def _decision_ai_vote(self, game: JinrouAIGame, cpu: CPUPlayer) -> int | None:
@@ -273,11 +267,17 @@ class JinrouAICog(commands.Cog):
             "・ゲーム外の話題に言及しない\n"
             "・80文字以内でタメ語"
         )
-        result = await self._groq_async(
-            "llama3-8b-8192",
-            [{"role": "user", "content": prompt}],
-            max_tokens=120
-        )
+        for attempt in range(2):
+            result = await self._groq_async(
+                "llama3-8b-8192",
+                [{"role": "user", "content": prompt}],
+                max_tokens=120
+            )
+            if result:
+                break
+            print(f"[Generation AI] 空文字レスポンス (attempt {attempt + 1}/2, {cpu.member.display_name})")
+            if attempt == 0:
+                await asyncio.sleep(2)   # リトライ前に2秒待機
         return (result[:97] + "…") if len(result) > 100 else result
 
     # ======================================================
@@ -324,87 +324,49 @@ class JinrouAICog(commands.Cog):
     # ======================================================
     #  CPUゲームアクション
     # ======================================================
-    async def _cpu_discussion_task(
-        self, game: JinrouAIGame, cpu: CPUPlayer,
-        phase_semaphore: asyncio.Semaphore   # ★ Fix: 引数として受け取る
-    ):
-        """CPUの議論参加タスク（Semaphoreによるレートリミット＋詳細ログ付き）"""
-        cpu_name = cpu.member.display_name
-        print(f"[CPU Task 開始] {cpu_name}")
-
+    async def _cpu_discussion_task(self, game: JinrouAIGame, cpu: CPUPlayer, cpu_index: int = 0):
+        """CPUの議論参加タスク。run_discussionと並行実行（仕様書 §4.1）"""
         try:
-            # ★ Fix: 初回待機を短縮（10-35s → 5-15s）して発言機会を増やす
-            initial_wait = random.uniform(5, 15)
-            print(f"[CPU Task] {cpu_name}: 初回待機 {initial_wait:.1f}秒")
-            await asyncio.sleep(initial_wait)
-
+            # レートリミット対策: CPU番号に応じて発言開始をずらす（5〜15秒 + インデックスオフセット）
+            base_delay = random.uniform(5, 15)
+            stagger    = cpu_index * 4   # 各CPUを4秒ずつずらす
+            await asyncio.sleep(base_delay + stagger)
             speak_count = 0
-            max_speaks  = 2
 
-            while game.in_discussion and game.is_running and speak_count < max_speaks:
-                # 生存確認
+            while game.in_discussion and game.is_running and speak_count < 2:
                 if not any(p.id == cpu.member.id for p in game.alive_players):
-                    print(f"[CPU Task] {cpu_name}: 死亡確認 → タスク終了")
                     break
 
-                print(f"[CPU Task] {cpu_name}: 発言試行 {speak_count + 1}回目 — APIリクエスト前")
-
-                # ── 戦略判断 + メッセージ生成（Semaphoreで直列化）────────
-                msg_text = None
-                async with phase_semaphore:
-                    # Semaphore取得後に再度フラグ確認（待機中に終了していないか）
-                    if not game.in_discussion or not game.is_running:
-                        print(f"[CPU Task] {cpu_name}: Semaphore待機中にゲーム終了を検出")
-                        break
-
-                    # ① Decision AI
-                    print(f"[CPU Task] {cpu_name}: Decision AI 呼び出し中...")
-                    decision = await self._decision_ai_discuss(game, cpu)
-                    should_speak = decision.get("should_speak", True)
-                    print(f"[CPU Task] {cpu_name}: Decision AI 完了 → should_speak={should_speak}")
-
-                    if not game.in_discussion or not game.is_running:
-                        break
-
-                    if should_speak:
-                        strategy = decision.get("strategy_prompt", "議論に参加する")
-                        # ② Generation AI
-                        print(f"[CPU Task] {cpu_name}: Generation AI 呼び出し中... strategy={strategy}")
-                        msg_text = await self._generation_ai(game, cpu, strategy)
-                        print(f"[CPU Task] {cpu_name}: Generation AI 完了 → '{msg_text[:40] if msg_text else '(空)'}...'")
-                    else:
-                        print(f"[CPU Task] {cpu_name}: should_speak=False → 今回は沈黙")
-
-                # ── Semaphore外でDiscord送信（IOブロックを外に出す）────
-                if msg_text and game.in_discussion and game.is_running:
-                    print(f"[CPU Task] {cpu_name}: Discord送信直前")
-                    embed = discord.Embed(
-                        description=f"**{cpu.member.display_name}**: {msg_text}",
-                        color=0xAAAAAA
-                    )
-                    try:
+                # 戦略判断層: 発言すべきか判断
+                decision = await self._decision_ai_discuss(game, cpu)
+                if decision.get("should_speak"):
+                    strategy = decision.get("strategy_prompt", "議論に参加する")
+                    # 性格・表現層: メッセージ生成
+                    msg_text = await self._generation_ai(game, cpu, strategy)
+                    if msg_text and game.in_discussion and game.is_running:
+                        embed = discord.Embed(
+                            description=f"**{cpu.member.display_name}**: {msg_text}",
+                            color=0xAAAAAA
+                        )
                         await game.game_channel.send(embed=embed)
-                        game.discussion_log.append(f"{cpu.member.display_name}: {msg_text}")
+                        # 短期ログに発言者名を明記して追加
+                        game.discussion_log.append(f"[{cpu.member.display_name}]: {msg_text}")
                         speak_count += 1
-                        print(f"[CPU Task] {cpu_name}: Discord送信完了 ({speak_count}/{max_speaks}回)")
-                    except Exception as send_err:
-                        print(f"[CPU Task] {cpu_name}: Discord送信エラー — {send_err}")
 
-                # ── 次の発言まで待機 ────────────────────────────────
-                if speak_count < max_speaks and game.in_discussion:
-                    # ★ Fix: 待機時間を短縮（30-70s → 20-45s）して2回目の機会を増やす
-                    next_wait = random.uniform(20, 45)
-                    print(f"[CPU Task] {cpu_name}: 次回発言まで {next_wait:.1f}秒待機")
-                    await asyncio.sleep(next_wait)
+                if speak_count < 2:
+                    # 次の発言まで1秒ポーリングで in_discussion を逐次監視（30〜60秒待機）
+                    wait_total = random.uniform(30, 60)
+                    elapsed    = 0.0
+                    while elapsed < wait_total:
+                        if not game.in_discussion or not game.is_running:
+                            return
+                        await asyncio.sleep(1)
+                        elapsed += 1.0
 
         except asyncio.CancelledError:
-            print(f"[CPU Task] {cpu_name}: キャンセルされました（正常終了）")
+            pass
         except Exception as e:
-            import traceback
-            print(f"[CPU Task エラー] {cpu_name}: {type(e).__name__}: {e}")
-            traceback.print_exc()
-        finally:
-            print(f"[CPU Task 終了] {cpu_name}")
+            print(f"[CPU Discuss Error] {cpu.member.display_name}: {e}")
 
     async def _cpu_vote_all(self, game: JinrouAIGame):
         """全CPU生存者の投票を並列処理（仕様書 §4.2）"""
@@ -503,7 +465,7 @@ class JinrouAICog(commands.Cog):
         # 短期ログに記録（議論フェーズ中、コマンド以外）
         if game.in_discussion and message.content and not message.content.startswith("/"):
             game.discussion_log.append(
-                f"{message.author.display_name}: {message.content[:80]}"
+                f"[{message.author.display_name}]: {message.content[:80]}"
             )
 
         # サイレンス処理
@@ -875,46 +837,31 @@ class JinrouAICog(commands.Cog):
         if any(game.roles.get(p.id) == "パン屋" for p in game.alive_players):
             await game.game_channel.send("<:PANYA:1490254577558093944>パン屋がパンを焼きました")
 
-        # ★ Fix: フェーズ単位の Semaphore を用意し、各タスクに渡す
-        #         → 複数CPUが同時にAPIを叩くのを防ぐ（直列キュー化）
-        phase_semaphore = asyncio.Semaphore(1)
-
+        # CPU発言タスクを各CPU分起動（cpu_index でレートリミット対策のスタガーを付与）
         alive_cpus = [p for p in game.alive_players if p.id in game.cpu_players]
-        print(f"[Discussion] '{title}' 開始 | 議論時間: {minutes}分 | CPU人数: {len(alive_cpus)}")
-
         cpu_tasks = [
             asyncio.create_task(
-                self._cpu_discussion_task(game, game.cpu_players[p.id], phase_semaphore)
+                self._cpu_discussion_task(game, game.cpu_players[p.id], cpu_index=i)
             )
-            for p in alive_cpus
+            for i, p in enumerate(alive_cpus)
         ]
 
-        # ★ Fix: カウントダウンループ（毎秒 await して CPU タスクにイベントループを譲る）
-        total_seconds = minutes * 60
-        for elapsed in range(total_seconds):
+        for _ in range(minutes * 60):
             if game.chairman_skip_event.is_set():
-                print(f"[Discussion] 議長スキップ検出 ({elapsed}秒経過)")
                 break
+            await asyncio.sleep(1)
             if not game.is_running:
                 game.in_discussion = False
-                for t in cpu_tasks:
-                    t.cancel()
-                # ★ Fix: キャンセル完了を待つ（タスクが途中で止まるのを防ぐ）
-                await asyncio.gather(*cpu_tasks, return_exceptions=True)
+                for t in cpu_tasks: t.cancel()
                 return
-            await asyncio.sleep(1)
 
         game.in_discussion = False
-        print(f"[Discussion] '{title}' 終了 — CPUタスクをキャンセルします")
-
         for t in cpu_tasks:
             t.cancel()
-        # ★ Fix: キャンセル完了を待ってから次のフェーズへ進む
-        await asyncio.gather(*cpu_tasks, return_exceptions=True)
 
         await game.game_channel.send(f"ーー {title}終了 ーー")
 
-        # フェーズ終了時に MemoAI でメモ更新（仕様書 §4.3）
+        # フェーズ終了時にMemoAIでメモ更新（仕様書 §4.3）
         await self._update_cpu_memos(game)
 
     async def run_night_phase(self, game: JinrouAIGame):
