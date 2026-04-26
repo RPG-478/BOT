@@ -282,23 +282,25 @@ class Voice(commands.Cog):
             state['current_track'] = None
             await self.check_queue(guild_id)
             
-    def play_next(self, error=None):
-        actual_played = time.time() - self.start_time
-        self.elapsed_offset += actual_played
+    def play_next(self, guild_id, error=None):
+        """再生終了後の処理 (サーバー別)"""
+        state = self.get_state(guild_id)
+        actual_played = time.time() - state['start_time']
+        state['elapsed_offset'] += actual_played
         
-        _, filename, duration, _ = self.current_track if self.current_track else (None, None, 0, None)
-        is_interrupted = (duration - self.elapsed_offset) > 5
-        self.is_processing_queue = False
+        track = state['current_track']
+        duration = track[2] if track else 0
+        is_interrupted = (duration - state['elapsed_offset']) > 5
+        state['is_processing_queue'] = False
 
-        if is_interrupted and self.retry_count < self.MAX_RETRIES and self.current_track:
-            self.retry_count += 1
-            logging.warning(f"再開: {filename} ({self.retry_count})")
-            asyncio.run_coroutine_threadsafe(self.check_queue(), self.bot.loop)
+        if is_interrupted and state['retry_count'] < 3 and state['current_track']:
+            state['retry_count'] += 1
+            asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), self.bot.loop)
         else:
-            self.current_track = None
-            self.elapsed_offset = 0
-            self.retry_count = 0
-            asyncio.run_coroutine_threadsafe(self.check_queue(), self.bot.loop)
+            state['current_track'] = None
+            state['elapsed_offset'] = 0
+            state['retry_count'] = 0
+            asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), self.bot.loop)
             
     @commands.command()
     async def play(self, ctx, *, input_str: str = None):
