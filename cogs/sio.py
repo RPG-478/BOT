@@ -8,7 +8,17 @@ import string
 import subprocess
 import json
 import io
+import yt_dlp
 
+# yt-dlpの設定（ストリーミング再生用）
+YTDL_OPTIONS = {
+    'format': 'bestaudio/best',
+    'noplaylist': True,
+    'quiet': True,
+    'no_warnings': True,
+    'default_search': 'auto',
+    'source_address': '0.0.0.0',
+}
 # BASE62の定義
 BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
 
