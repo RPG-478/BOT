@@ -5,3 +5,4 @@ matplotlib
 numpy
 supabase
 discord-ext-voice-recv
+yt-dlp
