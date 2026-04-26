@@ -339,10 +339,12 @@ class Voice(commands.Cog):
             return await ctx.send(embed=we("情報の取得に失敗しました。"))
 
         # キューに追加。引数の最後に is_yt フラグを追加
-        await self.queue.put((url, filename, final_id, is_yt))
+        # (中略) キューへの追加
+        await state['queue'].put((url, filename, final_id, is_yt))
 
-        if not ctx.voice_client.is_playing() and not self.is_processing_queue:
-            await self.check_queue()
+        if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
+            # ここに ctx.guild.id を入れる
+            await self.check_queue(ctx.guild.id)
         else:
             await ctx.send(f"✅ キューに追加しました: **{filename}**")
 
