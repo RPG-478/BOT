@@ -189,7 +189,7 @@ class Voice(commands.Cog):
     # =====================
     # Playback Logic
     # =====================
-async def check_queue(self):
+    async def check_queue(self):
         if self.is_processing_queue or self.current_ctx is None:
             return
         
