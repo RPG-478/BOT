@@ -1,4 +1,4 @@
-```python
+
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -139,5 +139,3 @@ class FirstGame(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(FirstGame(bot))
-
-```
