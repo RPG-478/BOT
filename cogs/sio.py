@@ -204,63 +204,58 @@ class Voice(commands.Cog):
     # =====================
     # Playback Logic
     # =====================
-    async def check_queue(self):
-        if self.is_processing_queue or self.current_ctx is None:
+    async def check_queue(self, guild_id: int):
+        """サーバー個別の状態を参照して再生を行う"""
+        state = self.get_state(guild_id)
+        
+        if state['is_processing_queue'] or state['current_ctx'] is None:
             return
         
-        vc = self.current_ctx.voice_client
+        ctx = state['current_ctx']
+        vc = ctx.voice_client
         if vc is None or not vc.is_connected():
-            self.is_processing_queue = False
+            state['is_processing_queue'] = False
             return
 
-        if self.current_track is None:
-            if self.queue.empty():
-                self.is_processing_queue = False
+        if state['current_track'] is None:
+            if state['queue'].empty():
+                state['is_processing_queue'] = False
                 return
             
             # キューからデータを取り出す (url_or_id, filename, b62_id, is_yt)
-            # ※playコマンドで渡す引数を1つ増やしています
-            target_input, filename, b62_id, is_yt = await self.queue.get() 
+            target_input, filename, b62_id, is_yt = await state['queue'].get() 
             
             if is_yt:
                 try:
-                    # 再生直前に最新のストリームURLを取得
                     info = await self.get_yt_info(target_input)
-                    self.current_track = (info['url'], info['title'], info['duration'], b62_id)
+                    state['current_track'] = (info['url'], info['title'], info['duration'], b62_id)
                 except Exception as e:
-                    await self.current_ctx.send(embed=we(f"❌ YouTube解析失敗: {e}"))
-                    return await self.check_queue()
+                    logging.error(f"YouTube解析失敗: {e}")
+                    await ctx.send(embed=we(f"❌ YouTubeの解析に失敗しました: {e}"))
+                    state['is_processing_queue'] = False
+                    return await self.check_queue(guild_id)
             else:
                 duration = await self.get_duration(target_input)
-                self.current_track = (target_input, filename, duration, b62_id) 
+                state['current_track'] = (target_input, filename, duration, b62_id) 
 
-            self.elapsed_offset = 0
-            self.retry_count = 0
+            state['elapsed_offset'] = 0
+            state['retry_count'] = 0
 
-        url, filename, duration, b62_id = self.current_track
-        self.is_processing_queue = True
+        url, filename, duration, b62_id = state['current_track']
+        state['is_processing_queue'] = True
 
-        # ストリーミングを安定させるためのオプション
+        # FFmpeg設定
+        headers_val = "User-Agent: Mozilla/5.0\r\n"
         before_options = f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
-        if self.elapsed_offset > 0:
-            before_options += f" -ss {self.elapsed_offset}"
+        if b62_id:
+            before_options += f' -headers "{headers_val}"'
+        if state['elapsed_offset'] > 0:
+            before_options += f" -ss {state['elapsed_offset']}"
 
-        # 既存のフィルター処理（eq_filter）はそのまま利用
-        # ... (以下、ソース構築と再生実行のロジック)
-
-        # 2. フィルターと追加入力の構築
-        # 修正後のフィルター構築部分
+        # フィルター設定
         if self.eq_filter == "afir":
-            url_l, name_l = await self.get_attachment_info(self.ir_l_id)
-            url_r, name_r = await self.get_attachment_info(self.ir_r_id)
-    
-            if not url_l or not url_r:
-                self.is_processing_queue = False
-                return await self.current_ctx.send("❌ IRファイルの取得に失敗しました。")
-
-            # [0:a] = メイン音声(url)
-            # [1:a] = url_l
-            # [2:a] = url_r
+            url_l, _ = await self.get_attachment_info(self.ir_l_id)
+            url_r, _ = await self.get_attachment_info(self.ir_r_id)
             options = (
                 f"-i \"{url_l}\" -i \"{url_r}\" "
                 f"-filter_complex \"[1:a][2:a]join=inputs=2:channel_layout=stereo[ir]; "
@@ -272,23 +267,20 @@ class Voice(commands.Cog):
             options = f"{af} -vn -ar 48000 -ac 2"
 
         try:
-            # 3. 再生実行
-            # stderr をキャプチャしたい場合は、FFmpegPCMAudioをラップするか、
-            # 実行時のログ出力を確認する必要があります。
             source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
-            self.start_time = time.time()
-            vc.play(source, after=lambda e: self.bot.loop.call_soon_threadsafe(self.play_next, e))
+            state['start_time'] = time.time()
+            
+            # play_nextにguild_idを渡すように修正
+            vc.play(source, after=lambda e: self.bot.loop.call_soon_threadsafe(self.play_next, guild_id, e))
+            
+            if state['elapsed_offset'] < 1:
+                await ctx.send(embed=we(f"🎵 再生開始: **{filename}**"))
         
         except Exception as e:
-            logging.error(f"FFmpeg Launch Error: {e}")
-            
-            if self.elapsed_offset < 1:
-                await self.current_ctx.send(embed=we(f"🎵 再生開始: **{filename}**"))
-        except Exception as e:
             logging.error(f"Playback error: {e}")
-            self.is_processing_queue = False
-            self.current_track = None
-            await self.check_queue()
+            state['is_processing_queue'] = False
+            state['current_track'] = None
+            await self.check_queue(guild_id)
             
     def play_next(self, error=None):
         actual_played = time.time() - self.start_time
