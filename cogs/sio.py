@@ -208,6 +208,7 @@ class Voice(commands.Cog):
         """サーバー個別の状態を参照して再生を行う"""
         state = self.get_state(guild_id)
         
+        # 処理中フラグのチェック
         if state['is_processing_queue'] or state['current_ctx'] is None:
             return
         
@@ -217,12 +218,13 @@ class Voice(commands.Cog):
             state['is_processing_queue'] = False
             return
 
+        # 現在のトラックがない場合、キューから取得
         if state['current_track'] is None:
             if state['queue'].empty():
                 state['is_processing_queue'] = False
                 return
             
-            # キューからデータを取り出す (url_or_id, filename, b62_id, is_yt)
+            # playコマンド側で (url, filename, final_id, is_yt) を入れるよう修正が必要
             target_input, filename, b62_id, is_yt = await state['queue'].get() 
             
             if is_yt:
@@ -233,6 +235,7 @@ class Voice(commands.Cog):
                     logging.error(f"YouTube解析失敗: {e}")
                     await ctx.send(embed=we(f"❌ YouTubeの解析に失敗しました: {e}"))
                     state['is_processing_queue'] = False
+                    # 失敗した場合は次の曲へ
                     return await self.check_queue(guild_id)
             else:
                 duration = await self.get_duration(target_input)
@@ -245,32 +248,23 @@ class Voice(commands.Cog):
         state['is_processing_queue'] = True
 
         # FFmpeg設定
-        headers_val = "User-Agent: Mozilla/5.0\r\n"
         before_options = f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
         if b62_id:
+            headers_val = "User-Agent: Mozilla/5.0\r\n"
             before_options += f' -headers "{headers_val}"'
+        
         if state['elapsed_offset'] > 0:
             before_options += f" -ss {state['elapsed_offset']}"
 
-        # フィルター設定
-        if self.eq_filter == "afir":
-            url_l, _ = await self.get_attachment_info(self.ir_l_id)
-            url_r, _ = await self.get_attachment_info(self.ir_r_id)
-            options = (
-                f"-i \"{url_l}\" -i \"{url_r}\" "
-                f"-filter_complex \"[1:a][2:a]join=inputs=2:channel_layout=stereo[ir]; "
-                f"[0:a][ir]afir=dry=1:wet=1[out]\" "
-                f"-map \"[out]\" -vn -ar 48000 -ac 2"
-            )
-        else:
-            af = f" -af {self.eq_filter}" if self.eq_filter else ""
-            options = f"{af} -vn -ar 48000 -ac 2"
+        # フィルター設定（eq_filterはCog共通変数としている場合）
+        af = f" -af {self.eq_filter}" if (hasattr(self, 'eq_filter') and self.eq_filter) else ""
+        options = f"{af} -vn -ar 48000 -ac 2"
 
         try:
             source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
             state['start_time'] = time.time()
             
-            # play_nextにguild_idを渡すように修正
+            # play_next に guild_id を渡す
             vc.play(source, after=lambda e: self.bot.loop.call_soon_threadsafe(self.play_next, guild_id, e))
             
             if state['elapsed_offset'] < 1:
