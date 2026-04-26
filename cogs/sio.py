@@ -55,7 +55,7 @@ class Voice(commands.Cog):
         self.bot = bot
         self.reaction_enabled = {}
         self.emoji_sounds = {}
-        self.states = {}
+        self.states = {} # サーバーごとのデータを格納
         self.log_buffer = bot.log_buffer
         self.eq_filter = None
         self.queue = asyncio.Queue()
@@ -71,13 +71,13 @@ class Voice(commands.Cog):
         self.ir_r_id = "d424KTRkAlaetACCuFZOCjUtFO0p0TMN"
 
     def get_state(self, guild_id: int):
-        """サーバーごとの状態を取得または作成"""
+        """サーバーごとの状態を取得。なければ初期化"""
         if guild_id not in self.states:
             self.states[guild_id] = {
                 'queue': asyncio.Queue(),
                 'current_ctx': None,
                 'is_processing_queue': False,
-                'current_track': None, # (url, filename, duration, b62_id)
+                'current_track': None,
                 'start_time': 0,
                 'elapsed_offset': 0,
                 'retry_count': 0
@@ -277,29 +277,28 @@ class Voice(commands.Cog):
             await self.check_queue(guild_id)
             
     def play_next(self, guild_id: int, error=None):
-        """再生終了後の処理。guild_idを明示的に引き継ぐ"""
-        state = self.get_state(guild_id)
+        """再生終了後の処理。guild_idからstateを特定する"""
+        state = self.get_state(guild_id) # ここで state を定義！
         
-        # 経過時間の計算
+        if error:
+            logging.error(f"Player error: {error}")
+
         actual_played = time.time() - state['start_time']
         state['elapsed_offset'] += actual_played
         
         track = state['current_track']
         duration = track[2] if track else 0
-        
-        # 5秒以上残して終了した場合は中断(エラー)とみなしてリトライ
         is_interrupted = (duration - state['elapsed_offset']) > 5
+        
         state['is_processing_queue'] = False
 
         if is_interrupted and state['retry_count'] < 3 and state['current_track']:
             state['retry_count'] += 1
-            # ここで guild_id を引数として渡す
             asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), self.bot.loop)
         else:
             state['current_track'] = None
             state['elapsed_offset'] = 0
             state['retry_count'] = 0
-            # 次の曲へ移動。ここでも guild_id を渡す
             asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), self.bot.loop)
             
     @commands.command()
