@@ -276,24 +276,30 @@ class Voice(commands.Cog):
             state['current_track'] = None
             await self.check_queue(guild_id)
             
-    def play_next(self, guild_id, error=None):
-        """再生終了後の処理 (サーバー別)"""
+    def play_next(self, guild_id: int, error=None):
+        """再生終了後の処理。guild_idを明示的に引き継ぐ"""
         state = self.get_state(guild_id)
+        
+        # 経過時間の計算
         actual_played = time.time() - state['start_time']
         state['elapsed_offset'] += actual_played
         
         track = state['current_track']
         duration = track[2] if track else 0
+        
+        # 5秒以上残して終了した場合は中断(エラー)とみなしてリトライ
         is_interrupted = (duration - state['elapsed_offset']) > 5
         state['is_processing_queue'] = False
 
         if is_interrupted and state['retry_count'] < 3 and state['current_track']:
             state['retry_count'] += 1
+            # ここで guild_id を引数として渡す
             asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), self.bot.loop)
         else:
             state['current_track'] = None
             state['elapsed_offset'] = 0
             state['retry_count'] = 0
+            # 次の曲へ移動。ここでも guild_id を渡す
             asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), self.bot.loop)
             
     @commands.command()
