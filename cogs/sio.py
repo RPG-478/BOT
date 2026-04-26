@@ -73,7 +73,7 @@ class Voice(commands.Cog):
         self.default_speed = 1.0
 
     def get_state(self, guild_id: int):
-        """サーバーごとの状態を取得。なければ初期化"""
+        """サーバーごとの状態を取得。音量と倍速の設定を保持"""
         if guild_id not in self.states:
             self.states[guild_id] = {
                 'queue': asyncio.Queue(),
@@ -82,7 +82,9 @@ class Voice(commands.Cog):
                 'current_track': None,
                 'start_time': 0,
                 'elapsed_offset': 0,
-                'retry_count': 0
+                'retry_count': 0,
+                'volume': self.default_volume, # サーバーごとの音量
+                'speed': self.default_speed     # サーバーごとの倍速
             }
         return self.states[guild_id]
 
