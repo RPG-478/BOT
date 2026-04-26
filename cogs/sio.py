@@ -304,21 +304,23 @@ class Voice(commands.Cog):
     @commands.command()
     async def play(self, ctx, *, input_str: str = None):
         if not ctx.voice_client: 
-            return await ctx.send(embed=we("先に !join してください。"))
+            return await ctx.send("先に !join してください。")
 
-        self.current_ctx = ctx
-        url, filename, final_id, is_yt = None, None, None, False
+        # サーバー個別の状態を取得
+        state = self.get_state(ctx.guild.id)
+        state['current_ctx'] = ctx
+        
+        is_yt = False
+        url, filename, final_id = None, None, None
 
-        # YouTube URL（または検索語句）の判定
-        if input_str and (input_str.startswith("http") or "youtube.com" in input_str or "youtu.be" in input_str):
+        # YouTube解析ロジック (yt-dlpを使用)
+        if input_str and ("youtube.com" in input_str or "youtu.be" in input_str):
             await ctx.send("⏳ YouTubeを解析中...")
             try:
                 info = await self.get_yt_info(input_str)
-                url = input_str  # 再生時に再抽出するため元のURLを保存
-                filename = info['title']
-                is_yt = True
+                url, filename, is_yt = input_str, info['title'], True
             except Exception as e:
-                return await ctx.send(embed=we(f"❌ 解析エラー: {e}"))
+                return await ctx.send(f"❌ 解析失敗: {e}")
 
         # 添付ファイルがある場合
         elif ctx.message.attachments:
@@ -337,15 +339,13 @@ class Voice(commands.Cog):
         if not url:
             return await ctx.send(embed=we("情報の取得に失敗しました。"))
 
-        # キューに追加。引数の最後に is_yt フラグを追加
-        # (中略) キューへの追加
+        # キューに追加 (4つの要素を渡す)
         await state['queue'].put((url, filename, final_id, is_yt))
 
         if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
-            # ここに ctx.guild.id を入れる
             await self.check_queue(ctx.guild.id)
         else:
-            await ctx.send(f"✅ キューに追加しました: **{filename}**")
+            await ctx.send(f"✅ キューに追加: **{filename}**")
 
     @commands.command()
     async def stop(self, ctx):
