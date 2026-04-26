@@ -192,6 +192,26 @@ class Voice(commands.Cog):
             return await ctx.send(embed=we(f"利用可能: {', '.join(eq_settings.keys())}"))
         self.eq_filter = eq_settings[mode]
         await ctx.send(embed=we(f"エフェクトを `{mode}` に変更しました。"))
+        
+    @commands.command()
+    async def volume(self, ctx, vol: float):
+        """音量を変更 (0.1 ～ 2.0) ※サーバー個別保存"""
+        if not 0.1 <= vol <= 2.0:
+            return await ctx.send(embed=we("音量は 0.1 から 2.0 の間で指定してください。"))
+        
+        state = self.get_state(ctx.guild.id)
+        state['volume'] = vol
+        await ctx.send(embed=we(f"🔊 このサーバーの音量を `{vol}` に設定しました。\n(次回の再生から適用されます)"))
+
+    @commands.command()
+    async def speed(self, ctx, speed: float):
+        """再生速度を変更 (0.5 ～ 2.0) ※サーバー個別保存"""
+        if not 0.5 <= speed <= 2.0:
+            return await ctx.send(embed=we("速度は 0.5 から 2.0 の間で指定してください。"))
+        
+        state = self.get_state(ctx.guild.id)
+        state['speed'] = speed
+        await ctx.send(embed=we(f"⚡ このサーバーの再生速度を `{speed}` 倍に設定しました。\n(次回の再生から適用されます)"))
 
     async def get_yt_info(self, url):
         """yt-dlpを使用して動画情報とストリームURLを取得"""
@@ -209,10 +229,8 @@ class Voice(commands.Cog):
     # Playback Logic
     # =====================
     async def check_queue(self, guild_id: int):
-        """サーバー個別の状態を参照して再生を行う"""
         state = self.get_state(guild_id)
         
-        # 処理中フラグのチェック
         if state['is_processing_queue'] or state['current_ctx'] is None:
             return
         
@@ -222,13 +240,12 @@ class Voice(commands.Cog):
             state['is_processing_queue'] = False
             return
 
-        # 現在のトラックがない場合、キューから取得
+        # キュー処理（既存ロジック）
         if state['current_track'] is None:
             if state['queue'].empty():
                 state['is_processing_queue'] = False
                 return
             
-            # playコマンド側で (url, filename, final_id, is_yt) を入れるよう修正が必要
             target_input, filename, b62_id, is_yt = await state['queue'].get() 
             
             if is_yt:
@@ -237,42 +254,51 @@ class Voice(commands.Cog):
                     state['current_track'] = (info['url'], info['title'], info['duration'], b62_id)
                 except Exception as e:
                     logging.error(f"YouTube解析失敗: {e}")
-                    await ctx.send(embed=we(f"❌ YouTubeの解析に失敗しました: {e}"))
+                    await ctx.send(embed=we(f"❌ 解析失敗: {e}"))
                     state['is_processing_queue'] = False
-                    # 失敗した場合は次の曲へ
                     return await self.check_queue(guild_id)
             else:
                 duration = await self.get_duration(target_input)
                 state['current_track'] = (target_input, filename, duration, b62_id) 
 
-            state['elapsed_offset'] = 0
-            state['retry_count'] = 0
-
         url, filename, duration, b62_id = state['current_track']
         state['is_processing_queue'] = True
 
-        # FFmpeg設定
+        # --- FFmpeg オプションの構築 ---
         before_options = f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
         if b62_id:
-            headers_val = "User-Agent: Mozilla/5.0\r\n"
-            before_options += f' -headers "{headers_val}"'
+            before_options += f' -headers "User-Agent: Mozilla/5.0\r\n"'
         
         if state['elapsed_offset'] > 0:
             before_options += f" -ss {state['elapsed_offset']}"
 
-        # フィルター設定（eq_filterはCog共通変数としている場合）
-        af = f" -af {self.eq_filter}" if (hasattr(self, 'eq_filter') and self.eq_filter) else ""
-        options = f"{af} -vn -ar 48000 -ac 2"
+        # サーバーごとの設定をFFmpegフィルター(af)に反映
+        filters = []
+        
+        # 1. 倍速 (atempo)
+        if state.get('speed', 1.0) != 1.0:
+            filters.append(f"atempo={state['speed']}")
+        
+        # 2. 音量 (volume)
+        if state.get('volume', 1.0) != 1.0:
+            filters.append(f"volume={state['volume']}")
+        
+        # 3. 既存のEQエフェクト (Cog共通変数を使用している場合)
+        if self.eq_filter:
+            filters.append(self.eq_filter)
+
+        af_string = f"-af {','.join(filters)}" if filters else ""
+        options = f"{af_string} -vn -ar 48000 -ac 2"
 
         try:
             source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
             state['start_time'] = time.time()
             
-            # play_next に guild_id を渡す
             vc.play(source, after=lambda e: self.bot.loop.call_soon_threadsafe(self.play_next, guild_id, e))
             
             if state['elapsed_offset'] < 1:
-                await ctx.send(embed=we(f"🎵 再生開始: **{filename}**"))
+                status = f"Speed: {state['speed']}x / Vol: {state['volume']}"
+                await ctx.send(embed=we(f"🎵 再生中: **{filename}**\n`{status}`"))
         
         except Exception as e:
             logging.error(f"Playback error: {e}")
