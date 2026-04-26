@@ -189,7 +189,7 @@ class Voice(commands.Cog):
     # =====================
     # Playback Logic
     # =====================
-    async def check_queue(self):
+async def check_queue(self):
         if self.is_processing_queue or self.current_ctx is None:
             return
         
@@ -202,20 +202,36 @@ class Voice(commands.Cog):
             if self.queue.empty():
                 self.is_processing_queue = False
                 return
-            url, filename, b62_id = await self.queue.get() 
-            duration = await self.get_duration(url)
-            self.current_track = (url, filename, duration, b62_id) 
+            
+            # キューからデータを取り出す (url_or_id, filename, b62_id, is_yt)
+            # ※playコマンドで渡す引数を1つ増やしています
+            target_input, filename, b62_id, is_yt = await self.queue.get() 
+            
+            if is_yt:
+                try:
+                    # 再生直前に最新のストリームURLを取得
+                    info = await self.get_yt_info(target_input)
+                    self.current_track = (info['url'], info['title'], info['duration'], b62_id)
+                except Exception as e:
+                    await self.current_ctx.send(embed=we(f"❌ YouTube解析失敗: {e}"))
+                    return await self.check_queue()
+            else:
+                duration = await self.get_duration(target_input)
+                self.current_track = (target_input, filename, duration, b62_id) 
+
             self.elapsed_offset = 0
             self.retry_count = 0
 
         url, filename, duration, b62_id = self.current_track
         self.is_processing_queue = True
 
-        # 1. 接続オプションの構築
-        headers_val = "User-Agent: Mozilla/5.0\r\n"
-        before_options = f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -headers "{headers_val}"'
+        # ストリーミングを安定させるためのオプション
+        before_options = f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
         if self.elapsed_offset > 0:
             before_options += f" -ss {self.elapsed_offset}"
+
+        # 既存のフィルター処理（eq_filter）はそのまま利用
+        # ... (以下、ソース構築と再生実行のロジック)
 
         # 2. フィルターと追加入力の構築
         # 修正後のフィルター構築部分
