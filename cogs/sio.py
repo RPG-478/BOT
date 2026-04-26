@@ -174,6 +174,18 @@ class Voice(commands.Cog):
         self.eq_filter = eq_settings[mode]
         await ctx.send(embed=we(f"エフェクトを `{mode}` に変更しました。"))
 
+    async def get_yt_info(self, url):
+        """yt-dlpを使用して動画情報とストリームURLを取得"""
+        loop = asyncio.get_event_loop()
+        with yt_dlp.YoutubeDL(YTDL_OPTIONS) as ydl:
+            # ネットワークI/Oをブロックしないよう別スレッドで実行
+            data = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
+            return {
+                'url': data.get('url'),
+                'title': data.get('title'),
+                'duration': data.get('duration', 0)
+            }
+    
     # =====================
     # Playback Logic
     # =====================
