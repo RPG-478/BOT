@@ -8,17 +8,7 @@ import string
 import subprocess
 import json
 import io
-import yt_dlp
 
-# yt-dlpの設定（ストリーミング再生用）
-YTDL_OPTIONS = {
-    'format': 'bestaudio/best',
-    'noplaylist': True,
-    'quiet': True,
-    'no_warnings': True,
-    'default_search': 'auto',
-    'source_address': '0.0.0.0',
-}
 # BASE62の定義
 BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
 
@@ -174,18 +164,6 @@ class Voice(commands.Cog):
         self.eq_filter = eq_settings[mode]
         await ctx.send(embed=we(f"エフェクトを `{mode}` に変更しました。"))
 
-    async def get_yt_info(self, url):
-        """yt-dlpを使用して動画情報とストリームURLを取得"""
-        loop = asyncio.get_event_loop()
-        with yt_dlp.YoutubeDL(YTDL_OPTIONS) as ydl:
-            # ネットワークI/Oをブロックしないよう別スレッドで実行
-            data = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
-            return {
-                'url': data.get('url'),
-                'title': data.get('title'),
-                'duration': data.get('duration', 0)
-            }
-    
     # =====================
     # Playback Logic
     # =====================
@@ -202,36 +180,21 @@ class Voice(commands.Cog):
             if self.queue.empty():
                 self.is_processing_queue = False
                 return
-            
-            # キューからデータを取り出す (url_or_id, filename, b62_id, is_yt)
-            # ※playコマンドで渡す引数を1つ増やしています
-            target_input, filename, b62_id, is_yt = await self.queue.get() 
-            
-            if is_yt:
-                try:
-                    # 再生直前に最新のストリームURLを取得
-                    info = await self.get_yt_info(target_input)
-                    self.current_track = (info['url'], info['title'], info['duration'], b62_id)
-                except Exception as e:
-                    await self.current_ctx.send(embed=we(f"❌ YouTube解析失敗: {e}"))
-                    return await self.check_queue()
-            else:
-                duration = await self.get_duration(target_input)
-                self.current_track = (target_input, filename, duration, b62_id) 
-
+            url, filename, b62_id = await self.queue.get() 
+            duration = await self.get_duration(url)
+            self.current_track = (url, filename, duration, b62_id) 
             self.elapsed_offset = 0
             self.retry_count = 0
 
         url, filename, duration, b62_id = self.current_track
         self.is_processing_queue = True
 
-        # ストリーミングを安定させるためのオプション
-        before_options = f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
+        # 1. 接続オプションの構築
+        headers_val = "User-Agent: Mozilla/5.0\r\n"
+        before_options = f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -headers "{headers_val}"'
         if self.elapsed_offset > 0:
             before_options += f" -ss {self.elapsed_offset}"
 
-        # 既存のフィルター処理（eq_filter）はそのまま利用
-        # ... (以下、ソース構築と再生実行のロジック)
         # 2. フィルターと追加入力の構築
         # 修正後のフィルター構築部分
         if self.eq_filter == "afir":
@@ -293,48 +256,39 @@ class Voice(commands.Cog):
             asyncio.run_coroutine_threadsafe(self.check_queue(), self.bot.loop)
             
     @commands.command()
-    async def play(self, ctx, *, input_str: str = None):
+    async def play(self, ctx, *, b62_id: str = None):
+        """ファイルを添付して再生、またはIDを指定して再生"""
         if not ctx.voice_client: 
-            return await ctx.send(embed=we("先に !join してください。"))
+            return await ctx.send("先に !join してください。")
 
         self.current_ctx = ctx
-        url, filename, final_id, is_yt = None, None, None, False
+        url, filename, final_id = None, None, None
 
-        # YouTube URL（または検索語句）の判定
-        if input_str and (input_str.startswith("http") or "youtube.com" in input_str or "youtu.be" in input_str):
-            await ctx.send("⏳ YouTubeを解析中...")
-            try:
-                info = await self.get_yt_info(input_str)
-                url = input_str  # 再生時に再抽出するため元のURLを保存
-                filename = info['title']
-                is_yt = True
-            except Exception as e:
-                return await ctx.send(embed=we(f"❌ 解析エラー: {e}"))
-
-        # 添付ファイルがある場合
-        elif ctx.message.attachments:
+        # 1. ファイルが添付されている場合
+        if ctx.message.attachments:
             attachment = ctx.message.attachments[0]
             url, filename = attachment.url, attachment.filename
+            # このメッセージ自体のIDを生成して保存
             final_id = encode_full_id(ctx.guild.id, ctx.channel.id, ctx.message.id)
         
-        # IDが指定された場合
-        elif input_str:
-            url, filename = await self.get_attachment_info(input_str)
-            final_id = input_str
+        # 2. 引数としてIDが渡された場合
+        elif b62_id:
+            url, filename = await self.get_attachment_info(b62_id)
+            final_id = b62_id
         
         else:
-            return await ctx.send(embed=we("ファイル添付、ID、またはYouTube URLを指定してください。"))
+            return await ctx.send("音声ファイルを添付するか、IDを入力してください。")
 
         if not url:
-            return await ctx.send(embed=we("情報の取得に失敗しました。"))
+            return await ctx.send("音声情報の取得に失敗しました。")
 
-        # キューに追加。引数の最後に is_yt フラグを追加
-        await self.queue.put((url, filename, final_id, is_yt))
+        # キューに追加 (url, filename, b62_id)
+        await self.queue.put((url, filename, final_id))
 
         if not ctx.voice_client.is_playing() and not self.is_processing_queue:
             await self.check_queue()
         else:
-            await ctx.send(f"✅ キューに追加しました: **{filename}**")
+            await ctx.send(f"✅ キューに追加しました: {filename}")
 
     @commands.command()
     async def stop(self, ctx):
