@@ -55,6 +55,7 @@ class Voice(commands.Cog):
         self.bot = bot
         self.reaction_enabled = {}
         self.emoji_sounds = {}
+        self.states = {}
         self.log_buffer = bot.log_buffer
         self.eq_filter = None
         self.queue = asyncio.Queue()
