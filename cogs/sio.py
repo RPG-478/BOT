@@ -69,6 +69,8 @@ class Voice(commands.Cog):
         self.supabase = getattr(bot, "supabase", None)
         self.ir_l_id = "d424KTRkAlaetACCuFZOCjUtFNjho1t5" 
         self.ir_r_id = "d424KTRkAlaetACCuFZOCjUtFO0p0TMN"
+        self.default_volume = 1.0
+        self.default_speed = 1.0
 
     def get_state(self, guild_id: int):
         """サーバーごとの状態を取得。なければ初期化"""
