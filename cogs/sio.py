@@ -70,6 +70,20 @@ class Voice(commands.Cog):
         self.ir_l_id = "d424KTRkAlaetACCuFZOCjUtFNjho1t5" 
         self.ir_r_id = "d424KTRkAlaetACCuFZOCjUtFO0p0TMN"
 
+    def get_state(self, guild_id: int):
+        """サーバーごとの状態を取得または作成"""
+        if guild_id not in self.states:
+            self.states[guild_id] = {
+                'queue': asyncio.Queue(),
+                'current_ctx': None,
+                'is_processing_queue': False,
+                'current_track': None, # (url, filename, duration, b62_id)
+                'start_time': 0,
+                'elapsed_offset': 0,
+                'retry_count': 0
+            }
+        return self.states[guild_id]
+
     @commands.Cog.listener()
     async def on_command_error(self, ctx, error):
         logging.exception("Command error")
