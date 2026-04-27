@@ -541,48 +541,58 @@ class SaitoRelay(commands.Cog):
         if not ctx.author.voice:
             return await ctx.send("VCに参加してから実行してください。")
 
+        # 1. 接続済みチェック（再生中や中継中の重複を避ける）
         if ctx.voice_client:
-            return await ctx.send("既に接続中、または再生機能が稼働中です。")
+            return await ctx.send("既にボイスチャンネルに接続しています。")
 
-        # 待機列処理
-        if not self.matching_queue:
-            self.matching_queue.append(ctx)
-            return await ctx.send("🔎 相手を探しています...")
+        # 2. 重複待機防止ロジック
+        # どのサーバーであれ、このユーザーが既にキューにいたら一度削除（上書き・キャンセル扱い）
+        is_already_waiting = any(c.author.id == ctx.author.id for c in self.matching_queue)
+        if is_already_waiting:
+            self.matching_queue = [c for c in self.matching_queue if c.author.id != ctx.author.id]
+            return await ctx.send("待機をキャンセルしました。")
 
-        peer_ctx = self.matching_queue.pop(0)
-        if peer_ctx.author.id == ctx.author.id:
-            return await ctx.send("待機を解除しました。")
+        # 3. マッチング相手の選定
+        # 自分以外のユーザーであり、かつ自分と同じギルド（サーバー）ではない相手を探す
+        target_peer = None
+        for i, peer in enumerate(self.matching_queue):
+            if peer.author.id != ctx.author.id and peer.guild.id != ctx.guild.id:
+                target_peer = self.matching_queue.pop(i)
+                break
         
-        if peer_ctx.guild.id == ctx.guild.id:
-            self.matching_queue.append(peer_ctx)
-            return await ctx.send("別のサーバーの相手を待っています...")
+        # 4. 相手が見つからない場合は待機列に追加
+        if not target_peer:
+            self.matching_queue.append(ctx)
+            return await ctx.send(f"🔎 相手を探しています... (サーバー: **{ctx.guild.name}**)")
 
-        await ctx.send("🤝 マッチング成功！接続します。")
-        await peer_ctx.send("🤝 マッチング成功！接続します。")
+        # 5. マッチング成立・接続処理
+        await ctx.send(f"🤝 **{target_peer.guild.name}** のユーザーと接続します！")
+        await target_peer.send(f"🤝 **{ctx.guild.name}** のユーザーと接続します！")
 
         try:
-            # VoiceRecvClientを使用して接続
+            # 各サーバーのチャンネルへ個別に接続
             vc1 = await ctx.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
-            vc2 = await peer_ctx.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
+            vc2 = await target_peer.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
 
-            # --- Sinkの定義と統合 ---
-            # クラスを増やさないよう、内部でBasicSink（または簡易定義）を利用
+            # 内部Sinkクラス（転送ロジック）
             class InternalRelay(voice_recv.AudioSink):
-                def __init__(self, dest): self.dest = dest
-                def want_opus(self): return True
+                def __init__(self, dest):
+                    self.dest = dest
+                def want_opus(self):
+                    return True
                 def write(self, user, packet):
                     if self.dest and self.dest.is_connected():
                         self.dest.send_audio_packet(packet.data)
 
-            # 双方向にリレーを開始
+            # 双方向リレー
             vc1.listen(InternalRelay(vc2))
             vc2.listen(InternalRelay(vc1))
 
         except Exception as e:
-            logging.error(f"Saito Error: {e}")
-            await ctx.send(f"エラーが発生しました: {e}")
+            logging.error(f"Saito Match Error: {e}")
+            await ctx.send("接続エラーが発生しました。")
             if ctx.voice_client: await ctx.voice_client.disconnect()
-            if peer_ctx.voice_client: await peer_ctx.voice_client.disconnect()
+            if target_peer.voice_client: await target_peer.voice_client.disconnect()
 
     @commands.command()
     async def saito_stop(self, ctx):
