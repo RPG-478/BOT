@@ -567,30 +567,35 @@ class SaitoRelay(commands.Cog):
         await target_peer.send(f"🤝 **{ctx.guild.name}** とマッチングしました！")
 
         try:
+            # 接続
             vc1 = await ctx.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
             vc2 = await target_peer.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
 
-            # 内部Sinkクラス（抽象メソッドをすべて実装）
             class InternalRelay(voice_recv.AudioSink):
                 def __init__(self, dest):
                     self.dest = dest
 
-                # 実装必須: パケットがOpusかどうかを判定する（複数形が正しい）
                 def wants_opus(self):
                     return True
 
-                # 実装必須: 音声データの処理
                 def write(self, user, packet):
+                    # 修正箇所: packet.data ではなく packet.packet にOpusデータが入っています
                     if self.dest and self.dest.is_connected():
-                        self.dest.send_audio_packet(packet.data)
+                        try:
+                            # packet.packet はデコード前の生のOpusパケットです
+                            self.dest.send_audio_packet(packet.packet)
+                        except Exception:
+                            pass
 
-                # 実装必須: 終了時のクリーンアップ処理
                 def cleanup(self):
                     self.dest = None
 
             # 双方向リレー
             vc1.listen(InternalRelay(vc2))
             vc2.listen(InternalRelay(vc1))
+
+            await ctx.send("🎙️ 通話を開始しました。")
+            await target_peer.send("🎙️ 通話を開始しました。")
 
         except Exception as e:
             logging.error(f"Saito Match Error: {e}")
