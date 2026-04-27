@@ -10,6 +10,7 @@ import json
 import io
 import yt_dlp
 from discord.ext import voice_recv
+import threading
 # yt-dlpの設定（ストリーミング再生用）
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -541,13 +542,12 @@ class SaitoRelay(commands.Cog):
 
     @commands.command()
     async def saito(self, ctx):
-        """音声中継マッチング (FFmpegパイプ再生)"""
+        """音声中継マッチング (FFmpeg stdin再生版)"""
         if not ctx.author.voice:
             return await ctx.send("VCに参加してから実行してください。")
         if ctx.voice_client:
             return await ctx.send("既に接続中です。")
 
-        # サーバー単位の待機キャンセル
         self.matching_queue = [c for c in self.matching_queue if c.guild.id != ctx.guild.id]
         
         target_peer = None
@@ -560,42 +560,63 @@ class SaitoRelay(commands.Cog):
             self.matching_queue.append(ctx)
             return await ctx.send(f"🔎 相手を探しています... ({ctx.guild.name})")
 
-        await ctx.send(f"🤝 **{target_peer.guild.name}** と接続します。")
-        await target_peer.send(f"🤝 **{ctx.guild.name}** と接続します。")
+        await ctx.send(f"🤝 **{target_peer.guild.name}** と接続中...")
+        await target_peer.send(f"🤝 **{ctx.guild.name}** と接続中...")
 
         try:
+            # VoiceRecvClientを使用して接続
             vc1 = await ctx.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
             vc2 = await target_peer.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
 
-            class FFmpegRelaySink(voice_recv.AudioSink):
-                def __init__(self, dest_vc):
-                    self.dest_vc = dest_vc
-                    # PCMデータをFFmpegに渡すためのバッファ
-                    self.buffer = io.BytesIO()
-                    # FFmpegプロセスの起動 (stdinからPCMを読み込み、stdoutへPCMを出す)
-                    # これにより、vc.play(discord.PCMAudio(...)) で再生可能になる
-                    self.source = discord.PCMAudio(self.buffer)
-                    
-                    # 再生開始 (一度だけ実行)
-                    if not self.dest_vc.is_playing():
-                        self.dest_vc.play(self.source)
+            class FFmpegStdinSource(discord.AudioSource):
+                def __init__(self):
+                    # FFmpegを起動。stdinからOpusを受け取り、stdoutからPCMを出す
+                    self.process = subprocess.Popen(
+                        ['ffmpeg', '-i', 'pipe:0', '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1'],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+                    )
 
-                def wants_opus(self):
-                    return False # PCMで受け取る
+                def read(self):
+                    # FFmpegが処理したPCMデータを20ms分(3840bytes)読み取る
+                    data = self.process.stdout.read(3840)
+                    if len(data) < 3840:
+                        return b'\x00' * 3840 # データが足りない時は無音
+                    return data
 
-                def write(self, user, data):
-                    if self.dest_vc and self.dest_vc.is_connected():
-                        # 受信したPCMデータをバッファに書き込む
-                        self.buffer.write(data.pcm)
-                        # バッファのポインタを調整せず、追記し続ける
+                def write_opus(self, data):
+                    # 受信したOpusパケットをFFmpegのstdinに放り込む
+                    try:
+                        self.process.stdin.write(data)
+                        self.process.stdin.flush()
+                    except:
+                        pass
 
                 def cleanup(self):
-                    self.dest_vc = None
-                    self.buffer.close()
+                    self.process.terminate()
 
-            # 双方向リレー
-            vc1.listen(FFmpegRelaySink(vc2))
-            vc2.listen(FFmpegRelaySink(vc1))
+            # 各VCでSourceを準備して再生開始
+            src1 = FFmpegStdinSource()
+            src2 = FFmpegStdinSource()
+            vc1.play(src1)
+            vc2.play(src2)
+
+            class InternalRelay(voice_recv.AudioSink):
+                def __init__(self, source):
+                    self.source = source
+
+                def wants_opus(self):
+                    return True # Opusのまま受け取る (Corrupted Streamエラーを回避)
+
+                def write(self, user, packet):
+                    # 受信したOpusデータをSourceのFFmpegに渡す
+                    self.source.write_opus(packet.data)
+
+                def cleanup(self):
+                    self.source = None
+
+            # 相互リレー開始
+            vc1.listen(InternalRelay(src2))
+            vc2.listen(InternalRelay(src1))
 
             await ctx.send("🎙️ 通話を開始しました。")
             await target_peer.send("🎙️ 通話を開始しました。")
@@ -610,6 +631,8 @@ class SaitoRelay(commands.Cog):
         if ctx.voice_client:
             await ctx.voice_client.disconnect()
             await ctx.send("通話を終了しました。")
+
+
 
 async def setup(bot):
     await bot.add_cog(Voice(bot))
