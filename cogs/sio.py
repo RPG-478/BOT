@@ -538,18 +538,18 @@ class Voice(commands.Cog):
 class SaitoRelay(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.matching_queue = [] # 待機中の ctx リスト
+        self.matching_queue = [] 
 
     @commands.command()
     async def saito(self, ctx):
-        """音声中継マッチング (discord-ext-voice-recv 直送版)"""
+        """音声中継マッチング (エンコーダー強制初期化版)"""
         if not ctx.author.voice:
             return await ctx.send("VCに参加してから実行してください。")
 
         if ctx.voice_client:
             return await ctx.send("このサーバーでは既に接続中です。")
 
-        # サーバー単位の待機キャンセル判定
+        # サーバー単位の待機キャンセル
         self.matching_queue = [c for c in self.matching_queue if c.guild.id != ctx.guild.id]
 
         target_peer = None
@@ -560,39 +560,47 @@ class SaitoRelay(commands.Cog):
         
         if not target_peer:
             self.matching_queue.append(ctx)
-            return await ctx.send(f"🔎 相手を探しています... (サーバー: **{ctx.guild.name}**)")
+            return await ctx.send(f"🔎 相手を探しています... ({ctx.guild.name})")
 
-        await ctx.send(f"🤝 **{target_peer.guild.name}** とマッチングしました！")
-        await target_peer.send(f"🤝 **{ctx.guild.name}** とマッチングしました！")
+        await ctx.send(f"🤝 **{target_peer.guild.name}** と接続中...")
+        await target_peer.send(f"🤝 **{ctx.guild.name}** と接続中...")
 
         try:
-            # READMEの通り、cls=voice_recv.VoiceRecvClient を使用して接続
+            # VoiceRecvClientを使用して接続
             vc1 = await ctx.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
             vc2 = await target_peer.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
 
-            # AudioSinkを継承したリレー用クラス
+            # --- 重要: エンコーダーを初期化するために無音を再生する ---
+            # これを行わないと send_audio_packet 時にエンコーダー未初期化エラーが出ます
+            silence_src1 = discord.FFmpegPCMAudio("/dev/null") # Linux環境
+            silence_src2 = discord.FFmpegPCMAudio("/dev/null")
+            vc1.play(silence_src1)
+            vc2.play(silence_src2)
+
             class RelaySink(voice_recv.AudioSink):
                 def __init__(self, dest_vc):
-                    super().__init__() # AudioSinkはinitの呼び出しが必須
+                    super().__init__()
                     self.dest_vc = dest_vc
 
                 def wants_opus(self) -> bool:
-                    # 再デコードによる遅延とエラーを防ぐため、Opusパケットを直接扱う
+                    # 受信したパケットをそのまま送るためTrue
                     return True
 
                 def write(self, user, data: voice_recv.VoiceData):
-                    # VoiceData.packet (生のパケット) を相手の送信キューに直接流し込む
+                    # data.packet は RTPヘッダーを含む生データ
+                    # data.data は 純粋なOpusペイロード
                     if self.dest_vc and self.dest_vc.is_connected():
-                        # send_audio_packetはdiscord.py標準の低レイヤ送信メソッド
-                        self.dest_vc.send_audio_packet(data.packet)
+                        try:
+                            # エンコーダーが初期化されていれば、data.data(Opus)を送信可能
+                            self.dest_vc.send_audio_packet(data.data)
+                        except Exception:
+                            pass
 
                 def cleanup(self):
                     self.dest_vc = None
 
-            # listen() メソッドを使用して音声受信を開始
-            # vc1(サーバーA)で受け取った音を vc2(サーバーB)へ送る
+            # 相互リレー開始
             vc1.listen(RelaySink(vc2))
-            # vc2(サーバーB)で受け取った音を vc1(サーバーA)へ送る
             vc2.listen(RelaySink(vc1))
 
             await ctx.send("🎙️ 通話を開始しました。")
@@ -605,7 +613,6 @@ class SaitoRelay(commands.Cog):
 
     @commands.command()
     async def saito_stop(self, ctx):
-        """通話終了 (stop_listeningも同時に行われる)"""
         if ctx.voice_client:
             await ctx.voice_client.disconnect()
             await ctx.send("通話を終了しました。")
