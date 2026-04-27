@@ -9,7 +9,7 @@ import subprocess
 import json
 import io
 import yt_dlp
-
+from discord.ext import voice_recv
 # yt-dlpの設定（ストリーミング再生用）
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -527,68 +527,62 @@ class Voice(commands.Cog):
         await ctx.send(embed=we(desc))
 
 
+# =====================
+# SaitoRelay Cog (通話系)
+# =====================
 class SaitoRelay(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.matching_queue = [] # 待機中の(ctx)
-        self.sessions = {} # 相互リレーのマップ {vc_id: peer_vc_id}
+        self.matching_queue = []
 
     @commands.command()
     async def saito(self, ctx):
-        """音声中継マッチング開始"""
+        """音声中継マッチング"""
         if not ctx.author.voice:
             return await ctx.send("VCに参加してから実行してください。")
 
-        if ctx.author.voice.channel.id in self.sessions:
-            return await ctx.send("すでに接続中です。")
+        if ctx.voice_client:
+            return await ctx.send("既に接続中、または再生機能が稼働中です。")
 
+        # 待機列処理
         if not self.matching_queue:
             self.matching_queue.append(ctx)
-            await ctx.send("🔎 相手を探しています...")
-            return
+            return await ctx.send("🔎 相手を探しています...")
 
-        # マッチング成立
         peer_ctx = self.matching_queue.pop(0)
+        if peer_ctx.author.id == ctx.author.id:
+            return await ctx.send("待機を解除しました。")
+        
         if peer_ctx.guild.id == ctx.guild.id:
-            # 同じサーバー内なら直接繋げばいいので今回はスキップ
             self.matching_queue.append(peer_ctx)
-            return await ctx.send("別のサーバーのユーザーを待っています...")
+            return await ctx.send("別のサーバーの相手を待っています...")
 
-        # 両方のVCに接続
-        vc1 = await ctx.author.voice.channel.connect()
-        vc2 = await peer_ctx.author.voice.channel.connect()
+        await ctx.send("🤝 マッチング成功！接続します。")
+        await peer_ctx.send("🤝 マッチング成功！接続します。")
 
-        # セッション登録
-        self.sessions[vc1.session_id] = vc2
-        self.sessions[vc2.session_id] = vc1
-
-        # 音声リレーの開始 (擬似コード)
-        # listen()で受け取ったパケットを相手のvc.send_audio_packet()に流す
-        await self.start_relay(vc1, vc2)
-        await ctx.send("🤝 マッチング成功！通話を開始します。")
-        await peer_ctx.send("🤝 マッチング成功！通話を開始します。")
-
-    async def start_relay(self, vc1, vc2):
-        """双方向に音声を転送するループ"""
-        def relay_callback(vc_source, vc_dest):
-            # 音声パケットを受信した際のコールバック
-            # 実際には discord-ext-voice 等の Sink 機能を利用します
-            while vc_source.is_connected():
-                audio_data = vc_source.receive_audio() # 内部的な受信待ち
-                if audio_data:
-                    vc_dest.send_audio_packet(audio_data)
-
-        # 非同期で双方の転送を開始
-        asyncio.create_task(self.run_transfer(vc1, vc2))
-        asyncio.create_task(self.run_transfer(vc2, vc1))
-
-    async def run_transfer(self, source, dest):
         try:
-            # ここで実際のパケットループを回します
-            # ※ライブラリの仕様により実装が大きく異なります
-            pass
+            # VoiceRecvClientを使用して接続
+            vc1 = await ctx.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
+            vc2 = await peer_ctx.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
+
+            # --- Sinkの定義と統合 ---
+            # クラスを増やさないよう、内部でBasicSink（または簡易定義）を利用
+            class InternalRelay(voice_recv.AudioSink):
+                def __init__(self, dest): self.dest = dest
+                def want_opus(self): return True
+                def write(self, user, packet):
+                    if self.dest and self.dest.is_connected():
+                        self.dest.send_audio_packet(packet.data)
+
+            # 双方向にリレーを開始
+            vc1.listen(InternalRelay(vc2))
+            vc2.listen(InternalRelay(vc1))
+
         except Exception as e:
-            print(f"Relay Error: {e}")
+            logging.error(f"Saito Error: {e}")
+            await ctx.send(f"エラーが発生しました: {e}")
+            if ctx.voice_client: await ctx.voice_client.disconnect()
+            if peer_ctx.voice_client: await peer_ctx.voice_client.disconnect()
 
     @commands.command()
     async def saito_stop(self, ctx):
