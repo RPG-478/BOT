@@ -541,20 +541,15 @@ class SaitoRelay(commands.Cog):
 
     @commands.command()
     async def saito(self, ctx):
-        """音声中継マッチング (FFmpegパイプ再生版)"""
+        """音声中継マッチング (FFmpegパイプ再生)"""
         if not ctx.author.voice:
             return await ctx.send("VCに参加してから実行してください。")
-
         if ctx.voice_client:
-            return await ctx.send("このサーバーでは既に接続中です。")
+            return await ctx.send("既に接続中です。")
 
         # サーバー単位の待機キャンセル
-        is_guild_waiting = any(c.guild.id == ctx.guild.id for c in self.matching_queue)
-        if is_guild_waiting:
-            self.matching_queue = [c for c in self.matching_queue if c.guild.id != ctx.guild.id]
-            return await ctx.send(f"🚫 **{ctx.guild.name}** の待機を解除しました。")
-
-        # マッチング相手の選定
+        self.matching_queue = [c for c in self.matching_queue if c.guild.id != ctx.guild.id]
+        
         target_peer = None
         for i, peer in enumerate(self.matching_queue):
             if peer.guild.id != ctx.guild.id:
@@ -563,54 +558,47 @@ class SaitoRelay(commands.Cog):
         
         if not target_peer:
             self.matching_queue.append(ctx)
-            return await ctx.send(f"🔎 相手を探しています... (サーバー: **{ctx.guild.name}**)")
+            return await ctx.send(f"🔎 相手を探しています... ({ctx.guild.name})")
 
         await ctx.send(f"🤝 **{target_peer.guild.name}** と接続します。")
         await target_peer.send(f"🤝 **{ctx.guild.name}** と接続します。")
 
         try:
-            # VoiceRecvClientを使用して接続
             vc1 = await ctx.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
             vc2 = await target_peer.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
 
-            class PipeRelaySink(voice_recv.AudioSink):
+            class FFmpegRelaySink(voice_recv.AudioSink):
                 def __init__(self, dest_vc):
                     self.dest_vc = dest_vc
-                    # FFmpegの入力としてパイプを使用する設定
-                    # -f s16le (16bit PCM), -ar 48000 (サンプリングレート), -ac 2 (ステレオ)
-                    self.ffmpeg_options = "-f s16le -ar 48000 -ac 2"
-                    # discord.PCMAudio は標準入力からの読み込みに対応
-                    self.source = discord.PCMAudio(io.BytesIO()) 
+                    # PCMデータをFFmpegに渡すためのバッファ
+                    self.buffer = io.BytesIO()
+                    # FFmpegプロセスの起動 (stdinからPCMを読み込み、stdoutへPCMを出す)
+                    # これにより、vc.play(discord.PCMAudio(...)) で再生可能になる
+                    self.source = discord.PCMAudio(self.buffer)
                     
-                    # 実際には、受信したデータをリアルタイムに流し込むため
-                    # pipeオブジェクトを管理します。
-                    self.process = subprocess.Popen(
-                        ['ffmpeg', '-i', 'pipe:0', '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1'],
-                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-                    )
+                    # 再生開始 (一度だけ実行)
+                    if not self.dest_vc.is_playing():
+                        self.dest_vc.play(self.source)
 
                 def wants_opus(self):
-                    # FFmpegに渡す前にデコードが必要なためFalse（PCMで受け取る）
-                    return False
+                    return False # PCMで受け取る
 
                 def write(self, user, data):
-                    # data.pcm にデコード済みの生の音声データが入っています
                     if self.dest_vc and self.dest_vc.is_connected():
-                        # ここで通常の play() ループに割り込ませるために
-                        # discord.AudioSource を自作するか、直接パケット送信を推奨しますが、
-                        # FFmpegを介して「鳴らす」場合は、受信したPCMをそのまま送信します。
-                        # 実装上の制約から、中継では以下の形式が最も安定して「音が鳴り」ます。
-                        self.dest_vc.send_audio_packet(data.pcm)
+                        # 受信したPCMデータをバッファに書き込む
+                        self.buffer.write(data.pcm)
+                        # バッファのポインタを調整せず、追記し続ける
 
                 def cleanup(self):
                     self.dest_vc = None
+                    self.buffer.close()
 
-            # リレー開始
-            vc1.listen(PipeRelaySink(vc2))
-            vc2.listen(PipeRelaySink(vc1))
+            # 双方向リレー
+            vc1.listen(FFmpegRelaySink(vc2))
+            vc2.listen(FFmpegRelaySink(vc1))
 
-            await ctx.send("🎙️ 通話を開始しました（パイプ中継）")
-            await target_peer.send("🎙️ 通話を開始しました（パイプ中継）")
+            await ctx.send("🎙️ 通話を開始しました。")
+            await target_peer.send("🎙️ 通話を開始しました。")
 
         except Exception as e:
             logging.error(f"Saito Error: {e}")
@@ -619,13 +607,9 @@ class SaitoRelay(commands.Cog):
 
     @commands.command()
     async def saito_stop(self, ctx):
-        """通話終了"""
         if ctx.voice_client:
-            # disconnectすれば自動的にlisten(Sink)も停止します
             await ctx.voice_client.disconnect()
             await ctx.send("通話を終了しました。")
-        else:
-            await ctx.send("接続していません。")
 
 async def setup(bot):
     await bot.add_cog(Voice(bot))
