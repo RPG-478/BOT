@@ -532,10 +532,12 @@ class Voice(commands.Cog):
 # =====================
 # SaitoRelayクラス内の修正・変更箇所のみ
 
+# SaitoRelayクラスの修正版
+
 class SaitoRelay(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.matching_queue = [] 
+        self.matching_queue = [] # 待機中の ctx リスト
 
     @commands.command()
     async def saito(self, ctx):
@@ -543,6 +545,7 @@ class SaitoRelay(commands.Cog):
         if not ctx.author.voice:
             return await ctx.send("VCに参加してから実行してください。")
 
+        # そのサーバーで既にBotが動いているかチェック
         if ctx.voice_client:
             return await ctx.send("このサーバーでは既にボイスチャンネルに接続中です。")
 
@@ -552,7 +555,7 @@ class SaitoRelay(commands.Cog):
             self.matching_queue = [c for c in self.matching_queue if c.guild.id != ctx.guild.id]
             return await ctx.send(f"🚫 **{ctx.guild.name}** の待機を解除しました。")
 
-        # マッチング相手の選定（サーバーIDで判定）
+        # マッチング相手の選定（自分以外のサーバーIDのものを探す）
         target_peer = None
         for i, peer in enumerate(self.matching_queue):
             if peer.guild.id != ctx.guild.id:
@@ -563,26 +566,27 @@ class SaitoRelay(commands.Cog):
             self.matching_queue.append(ctx)
             return await ctx.send(f"🔎 相手を探しています... (サーバー: **{ctx.guild.name}**)")
 
-        await ctx.send(f"🤝 **{target_peer.guild.name}** とマッチングしました！")
-        await target_peer.send(f"🤝 **{ctx.guild.name}** とマッチングしました！")
+        await ctx.send(f"🤝 **{target_peer.guild.name}** とマッチングしました！接続します。")
+        await target_peer.send(f"🤝 **{ctx.guild.name}** とマッチングしました！接続します。")
 
         try:
-            # 接続
+            # 【重要】voice_recv.VoiceRecvClient を使用して接続
             vc1 = await ctx.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
             vc2 = await target_peer.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
 
+            # 内部Sinkクラスの定義
             class InternalRelay(voice_recv.AudioSink):
                 def __init__(self, dest):
                     self.dest = dest
 
                 def wants_opus(self):
-                    return True
+                    return True # Opusパケットをそのまま扱う（変換なしで流すため低負荷）
 
                 def write(self, user, packet):
-                    # 修正箇所: packet.data ではなく packet.packet にOpusデータが入っています
+                    # 受信した音声パケット(packet.packet)を相手のVC(dest)で「鳴らす」
                     if self.dest and self.dest.is_connected():
                         try:
-                            # packet.packet はデコード前の生のOpusパケットです
+                            # send_audio_packetにより、相手サーバーのスピーカーから音が出ます
                             self.dest.send_audio_packet(packet.packet)
                         except Exception:
                             pass
@@ -590,7 +594,8 @@ class SaitoRelay(commands.Cog):
                 def cleanup(self):
                     self.dest = None
 
-            # 双方向リレー
+            # 双方向で音声のキャプチャ（listen）を開始
+            # vc1(A鯖)の音をvc2(B鯖)で流し、vc2(B鯖)の音をvc1(A鯖)で流す
             vc1.listen(InternalRelay(vc2))
             vc2.listen(InternalRelay(vc1))
 
@@ -607,8 +612,11 @@ class SaitoRelay(commands.Cog):
     async def saito_stop(self, ctx):
         """通話終了"""
         if ctx.voice_client:
+            # disconnectすれば自動的にlisten(Sink)も停止します
             await ctx.voice_client.disconnect()
             await ctx.send("通話を終了しました。")
+        else:
+            await ctx.send("接続していません。")
 
 async def setup(bot):
     await bot.add_cog(Voice(bot))
