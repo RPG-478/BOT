@@ -570,29 +570,35 @@ class SaitoRelay(commands.Cog):
 
             class FFmpegStdinSource(discord.AudioSource):
                 def __init__(self):
-                    # FFmpegを起動。stdinからOpusを受け取り、stdoutからPCMを出す
+                    # FFmpegの起動。stdinから読み込み、stdoutからPCMを出す
+                    # opus形式であることを明示的に指定
                     self.process = subprocess.Popen(
                         ['ffmpeg', '-i', 'pipe:0', '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1'],
                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
                     )
 
                 def read(self):
-                    # FFmpegが処理したPCMデータを20ms分(3840bytes)読み取る
-                    data = self.process.stdout.read(3840)
-                    if len(data) < 3840:
-                        return b'\x00' * 3840 # データが足りない時は無音
-                    return data
+                    # PCMデータを20ms分(3840bytes)読み取る
+                    try:
+                        data = self.process.stdout.read(3840)
+                        if len(data) < 3840:
+                            return b'\x00' * 3840
+                        return data
+                    except:
+                        return b'\x00' * 3840
 
                 def write_opus(self, data):
-                    # 受信したOpusパケットをFFmpegのstdinに放り込む
-                    try:
-                        self.process.stdin.write(data)
-                        self.process.stdin.flush()
-                    except:
-                        pass
+                    # 受信したOpusパケットをFFmpegのstdinに書き込む
+                    if self.process.poll() is None: # プロセスが生きていれば
+                        try:
+                            self.process.stdin.write(data)
+                            self.process.stdin.flush()
+                        except:
+                            pass
 
                 def cleanup(self):
-                    self.process.terminate()
+                    if self.process:
+                        self.process.terminate()
 
             # 各VCでSourceを準備して再生開始
             src1 = FFmpegStdinSource()
@@ -605,11 +611,12 @@ class SaitoRelay(commands.Cog):
                     self.source = source
 
                 def wants_opus(self):
-                    return True # Opusのまま受け取る (Corrupted Streamエラーを回避)
+                    return True
 
                 def write(self, user, packet):
-                    # 受信したOpusデータをSourceのFFmpegに渡す
-                    self.source.write_opus(packet.data)
+                    # エラー箇所修正: packet.data ではなく packet.packet を使用
+                    if self.source:
+                        self.source.write_opus(packet.packet)
 
                 def cleanup(self):
                     self.source = None
