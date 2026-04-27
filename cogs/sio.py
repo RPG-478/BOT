@@ -530,10 +530,12 @@ class Voice(commands.Cog):
 # =====================
 # SaitoRelay Cog (通話系)
 # =====================
+# SaitoRelayクラス内の修正・変更箇所のみ
+
 class SaitoRelay(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.matching_queue = []
+        self.matching_queue = [] # 待機中の ctx リスト
 
     @commands.command()
     async def saito(self, ctx):
@@ -541,22 +543,22 @@ class SaitoRelay(commands.Cog):
         if not ctx.author.voice:
             return await ctx.send("VCに参加してから実行してください。")
 
-        # 1. 接続済みチェック（再生中や中継中の重複を避ける）
+        # 1. 接続済みチェック（そのサーバーで既にBotが動いているか）
         if ctx.voice_client:
-            return await ctx.send("既にボイスチャンネルに接続しています。")
+            return await ctx.send("このサーバーでは既にボイスチャンネルに接続中です。")
 
-        # 2. 重複待機防止ロジック
-        # どのサーバーであれ、このユーザーが既にキューにいたら一度削除（上書き・キャンセル扱い）
-        is_already_waiting = any(c.author.id == ctx.author.id for c in self.matching_queue)
-        if is_already_waiting:
-            self.matching_queue = [c for c in self.matching_queue if c.author.id != ctx.author.id]
-            return await ctx.send("待機をキャンセルしました。")
+        # 2. サーバー単位の待機キャンセル判定
+        # 同じサーバーから再度コマンドが打たれたら、そのサーバーの待機を解除する
+        is_guild_waiting = any(c.guild.id == ctx.guild.id for c in self.matching_queue)
+        if is_guild_waiting:
+            self.matching_queue = [c for c in self.matching_queue if c.guild.id != ctx.guild.id]
+            return await ctx.send(f"🚫 **{ctx.guild.name}** の待機を解除しました。")
 
         # 3. マッチング相手の選定
-        # 自分以外のユーザーであり、かつ自分と同じギルド（サーバー）ではない相手を探す
+        # 自分（現在のサーバー）以外の待機者がいればマッチング
         target_peer = None
         for i, peer in enumerate(self.matching_queue):
-            if peer.author.id != ctx.author.id and peer.guild.id != ctx.guild.id:
+            if peer.guild.id != ctx.guild.id:
                 target_peer = self.matching_queue.pop(i)
                 break
         
@@ -566,8 +568,8 @@ class SaitoRelay(commands.Cog):
             return await ctx.send(f"🔎 相手を探しています... (サーバー: **{ctx.guild.name}**)")
 
         # 5. マッチング成立・接続処理
-        await ctx.send(f"🤝 **{target_peer.guild.name}** のユーザーと接続します！")
-        await target_peer.send(f"🤝 **{ctx.guild.name}** のユーザーと接続します！")
+        await ctx.send(f"🤝 **{target_peer.guild.name}** とマッチングしました！接続します。")
+        await target_peer.send(f"🤝 **{ctx.guild.name}** とマッチングしました！接続します。")
 
         try:
             # 各サーバーのチャンネルへ個別に接続
