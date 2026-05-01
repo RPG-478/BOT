@@ -7,6 +7,22 @@ from discord import app_commands
 from discord.ext import commands
 
 # ======================================================
+#  白黒判定ユーティリティ
+# ======================================================
+# 占い師用 黒判定役職（デカ狼は賄賂で白）
+BLACK_ROLES_URANAI  = {"人狼", "入狼", "ワンころ", "メンヘラ"}
+# 霊媒師/大霊媒師用 黒判定役職（デカ狼も黒）
+BLACK_ROLES_REIBAI  = {"人狼", "デカ狼", "入狼", "ワンころ", "メンヘラ"}
+
+def uranai_color(role: str) -> str:
+    """占い師の白黒判定（デカ狼は白）"""
+    return "黒" if role in BLACK_ROLES_URANAI else "白"
+
+def reibai_color(role: str) -> str:
+    """霊媒師の白黒判定（デカ狼は黒）"""
+    return "黒" if role in BLACK_ROLES_REIBAI else "白"
+
+# ======================================================
 #  ゲーム状態
 # ======================================================
 class JinrouGame:
@@ -25,8 +41,10 @@ class JinrouGame:
         self.masai_evasion = {}   # {マサイID: 回避可能か(bool)}
         self.silenced_players = set()      # 発言削除対象プレイヤーID
         self.chairman_skip_event = None    # asyncio.Event（議長スキップ用）
-        self.chairman_ketsugu_used = False # 議長の決議使用済みフラグ
-        self.chairman_ketsugu_target = None # 議長が決議した対象ID
+        self.chairman_ketsugu_used = False # 議長の強制投票使用済みフラグ
+        self.chairman_ketsugu_target = None # 議長の強制投票で選ばれた対象ID
+        self.chairman_forced_vote = False  # 強制投票発動フラグ
+        self.chairman_vote_event = None    # 強制投票パネル完了イベント
         self.in_discussion = False         # 発言フェーズ中フラグ
         self.riacchu_pairs = []   # [(id1, id2), ...] リア充ペア
         self.kizoku_slave = {}    # {貴族id: 奴隷id}
@@ -85,35 +103,24 @@ class JinrouCog(commands.Cog):
                         await game.game_channel.send("議長がスキップを宣言。議論を終了し投票フェーズに移行します。")
                         game.chairman_skip_event.set()
 
-                elif content.startswith("決議") and not game.chairman_ketsugu_used:
-                    target_name = content[2:].strip()
-                    if target_name:
-                        target_player = None
-                        for p in game.alive_players:
-                            if p.id == message.author.id:
-                                continue
-                            member = game.game_channel.guild.get_member(p.id)
-                            if member and member.display_name == target_name:
-                                target_player = p
-                                break
-
-                        if target_player:
-                            game.chairman_ketsugu_target = target_player.id
-                            game.chairman_ketsugu_used = True
-                            if game.chairman_skip_event and not game.chairman_skip_event.is_set():
-                                game.chairman_skip_event.set()
-                            await game.game_channel.send(
-                                f"議長が決議を発動！ **{target_name}** の追放が決定されました。"
-                            )
+                elif content == "強制投票" and not game.chairman_ketsugu_used:
+                    game.chairman_ketsugu_used = True
+                    game.chairman_forced_vote = True
+                    if game.chairman_skip_event and not game.chairman_skip_event.is_set():
+                        game.chairman_skip_event.set()
+                    await game.game_channel.send(
+                        "議長が強制投票を宣言！ 議論を中断し、議長による投票に移行します。"
+                    )
 
     # ======================================================
     #  役職割当
     # ======================================================
     def assign_roles(self, game):
         num = len(game.players)
-        num_wolves = max(1, num // 5)
+        # 4人に対して1人の人狼
+        num_wolves = max(1, num // 4)
 
-        # 昇格マップ（基本職 → 上級職、40%で昇格）
+        # 昇格マップ（基本職 → 上級職、35%で昇格）
         promotion_map = {
             "人狼":          "デカ狼",
             "騎士":          "罠師",
@@ -121,10 +128,11 @@ class JinrouCog(commands.Cog):
             "狂人":          "狂信者",
             "入狼":          "ワンころ",
             "ハゲ":          "コウモリむに",
+            "霊媒師":        "大霊媒師",   # NEW: 霊媒師の上位職
         }
 
         def maybe_promote(role):
-            if role in promotion_map and random.random() < 0.4:
+            if role in promotion_map and random.random() < 0.35:
                 return promotion_map[role]
             return role
 
@@ -217,6 +225,8 @@ class JinrouCog(commands.Cog):
         game.in_discussion = False
         if game.chairman_skip_event:
             game.chairman_skip_event.set()
+        if game.chairman_vote_event:
+            game.chairman_vote_event.set()
         embed = discord.Embed(description="管理者によりゲームが強制終了されました。", color=0xFFFFFF)
         await interaction.response.send_message(embed=embed)
 
@@ -228,29 +238,30 @@ class JinrouCog(commands.Cog):
             color=0xFFFFFF
         )
         roles_info = {
-            "【基本職】一般通過あごむに": "空気。存在しているだけで偉い。特に何もしない。",
-            "【上級職】タフむに":        "殺された時に最後の一撃で相手を道連れにする根性の一般通過。",
-            "【基本職】占い師":          "毎晩1人を占える。安物のビー玉を使って人間か人狼かを見抜く。",
-            "【基本職】霊媒師":          "昨日追放された者が人間だったか人狼だったかを確認する悪趣味な仕事。",
-            "【基本職】騎士":            "毎晩1人をつまようじで守る。自分は守れない不器用なやつ。",
-            "【上級職】罠師":            "騎士の上位職。対象を守るだけでなく、狼が守った対象を襲撃した場合にその狼を返り討ちにする。",
-            "【基本職】人狼":            "村人を食べる。仲間同士は誰が人狼か知っている。",
-            "【上級職】デカ狼":          "占い師を賄賂で黙らせる人狼。占い師に白判定を出させる。デカイだけで威圧感がある。",
-            "【基本職】狂人":            "人狼の味方をする人間。人狼が誰かは知らないが、とにかく場を乱す。",
-            "【上級職】狂信者":          "人狼とデカ狼が誰かを知っている熱狂的なファン。人狼陣営の参謀。",
-            "【基本職】ハゲ":            "追放されたら勝利。髪の毛が観測できないバグのせいで目立ちすぎる。",
-            "【上級職】コウモリむに":    "ハゲの上位職。追放されても勝利できる上、最後まで生き残っても個人勝利できる。",
-            "【基本職】メンヘラ":        "自分に関与した（占う、守る、食べる）者を物理的に消去する。",
-            "【基本職】あごむに破道砲":  "自爆して対象を道連れにする。さらにもう1人も誤発で巻き込む。（※3日目の夜以降に使用可能）",
-            "【基本職】パン屋":          "生きていれば朝にパンを配る。死んでいても何故かパンが届く怪奇現象を起こす。",
-            "【基本職】マサイ族":        "視力とジャンプ力が高い。夜に1人を観察する。もし対象が人狼なら襲撃を50%で回避する準備を整える。真偽は誰にもわからない。",
-            "【基本職】入狼":            "人狼のような名前の村人。占われると人狼判定が出る不幸なやつ。",
-            "【上級職】ワンころ":        "最初に飼い主を決める。飼い主が死ぬかいない場合は野良化して人狼になる。",
-            "【発展職】議長":            "会議中に『スキップ』と発言すると強制的に議論を打ち切り投票に移行できる。ゲーム中一回だけ『決議 [名前]』と発言すると対象を強制追放できる（投票不要）。白陣営。",
-            "【発展職】ビー玉ブレイカー":"このプレイヤーが生きているだけで占い師の判定が30%の確率でひっくり返る。パッシブ。白陣営。",
-            "【2人役】リア充":           "2人1組で存在し、お互いが誰かを知っている。片方が死ぬともう片方も道連れになる。",
-            "【2人役】貴族":             "奴隷とセットで発生。死亡判定を自動的に奴隷に肩代わりさせることができる（奴隷が存在する場合）。奴隷が誰か分かる。",
-            "【2人役】奴隷":             "貴族とセットで発生。貴族が死亡判定にかかると代わりに死ぬ運命。貴族が誰か分かる。",
+            "【村人陣営】一般通過あごむに": "空気。存在しているだけで偉い。特に何もしない。",
+            "【村人陣営】タフむに":        "殺された時に最後の一撃で相手を道連れにする根性の一般通過。",
+            "【村人陣営】占い師":          "毎晩1人を占える。安物のビー玉を使って白か黒かを見抜く。",
+            "【村人陣営】霊媒師":          "昨日追放された者が白か黒かを昼に自動で通知される悪趣味な仕事。",
+            "【村人陣営】大霊媒師":        "霊媒師の上位職。追放者の白黒を自動通知に加え、夜に死者ならば誰でも調べられ役職まで判明する。",
+            "【村人陣営】騎士":            "毎晩1人をつまようじで守る。自分は守れない不器用なやつ。",
+            "【村人陣営】罠師":            "騎士の上位職。対象を守るだけでなく、狼が守った対象を襲撃した場合にその狼を返り討ちにする。",
+            "【村人陣営】入狼":            "人狼のような名前の村人。占われると黒判定が出る不幸なやつ。",
+            "【村人陣営】パン屋":          "生きていれば朝にパンを配る。死んでいても何故かパンが届く怪奇現象を起こす。",
+            "【村人陣営】マサイ族":        "視力とジャンプ力が高い。夜に1人を観察する。もし対象が人狼なら襲撃を50%で回避する準備を整える。真偽は誰にもわからない。",
+            "【村人陣営】議長":            "会議中に『スキップ』と発言すると強制的に議論を打ち切り通常投票へ移行できる。ゲーム中一回だけ『強制投票』と発言すると議論を中断して議長専用の投票箱が設置され、議長が直接追放対象を選べる。",
+            "【村人陣営】ビー玉ブレイカー":"このプレイヤーが生きているだけで占い師の判定が30%の確率でひっくり返る。パッシブ。",
+            "【村人陣営】リア充":          "2人1組で存在し、お互いが誰かを知っている。片方が死ぬともう片方も道連れになる。",
+            "【村人陣営】貴族":            "奴隷とセットで発生。死亡判定を自動的に奴隷に肩代わりさせることができる（奴隷が存在する場合）。奴隷が誰か分かる。",
+            "【村人陣営】奴隷":            "貴族とセットで発生。貴族が死亡判定にかかると代わりに死ぬ運命。貴族が誰か分かる。",
+            "【人狼陣営】人狼":            "村人を食べる。仲間同士は誰が人狼か知っている。",
+            "【人狼陣営】デカ狼":          "占い師を賄賂で黙らせる人狼。占い師に白判定を出させる。霊媒師には黒と出る。デカイだけで威圧感がある。",
+            "【人狼陣営】狂人":            "人狼の味方をする人間。人狼が誰かは知らないが、とにかく場を乱す。",
+            "【人狼陣営】狂信者":          "人狼とデカ狼が誰かを知っている熱狂的なファン。人狼陣営の参謀。",
+            "【第三者陣営】ハゲ":          "追放されたら勝利。髪の毛が観測できないバグのせいで目立ちすぎる。",
+            "【第三者陣営】コウモリむに":  "ハゲの上位職。追放されても勝利できる上、最後まで生き残っても個人勝利できる。",
+            "【第三者陣営】メンヘラ":      "自分に関与した（占う、守る、食べる）者を物理的に消去する。占うと黒判定が出る。",
+            "【第三者陣営】あごむに破道砲":"自爆して対象を道連れにする。さらにもう1人も誤発で巻き込む。（※3日目の夜以降に使用可能）",
+            "【第三者陣営】ワンころ":      "最初に飼い主を決める。飼い主が死ぬかいない場合は野良化して人狼になる。占うと黒判定が出る。",
         }
         for name, desc in roles_info.items():
             embed.add_field(name=name, value=desc, inline=False)
@@ -278,6 +289,8 @@ class JinrouCog(commands.Cog):
         game.silenced_players = set()
         game.chairman_ketsugu_used = False
         game.chairman_ketsugu_target = None
+        game.chairman_forced_vote = False
+        game.chairman_vote_event = None
         game.in_discussion = False
         game.riacchu_pairs = []
         game.kizoku_slave = {}
@@ -316,9 +329,10 @@ class JinrouCog(commands.Cog):
         mentions = " ".join([p.mention for p in game.players])
         roles_for_display = []
         for r in game.roles.values():
-            if r == "タフむに": roles_for_display.append("一般通過あごむに")
-            elif r == "入狼":   roles_for_display.append("人狼")
-            else:               roles_for_display.append(r)
+            if r == "タフむに":    roles_for_display.append("一般通過あごむに")
+            elif r == "入狼":      roles_for_display.append("人狼")
+            elif r == "大霊媒師":  roles_for_display.append("霊媒師")
+            else:                  roles_for_display.append(r)
         roles_list = " / ".join(set(roles_for_display))
 
         await channel.send(
@@ -365,12 +379,14 @@ class JinrouCog(commands.Cog):
                 if not game.is_running or await self.check_victory(game): break
 
                 game.chairman_ketsugu_target = None
+                game.chairman_forced_vote = False
                 await self.run_discussion(game, minutes=3, title="昼のディスカッション")
                 if not game.is_running: break
 
-                if game.chairman_ketsugu_target:
-                    await self.apply_forced_execution(game, game.chairman_ketsugu_target)
-                    game.chairman_ketsugu_target = None
+                if game.chairman_forced_vote:
+                    # 強制投票：議長専用投票パネル
+                    game.chairman_forced_vote = False
+                    await self.run_chairman_vote_phase(game)
                 else:
                     await self.run_voting_phase(game)
 
@@ -419,6 +435,11 @@ class JinrouCog(commands.Cog):
         req_roles = ["占い師", "騎士", "罠師", "人狼", "デカ狼", "あごむに破道砲", "マサイ族"]
         if game.day_count == 1: req_roles.append("ワンころ")
         req = sum(1 for p in game.alive_players if game.roles.get(p.id) in req_roles)
+
+        # 大霊媒師：死者がいる場合のみカウント
+        alive_ids = {p.id for p in game.alive_players}
+        has_dead = any(p.id not in alive_ids for p in game.players)
+        req += sum(1 for p in game.alive_players if game.roles.get(p.id) == "大霊媒師" and has_dead)
 
         t = 0
         while len(game.night_actions) < req and t < 60:
@@ -595,6 +616,42 @@ class JinrouCog(commands.Cog):
             await game.game_channel.send(f"さらに、{'、'.join(names_list)} は最後まで生き残り個人勝利しました！")
 
     # ======================================================
+    #  霊媒師への通知（バグ修正 + 新機能）
+    # ======================================================
+    async def _notify_reibai(self, game, executed_id):
+        """
+        霊媒師・大霊媒師に追放者の白黒を通知する。
+        霊媒師：白か黒かのみ。
+        大霊媒師：白黒 + 役職名。
+        """
+        role = game.roles.get(executed_id)
+        if role is None:
+            return
+        result = reibai_color(role)
+        ex_member = game.game_channel.guild.get_member(executed_id)
+        ex_name = ex_member.display_name if ex_member else "不明"
+
+        for p in game.alive_players:
+            p_role = game.roles.get(p.id)
+            if p_role not in ["霊媒師", "大霊媒師"]:
+                continue
+            member = game.game_channel.guild.get_member(p.id)
+            if not member:
+                continue
+            try:
+                if p_role == "霊媒師":
+                    await member.send(
+                        f"<:REIBAI:1490254585413148703>霊媒結果：**{ex_name}** は【{result}】でした。"
+                    )
+                elif p_role == "大霊媒師":
+                    await member.send(
+                        f"<:REIBAI:1490254585413148703>大霊媒師の霊媒結果：**{ex_name}** は【{result}】"
+                        f"（役職：**{role}**）でした。"
+                    )
+            except:
+                pass
+
+    # ======================================================
     #  議長の強制追放
     # ======================================================
     async def apply_forced_execution(self, game, target_id):
@@ -620,6 +677,11 @@ class JinrouCog(commands.Cog):
         game.last_executed = actual_target_id
         game.silenced_players.add(actual_target_id)
         game.alive_players = [p for p in game.alive_players if p.id != actual_target_id]
+
+        await game.game_channel.send(f"{target_m.display_name} さんが追放されました。")
+
+        # 霊媒師への通知（バグ修正）
+        await self._notify_reibai(game, actual_target_id)
 
         executed_role = game.roles.get(actual_target_id)
         if executed_role == "ハゲ":
@@ -703,6 +765,9 @@ class JinrouCog(commands.Cog):
         game.silenced_players.add(actual_target_id)
         game.alive_players = [p for p in game.alive_players if p.id != actual_target_id]
 
+        # 霊媒師への通知（バグ修正）
+        await self._notify_reibai(game, actual_target_id)
+
         executed_role = game.roles.get(actual_target_id)
         if executed_role == "ハゲ":
             await game.game_channel.send("<:f8cc0b1b5e501838:1491033609929490492>ハゲが追放された。ハゲの勝利です。")
@@ -725,6 +790,54 @@ class JinrouCog(commands.Cog):
                         game.alive_players = [p for p in game.alive_players if p.id != partner_id]
                 break
 
+    # ======================================================
+    #  強制投票フェーズ（議長専用）
+    # ======================================================
+    async def run_chairman_vote_phase(self, game):
+        if not game.is_running: return
+        game.chairman_vote_event = asyncio.Event()
+        game.chairman_ketsugu_target = None
+
+        opts = [
+            discord.SelectOption(label=p.display_name, value=str(p.id))
+            for p in game.alive_players
+            if game.roles.get(p.id) != "議長"
+        ]
+        if not opts:
+            await game.game_channel.send("追放できる対象がいません。")
+            return
+
+        # 議長以外の発言をサイレンス
+        for p in game.alive_players:
+            if game.roles.get(p.id) != "議長":
+                game.silenced_players.add(p.id)
+
+        view = ChairmanVoteView(game, opts)
+        msg = await game.game_channel.send(
+            "ーー 強制投票（60秒） ーー\n**議長のみ**が投票できます。追放する対象を選んでください。",
+            view=view
+        )
+
+        t = 0
+        while not game.chairman_vote_event.is_set() and t < 60:
+            await asyncio.sleep(1)
+            t += 1
+            if not game.is_running: break
+
+        try: await msg.delete()
+        except: pass
+
+        # サイレンス解除
+        for p in game.alive_players:
+            game.silenced_players.discard(p.id)
+
+        if game.chairman_ketsugu_target:
+            await self.apply_forced_execution(game, game.chairman_ketsugu_target)
+            game.chairman_ketsugu_target = None
+        else:
+            await game.game_channel.send("議長が時間内に投票しなかった。追放はありません。")
+
+
 # ======================================================
 #  UI Components
 # ======================================================
@@ -741,8 +854,9 @@ class RoleCheckView(discord.ui.View):
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         display_role = real_role
-        if real_role == "タフむに": display_role = "一般通過あごむに"
-        elif real_role == "入狼":   display_role = "人狼"
+        if real_role == "タフむに":   display_role = "一般通過あごむに"
+        elif real_role == "入狼":     display_role = "人狼"
+        elif real_role == "大霊媒師": display_role = "霊媒師"
 
         wolves = self.cog.get_wolves_names(self.game)
 
@@ -772,29 +886,30 @@ class RoleCheckView(discord.ui.View):
                     break
 
         descs = {
-            "一般通過あごむに": "一般通過あごむに。空気より存在感が薄い。",
-            "占い師":           "毎晩1人を占える。金がないのでビー玉で占っている。",
-            "霊媒師":           "昨日追放された者の正体を覗き見る趣味がある。",
-            "人狼":             f"仲間: {wolves}",
-            "騎士":             "毎晩一人をつまようじで守る。",
-            "罠師":             "毎晩一人を守る。狼が守った対象を攻撃した場合、その狼を返り討ちにする。騎士の上位職。",
-            "狂人":             "人狼の味方。基本的に無能である。",
-            "ハゲ":             "追放されたら勝てる。髪の毛が観測できないバグが発生している。",
-            "コウモリむに":     "ハゲの上位職。追放されても勝利できる上、最後まで生き残っても個人勝利できる。",
-            "メンヘラ":         "自分に関与した者を物理的に消す。",
-            "あごむに破道砲":   "自らを弾にして1人を狙い撃ちできるが、誤発してもう1人殺す。（※3日目の夜以降に使用可能）",
-            "デカ狼":           f"占い師に賄賂を払って白判定にする。デカイだけである。仲間: {wolves}",
-            "パン屋":           "生きているうちは朝にパンを配る。死んでいてもなぜかパンが届く。",
-            "マサイ族":         "視力とジャンプ力が高い。夜に1人を観察する。もし対象が人狼なら襲撃を50%で回避する準備を整える。真偽は誰にもわからない。",
-            "入狼":             "生まれた名前が悪かった。ビー玉で占ってるやつに人狼と誤解される哀れな村陣営。",
-            "ワンころ":         "最初の夜に飼い主を決める。飼い主がいないと野生化して人狼になる。",
-            "タフむに":         "殺された時に殺し返す根性のある一般通過あごむに。",
-            "狂信者":           f"人狼とデカ狼を知っている熱狂的な人狼ファン。 仲間: {wolves}",
-            "議長":             "会議中に『スキップ』で議論を即終了→投票へ。ゲーム中一回だけ『決議 [名前]』で対象を強制追放できる。",
-            "ビー玉ブレイカー": "あなたが生きているだけで占い師の判定が30%の確率で逆転する。パッシブ効果のため夜は何もしなくていい。",
-            "リア充":           f"リア充。パートナー: {partner_name}。片方が死ぬと両方道連れになる。",
-            "貴族":             f"貴族。奴隷が生きている間は死を自動的に肩代わりさせることができる。奴隷: {slave_name}",
-            "奴隷":             f"奴隷。貴族が死亡判定を受けると代わりに死ぬ運命。貴族: {kizoku_name}",
+            "一般通過あごむに": "【村人陣営】一般通過あごむに。空気より存在感が薄い。",
+            "占い師":           "【村人陣営】毎晩1人を占える。白か黒か結果が出る。金がないのでビー玉で占っている。",
+            "霊媒師":           "【村人陣営】昨日追放された者が白か黒かを昼にDMで通知される悪趣味な仕事。",
+            "大霊媒師":         "【村人陣営】霊媒師の上位職。追放者の白黒+役職をDMで通知される。さらに夜に死者ならば誰でも選んで調べることができ役職まで判明する。",
+            "人狼":             f"【人狼陣営】仲間: {wolves}",
+            "騎士":             "【村人陣営】毎晩一人をつまようじで守る。",
+            "罠師":             "【村人陣営】毎晩一人を守る。狼が守った対象を攻撃した場合、その狼を返り討ちにする。騎士の上位職。",
+            "狂人":             "【人狼陣営】人狼の味方。基本的に無能である。",
+            "ハゲ":             "【第三者陣営】追放されたら勝てる。髪の毛が観測できないバグが発生している。",
+            "コウモリむに":     "【第三者陣営】ハゲの上位職。追放されても勝利できる上、最後まで生き残っても個人勝利できる。",
+            "メンヘラ":         "【第三者陣営】自分に関与した者を物理的に消す。占うと黒判定が出る。",
+            "あごむに破道砲":   "【第三者陣営】自らを弾にして1人を狙い撃ちできるが、誤発してもう1人殺す。（※3日目の夜以降に使用可能）",
+            "デカ狼":           f"【人狼陣営】占い師に賄賂を払って白判定にする（霊媒師には黒と出る）。デカイだけである。仲間: {wolves}",
+            "パン屋":           "【村人陣営】生きているうちは朝にパンを配る。死んでいてもなぜかパンが届く。",
+            "マサイ族":         "【村人陣営】視力とジャンプ力が高い。夜に1人を観察する。もし対象が人狼なら襲撃を50%で回避する準備を整える。真偽は誰にもわからない。",
+            "入狼":             "【村人陣営】生まれた名前が悪かった。ビー玉で占ってるやつに黒と誤解される哀れな村陣営。",
+            "ワンころ":         "【第三者陣営】最初の夜に飼い主を決める。飼い主がいないと野生化して人狼になる。占うと黒判定が出る。",
+            "タフむに":         "【村人陣営】殺された時に殺し返す根性のある一般通過あごむに。",
+            "狂信者":           f"【人狼陣営】人狼とデカ狼を知っている熱狂的な人狼ファン。 仲間: {wolves}",
+            "議長":             "【村人陣営】会議中に『スキップ』で議論を即終了→通常投票へ。ゲーム中一回だけ『強制投票』と発言すると議長専用の投票箱が設置され、議長が直接追放対象を選べる。",
+            "ビー玉ブレイカー": "【村人陣営】あなたが生きているだけで占い師の判定が30%の確率で逆転する。パッシブ効果のため夜は何もしなくていい。",
+            "リア充":           f"【村人陣営】リア充。パートナー: {partner_name}。片方が死ぬと両方道連れになる。",
+            "貴族":             f"【村人陣営】貴族。奴隷が生きている間は死を自動的に肩代わりさせることができる。奴隷: {slave_name}",
+            "奴隷":             f"【村人陣営】奴隷。貴族が死亡判定を受けると代わりに死ぬ運命。貴族: {kizoku_name}",
         }
 
         role_image_map = {
@@ -807,6 +922,7 @@ class RoleCheckView(discord.ui.View):
             "罠師": "WANASSI.PNG",               "議長": "GICHOU.PNG",
             "ビー玉ブレイカー": "BEEBREAKER.PNG", "リア充": "RIAJUU.PNG",
             "貴族": "KIZOKU.PNG",                "奴隷": "DOREI.PNG",          "コウモリむに": "KOUMORI.PNG",
+            "大霊媒師": "REIBAI.PNG",  # 専用画像がない場合は霊媒師と共用
         }
 
         embed = discord.Embed(
@@ -847,6 +963,17 @@ class NightActionView(discord.ui.View):
             embed = discord.Embed(description=f"あごむに破道砲は第3夜からしか使用できません。(現在は第{self.game.day_count}夜)", color=0xFFFFFF)
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
+        # ─── 大霊媒師：死者から選択 ──────────────────────
+        if role == "大霊媒師":
+            alive_ids = {p.id for p in self.game.alive_players}
+            dead_players = [p for p in self.game.players if p.id not in alive_ids and p.id != p_id]
+            if not dead_players:
+                embed = discord.Embed(description="調べられる死者がいません。今夜は待機です。", color=0xFFFFFF)
+                return await interaction.response.send_message(embed=embed, ephemeral=True)
+            opts = [discord.SelectOption(label=p.display_name, value=str(p.id)) for p in dead_players]
+            embed = discord.Embed(description="調べる死者を選択してください：", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, view=ActionSelectView(self.game, opts, role), ephemeral=True)
+
         passive_roles = [
             "一般通過あごむに", "霊媒師", "狂人", "ハゲ", "コウモリむに",
             "メンヘラ", "パン屋", "入狼", "タフむに", "狂信者",
@@ -884,13 +1011,27 @@ class ActionSelectView(discord.ui.View):
 
         if self.role == "占い師":
             r = self.game.roles.get(t_id)
-            res = "人狼" if r in ["人狼", "入狼", "ワンころ"] else "人間"
+            # デカ狼は賄賂で白、それ以外は白黒判定
+            if r == "デカ狼":
+                res = "白"
+            else:
+                res = uranai_color(r)
             # ビー玉ブレイカーが生存している場合、30%で判定逆転
             if any(self.game.roles.get(p.id) == "ビー玉ブレイカー" for p in self.game.alive_players):
                 if random.random() < 0.3:
-                    res = "人間" if res == "人狼" else "人狼"
-            embed = discord.Embed(description=f"<:URANAI:1490255412837093568>結果: 【{res}】", color=0xFFFFFF)
+                    res = "白" if res == "黒" else "黒"
+            embed = discord.Embed(description=f"<:URANAI:1490255412837093568>占い結果: 【{res}】", color=0xFFFFFF)
             await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        elif self.role == "大霊媒師":
+            r = self.game.roles.get(t_id)
+            color = reibai_color(r)
+            embed = discord.Embed(
+                description=f"<:REIBAI:1490254585413148703>大霊媒師の結果: 【{color}】 役職: 【{r}】",
+                color=0xFFFFFF
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
         elif self.role == "マサイ族":
             r = self.game.roles.get(t_id)
             if r in ["人狼", "デカ狼"]:
@@ -942,6 +1083,42 @@ class PublicVoteView(discord.ui.View):
 
         self.game.voted_count[p_id] = self.children[0].values[0]
         await interaction.response.send_message(f"<u:success:1490985168100659322>{interaction.user.display_name} さんが投票を完了しました。")
+
+
+class ChairmanVoteView(discord.ui.View):
+    """強制投票フェーズ：議長のみが投票できる投票箱パネル"""
+    def __init__(self, game, options):
+        super().__init__(timeout=60)
+        self.game = game
+        self.voted = False
+        s = discord.ui.Select(options=options, placeholder="追放する対象を選んでください")
+        s.callback = self.callback
+        self.add_item(s)
+
+    async def callback(self, interaction):
+        p_id = interaction.user.id
+
+        # 議長のみ投票可能
+        if self.game.roles.get(p_id) != "議長":
+            embed = discord.Embed(description="この投票は議長のみ行えます。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        if self.voted:
+            embed = discord.Embed(description="既に投票済みです。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        self.voted = True
+        t_id = int(self.children[0].values[0])
+        self.game.chairman_ketsugu_target = t_id
+
+        if self.game.chairman_vote_event:
+            self.game.chairman_vote_event.set()
+
+        target_m = self.game.game_channel.guild.get_member(t_id)
+        target_name = target_m.display_name if target_m else "不明"
+        await interaction.response.send_message(
+            f"議長が **{target_name}** を選びました。強制投票完了。"
+        )
 
 
 async def setup(bot):
