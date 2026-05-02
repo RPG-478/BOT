@@ -11,6 +11,7 @@ import io
 import yt_dlp
 from discord.ext import voice_recv
 import threading
+import random
 # yt-dlpの設定（ストリーミング再生用）
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
