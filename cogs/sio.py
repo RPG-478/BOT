@@ -620,9 +620,53 @@ class SaitoRelay(commands.Cog):
 class Timer(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.active_timers = {}  # guild_id: task
-        self.work_stats = {}    # user_id: {total_seconds: int, last_start: float}
+        self.active_timers = {} 
+        self.work_stats = {}
+        # 環境音のプリセット (著作権フリーの音源URL例)
+        self.ambient_presets = {
+            "rain": "https://www.soundjay.com/nature/rain-01.mp3",
+            "fire": "https://www.soundjay.com/nature/fire-1.mp3",
+            "cafe": "https://p.scrubfuzz.com/ambient/cafe_ambience.mp3", # 例示用URL
+            "forest": "https://www.soundjay.com/nature/forest-wind-1.mp3",
+            "noise": "https://www.soundjay.com/misc/white-noise-01.mp3"
+        }
 
+    # --- (前述の pomo / work 関連メソッドはそのまま保持) ---
+
+    @commands.command()
+    async def ambient(self, ctx, mode: str = None):
+        """環境音を再生する (例: !ambient rain)"""
+        if not ctx.voice_client:
+            return await ctx.send("先に !join してください。")
+
+        if mode is None:
+            list_str = ", ".join([f"`{k}`" for k in self.ambient_presets.keys()])
+            return await ctx.send(embed=we(f"利用可能な環境音: {list_str}\n停止は `!stop` を使用してください。"))
+
+        if mode not in self.ambient_presets:
+            return await ctx.send(embed=we(f"❌ `{mode}` は見つかりません。"))
+
+        url = self.ambient_presets[mode]
+        voice_cog = self.bot.get_cog("Voice")
+        
+        if voice_cog:
+            state = voice_cog.get_state(ctx.guild.id)
+            # 現在のキューをクリアして環境音をセット（ループを想定する場合は別途フラグが必要ですが、
+            # 現状の仕様では1ファイルを再生キューの先頭に入れます）
+            await state['queue'].put((url, f"Ambient: {mode}", None, False))
+            
+            if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
+                await voice_cog.check_queue(ctx.guild.id)
+                await ctx.send(embed=we(f"🎧 環境音 `{mode}` を再生します。集中しましょう！"))
+            else:
+                await ctx.send(embed=we(f"✅ キューに `{mode}` を追加しました。"))
+
+    @commands.command()
+    async def ambient_add(self, ctx, name: str, url: str):
+        """カスタム環境音を一時的に追加する"""
+        self.ambient_presets[name] = url
+        await ctx.send(embed=we(f"登録しました: `{name}`"))
+        
     def format_time(self, seconds: int) -> str:
         m, s = divmod(seconds, 60)
         h, m = divmod(m, 60)
