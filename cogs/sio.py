@@ -622,98 +622,59 @@ class Timer(commands.Cog):
         self.bot = bot
         self.active_timers = {} 
         self.work_stats = {}
-        # 環境音のプリセット (著作権フリーの音源URL例)
-        self.ambient_presets = {
-            "rain": "https://www.soundjay.com/nature/rain-01.mp3",
-            "fire": "https://www.soundjay.com/nature/fire-1.mp3",
-            "cafe": "https://p.scrubfuzz.com/ambient/cafe_ambience.mp3", # 例示用URL
-            "forest": "https://www.soundjay.com/nature/forest-wind-1.mp3",
-            "noise": "https://www.soundjay.com/misc/white-noise-01.mp3"
-        }
+        # ベースURLの定義
+        self.base_ambient_url = "https://www.soundjay.com/nature/sounds/"
+        # 通知音（終了時）のURL
+        self.notify_url = "https://www.soundjay.com/buttons/sounds/beep-06.mp3"
 
-    # --- (前述の pomo / work 関連メソッドはそのまま保持) ---
-
-    @commands.command()
-    async def ambient(self, ctx, mode: str = None):
-        """環境音を再生する (例: !ambient rain)"""
-        if not ctx.voice_client:
-            return await ctx.send("先に !join してください。")
-
-        if mode is None:
-            list_str = ", ".join([f"`{k}`" for k in self.ambient_presets.keys()])
-            return await ctx.send(embed=we(f"利用可能な環境音: {list_str}\n停止は `!stop` を使用してください。"))
-
-        if mode not in self.ambient_presets:
-            return await ctx.send(embed=we(f"❌ `{mode}` は見つかりません。"))
-
-        url = self.ambient_presets[mode]
-        voice_cog = self.bot.get_cog("Voice")
-        
-        if voice_cog:
-            state = voice_cog.get_state(ctx.guild.id)
-            # 現在のキューをクリアして環境音をセット（ループを想定する場合は別途フラグが必要ですが、
-            # 現状の仕様では1ファイルを再生キューの先頭に入れます）
-            await state['queue'].put((url, f"Ambient: {mode}", None, False))
-            
-            if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
-                await voice_cog.check_queue(ctx.guild.id)
-                await ctx.send(embed=we(f"🎧 環境音 `{mode}` を再生します。集中しましょう！"))
-            else:
-                await ctx.send(embed=we(f"✅ キューに `{mode}` を追加しました。"))
-
-    @commands.command()
-    async def ambient_add(self, ctx, name: str, url: str):
-        """カスタム環境音を一時的に追加する"""
-        self.ambient_presets[name] = url
-        await ctx.send(embed=we(f"登録しました: `{name}`"))
-        
     def format_time(self, seconds: int) -> str:
+        """秒数を時:分:秒の形式にフォーマット"""
         m, s = divmod(seconds, 60)
         h, m = divmod(m, 60)
         return f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
 
-    async def notify(self, ctx, text: str):
-        """通知メッセージと、もし接続中ならキューに通知音を入れる"""
+    async def notify_triple(self, ctx, text: str):
+        """通知メッセージを送信し、音声を3回キューに追加する"""
         await ctx.send(embed=we(description=f"🔔 **{text}**"))
         
-        # Voice Cogを取得して再生を試みる
         voice_cog = self.bot.get_cog("Voice")
         if voice_cog and ctx.voice_client:
-            # YouTubeなどの汎用的な通知音（ここでは例として適当な通知音のURLを想定）
-            # もし特定のIDがあるなら info['url'] に差し替えてください
-            notification_url = "https://www.soundjay.com/buttons/beep-07a.mp3" 
-            state = voice_cog.get_state(ctx.guild.id)
-            await state['queue'].put((notification_url, "Notification", None, False))
-            if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
-                await voice_cog.check_queue(ctx.guild.id)
+            state = voice_cog.get_state(ctx.guild.id)[cite: 1]
+            
+            # 3回連続で再生キューに追加
+            for i in range(3):
+                await state['queue'].put((self.notify_url, f"Notification-{i+1}", None, False))[cite: 1]
+            
+            # 再生中でなければ再生を開始
+            if not ctx.voice_client.is_playing() and not state['is_processing_queue']:[cite: 1]
+                await voice_cog.check_queue(ctx.guild.id)[cite: 1]
 
     @commands.command()
     async def pomo(self, ctx, work: int = 25, rest: int = 5):
-        """ポモドーロタイマーを開始 (例: !pomo 25 5)"""
+        """ポモドーロタイマー開始 (例: !pomo 25 5)"""
         guild_id = ctx.guild.id
-        
         if guild_id in self.active_timers:
             return await ctx.send("既にタイマーが稼働中です。`!pomo_stop` で停止してください。")
 
         async def pomodoro_loop():
             try:
                 while True:
-                    # 作業フェーズ
-                    await self.notify(ctx, f"作業開始！ ({work}分間)")
+                    # 作業フェーズ開始
+                    await self.notify_triple(ctx, f"作業開始！ ({work}分間)")
                     await asyncio.sleep(work * 60)
                     
-                    # 休憩フェーズ
-                    await self.notify(ctx, f"作業終了。休憩してください！ ({rest}分間)")
+                    # 休憩フェーズ開始
+                    await self.notify_triple(ctx, f"休憩時間です。お疲れ様でした！ ({rest}分間)")
                     await asyncio.sleep(rest * 60)
             except asyncio.CancelledError:
-                await ctx.send(embed=we("ポモドーロタイマーを停止しました。"))
+                await ctx.send(embed=we("ポモドーロタイマーを終了しました。"))
 
         self.active_timers[guild_id] = self.bot.loop.create_task(pomodoro_loop())
-        await ctx.send(embed=we(f"⏳ ポモドーロを開始しました: 作業 {work}分 / 休憩 {rest}分"))
+        await ctx.send(embed=we(f"⏳ ポモドーロを開始しました: 作業{work}分 / 休憩{rest}分"))
 
     @commands.command()
     async def pomo_stop(self, ctx):
-        """稼働中のタイマーを停止"""
+        """ポモドーロタイマーを停止"""
         task = self.active_timers.pop(ctx.guild.id, None)
         if task:
             task.cancel()
@@ -721,33 +682,60 @@ class Timer(commands.Cog):
             await ctx.send("稼働中のタイマーはありません。")
 
     @commands.command()
-    async def work_start(self, ctx):
-        """作業時間の計測を開始"""
-        uid = ctx.author.id
-        if uid in self.work_stats and self.work_stats[uid].get('last_start'):
-            return await ctx.send("既に計測中です。")
+    async def ambient(self, ctx, mode: str = "rain"):
+        """環境音を再生 (!ambient rain で01-07をランダム再生)"""
+        if not ctx.voice_client:
+            return await ctx.send("先に !join してください。")
+
+        voice_cog = self.bot.get_cog("Voice")
+        if not voice_cog: return
+
+        target_url = ""
+        display_name = ""
+
+        # rainの場合は01-07からランダム選択
+        if mode == "rain":
+            num = str(random.randint(1, 7)).zfill(2)
+            target_url = f"{self.base_ambient_url}rain-{num}.mp3"
+            display_name = f"Rain {num}"
+        else:
+            target_url = f"{self.base_ambient_url}{mode}-01.mp3"
+            display_name = mode
+
+        state = voice_cog.get_state(ctx.guild.id)[cite: 1]
+        state['current_ctx'] = ctx[cite: 1]
         
+        await state['queue'].put((target_url, display_name, None, False))[cite: 1]
+        
+        if not ctx.voice_client.is_playing() and not state['is_processing_queue']:[cite: 1]
+            await voice_cog.check_queue(ctx.guild.id)[cite: 1]
+            await ctx.send(embed=we(f"🎧 環境音 `{display_name}` を再生します。"))
+        else:
+            await ctx.send(embed=we(f"✅ キューに `{display_name}` を追加しました。"))
+
+    @commands.command()
+    async def work_start(self, ctx):
+        """作業計測開始"""
+        uid = ctx.author.id
         if uid not in self.work_stats:
             self.work_stats[uid] = {'total_seconds': 0}
-        
         self.work_stats[uid]['last_start'] = time.time()
         await ctx.send(embed=we(f"📝 {ctx.author.display_name} さんの作業計測を開始しました。"))
 
     @commands.command()
     async def work_end(self, ctx):
-        """作業時間の計測を終了し、合計に加算"""
+        """作業計測終了"""
         uid = ctx.author.id
         if uid not in self.work_stats or 'last_start' not in self.work_stats[uid]:
             return await ctx.send("計測が開始されていません。")
 
         elapsed = int(time.time() - self.work_stats[uid]['last_start'])
         self.work_stats[uid]['total_seconds'] += elapsed
-        self.work_stats[uid].pop('last_start')
+        del self.work_stats[uid]['last_start']
 
-        total_str = self.format_time(self.work_stats[uid]['total_seconds'])
         await ctx.send(embed=we(
-            title="作業お疲れ様でした！",
-            description=f"今回の作業時間: `{self.format_time(elapsed)}` \n累計作業時間: `{total_str}`"
+            title="計測終了",
+            description=f"今回の作業: `{self.format_time(elapsed)}` / 累計: `{self.format_time(self.work_stats[uid]['total_seconds'])}`"
         ))
 
     @commands.command()
