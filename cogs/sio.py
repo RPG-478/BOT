@@ -640,19 +640,20 @@ class Timer(commands.Cog):
         
         voice_cog = self.bot.get_cog("Voice")
         if voice_cog and ctx.voice_client:
-            state = voice_cog.get_state(ctx.guild.id)[cite: 1]
+            # 不要な を削除し、インデントを整理
+            state = voice_cog.get_state(ctx.guild.id)
             
             # 3回連続で再生キューに追加
             for i in range(3):
-                await state['queue'].put((self.notify_url, f"Notification-{i+1}", None, False))[cite: 1]
+                await state['queue'].put((self.notify_url, f"Notification-{i+1}", None, False))
             
             # 再生中でなければ再生を開始
-            if not ctx.voice_client.is_playing() and not state['is_processing_queue']:[cite: 1]
-                await voice_cog.check_queue(ctx.guild.id)[cite: 1]
+            if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
+                await voice_cog.check_queue(ctx.guild.id)
 
     @commands.command()
     async def pomo(self, ctx, work: int = 25, rest: int = 5):
-        """ポモドーロタイマー開始 (例: !pomo 25 5)"""
+        """ポモドーロタイマー開始"""
         guild_id = ctx.guild.id
         if guild_id in self.active_timers:
             return await ctx.send("既にタイマーが稼働中です。`!pomo_stop` で停止してください。")
@@ -660,11 +661,9 @@ class Timer(commands.Cog):
         async def pomodoro_loop():
             try:
                 while True:
-                    # 作業フェーズ開始
                     await self.notify_triple(ctx, f"作業開始！ ({work}分間)")
                     await asyncio.sleep(work * 60)
                     
-                    # 休憩フェーズ開始
                     await self.notify_triple(ctx, f"休憩時間です。お疲れ様でした！ ({rest}分間)")
                     await asyncio.sleep(rest * 60)
             except asyncio.CancelledError:
@@ -684,17 +683,17 @@ class Timer(commands.Cog):
 
     @commands.command()
     async def ambient(self, ctx, mode: str = "rain"):
-        """環境音を再生 (!ambient rain で01-07をランダム再生)"""
+        """環境音を再生"""
         if not ctx.voice_client:
             return await ctx.send("先に !join してください。")
 
         voice_cog = self.bot.get_cog("Voice")
-        if not voice_cog: return
+        if not voice_cog: 
+            return
 
         target_url = ""
         display_name = ""
 
-        # rainの場合は01-07からランダム選択
         if mode == "rain":
             num = str(random.randint(1, 7)).zfill(2)
             target_url = f"{self.base_ambient_url}rain-{num}.mp3"
@@ -703,13 +702,13 @@ class Timer(commands.Cog):
             target_url = f"{self.base_ambient_url}{mode}-01.mp3"
             display_name = mode
 
-        state = voice_cog.get_state(ctx.guild.id)[cite: 1]
-        state['current_ctx'] = ctx[cite: 1]
+        state = voice_cog.get_state(ctx.guild.id)
+        state['current_ctx'] = ctx
         
-        await state['queue'].put((target_url, display_name, None, False))[cite: 1]
+        await state['queue'].put((target_url, display_name, None, False))
         
-        if not ctx.voice_client.is_playing() and not state['is_processing_queue']:[cite: 1]
-            await voice_cog.check_queue(ctx.guild.id)[cite: 1]
+        if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
+            await voice_cog.check_queue(ctx.guild.id)
             await ctx.send(embed=we(f"🎧 環境音 `{display_name}` を再生します。"))
         else:
             await ctx.send(embed=we(f"✅ キューに `{display_name}` を追加しました。"))
@@ -749,9 +748,7 @@ class Timer(commands.Cog):
         status = " (現在計測中)" if 'last_start' in data else ""
         await ctx.send(embed=we(f"📊 {ctx.author.display_name} さんの累計作業時間: `{total_str}`{status}"))
 
-# 既存のsetup関数にTimerを追加
 async def setup(bot):
     await bot.add_cog(Voice(bot))
     await bot.add_cog(SaitoRelay(bot))
-    await bot.add_cog(Timer(bot)) # ここに追加
-
+    await bot.add_cog(Timer(bot))
