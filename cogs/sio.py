@@ -623,7 +623,7 @@ class Timer(commands.Cog):
         self.active_timers = {} 
         self.work_stats = {}
         # ベースURLの定義
-        self.base_ambient_url = "https://www.soundjay.com/nature/sounds/"
+        self.base_ambient_url = "https://www.soundjay.com/nature_c2026/sounds/"
         # 通知音（終了時）のURL
         self.notify_url = "https://www.soundjay.com/buttons/sounds/beep-06.mp3"
 
