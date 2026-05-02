@@ -616,9 +616,109 @@ class SaitoRelay(commands.Cog):
         if ctx.voice_client:
             await ctx.voice_client.disconnect()
             await ctx.send("通話を終了しました。")
+            
+class Timer(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.active_timers = {}  # guild_id: task
+        self.work_stats = {}    # user_id: {total_seconds: int, last_start: float}
 
+    def format_time(self, seconds: int) -> str:
+        m, s = divmod(seconds, 60)
+        h, m = divmod(m, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
 
+    async def notify(self, ctx, text: str):
+        """通知メッセージと、もし接続中ならキューに通知音を入れる"""
+        await ctx.send(embed=we(description=f"🔔 **{text}**"))
+        
+        # Voice Cogを取得して再生を試みる
+        voice_cog = self.bot.get_cog("Voice")
+        if voice_cog and ctx.voice_client:
+            # YouTubeなどの汎用的な通知音（ここでは例として適当な通知音のURLを想定）
+            # もし特定のIDがあるなら info['url'] に差し替えてください
+            notification_url = "https://www.soundjay.com/buttons/beep-07a.mp3" 
+            state = voice_cog.get_state(ctx.guild.id)
+            await state['queue'].put((notification_url, "Notification", None, False))
+            if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
+                await voice_cog.check_queue(ctx.guild.id)
 
+    @commands.command()
+    async def pomo(self, ctx, work: int = 25, rest: int = 5):
+        """ポモドーロタイマーを開始 (例: !pomo 25 5)"""
+        guild_id = ctx.guild.id
+        
+        if guild_id in self.active_timers:
+            return await ctx.send("既にタイマーが稼働中です。`!pomo_stop` で停止してください。")
+
+        async def pomodoro_loop():
+            try:
+                while True:
+                    # 作業フェーズ
+                    await self.notify(ctx, f"作業開始！ ({work}分間)")
+                    await asyncio.sleep(work * 60)
+                    
+                    # 休憩フェーズ
+                    await self.notify(ctx, f"作業終了。休憩してください！ ({rest}分間)")
+                    await asyncio.sleep(rest * 60)
+            except asyncio.CancelledError:
+                await ctx.send(embed=we("ポモドーロタイマーを停止しました。"))
+
+        self.active_timers[guild_id] = self.bot.loop.create_task(pomodoro_loop())
+        await ctx.send(embed=we(f"⏳ ポモドーロを開始しました: 作業 {work}分 / 休憩 {rest}分"))
+
+    @commands.command()
+    async def pomo_stop(self, ctx):
+        """稼働中のタイマーを停止"""
+        task = self.active_timers.pop(ctx.guild.id, None)
+        if task:
+            task.cancel()
+        else:
+            await ctx.send("稼働中のタイマーはありません。")
+
+    @commands.command()
+    async def work_start(self, ctx):
+        """作業時間の計測を開始"""
+        uid = ctx.author.id
+        if uid in self.work_stats and self.work_stats[uid].get('last_start'):
+            return await ctx.send("既に計測中です。")
+        
+        if uid not in self.work_stats:
+            self.work_stats[uid] = {'total_seconds': 0}
+        
+        self.work_stats[uid]['last_start'] = time.time()
+        await ctx.send(embed=we(f"📝 {ctx.author.display_name} さんの作業計測を開始しました。"))
+
+    @commands.command()
+    async def work_end(self, ctx):
+        """作業時間の計測を終了し、合計に加算"""
+        uid = ctx.author.id
+        if uid not in self.work_stats or 'last_start' not in self.work_stats[uid]:
+            return await ctx.send("計測が開始されていません。")
+
+        elapsed = int(time.time() - self.work_stats[uid]['last_start'])
+        self.work_stats[uid]['total_seconds'] += elapsed
+        self.work_stats[uid].pop('last_start')
+
+        total_str = self.format_time(self.work_stats[uid]['total_seconds'])
+        await ctx.send(embed=we(
+            title="作業お疲れ様でした！",
+            description=f"今回の作業時間: `{self.format_time(elapsed)}` \n累計作業時間: `{total_str}`"
+        ))
+
+    @commands.command()
+    async def stats(self, ctx):
+        """現在の累計作業時間を表示"""
+        uid = ctx.author.id
+        data = self.work_stats.get(uid, {'total_seconds': 0})
+        total_str = self.format_time(data['total_seconds'])
+        
+        status = " (現在計測中)" if 'last_start' in data else ""
+        await ctx.send(embed=we(f"📊 {ctx.author.display_name} さんの累計作業時間: `{total_str}`{status}"))
+
+# 既存のsetup関数にTimerを追加
 async def setup(bot):
     await bot.add_cog(Voice(bot))
     await bot.add_cog(SaitoRelay(bot))
+    await bot.add_cog(Timer(bot)) # ここに追加
+
