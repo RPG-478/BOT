@@ -683,13 +683,12 @@ class Timer(commands.Cog):
 
     @commands.command()
     async def ambient(self, ctx, mode: str = "rain"):
-        """環境音を再生"""
+        """環境音を再生 (再生が終わっても通知は鳴りません)"""
         if not ctx.voice_client:
             return await ctx.send("先に !join してください。")
 
         voice_cog = self.bot.get_cog("Voice")
-        if not voice_cog: 
-            return
+        if not voice_cog: return
 
         target_url = ""
         display_name = ""
@@ -705,6 +704,8 @@ class Timer(commands.Cog):
         state = voice_cog.get_state(ctx.guild.id)
         state['current_ctx'] = ctx
         
+        # キューに追加 (is_yt=False)。
+        # Voice.play_next がシンプルであれば、これの終了時に通知が鳴ることはありません。
         await state['queue'].put((target_url, display_name, None, False))
         
         if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
