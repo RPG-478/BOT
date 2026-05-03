@@ -623,61 +623,41 @@ class Timer(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.active_timers = {}
-        self.work_stats = {}
-        self.sample_rate = 48000  # Discord標準
         self.ambient_running = {}
+        self.sample_rate = 48000
 
-    def generate_beep_pcm(self, duration=0.2, freq=880.0):
-        """指定した周波数のビープ音(PCM)を生成"""
-        samples = int(self.sample_rate * duration)
-        buf = bytearray()
-        for i in range(samples):
-            # 正弦波の計算
-            value = int(32767.0 * math.sin(2.0 * math.pi * freq * i / self.sample_rate))
-            buf.extend(struct.pack('<h', value)) # 16-bit Little Endian
-        return bytes(buf)
+    def format_time(self, seconds: int) -> str:
+        m, s = divmod(seconds, 60)
+        h, m = divmod(m, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
 
     async def notify_triple(self, ctx, text: str):
-        """3回のビープ音を直接生成して再生"""
+        """通知音（Beep）を3回生成して再生"""
         await ctx.send(embed=we(description=f"🔔 **{text}**"))
-        
-        # 0.2秒の音 + 0.1秒の無音 を3回繰り返したPCMを作成
-        single_beep = self.generate_beep_pcm(0.15, 880.0)
-        silence = bytes(int(self.sample_rate * 0.1) * 2) # 無音
-        triple_pcm = (single_beep + silence) * 3
-        
-        await self.play_generated_audio(ctx, triple_pcm)
+        if ctx.voice_client:
+            samples = int(self.sample_rate * 0.15)
+            beep = bytearray()
+            for i in range(samples):
+                # 880Hzのサイン波を生成
+                v = int(32767.0 * math.sin(2.0 * math.pi * 880.0 * i / self.sample_rate))
+                beep.extend(struct.pack('<hh', v, v)) # ステレオ
+            
+            for _ in range(3):
+                if ctx.voice_client:
+                    source = discord.PCMAudio(io.BytesIO(bytes(beep)))
+                    ctx.voice_client.play(source)
+                await asyncio.sleep(0.3)
 
     @commands.command()
-    async def pomo(self, ctx, work: int = 25, rest: int = 5):
-        """ポモドーロ開始"""
-        guild_id = ctx.guild.id
-        if guild_id in self.active_timers:
-            return await ctx.send("既に稼働中です。")
-
-        async def pomodoro_loop():
-            try:
-                while True:
-                    await self.notify_triple(ctx, f"作業開始！ ({work}分間)")
-                    await asyncio.sleep(work * 60)
-                    await self.notify_triple(ctx, f"休憩時間です！ ({rest}分間)")
-                    await asyncio.sleep(rest * 60)
-            except asyncio.CancelledError:
-                pass
-
-        self.active_timers[guild_id] = self.bot.loop.create_task(pomodoro_loop())
-        await ctx.send(embed=we(f"⏳ ポモドーロ(自作音源版)を開始しました。"))
-
-    @commands.command()
-    async def ambient(self, ctx, mode: str = "rain"):
-        """Pipeを使用してリアルタイムに雨音やノイズを生成"""
+    async def ambient(self, ctx, mode: str = "brown"):
+        """Pipeを使用してリアルタイムにブラウンノイズ/雨音を生成"""
         if not ctx.voice_client:
             return await ctx.send("先に !join してください。")
 
         guild_id = ctx.guild.id
         self.ambient_running[guild_id] = True
 
-        # ffmpegの設定 (16bit PCM, 48kHz, Stereo)
+        # FFmpeg設定: stdinからs16le(16bit PCM)を受け取りDiscord形式で出力
         ffmpeg_options = [
             'ffmpeg', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:0',
             '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1'
@@ -691,32 +671,37 @@ class Timer(commands.Cog):
         )
 
         def generate_worker():
-            last_out = 0.0
-            chunk_size = 1024  # まとめて計算するサンプル数
+            # ブラウンノイズ生成用変数 (ランダムウォーク)
+            current_val = 0.0
+            chunk_size = 1024
             
             try:
                 while self.ambient_running.get(guild_id):
                     buf = bytearray()
                     for _ in range(chunk_size):
                         if mode == "rain":
-                            # 雨音ロジック: 基本は静かなノイズ、たまに強い粒(ランダム)
+                            # 雨音生成ロジック
                             v = random.uniform(-0.1, 0.1) if random.random() > 0.001 else random.uniform(-0.7, 0.7)
                         else:
-                            # ブラウンノイズロジック: 低音寄りの安定したノイズ
-                            white = random.uniform(-1.0, 1.0)
-                            brown = (last_out + (0.02 * white)) / 1.02
-                            last_out = brown
-                            v = brown * 3.5
+                            # 【直接生成ブラウンノイズ】
+                            # 1. 前回の値に小さなランダム変化を加える (ランダムウォーク)
+                            # 0.02という係数は、低音の深さと高音のバランスを調整
+                            step = random.uniform(-0.02, 0.02)
+                            current_val += step
+                            
+                            # 2. 値が発散しないように減衰（リーキー積分）をかける
+                            current_val *= 0.995
+                            
+                            # 3. 振幅を整えて音量を調整
+                            v = current_val * 4.0
                         
-                        # 振幅制限と16bit整数化
+                        # クリッピング（振幅制限）
                         v = int(max(-1, min(1, v)) * 32767.0)
-                        # ステレオ(左, 右)として書き込み
                         buf.extend(struct.pack('<hh', v, v))
                     
-                    # ffmpegの標準入力に流し込む
                     process.stdin.write(buf)
-                    # 再生速度に合わせて少し待機 (負荷軽減)
-                    time.sleep(chunk_size / 48000 * 0.9)
+                    # バッファが空にならないよう速度調整
+                    time.sleep(chunk_size / 48000 * 0.85)
             except (OSError, BrokenPipeError):
                 pass
             finally:
@@ -724,30 +709,50 @@ class Timer(commands.Cog):
                     process.stdin.close()
                 process.terminate()
 
-        # 別スレッドで生成を開始
+        # 別スレッドで波形計算を開始
         threading.Thread(target=generate_worker, daemon=True).start()
 
-        # Discordで再生開始
+        # Discord再生ソース
         source = discord.FFmpegPCMAudio(process.stdout, pipe=True)
         if ctx.voice_client.is_playing():
             ctx.voice_client.stop()
         
         ctx.voice_client.play(source, after=lambda e: self.stop_ambient(guild_id))
         
-        emoji = "🌧️" if mode == "rain" else "🌊"
-        await ctx.send(embed=we(f"{emoji} `{mode}` をリアルタイム生成で再生中...\n停止は `!stop_pomo`"))
+        msg = "🌊 ブラウンノイズ(直接合成)" if mode == "brown" else "🌧️ 雨音(直接合成)"
+        await ctx.send(embed=we(f"{msg} をリアルタイム生成中...\n停止は `!stop_pomo`"))
 
     def stop_ambient(self, guild_id):
         self.ambient_running[guild_id] = False
 
-    
     @commands.command()
-    async def stop_all(self, ctx):
-        """再生を停止"""
+    async def pomo(self, ctx, work: int = 25, rest: int = 5):
+        """ポモドーロ開始"""
+        guild_id = ctx.guild.id
+        if guild_id in self.active_timers:
+            return await ctx.send("既にタイマーが稼働中です。")
+
+        async def pomodoro_loop():
+            try:
+                while True:
+                    await self.notify_triple(ctx, f"作業開始！ ({work}分間)")
+                    await asyncio.sleep(work * 60)
+                    await self.notify_triple(ctx, f"休憩時間です！ ({rest}分間)")
+                    await asyncio.sleep(rest * 60)
+            except asyncio.CancelledError:
+                pass
+
+        self.active_timers[guild_id] = self.bot.loop.create_task(pomodoro_loop())
+        await ctx.send(embed=we(f"⏳ ポモドーロ(自作音源)を開始しました。"))
+
+    @commands.command()
+    async def stop_pomo(self, ctx):
+        """タイマーと環境音をすべて停止"""
         self.stop_ambient(ctx.guild.id)
-        if ctx.voice_client:
-            ctx.voice_client.stop()
-        await ctx.send("停止しました。")
+        task = self.active_timers.pop(ctx.guild.id, None)
+        if task: task.cancel()
+        if ctx.voice_client: ctx.voice_client.stop()
+        await ctx.send(embed=we("すべての機能を停止しました。"))
         
     @commands.command()
     async def work_start(self, ctx):
