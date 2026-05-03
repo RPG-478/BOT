@@ -636,32 +636,6 @@ class Timer(commands.Cog):
             buf.extend(struct.pack('<h', value)) # 16-bit Little Endian
         return bytes(buf)
 
-    def generate_brown_noise_pcm(self, duration=30):
-        """ブラウンノイズを直接生成"""
-        samples = int(self.sample_rate * duration)
-        buf = bytearray()
-        last_out = 0.0
-        for _ in range(samples):
-            white = random.uniform(-1.0, 1.0)
-            # 積分によるブラウンノイズ化 (低域強調)
-            brown = (last_out + (0.02 * white)) / 1.02
-            last_out = brown
-            # 音量を整えて16bit整数に変換
-            value = int(brown * 3.5 * 32767.0)
-            value = max(-32767, min(32767, value))
-            buf.extend(struct.pack('<h', value))
-        return bytes(buf)
-
-    async def play_generated_audio(self, ctx, pcm_data):
-        """生成したPCMデータをDiscordで再生"""
-        if ctx.voice_client:
-            # Discordは48kHz, Stereo, 16bitを期待するため、モノラルをステレオとして送る設定
-            source = discord.PCMAudio(io.BytesIO(pcm_data))
-            # 既存の再生を止めて割り込むか、終了を待つかは運用次第
-            if ctx.voice_client.is_playing():
-                ctx.voice_client.stop()
-            ctx.voice_client.play(source)
-
     async def notify_triple(self, ctx, text: str):
         """3回のビープ音を直接生成して再生"""
         await ctx.send(embed=we(description=f"🔔 **{text}**"))
@@ -695,30 +669,82 @@ class Timer(commands.Cog):
 
     @commands.command()
     async def ambient(self, ctx, mode: str = "brown"):
-        """環境音(直接生成版)を再生"""
+        """Pipeを使用してリアルタイム生成した音声を再生"""
         if not ctx.voice_client:
             return await ctx.send("先に !join してください。")
 
-        if mode in ["brown", "brownnoise"]:
-            await ctx.send("🔊 ブラウンノイズを生成中...")
-            # 30秒分生成して再生 (ループはDiscord.pyの仕様上、再度コマンドを打つか
-            # 長めに生成する必要があります)
-            pcm = self.generate_brown_noise_pcm(60) 
-            await self.play_generated_audio(ctx, pcm)
-        elif mode == "rain":
-            # 雨音は波形合成が複雑なため、ホワイトノイズにフィルタをかけた簡易版を生成
-            await ctx.send("🌧️ 簡易雨音を生成中...")
-            samples = int(self.sample_rate * 60)
-            buf = bytearray()
-            for _ in range(samples):
-                # 瞬間的な音量変化で雨粒をシミュレート
-                if random.random() > 0.999: 
-                    v = random.uniform(-0.8, 0.8)
-                else:
-                    v = random.uniform(-0.1, 0.1)
-                buf.extend(struct.pack('<h', int(v * 32767)))
-            await self.play_generated_audio(ctx, bytes(buf))
+        guild_id = ctx.guild.id
+        self.ambient_running[guild_id] = True
 
+        # ffmpegの設定: stdinから16bit PCM, 48kHz, Stereoを読み込む
+        ffmpeg_options = (
+            '-f s16le '          # 入力フォーマット: 16bit Little Endian PCM
+            '-ar 48000 '        # サンプリングレート: 48kHz
+            '-ac 2 '            # チャンネル数: 2 (Stereo)
+            '-i pipe:0 '        # 標準入力(stdin)から読み込む
+            '-f s16le '          # 出力フォーマット
+            '-ar 48000 '
+            '-ac 2 '
+            'pipe:1'            # 標準出力(stdout)へ書き出す
+        )
+
+        # ffmpegをサブプロセスとして起動
+        process = subprocess.Popen(
+            ['ffmpeg'] + ffmpeg_options.split(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL
+        )
+
+        def generate_worker():
+            """バックグラウンドで波形を計算してpipeに書き込み続ける"""
+            last_out = 0.0
+            sample_rate = 48000
+            
+            try:
+                while self.ambient_running.get(guild_id):
+                    # ブラウンノイズの計算
+                    white = random.uniform(-1.0, 1.0)
+                    brown = (last_out + (0.02 * white)) / 1.02
+                    last_out = brown
+                    
+                    # 16bit PCMに変換 (ステレオにするため2回pack)
+                    value = int(max(-1, min(1, brown * 3.5)) * 32767.0)
+                    pcm_data = struct.pack('<hh', value, value)
+                    
+                    # pipeのstdinに書き込み
+                    process.stdin.write(pcm_data)
+                    
+                    # CPU負荷を抑えるための調整 (バッファリングに任せるためsleepは短く)
+            except (OSError, BrokenPipeError):
+                pass
+            finally:
+                process.stdin.close()
+
+        # 書き込み用スレッド開始
+        threading.Thread(target=generate_worker, daemon=True).start()
+
+        # Discordで再生 (ffmpegのstdoutをソースにする)
+        source = discord.FFmpegPCMAudio(process.stdout, pipe=True)
+        
+        if ctx.voice_client.is_playing():
+            ctx.voice_client.stop()
+        
+        ctx.voice_client.play(source, after=lambda e: self.stop_ambient(guild_id))
+        await ctx.send(embed=we(f"🌊 {mode} をリアルタイム生成してストリーミング中..."))
+
+    def stop_ambient(self, guild_id):
+        self.ambient_running[guild_id] = False
+
+    
+    @commands.command()
+    async def stop_all(self, ctx):
+        """再生を停止"""
+        self.stop_ambient(ctx.guild.id)
+        if ctx.voice_client:
+            ctx.voice_client.stop()
+        await ctx.send("停止しました。")
+        
     @commands.command()
     async def work_start(self, ctx):
         """作業計測開始"""
