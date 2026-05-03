@@ -625,6 +625,7 @@ class Timer(commands.Cog):
         self.active_timers = {}
         self.work_stats = {}
         self.sample_rate = 48000  # Discord標準
+        self.ambient_running = {}
 
     def generate_beep_pcm(self, duration=0.2, freq=880.0):
         """指定した周波数のビープ音(PCM)を生成"""
