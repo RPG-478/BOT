@@ -9,6 +9,7 @@ import subprocess
 import json
 import io
 import yt_dlp
+import struct
 from discord.ext import voice_recv
 import threading
 import random
