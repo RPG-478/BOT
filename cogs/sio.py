@@ -669,70 +669,73 @@ class Timer(commands.Cog):
         await ctx.send(embed=we(f"⏳ ポモドーロ(自作音源版)を開始しました。"))
 
     @commands.command()
-    async def ambient(self, ctx, mode: str = "brown"):
-        """Pipeを使用してリアルタイム生成した音声を再生"""
+    async def ambient(self, ctx, mode: str = "rain"):
+        """Pipeを使用してリアルタイムに雨音やノイズを生成"""
         if not ctx.voice_client:
             return await ctx.send("先に !join してください。")
 
         guild_id = ctx.guild.id
         self.ambient_running[guild_id] = True
 
-        # ffmpegの設定: stdinから16bit PCM, 48kHz, Stereoを読み込む
-        ffmpeg_options = (
-            '-f s16le '          # 入力フォーマット: 16bit Little Endian PCM
-            '-ar 48000 '        # サンプリングレート: 48kHz
-            '-ac 2 '            # チャンネル数: 2 (Stereo)
-            '-i pipe:0 '        # 標準入力(stdin)から読み込む
-            '-f s16le '          # 出力フォーマット
-            '-ar 48000 '
-            '-ac 2 '
-            'pipe:1'            # 標準出力(stdout)へ書き出す
-        )
+        # ffmpegの設定 (16bit PCM, 48kHz, Stereo)
+        ffmpeg_options = [
+            'ffmpeg', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:0',
+            '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1'
+        ]
 
-        # ffmpegをサブプロセスとして起動
         process = subprocess.Popen(
-            ['ffmpeg'] + ffmpeg_options.split(),
+            ffmpeg_options,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL
         )
 
         def generate_worker():
-            """バックグラウンドで波形を計算してpipeに書き込み続ける"""
             last_out = 0.0
-            sample_rate = 48000
+            chunk_size = 1024  # まとめて計算するサンプル数
             
             try:
                 while self.ambient_running.get(guild_id):
-                    # ブラウンノイズの計算
-                    white = random.uniform(-1.0, 1.0)
-                    brown = (last_out + (0.02 * white)) / 1.02
-                    last_out = brown
+                    buf = bytearray()
+                    for _ in range(chunk_size):
+                        if mode == "rain":
+                            # 雨音ロジック: 基本は静かなノイズ、たまに強い粒(ランダム)
+                            v = random.uniform(-0.1, 0.1) if random.random() > 0.001 else random.uniform(-0.7, 0.7)
+                        else:
+                            # ブラウンノイズロジック: 低音寄りの安定したノイズ
+                            white = random.uniform(-1.0, 1.0)
+                            brown = (last_out + (0.02 * white)) / 1.02
+                            last_out = brown
+                            v = brown * 3.5
+                        
+                        # 振幅制限と16bit整数化
+                        v = int(max(-1, min(1, v)) * 32767.0)
+                        # ステレオ(左, 右)として書き込み
+                        buf.extend(struct.pack('<hh', v, v))
                     
-                    # 16bit PCMに変換 (ステレオにするため2回pack)
-                    value = int(max(-1, min(1, brown * 3.5)) * 32767.0)
-                    pcm_data = struct.pack('<hh', value, value)
-                    
-                    # pipeのstdinに書き込み
-                    process.stdin.write(pcm_data)
-                    
-                    # CPU負荷を抑えるための調整 (バッファリングに任せるためsleepは短く)
+                    # ffmpegの標準入力に流し込む
+                    process.stdin.write(buf)
+                    # 再生速度に合わせて少し待機 (負荷軽減)
+                    time.sleep(chunk_size / 48000 * 0.9)
             except (OSError, BrokenPipeError):
                 pass
             finally:
-                process.stdin.close()
+                if process.stdin:
+                    process.stdin.close()
+                process.terminate()
 
-        # 書き込み用スレッド開始
+        # 別スレッドで生成を開始
         threading.Thread(target=generate_worker, daemon=True).start()
 
-        # Discordで再生 (ffmpegのstdoutをソースにする)
+        # Discordで再生開始
         source = discord.FFmpegPCMAudio(process.stdout, pipe=True)
-        
         if ctx.voice_client.is_playing():
             ctx.voice_client.stop()
         
         ctx.voice_client.play(source, after=lambda e: self.stop_ambient(guild_id))
-        await ctx.send(embed=we(f"🌊 {mode} をリアルタイム生成してストリーミング中..."))
+        
+        emoji = "🌧️" if mode == "rain" else "🌊"
+        await ctx.send(embed=we(f"{emoji} `{mode}` をリアルタイム生成で再生中...\n停止は `!stop_pomo`"))
 
     def stop_ambient(self, guild_id):
         self.ambient_running[guild_id] = False
