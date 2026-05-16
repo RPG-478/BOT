@@ -48,6 +48,7 @@ class JinrouGame:
         self.in_discussion = False         # 発言フェーズ中フラグ
         self.riacchu_pairs = []   # [(id1, id2), ...] リア充ペア
         self.kizoku_slave = {}    # {貴族id: 奴隷id}
+        self.musician_party_used = False   # ミュージシャンのパーティ使用済みフラグ
 
 # ======================================================
 #  Cog 本体
@@ -128,7 +129,8 @@ class JinrouCog(commands.Cog):
             "狂人":          "狂信者",
             "入狼":          "ワンころ",
             "ハゲ":          "コウモリむに",
-            "霊媒師":        "大霊媒師",   # NEW: 霊媒師の上位職
+            "霊媒師":        "大霊媒師",
+            "陽キャ":        "ミュージシャン",   # NEW: 陽キャの上位職
         }
 
         def maybe_promote(role):
@@ -144,7 +146,8 @@ class JinrouCog(commands.Cog):
         ]
         pool += [maybe_promote("人狼") for _ in range(num_wolves)]
 
-        pro_roles = ["ハゲ", "メンヘラ", "あごむに破道砲", "パン屋", "マサイ族", "入狼", "議長", "ビー玉ブレイカー"]
+        # 陽キャを追加
+        pro_roles = ["ハゲ", "メンヘラ", "あごむに破道砲", "パン屋", "マサイ族", "入狼", "議長", "ビー玉ブレイカー", "陽キャ"]
         base_roles = ["霊媒師", "狂人"]
 
         while len(pool) < num:
@@ -253,12 +256,14 @@ class JinrouCog(commands.Cog):
             "【村人陣営】リア充":          "2人1組で存在し、お互いが誰かを知っている。片方が死ぬともう片方も道連れになる。",
             "【村人陣営】貴族":            "奴隷とセットで発生。死亡判定を自動的に奴隷に肩代わりさせることができる（奴隷が存在する場合）。奴隷が誰か分かる。",
             "【村人陣営】奴隷":            "貴族とセットで発生。貴族が死亡判定にかかると代わりに死ぬ運命。貴族が誰か分かる。",
+            "【村人陣営】陽キャ":          "毎晩1人をℳ𝓎𝒽ℴ𝓂ℯに連れ込む。相手が人狼/デカ狼なら陽キャが死ぬ。相手がメンヘラなら陽キャが堕として2人ともリア充に変化。それ以外は酔い潰してそのプレイヤーの夜のアクションをキャンセルする。",
+            "【村人陣営】ミュージシャン":  "陽キャの発展職。ゲーム中1度だけ夜にパーティを開催してランダムに4人を招待できる。招待者は殺されなくなり夜のアクションもキャンセル。ただし人狼/デカ狼が混じっていた場合30%で招待者の中の非狼陣営が1人死亡。",
             "【人狼陣営】人狼":            "村人を食べる。仲間同士は誰が人狼か知っている。",
             "【人狼陣営】デカ狼":          "占い師を賄賂で黙らせる人狼。占い師に白判定を出させる。霊媒師には黒と出る。デカイだけで威圧感がある。",
             "【人狼陣営】狂人":            "人狼の味方をする人間。人狼が誰かは知らないが、とにかく場を乱す。",
             "【人狼陣営】狂信者":          "人狼とデカ狼が誰かを知っている熱狂的なファン。人狼陣営の参謀。",
             "【第三者陣営】ハゲ":          "追放されたら勝利。髪の毛が観測できないバグのせいで目立ちすぎる。",
-            "【第三者陣営】コウモリむに":  "ハゲの上位職。追放されても勝利できる上、最後まで生き残っても個人勝利できる。",
+            "【第三者陣営】コウモリむに":  "ハゲの上位職。追放されても勝利しない。ただし最後まで生き残れば追加勝利できる。",
             "【第三者陣営】メンヘラ":      "自分に関与した（占う、守る、食べる）者を物理的に消去する。占うと黒判定が出る。",
             "【第三者陣営】あごむに破道砲":"自爆して対象を道連れにする。さらにもう1人も誤発で巻き込む。（※3日目の夜以降に使用可能）",
             "【第三者陣営】ワンころ":      "最初に飼い主を決める。飼い主が死ぬかいない場合は野良化して人狼になる。占うと黒判定が出る。",
@@ -294,6 +299,7 @@ class JinrouCog(commands.Cog):
         game.in_discussion = False
         game.riacchu_pairs = []
         game.kizoku_slave = {}
+        game.musician_party_used = False
 
         view = RecruitView(game, timeout=wait_minutes * 60)
         await interaction.response.send_message(f"<a:POYOPOYO:1490724627805110392>人狼ゲーム募集開始。募集時間: {wait_minutes}分", view=view)
@@ -329,10 +335,11 @@ class JinrouCog(commands.Cog):
         mentions = " ".join([p.mention for p in game.players])
         roles_for_display = []
         for r in game.roles.values():
-            if r == "タフむに":    roles_for_display.append("一般通過あごむに")
-            elif r == "入狼":      roles_for_display.append("人狼")
-            elif r == "大霊媒師":  roles_for_display.append("霊媒師")
-            else:                  roles_for_display.append(r)
+            if r == "タフむに":       roles_for_display.append("一般通過あごむに")
+            elif r == "入狼":         roles_for_display.append("人狼")
+            elif r == "大霊媒師":     roles_for_display.append("霊媒師")
+            elif r == "ミュージシャン": roles_for_display.append("陽キャ")  # 発展職を隠す
+            else:                     roles_for_display.append(r)
         roles_list = " / ".join(set(roles_for_display))
 
         await channel.send(
@@ -397,6 +404,12 @@ class JinrouCog(commands.Cog):
         finally:
             game.silenced_players.clear()
             game.in_discussion = False
+            # ゲーム終了後に最終役職を開示
+            if game.roles:
+                try:
+                    await self._announce_final_roles(game)
+                except Exception:
+                    pass
             game.is_running = False
 
     # ======================================================
@@ -432,7 +445,7 @@ class JinrouCog(commands.Cog):
         view = NightActionView(game)
         msg = await game.game_channel.send("アクションを選択してください", view=view)
 
-        req_roles = ["占い師", "騎士", "罠師", "人狼", "デカ狼", "あごむに破道砲", "マサイ族"]
+        req_roles = ["占い師", "騎士", "罠師", "人狼", "デカ狼", "あごむに破道砲", "マサイ族", "陽キャ"]
         if game.day_count == 1: req_roles.append("ワンころ")
         req = sum(1 for p in game.alive_players if game.roles.get(p.id) in req_roles)
 
@@ -440,6 +453,9 @@ class JinrouCog(commands.Cog):
         alive_ids = {p.id for p in game.alive_players}
         has_dead = any(p.id not in alive_ids for p in game.players)
         req += sum(1 for p in game.alive_players if game.roles.get(p.id) == "大霊媒師" and has_dead)
+
+        # ミュージシャン：パーティ未使用の場合のみカウント
+        req += sum(1 for p in game.alive_players if game.roles.get(p.id) == "ミュージシャン" and not game.musician_party_used)
 
         t = 0
         while len(game.night_actions) < req and t < 60:
@@ -464,10 +480,94 @@ class JinrouCog(commands.Cog):
         trap_targets   = {}         # {target_id: trapper_id} 罠師の守護対象
         psycho_killer_ids = {p.id for p in game.alive_players if game.roles.get(p.id) == "メンヘラ"}
         menhera_triggered = False
+        cancelled_ids = set()       # 夜のアクションがキャンセルされたプレイヤーID（陽キャ/ミュージシャン）
+        musician_protected = set()  # ミュージシャンのパーティで狼から守られたプレイヤーID
+
+        # ─── ミュージシャンのパーティ処理 ───────────────────────
+        for p_id, t_id in game.night_actions.items():
+            role = game.roles.get(p_id)
+            if role == "ミュージシャン" and t_id == 0 and not game.musician_party_used:
+                game.musician_party_used = True
+                candidates = [p for p in game.alive_players if p.id != p_id]
+                party_count = min(4, len(candidates))
+                if party_count > 0:
+                    party_members = random.sample(candidates, party_count)
+                    party_ids = {p.id for p in party_members}
+                    party_names = []
+                    for pid in party_ids:
+                        m = game.game_channel.guild.get_member(pid)
+                        if m: party_names.append(m.display_name)
+
+                    await game.game_channel.send(
+                        f"ミュージシャンがパーティを開催！ {', '.join(party_names)} が招待されました！"
+                    )
+
+                    # 招待者はアクションキャンセル＆狼から保護
+                    for pid in party_ids:
+                        cancelled_ids.add(pid)
+                        musician_protected.add(pid)
+
+                    # 人狼/デカ狼が混じっていた場合30%で招待者の中の非狼陣営が1人死亡
+                    wolf_in_party = [pid for pid in party_ids if game.roles.get(pid) in ["人狼", "デカ狼"]]
+                    if wolf_in_party and random.random() < 0.3:
+                        non_wolf_party = [pid for pid in party_ids if game.roles.get(pid) not in ["人狼", "デカ狼"]]
+                        if non_wolf_party:
+                            victim_id = random.choice(non_wolf_party)
+                            dead_ids.add(victim_id)
+                            victim_m = game.game_channel.guild.get_member(victim_id)
+                            if victim_m:
+                                await game.game_channel.send(
+                                    f"🎵 パーティに人狼が紛れ込んでいた！ {victim_m.display_name} が犠牲になりました..."
+                                )
+                break
+
+        # ─── 陽キャのアクション処理 ──────────────────────────
+        for p_id, t_id in list(game.night_actions.items()):
+            role = game.roles.get(p_id)
+            if role != "陽キャ":
+                continue
+            if p_id in cancelled_ids:
+                continue  # 陽キャ自身がミュージシャンのパーティでキャンセルされている場合
+
+            t_role = game.roles.get(t_id)
+            target_m = game.game_channel.guild.get_member(t_id)
+            target_name = target_m.display_name if target_m else "不明"
+            yoikya_m = game.game_channel.guild.get_member(p_id)
+            yoikya_name = yoikya_m.display_name if yoikya_m else "不明"
+
+            if t_role in ["人狼", "デカ狼"]:
+                # 陽キャは返り討ちで死ぬ
+                dead_ids.add(p_id)
+                await game.game_channel.send(
+                    f"{yoikya_name} が {target_name} をℳ𝓎𝒽ℴ𝓂ℯに誘ったが人狼に返り討ちにあった..."
+                )
+            elif t_role == "メンヘラ":
+                # 陽キャがメンヘラを堕とす → 2人ともリア充に変化
+                game.roles[p_id] = "リア充"
+                game.roles[t_id] = "リア充"
+                game.riacchu_pairs.append((p_id, t_id))
+                # メンヘラのキラー効果を除去
+                psycho_killer_ids.discard(t_id)
+                await game.game_channel.send(
+                    f"{yoikya_name} が {target_name}（メンヘラ）を堕とした！ 2人はリア充へと変化しました！"
+                )
+            else:
+                # 酔い潰してターゲットの夜のアクションをキャンセル
+                cancelled_ids.add(t_id)
+                await game.game_channel.send(
+                    f"{yoikya_name} が {target_name} をℳ𝓎𝒽ℴ𝓂ℯに誘って酔い潰した！ {target_name} の夜のアクションはキャンセルされました。"
+                )
 
         # ─── アクション収集 ───────────────────────────────
         for p_id, t_id in game.night_actions.items():
             role = game.roles.get(p_id)
+
+            # キャンセルされたアクションをスキップ
+            if p_id in cancelled_ids:
+                continue
+            # ミュージシャンのセンチネル（t_id==0）をスキップ
+            if t_id == 0:
+                continue
 
             # メンヘラに関与した者は死ぬ
             if t_id in psycho_killer_ids:
@@ -505,6 +605,10 @@ class JinrouCog(commands.Cog):
 
             # 騎士チェック：守護対象は守られる
             if target_id in knight_targets:
+                continue
+
+            # ミュージシャンのパーティ参加者は守られる
+            if target_id in musician_protected:
                 continue
 
             # マサイ族の回避判定
@@ -568,6 +672,13 @@ class JinrouCog(commands.Cog):
         else:
             await game.game_channel.send("<:KISHI:1490254592800456794>夜の結果: 昨晩の犠牲者はいないようです。")
 
+        # ─── 夜明け：生存者をメンション付きでアナウンス ──────────
+        if game.alive_players:
+            survivors_mention = " ".join(p.mention for p in game.alive_players)
+            await game.game_channel.send(
+                f"夜が明けました。生存者（{len(game.alive_players)}人）: {survivors_mention}"
+            )
+
     # ======================================================
     #  勝利判定
     # ======================================================
@@ -614,6 +725,28 @@ class JinrouCog(commands.Cog):
             if m: names_list.append(m.display_name)
         if names_list:
             await game.game_channel.send(f"さらに、{'、'.join(names_list)} は最後まで生き残り個人勝利しました！")
+
+    # ======================================================
+    #  最終役職開示
+    # ======================================================
+    async def _announce_final_roles(self, game):
+        """ゲーム終了後に全プレイヤーの最終役職を開示する"""
+        if not game.game_channel or not game.roles:
+            return
+        lines = []
+        alive_ids = {p.id for p in game.alive_players}
+        for p in game.players:
+            m = game.game_channel.guild.get_member(p.id)
+            name = m.display_name if m else "不明"
+            role = game.roles.get(p.id, "不明")
+            status = "✅" if p.id in alive_ids else "💀"
+            lines.append(f"{status} **{name}**: {role}")
+        embed = discord.Embed(
+            title="最終役職開示",
+            description="\n".join(lines),
+            color=0xFFFFFF
+        )
+        await game.game_channel.send(embed=embed)
 
     # ======================================================
     #  霊媒師への通知（バグ修正 + 新機能）
@@ -689,9 +822,8 @@ class JinrouCog(commands.Cog):
             game.is_running = False
             return
         elif executed_role == "コウモリむに":
-            await game.game_channel.send("コウモリむにが追放された。コウモリむにの勝利です。")
-            game.is_running = False
-            return
+            # 追放では勝利しない（生き残った場合のみ追加勝利）
+            await game.game_channel.send("コウモリむにが追放された。しかし追放ではコウモリむには勝利できない...")
 
         # リア充 連鎖死
         for pair in game.riacchu_pairs:
@@ -741,7 +873,6 @@ class JinrouCog(commands.Cog):
             return await game.game_channel.send("同数票のためスキップされました。追放はありません。")
 
         target_id_str = most[0][0]
-
         if target_id_str == "skip":
             return await game.game_channel.send("投票の結果、スキップされました。追放はありません。")
 
@@ -774,9 +905,8 @@ class JinrouCog(commands.Cog):
             game.is_running = False
             return
         elif executed_role == "コウモリむに":
-            await game.game_channel.send("コウモリむにが追放された。コウモリむにの勝利です。")
-            game.is_running = False
-            return
+            # 追放では勝利しない（生き残った場合のみ追加勝利）
+            await game.game_channel.send("コウモリむにが追放された。しかし追放ではコウモリむには勝利できない...")
 
         # リア充 連鎖死
         for pair in game.riacchu_pairs:
@@ -854,9 +984,10 @@ class RoleCheckView(discord.ui.View):
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         display_role = real_role
-        if real_role == "タフむに":   display_role = "一般通過あごむに"
-        elif real_role == "入狼":     display_role = "人狼"
-        elif real_role == "大霊媒師": display_role = "霊媒師"
+        if real_role == "タフむに":      display_role = "一般通過あごむに"
+        elif real_role == "入狼":        display_role = "人狼"
+        elif real_role == "大霊媒師":    display_role = "霊媒師"
+        elif real_role == "ミュージシャン": display_role = "陽キャ"  # 発展職を隠す
 
         wolves = self.cog.get_wolves_names(self.game)
 
@@ -895,7 +1026,7 @@ class RoleCheckView(discord.ui.View):
             "罠師":             "【村人陣営】毎晩一人を守る。狼が守った対象を攻撃した場合、その狼を返り討ちにする。騎士の上位職。",
             "狂人":             "【人狼陣営】人狼の味方。基本的に無能である。",
             "ハゲ":             "【第三者陣営】追放されたら勝てる。髪の毛が観測できないバグが発生している。",
-            "コウモリむに":     "【第三者陣営】ハゲの上位職。追放されても勝利できる上、最後まで生き残っても個人勝利できる。",
+            "コウモリむに":     "【第三者陣営】ハゲの上位職。追放されても勝利できない。ただし最後まで生き残れば個人追加勝利できる。",
             "メンヘラ":         "【第三者陣営】自分に関与した者を物理的に消す。占うと黒判定が出る。",
             "あごむに破道砲":   "【第三者陣営】自らを弾にして1人を狙い撃ちできるが、誤発してもう1人殺す。（※3日目の夜以降に使用可能）",
             "デカ狼":           f"【人狼陣営】占い師に賄賂を払って白判定にする（霊媒師には黒と出る）。デカイだけである。仲間: {wolves}",
@@ -910,6 +1041,8 @@ class RoleCheckView(discord.ui.View):
             "リア充":           f"【村人陣営】リア充。パートナー: {partner_name}。片方が死ぬと両方道連れになる。",
             "貴族":             f"【村人陣営】貴族。奴隷が生きている間は死を自動的に肩代わりさせることができる。奴隷: {slave_name}",
             "奴隷":             f"【村人陣営】奴隷。貴族が死亡判定を受けると代わりに死ぬ運命。貴族: {kizoku_name}",
+            "陽キャ":           "【村人陣営】毎晩1人をℳ𝓎𝒽ℴ𝓂ℯに連れ込む。相手が人狼/デカ狼なら自分が死ぬ。相手がメンヘラなら2人ともリア充に変化。それ以外は夜のアクションを酔い潰してキャンセルする。",
+            "ミュージシャン":   "【村人陣営】陽キャの発展職。ゲーム中1度だけ夜にランダム4人をパーティに招待できる。招待者は狼から守られ夜のアクションもキャンセル。人狼が混じっていたら30%で村人側の1人が死亡。",
         }
 
         role_image_map = {
@@ -919,10 +1052,11 @@ class RoleCheckView(discord.ui.View):
             "狂人": "KYOJIN.PNG",               "ハゲ": "HAGE.PNG",            "デカ狼": "DEKAROU.PNG",
             "あごむに破道砲": "AGOMUNIHADOHOU.PNG", "ワンころ": "WANKORO.PNG",
             "タフむに": "TAHUMUNI.PNG",          "狂信者": "KYOUSINSYA.PNG",
-            "罠師": "WANASSI.PNG",               "議長": "GICHOU.PNG",
-            "ビー玉ブレイカー": "BEEBREAKER.PNG", "リア充": "RIAJUU.PNG",
+            "罠師": "WANASI.PNG",               "議長": "GITYO.PNG",
+            "ビー玉ブレイカー": "BI-BURE.PNG", "リア充": "RIAJUU.PNG",
             "貴族": "KIZOKU.PNG",                "奴隷": "DOREI.PNG",          "コウモリむに": "KOUMORI.PNG",
-            "大霊媒師": "REIBAI.PNG",  # 専用画像がない場合は霊媒師と共用
+            "大霊媒師": "REIBAI.PNG",
+            "陽キャ": "YOUKYA.PNG",              "ミュージシャン": "MUSICIAN.PNG",
         }
 
         embed = discord.Embed(
@@ -973,6 +1107,16 @@ class NightActionView(discord.ui.View):
             opts = [discord.SelectOption(label=p.display_name, value=str(p.id)) for p in dead_players]
             embed = discord.Embed(description="調べる死者を選択してください：", color=0xFFFFFF)
             return await interaction.response.send_message(embed=embed, view=ActionSelectView(self.game, opts, role), ephemeral=True)
+
+        # ─── ミュージシャン：パーティ開催（一回限り・対象選択不要） ──
+        if role == "ミュージシャン":
+            if self.game.musician_party_used:
+                embed = discord.Embed(description="パーティは既に開催済みです。今夜は待機してください。", color=0xFFFFFF)
+                return await interaction.response.send_message(embed=embed, ephemeral=True)
+            # t_id = 0 をセンチネルとして使用（Discord IDは正の整数のみ）
+            self.game.night_actions[p_id] = 0
+            embed = discord.Embed(description="🎵 パーティを開催します！ランダムに4人を招待します。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         passive_roles = [
             "一般通過あごむに", "霊媒師", "狂人", "ハゲ", "コウモリむに",
@@ -1045,6 +1189,11 @@ class ActionSelectView(discord.ui.View):
             master_m = self.game.game_channel.guild.get_member(t_id) if self.game.game_channel else None
             master_name = master_m.display_name if master_m else "不明"
             embed = discord.Embed(description=f"飼い主を **{master_name}** に決めました。飼い主が生きている間はあなたも村人陣営です。", color=0xFFFFFF)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        elif self.role == "陽キャ":
+            t_m = self.game.game_channel.guild.get_member(t_id)
+            t_name = t_m.display_name if t_m else "不明"
+            embed = discord.Embed(description=f"🎉 {t_name} をℳ𝓎𝒽ℴ𝓂ℯに誘います。", color=0xFFFFFF)
             await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
             embed = discord.Embed(description="完了。", color=0xFFFFFF)
