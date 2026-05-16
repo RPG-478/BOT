@@ -1055,7 +1055,7 @@ class RoleCheckView(discord.ui.View):
             "罠師": "WANASI.PNG",               "議長": "GITYO.PNG",
             "ビー玉ブレイカー": "BI-BURE.PNG", "リア充": "RIAJUU.PNG",
             "貴族": "KIZOKU.PNG",                "奴隷": "DOREI.PNG",          "コウモリむに": "KOUMORI.PNG",
-            "大霊媒師": "REIBAI.PNG",
+            "大霊媒師": "DAIREIBAI.PNG",
             "陽キャ": "YOUKYA.PNG",              "ミュージシャン": "MUSICIAN.PNG",
         }
 
