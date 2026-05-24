@@ -566,17 +566,14 @@ class UnoDeclareView(discord.ui.View):
         )
 
 
-    async def uno_declaration_timer(self, channel, game: UnoGame, player_id: int):
-        
+        async def uno_declaration_timer(self, channel, game: UnoGame, player_id: int):
+            view = UnoDeclareView(game, player_id)
+            uno_msg = await channel.send(
+                f"<@{player_id}> さん、5秒以内にUNOを宣言してください！",
+                view=view
+            )
 
-        view = UnoDeclareView(game, player_id)
-
-        uno_msg = await channel.send(
-            f"<@{player_id}> さん、5秒以内にUNOを宣言してください！",
-            view=view
-        )
-
-        await asyncio.sleep(5.0)
+            await asyncio.sleep(5.0)
 
         try:
             for child in view.children:
