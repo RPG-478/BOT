@@ -657,8 +657,8 @@ class Timer(commands.Cog):
         if ctx.voice_client.is_playing():
             ctx.voice_client.stop()
         
-        # 1行でFFmpegのプロセス起動からDiscordの再生ソース化までを完結
-        ctx.voice_client.play(discord.FFmpegPCMAudio(source='ffmpeg -f lavfi -i "anoisesrc=d=0:c=brown:r=48000:a=0.5,pan=stereo|c0=c0|c1=c0" -f s16le -ar 48000 -ac 2 pipe:', pipe=True))
+        # from_probe の第一引数に lavfi 形式のコマンドを入れることで、1行で再生が完結します
+        ctx.voice_client.play(await discord.FFmpegOpusAudio.from_probe('anoisesrc=d=0:c=brown:r=48000:a=0.5,pan=stereo|c0=c0|c1=c0', method='fallback', before_options='-f lavfi'))
         
         await ctx.send(embed=we("🌊 FFmpeg純正機能でブラウンノイズを再生中..."))
 
