@@ -650,28 +650,16 @@ class Timer(commands.Cog):
 
     @commands.command()
     async def ambient(self, ctx):
-        """FFmpegの機能だけでブラウンノイズを生成して再生"""
+        """1行でブラウンノイズを生成して再生"""
         if not ctx.voice_client:
             return await ctx.send("先に !join してください。")
 
-        # すべての入力・生成オプションを before_options に集約
-        # これにより、discord.py が余計なファイルチェックをせず FFmpeg に丸投げしてくれます
-        ffmpeg_args = (
-            '-f lavfi -i "anoisesrc=d=0:c=brown:r=48000:a=0.5,pan=stereo|c0=c0|c1=c0" '
-            '-f s16le -ar 48000 -ac 2'
-        )
-
-        # source にはダミーの文字列を渡し、pipe=False にします
-        source = discord.FFmpegPCMAudio(
-            source='dummy',
-            before_options=ffmpeg_args,
-            pipe=False
-        )
-        
         if ctx.voice_client.is_playing():
             ctx.voice_client.stop()
         
-        ctx.voice_client.play(source)
+        # 1行でFFmpegのプロセス起動からDiscordの再生ソース化までを完結
+        ctx.voice_client.play(discord.FFmpegPCMAudio(source='ffmpeg -f lavfi -i "anoisesrc=d=0:c=brown:r=48000:a=0.5,pan=stereo|c0=c0|c1=c0" -f s16le -ar 48000 -ac 2 pipe:', pipe=True))
+        
         await ctx.send(embed=we("🌊 FFmpeg純正機能でブラウンノイズを再生中..."))
 
     @commands.command()
