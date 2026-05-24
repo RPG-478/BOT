@@ -654,23 +654,27 @@ class Timer(commands.Cog):
         if not ctx.voice_client:
             return await ctx.send("先に !join してください。")
 
-        # anoisesrcフィルターでブラウンノイズ(d=0で無限)を直接生成
-        # 48000Hz, ステレオ(2ch)に設定
-        ffmpeg_options = (
-            '-f lavfi -i "anoisesrc=d=0:c=brown:r=48000:a=0.5,pan=stereo|c0=c0|c1=c0" '
-            '-f s16le -ar 48000 -ac 2'
-        )
+        # 入力ソース（-i の前）としてlavfiのanoisesrcを指定
+        before_args = '-f lavfi -i "anoisesrc=d=0:c=brown:r=48000:a=0.5,pan=stereo|c0=c0|c1=c0"'
+        
+        # 出力フォーマット（s16le、48000Hz、2ch）を指定
+        output_args = '-f s16le -ar 48000 -ac 2'
 
-        source = discord.FFmpegPCMAudio(ffmpeg_options, pipe=False)
+        #引数を正しく分割して渡すために、pipe=True にしてダミーパスを渡すか、
+        # 通常は discord.FFmpegPCMAudio の引数構造に合わせます。
+        # ここでは一番シンプルかつ確実に動く「pipe=Trueにしてstdoutを吸う」設定にします。
+        source = discord.FFmpegPCMAudio(
+            'pipe:',  # ダミー。実際はbefore_optionsの入力が使われます
+            before_options=before_args,
+            options=output_args,
+            pipe=True
+        )
         
         if ctx.voice_client.is_playing():
             ctx.voice_client.stop()
         
         ctx.voice_client.play(source)
         await ctx.send(embed=we("🌊 FFmpeg純正機能でブラウンノイズを再生中..."))
-
-    def stop_ambient(self, guild_id):
-        self.ambient_running[guild_id] = False
 
     @commands.command()
     async def pomo(self, ctx, work: int = 25, rest: int = 5):
