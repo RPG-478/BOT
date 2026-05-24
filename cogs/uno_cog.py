@@ -26,6 +26,10 @@ class UnoGame:
         self.uno_declared = False         # 現ターンでUNO宣言が成功したか
         self.waiting_for_uno = False      # UNO宣言の猶予時間中か
 
+        # プラスカード累積用
+        self.pending_draw_count = 0       # 累積しているドロー枚数
+        self.active_plus_type = None      # 現在累積中のカードタイプ ("+2" または "Wild+4")
+
     def setup_deck(self):
         colors = ['赤', '青', '黄', '緑']
         numbers = [str(i) for i in range(10)] + ['Skip', 'Reverse', '+2']
@@ -71,10 +75,18 @@ class UnoGame:
             
         top_card = self.discard_pile[-1]
         
-        # ワイルドなどで色が変わっている場合、その色を基準にする
+        # プラスカードが累積している場合は、同じプラスカードしか出せない（対抗ルール）
+        if self.pending_draw_count > 0 and self.active_plus_type:
+            for card in hand:
+                if self.active_plus_type == "+2" and "+2" in card:
+                    playable.append(card)
+                elif self.active_plus_type == "Wild+4" and card == "Wild+4":
+                    playable.append(card)
+            return playable
+
+        # 通常時の処理
         target_color = self.current_color
         
-        # 一番上のカードのパース (例: "赤の5", "青のSkip", "Wild")
         top_color = None
         top_value = None
         if "の" in top_card:
@@ -90,7 +102,6 @@ class UnoGame:
                 
             if "の" in card:
                 c_color, c_value = card.split("の")
-                # 色が同じ、または数字・効果が同じなら出せる
                 if c_color == target_color or c_value == top_value:
                     playable.append(card)
                     
@@ -127,8 +138,7 @@ class JoinView(discord.ui.View):
         self.game.hands[interaction.user.id] = []
         
         embed = interaction.message.embeds[0]
-        # 参加者リストを更新
-        players_text = "\n".join([f"• <@{p_id}>" for p_id in self.game.players])
+        players_text = "\n".join([f"* <@{p_id}>" for p_id in self.game.players])
         embed.set_field_at(0, name=f"参加者 ({len(self.game.players)}人)", value=players_text, inline=False)
         
         await interaction.response.edit_message(embed=embed, view=self)
@@ -140,7 +150,7 @@ class JoinView(discord.ui.View):
         if len(self.game.players) < 2:
             return await interaction.response.send_message("開始するには最低2人のプレイヤーが必要です！", ephemeral=True)
             
-        self.stop() # タイマータスクを終了させる
+        self.stop()
         await interaction.response.defer()
         await self.cog.start_uno_game(interaction.channel, self.game)
 
@@ -153,7 +163,7 @@ class JoinView(discord.ui.View):
         if self.game.channel_id in self.cog.games:
             del self.cog.games[self.game.channel_id]
         
-        await interaction.response.edit_message(content="⚠️ ゲームの募集がキャンセルされました。", embed=None, view=None)
+        await interaction.response.edit_message(content="[!] ゲームの募集がキャンセルされました。", embed=None, view=None)
 
 
 class CardSelect(discord.ui.Select):
@@ -163,13 +173,18 @@ class CardSelect(discord.ui.Select):
         self.cog = cog
         
         options = []
-        # 出せるカードをセレクトオプションに追加
         for card in playable_cards:
-            options.append(discord.SelectOption(label=card, value=card, emoji="🃏"))
+            options.append(discord.SelectOption(label=card, value=card))
             
-        # 出せるカードがない、またはパスを明示的に選べるよう常にパス選択肢を用意
-        options.append(discord.SelectOption(label="山札から1枚引く (パス)", value="DRAW_PASS", emoji="➕"))
-        
+        # 累積ペナルティがある場合は「パス」ではなく「累積枚数を引き取る」表記に変える
+        if game.pending_draw_count > 0:
+            label_text = f"カードを引く (計 {game.pending_draw_count} 枚)"
+            value_text = "DRAW_PUNISH"
+        else:
+            label_text = "山札から1枚引く (パス)"
+            value_text = "DRAW_PASS"
+
+        options.append(discord.SelectOption(label=label_text, value=value_text))
         super().__init__(placeholder="出すカードを選択してください...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
@@ -178,23 +193,33 @@ class CardSelect(discord.ui.Select):
             return await interaction.response.send_message("あなたの番ではありません！", ephemeral=True)
 
         selected_card = self.values[0]
-        await interaction.response.defer() # ボタン押下後の読み込み中対策
+        await interaction.response.defer()
 
+        # ペナルティ（溜まったプラスカード）を引き受ける処理
+        if selected_card == "DRAW_PUNISH":
+            count = self.game.pending_draw_count
+            self.game.draw_card(current_player_id, count)
+            msg = f"[-] <@{current_player_id}> さんは対抗カードがないため、山札から {count} 枚引きました。"
+            
+            # 累積状態をリセットして次の人へ
+            self.game.pending_draw_count = 0
+            self.game.active_plus_type = None
+            self.game.advance_turn()
+            await self.cog.send_game_panel(interaction.channel, self.game, info_msg=msg)
+            return
+
+        # 通常の1枚ドロー（パス）処理
         if selected_card == "DRAW_PASS":
-            # 1枚引く
             drawn = self.game.draw_card(current_player_id, 1)
             drawn_str = drawn[0] if drawn else "なし"
             
-            # 引いたカードが今出せるかチェック
-            self.game.current_color = None # 一旦色指定をリセットして通常チェック
+            self.game.current_color = None
             playable_now = self.game.get_playable_cards(current_player_id)
             
-            if drawn[0] in playable_now:
-                # 引いたカードを出せる場合、自動で出すか選ばせる追加演出も可能ですが、
-                # シンプルにするため引いた後に手番を交代します
-                msg = f"🃏 <@{current_player_id}> さんは山札から1枚引きました（{drawn_str}）。出せる状態ですがパスしました。"
+            if drawn and drawn[0] in playable_now:
+                msg = f"[-] <@{current_player_id}> さんは山札から1枚引きました（{drawn_str}）。出せる状態ですがパスしました。"
             else:
-                msg = f"🃏 <@{current_player_id}> さんは出せるカードがないため、山札から1枚引きました。"
+                msg = f"[-] <@{current_player_id}> さんは出せるカードがないため、山札から1枚引きました。"
                 
             self.game.advance_turn()
             await self.cog.send_game_panel(interaction.channel, self.game, info_msg=msg)
@@ -203,9 +228,8 @@ class CardSelect(discord.ui.Select):
         # カードを出す処理
         self.game.hands[current_player_id].remove(selected_card)
         self.game.discard_pile.append(selected_card)
-        self.game.current_color = None # 通常カードを出した際は色変更リセット
+        self.game.current_color = None
 
-        # UNO宣言が必要な状況か判定 (手札が1枚になった時)
         hand_len = len(self.game.hands[current_player_id])
         uno_penalty_check = False
         
@@ -213,17 +237,17 @@ class CardSelect(discord.ui.Select):
             uno_penalty_check = True
             self.game.uno_declared = False
             self.game.waiting_for_uno = True
-            # 非同期で5秒間の「UNO」発言監視を開始
             asyncio.create_task(self.cog.uno_declaration_timer(interaction.channel, self.game, current_player_id))
 
-        # 特殊カードの効果処理
-        action_msg = f"📤 <@{current_player_id}> さんが **[{selected_card}]** を出しました！"
+        action_msg = f"[+] <@{current_player_id}> さんが [{selected_card}] を出しました！"
         
+        # ワイルドカード（Wild / Wild+4）の処理
         if selected_card in ["Wild", "Wild+4"]:
-            # 色指定セレクト用のビューを送り、手番処理は色指定後に回す
+            if selected_card == "Wild+4":
+                self.game.pending_draw_count += 4
+                self.game.active_plus_type = "Wild+4"
+
             view = WildColorView(self.game, selected_card, current_player_id, self.cog, action_msg, uno_penalty_check)
-            
-            # 手札を見る用のパネルは消去する
             if self.game.active_panel_message:
                 try:
                     await self.game.active_panel_message.delete()
@@ -236,7 +260,7 @@ class CardSelect(discord.ui.Select):
             )
             return
 
-        # 通常＆その他の特殊カードの処理
+        # 通常カードおよびその他の特殊カード（+2など）の処理
         await self.process_card_effect(selected_card, action_msg)
 
 
@@ -244,38 +268,34 @@ class CardSelect(discord.ui.Select):
         """カードの効果処理を行い、次のターンへ移行する"""
         current_player_id = self.game.players[self.game.current_player_idx]
         
-        # 勝敗判定
         if len(self.game.hands[current_player_id]) == 0:
             await self.cog.finish_game(self.game.channel_id, current_player_id)
             return
 
         next_msg = ""
         
-        # スキップ、リバース、+2の効果分岐
         if "Skip" in card:
             skipped_player = self.game.players[self.game.next_turn_idx(1)]
-            next_msg = f"\n🚫 <@{skipped_player}> さんのターンがスキップされました！"
-            self.game.advance_turn(2) # 1人飛ばして進める
+            next_msg = f"\n[!] <@{skipped_player}> さんのターンがスキップされました！"
+            self.game.advance_turn(2)
             
         elif "Reverse" in card:
             if len(self.game.players) == 2:
-                # 2人プレイ時のリバースはスキップと同じ挙動
                 skipped_player = self.game.players[self.game.next_turn_idx(1)]
-                next_msg = f"\n🔄 2人プレイのため、<@{skipped_player}> さんのターンがスキップされました！"
+                next_msg = f"\n[<->] 2人プレイのため、<@{skipped_player}> さんのターンがスキップされました！"
                 self.game.advance_turn(2)
             else:
                 self.game.direction *= -1
-                next_msg = f"\n🔄 順番が逆回転になりました！"
+                next_msg = f"\n[<->] 順番が逆回転になりました！"
                 self.game.advance_turn(1)
                 
         elif "+2" in card:
-            target_player = self.game.players[self.game.next_turn_idx(1)]
-            drawn_cards = self.game.draw_card(target_player, 2)
-            next_msg = f"\n⚠️ <@{target_player}> さんは2枚引かされ、手番がスキップされました！"
-            self.game.advance_turn(2) # 引かされたプレイヤーはパスされる
+            self.game.pending_draw_count += 2
+            self.game.active_plus_type = "+2"
+            next_msg = f"\n[!] ドロー累積: 計 {self.game.pending_draw_count} 枚！ 次のプレイヤーは [+2] で対抗できます。"
+            self.game.advance_turn(1) # 次のプレイヤーへ（出すか引くかの選択を委ねる）
             
         else:
-            # 通常の数字カード
             self.game.advance_turn(1)
 
         combined_msg = base_msg + next_msg
@@ -300,18 +320,14 @@ class WildColorView(discord.ui.View):
         await interaction.response.defer()
         self.game.current_color = color
         
-        color_msg = f"\n🎨 場の色が **[{color}]** に指定されました！"
+        color_msg = f"\n[Color] 場の色が [{color}] に指定されました！"
         effect_msg = ""
         
         if self.card_type == "Wild+4":
-            target_player = self.game.players[self.game.next_turn_idx(1)]
-            self.game.draw_card(target_player, 4)
-            effect_msg = f"\n🔥 <@{target_player}> さんは4枚引かされ、手番がスキップされました！"
-            self.game.advance_turn(2)
-        else:
-            self.game.advance_turn(1)
+            effect_msg = f"\n[!] ドロー累積: 計 {self.game.pending_draw_count} 枚！ 次のプレイヤーは [Wild+4] で対抗できます。"
+        
+        self.game.advance_turn(1)
             
-        # 勝利チェック
         if len(self.game.hands[self.player_id]) == 0:
             await self.cog.finish_game(self.game.channel_id, self.player_id)
             return
@@ -329,7 +345,6 @@ class WildColorView(discord.ui.View):
 
     @discord.ui.button(label="黄", style=discord.ButtonStyle.success, custom_id="color_yellow")
     async def yellow(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 黄色を緑（Success）と分けたいが、ButtonStyleのバリエーション上Success(緑)と区分
         await self.handle_color_choice(interaction, "黄")
 
     @discord.ui.button(label="緑", style=discord.ButtonStyle.secondary, custom_id="color_green")
@@ -340,12 +355,22 @@ class WildColorView(discord.ui.View):
 class GameControlView(discord.ui.View):
     """メインゲーム進行中、手番プレイヤーが使用する操作ビュー"""
     def __init__(self, game: UnoGame, playable_cards: list, cog):
-        super().__init__(timeout=180.0) # 3分の操作タイムアウト
+        super().__init__(timeout=180.0)
         self.game = game
         self.cog = cog
         
-        # セレクトメニューをこのビューに追加
+        # 1行目にカード選択メニューを追加
         self.add_item(CardSelect(game, playable_cards, cog))
+
+    @discord.ui.button(label="手札を確認", style=discord.ButtonStyle.secondary, custom_id="uno_check_hand_btn", row=1)
+    async def check_hand(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """自分にだけ見えるメッセージで全手札の一覧を表示する"""
+        user_hand = self.game.hands.get(interaction.user.id, [])
+        if not user_hand:
+            return await interaction.response.send_message("あなたはゲームに参加していないか、手札がありません。", ephemeral=True)
+        
+        hand_text = " / ".join([f"[{card}]" for card in user_hand])
+        await interaction.response.send_message(f"あなたの現在の手札 ({len(user_hand)}枚):\n{hand_text}", ephemeral=True)
 
 
 # ==========================================
@@ -361,37 +386,34 @@ class Uno(commands.Cog):
         channel_id = interaction.channel_id
         
         if channel_id in self.games:
-            return await interaction.response.send_message("⚠️ このチャンネルでは既にUNOゲームが進行中、または準備中です。", ephemeral=True)
+            return await interaction.response.send_message("[!] このチャンネルでは既にUNOゲームが進行中、または準備中です。", ephemeral=True)
             
         game = UnoGame(channel_id, interaction.user.id)
-        # 作成者を最初のプレイヤーとして自動登録
         game.players.append(interaction.user.id)
         game.hands[interaction.user.id] = []
         self.games[channel_id] = game
 
         embed = discord.Embed(
-            title="🃏 UNO（ウノ）対戦ルーム",
+            title="[-] UNO 対戦ルーム",
             description="ゲームを開始するには2人以上のプレイヤーが必要です。\n1分後に自動的にゲームが開始されます。",
             color=discord.Color.gold()
         )
-        embed.add_field(name=f"参加者 (1人)", value=f"• <@{interaction.user.id}>", inline=False)
+        embed.add_field(name=f"参加者 (1人)", value=f"* <@{interaction.user.id}>", inline=False)
         embed.set_footer(text="ホストはボタンから即時開始またはキャンセルが行えます。")
 
         view = JoinView(game, self)
-        await interaction.response.send_message("📢 UNOゲームの募集を開始しました！", ephemeral=True)
+        await interaction.response.send_message("[+] UNOゲームの募集を開始しました！", ephemeral=True)
         game.active_panel_message = await interaction.channel.send(embed=embed, view=view)
 
-        # 1分間の待機処理
         await asyncio.sleep(60)
         
-        # 1分経過後にまだ開始されていないか確認 (キャンセルされてないか、強制起動されてないか)
         if channel_id in self.games and not game.is_started:
             if len(game.players) >= 2:
                 await self.start_uno_game(interaction.channel, game)
             else:
                 del self.games[channel_id]
                 try:
-                    await game.active_panel_message.edit(content="⚠️ 参加人数が足りなかったため（最低2人）、ゲームの募集を終了しました。", embed=None, view=None)
+                    await game.active_panel_message.edit(content="[!] 参加人数が足りなかったため（最低2人）、ゲームの募集を終了しました。", embed=None, view=None)
                 except discord.NotFound:
                     pass
 
@@ -399,29 +421,25 @@ class Uno(commands.Cog):
         game.is_started = True
         game.setup_deck()
         
-        # 全員に7枚配る
         for p_id in game.players:
             game.draw_card(p_id, 7)
             
-        # 最初の1枚（ワイルド系以外が出るまで繰り返す）
         first_card = game.deck.pop()
         while first_card in ["Wild", "Wild+4"]:
-            game.deck.insert(0, first_card) # 山札の下（または中身）に戻してシャッフル
+            game.deck.insert(0, first_card)
             random.shuffle(game.deck)
             first_card = game.deck.pop()
             
         game.discard_pile.append(first_card)
         
-        # 最初のカードの「色」をパースして設定
         if "の" in first_card:
             game.current_color = first_card.split("の")[0]
 
-        start_msg = f"🎉 UNOゲームがスタートしました！\n最初の場カードは **[{first_card}]** です。"
+        start_msg = f"[!] UNOゲームがスタートしました！\n最初の場カードは [{first_card}] です。"
         await self.send_game_panel(channel, game, info_msg=start_msg)
 
     async def send_game_panel(self, channel, game: UnoGame, info_msg: str = ""):
         """ターン進行用の総合ゲームパネルを送信する"""
-        # 以前のアクティブなパネルを消去
         if game.active_panel_message:
             try:
                 await game.active_panel_message.delete()
@@ -431,27 +449,29 @@ class Uno(commands.Cog):
         current_player_id = game.players[game.current_player_idx]
         playable_cards = game.get_playable_cards(current_player_id)
         
-        # 場の色・状況のテキスト化
         current_top = game.discard_pile[-1]
         active_color = game.current_color if game.current_color else current_top.split("の")[0]
 
         embed = discord.Embed(
-            title="🎮 UNO プレイ中",
+            title="[-] UNO プレイ中",
             description=info_msg if info_msg else "各自カードを選択してゲームを進めてください。",
             color=self.get_embed_color(active_color)
         )
-        embed.add_field(name="現在の場のカード", value=f"👉 **[{current_top}]**", inline=True)
-        embed.add_field(name="指定された色", value=f"🎨 **[{active_color}]**", inline=True)
+        embed.add_field(name="現在の場のカード", value=f"-> **[{current_top}]**", inline=True)
+        embed.add_field(name="指定された色", value=f"Color: **[{active_color}]**", inline=True)
         
-        # 順番リストの作成
+        # 累積がある場合は警告として埋め込みに表示
+        if game.pending_draw_count > 0:
+            embed.add_field(name="[警告] ドロー累積中", value=f"⚠️ 次の手番は **{game.pending_draw_count}枚** 累積しています！", inline=False)
+
         order_list = []
         for idx, p_id in enumerate(game.players):
             hand_count = len(game.hands[p_id])
-            marker = "▶️ " if idx == game.current_player_idx else "• "
+            marker = ">> " if idx == game.current_player_idx else "* "
             order_list.append(f"{marker}<@{p_id}>: 手札 {hand_count}枚")
             
         embed.add_field(name="プレイヤー順", value="\n".join(order_list), inline=False)
-        embed.set_footer(text="手番プレイヤーは下のセレクトメニューからカードを出せます。")
+        embed.set_footer(text="手番プレイヤーは下のセレクトメニューからカードを選択してください。")
 
         view = GameControlView(game, playable_cards, self)
         game.active_panel_message = await channel.send(embed=embed, view=view)
@@ -481,35 +501,29 @@ class Uno(commands.Cog):
         if not game.is_started or not game.waiting_for_uno:
             return
 
-        # 最新のターンプレイヤーを取得
         last_player_id = game.players[game.current_player_idx]
         
-        # 該当プレイヤーが「うの、ウノ、UNO、uno」を発言したか正規表現でチェック
         if message.author.id == last_player_id:
             content = message.content.strip().lower()
             if re.fullmatch(r"(うの|ウノ|uno)", content):
                 game.uno_declared = True
-                await message.reply("📣 **「ウノ！」宣言が確認されました！セーフ！**")
+                await message.reply("[!] 「ウノ！」宣言が確認されました！セーフ！")
 
     async def uno_declaration_timer(self, channel, game: UnoGame, player_id: int):
         """カードを出してから5秒間、UNO発言を待つタイマー"""
         await asyncio.sleep(5.0)
         
-        # 5秒経った時点でゲームが続いており、かつそのプレイヤーの手札が1枚のままの場合
         if game.channel_id in self.games and len(game.hands.get(player_id, [])) == 1:
             if not game.uno_declared:
-                # ペナルティとして1枚引かせる
                 drawn = game.draw_card(player_id, 1)
                 drawn_str = f"（{drawn[0]}）" if drawn else ""
                 
                 await channel.send(
-                    f"⏰ **ペナルティ！** <@{player_id}> さんは5秒以内に「UNO」の宣言がなかったため、山札から1枚引きました。{drawn_str}"
+                    f"[!] ペナルティ！ <@{player_id}> さんは5秒以内に「UNO」の宣言がなかったため、山札から1枚引きました。{drawn_str}"
                 )
                 
-                # 手札が2枚に戻るため、ゲーム表示を最新にする
-                await self.send_game_panel(channel, game, info_msg=f"⚠️ <@{player_id}> さんにUNO未宣言ペナルティが適用されました。")
+                await self.send_game_panel(channel, game, info_msg=f"[!] <@{player_id}> さんにUNO未宣言ペナルティが適用されました。")
             
-            # 状態をリセット
             game.waiting_for_uno = False
             game.uno_declared = False
 
@@ -518,14 +532,13 @@ class Uno(commands.Cog):
         channel = self.bot.get_channel(channel_id)
         
         embed = discord.Embed(
-            title="🏆 UNO ゲーム決着！",
-            description=f"🎉🎉 <@{winner_id}> さんが手札をすべて使い切り、見事勝利しました！ 🎉🎉",
+            title="[!] UNO ゲーム決着！",
+            description=f"*** <@{winner_id}> さんが手札をすべて使い切り、見事勝利しました！ ***",
             color=discord.Color.brand_green()
         )
         
         if channel_id in self.games:
             game = self.games[channel_id]
-            # 各自の最終残手札を公開
             remains = []
             for p_id in game.players:
                 if p_id != winner_id:
@@ -534,7 +547,6 @@ class Uno(commands.Cog):
             if remains:
                 embed.add_field(name="他のプレイヤーの残り手札", value="\n".join(remains), inline=False)
                 
-            # メッセージお片付け
             if game.active_panel_message:
                 try:
                     await game.active_panel_message.delete()
