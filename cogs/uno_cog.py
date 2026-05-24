@@ -466,7 +466,7 @@ class Uno(commands.Cog):
 
         if game.current_color:
             active_color = game.current_color
-            elif "の" in current_top:
+        elif "の" in current_top:
             active_color = current_top.split("の")[0]
         else:
             # Wild系でcurrent_colorが未設定の場合は前の通常カード色を使う
