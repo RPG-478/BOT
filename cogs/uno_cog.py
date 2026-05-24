@@ -530,7 +530,8 @@ class Uno(commands.Cog):
         
         if message.author.id == last_player_id:
             content = message.content.strip().lower()
-            if re.fullmatch(r"(うの|ウノ|uno)", content):
+    
+            if content in ["うの", "ウノ", "uno"]:
                 game.uno_declared = True
                 await message.reply("[!] 「ウノ！」宣言が確認されました！セーフ！")
 
