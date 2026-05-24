@@ -463,7 +463,19 @@ class Uno(commands.Cog):
         playable_cards = game.get_playable_cards(current_player_id)
         
         current_top = game.discard_pile[-1]
-        active_color = game.current_color if game.current_color else current_top.split("の")[0]
+
+        if game.current_color:
+            active_color = game.current_color
+            elif "の" in current_top:
+            active_color = current_top.split("の")[0]
+        else:
+            # Wild系でcurrent_colorが未設定の場合は前の通常カード色を使う
+            active_color = "未設定"
+    
+            for card in reversed(game.discard_pile[:-1]):
+                if "の" in card:
+                    active_color = card.split("の")[0]
+                    break
 
         embed = discord.Embed(
             title="[-] UNO プレイ中",
