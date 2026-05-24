@@ -1,4 +1,3 @@
-```python
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -548,5 +547,3 @@ class Uno(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Uno(bot))
-
-```
