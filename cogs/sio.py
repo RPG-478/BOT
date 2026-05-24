@@ -654,20 +654,18 @@ class Timer(commands.Cog):
         if not ctx.voice_client:
             return await ctx.send("先に !join してください。")
 
-        # 入力ソース（-i の前）としてlavfiのanoisesrcを指定
-        before_args = '-f lavfi -i "anoisesrc=d=0:c=brown:r=48000:a=0.5,pan=stereo|c0=c0|c1=c0"'
-        
-        # 出力フォーマット（s16le、48000Hz、2ch）を指定
-        output_args = '-f s16le -ar 48000 -ac 2'
+        # すべての入力・生成オプションを before_options に集約
+        # これにより、discord.py が余計なファイルチェックをせず FFmpeg に丸投げしてくれます
+        ffmpeg_args = (
+            '-f lavfi -i "anoisesrc=d=0:c=brown:r=48000:a=0.5,pan=stereo|c0=c0|c1=c0" '
+            '-f s16le -ar 48000 -ac 2'
+        )
 
-        #引数を正しく分割して渡すために、pipe=True にしてダミーパスを渡すか、
-        # 通常は discord.FFmpegPCMAudio の引数構造に合わせます。
-        # ここでは一番シンプルかつ確実に動く「pipe=Trueにしてstdoutを吸う」設定にします。
+        # source にはダミーの文字列を渡し、pipe=False にします
         source = discord.FFmpegPCMAudio(
-            'pipe:',  # ダミー。実際はbefore_optionsの入力が使われます
-            before_options=before_args,
-            options=output_args,
-            pipe=True
+            source='dummy',
+            before_options=ffmpeg_args,
+            pipe=False
         )
         
         if ctx.voice_client.is_playing():
