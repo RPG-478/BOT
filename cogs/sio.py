@@ -648,7 +648,7 @@ class Timer(commands.Cog):
                     ctx.voice_client.play(source)
                 await asyncio.sleep(0.3)
 
-@commands.command()
+    @commands.command()
     async def ambient(self, ctx):
         """FFmpegの機能だけでブラウンノイズを生成して再生"""
         if not ctx.voice_client:
