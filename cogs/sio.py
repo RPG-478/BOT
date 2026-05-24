@@ -648,79 +648,26 @@ class Timer(commands.Cog):
                     ctx.voice_client.play(source)
                 await asyncio.sleep(0.3)
 
-    @commands.command()
-    async def ambient(self, ctx, mode: str = "brown"):
-        """Pipeを使用してリアルタイムにブラウンノイズ/雨音を生成"""
+@commands.command()
+    async def ambient(self, ctx):
+        """FFmpegの機能だけでブラウンノイズを生成して再生"""
         if not ctx.voice_client:
             return await ctx.send("先に !join してください。")
 
-        guild_id = ctx.guild.id
-        self.ambient_running[guild_id] = True
-
-        # FFmpeg設定: stdinからs16le(16bit PCM)を受け取りDiscord形式で出力
-        ffmpeg_options = [
-            'ffmpeg', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:0',
-            '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1'
-        ]
-
-        process = subprocess.Popen(
-            ffmpeg_options,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL
+        # anoisesrcフィルターでブラウンノイズ(d=0で無限)を直接生成
+        # 48000Hz, ステレオ(2ch)に設定
+        ffmpeg_options = (
+            '-f lavfi -i "anoisesrc=d=0:c=brown:r=48000:a=0.5,pan=stereo|c0=c0|c1=c0" '
+            '-f s16le -ar 48000 -ac 2'
         )
 
-        def generate_worker():
-            # ブラウンノイズ生成用変数 (ランダムウォーク)
-            current_val = 0.0
-            chunk_size = 1024
-            
-            try:
-                while self.ambient_running.get(guild_id):
-                    buf = bytearray()
-                    for _ in range(chunk_size):
-                        if mode == "rain":
-                            # 雨音生成ロジック
-                            v = random.uniform(-0.1, 0.1) if random.random() > 0.001 else random.uniform(-0.7, 0.7)
-                        else:
-                            # 【直接生成ブラウンノイズ】
-                            # 1. 前回の値に小さなランダム変化を加える (ランダムウォーク)
-                            # 0.02という係数は、低音の深さと高音のバランスを調整
-                            step = random.uniform(-0.02, 0.02)
-                            current_val += step
-                            
-                            # 2. 値が発散しないように減衰（リーキー積分）をかける
-                            current_val *= 0.995
-                            
-                            # 3. 振幅を整えて音量を調整
-                            v = current_val * 4.0
-                        
-                        # クリッピング（振幅制限）
-                        v = int(max(-1, min(1, v)) * 32767.0)
-                        buf.extend(struct.pack('<hh', v, v))
-                    
-                    process.stdin.write(buf)
-                    # バッファが空にならないよう速度調整
-                    time.sleep(chunk_size / 48000 * 0.85)
-            except (OSError, BrokenPipeError):
-                pass
-            finally:
-                if process.stdin:
-                    process.stdin.close()
-                process.terminate()
-
-        # 別スレッドで波形計算を開始
-        threading.Thread(target=generate_worker, daemon=True).start()
-
-        # Discord再生ソース
-        source = discord.FFmpegPCMAudio(process.stdout, pipe=True)
+        source = discord.FFmpegPCMAudio(ffmpeg_options, pipe=False)
+        
         if ctx.voice_client.is_playing():
             ctx.voice_client.stop()
         
-        ctx.voice_client.play(source, after=lambda e: self.stop_ambient(guild_id))
-        
-        msg = "🌊 ブラウンノイズ(直接合成)" if mode == "brown" else "🌧️ 雨音(直接合成)"
-        await ctx.send(embed=we(f"{msg} をリアルタイム生成中...\n停止は `!stop_pomo`"))
+        ctx.voice_client.play(source)
+        await ctx.send(embed=we("🌊 FFmpeg純正機能でブラウンノイズを再生中..."))
 
     def stop_ambient(self, guild_id):
         self.ambient_running[guild_id] = False
@@ -743,7 +690,7 @@ class Timer(commands.Cog):
                 pass
 
         self.active_timers[guild_id] = self.bot.loop.create_task(pomodoro_loop())
-        await ctx.send(embed=we(f"⏳ ポモドーロ(自作音源)を開始しました。"))
+        await ctx.send(embed=we(f"⏳ ポモドーロを開始しました。"))
 
     @commands.command()
     async def stop_pomo(self, ctx):
