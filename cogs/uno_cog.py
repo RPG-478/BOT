@@ -509,37 +509,52 @@ class Uno(commands.Cog):
             '緑': discord.Color.green()
         }
         return colors.get(color_name, discord.Color.dark_grey())
+        
+    async def finish_game(self, channel_id: int, winner_id: int):
+        """ゲーム終了時の勝者発表処理"""
+        channel = self.bot.get_channel(channel_id)
+        
+        embed = discord.Embed(
+            title="[!] UNO ゲーム決着！",
+            description=f"*** <@{winner_id}> さんが手札をすべて使い切り、見事勝利しました！ ***",
+            color=discord.Color.brand_green()
+        )
+        
+        if channel_id in self.games:
+            game = self.games[channel_id]
+            remains = []
+            for p_id in game.players:
+                if p_id != winner_id:
+                    cards_str = ", ".join(game.hands[p_id])
+                    remains.append(f"<@{p_id}>: {cards_str} ({len(game.hands[p_id])}枚)")
+            if remains:
+                embed.add_field(name="他のプレイヤーの残り手札", value="\n".join(remains), inline=False)
+                
+            if game.active_panel_message:
+                try:
+                    await game.active_panel_message.delete()
+                except discord.NotFound:
+                    pass
+            del self.games[channel_id]
+
+        await channel.send(embed=embed)
 
     # ==========================================
     # 4. UNO宣言システム (チャットイベント検知)
     # ==========================================
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        if message.author.bot:
-            return
-
-        channel_id = message.channel.id
-        if channel_id not in self.games:
-            return
-
-        game = self.games[channel_id]
-        if not game.is_started or not game.waiting_for_uno:
-            return
-
-        last_player_id = game.players[game.current_player_idx]
-        
-        if message.author.id == last_player_id:
-            content = message.content.strip().lower()
-    
-            if content in ["うの", "ウノ", "uno"]:
-                game.uno_declared = True
-                await message.reply("[!] 「ウノ！」宣言が確認されました！セーフ！")
-
+class UnoDeclareView(discord.ui.View):
+    def __init__(self, game: UnoGame, player_id: int):
+        super().__init__(timeout=5.0)
+        self.game = game
+        self.player_id = player_id
 
     @discord.ui.button(label="UNO!", style=discord.ButtonStyle.red)
     async def declare_uno(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.player_id:
-            return await interaction.response.send_message("あなたのUNOボタンではありません。", ephemeral=True)
+            return await interaction.response.send_message(
+                "あなたのUNOボタンではありません。",
+                ephemeral=True
+            )
 
         self.game.uno_declared = True
 
@@ -547,8 +562,7 @@ class Uno(commands.Cog):
         await interaction.response.edit_message(view=self)
 
         await interaction.followup.send(
-            f"[!] <@{self.player_id}> さんの「UNO！」宣言が確認されました！",
-            ephemeral=False
+            f"[!] <@{self.player_id}> さんの「UNO！」宣言が確認されました！"
         )
 
 
@@ -590,34 +604,7 @@ class Uno(commands.Cog):
             game.waiting_for_uno = False
             game.uno_declared = False
 
-    async def finish_game(self, channel_id: int, winner_id: int):
-        """ゲーム終了時の勝者発表処理"""
-        channel = self.bot.get_channel(channel_id)
-        
-        embed = discord.Embed(
-            title="[!] UNO ゲーム決着！",
-            description=f"*** <@{winner_id}> さんが手札をすべて使い切り、見事勝利しました！ ***",
-            color=discord.Color.brand_green()
-        )
-        
-        if channel_id in self.games:
-            game = self.games[channel_id]
-            remains = []
-            for p_id in game.players:
-                if p_id != winner_id:
-                    cards_str = ", ".join(game.hands[p_id])
-                    remains.append(f"<@{p_id}>: {cards_str} ({len(game.hands[p_id])}枚)")
-            if remains:
-                embed.add_field(name="他のプレイヤーの残り手札", value="\n".join(remains), inline=False)
-                
-            if game.active_panel_message:
-                try:
-                    await game.active_panel_message.delete()
-                except discord.NotFound:
-                    pass
-            del self.games[channel_id]
 
-        await channel.send(embed=embed)
 
 
 async def setup(bot):
