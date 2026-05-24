@@ -172,15 +172,15 @@ class CardSelect(discord.ui.Select):
         self.game = game
         self.cog = cog
         
-    options = []
+        options = []
 
-    for i, card in enumerate(playable_cards):
-        options.append(
-            discord.SelectOption(
-                label=str(card),
-                value=f"{card}_{i}"
+        for i, card in enumerate(playable_cards):
+            options.append(
+                discord.SelectOption(
+                    label=str(card),
+                    value=f"{card}_{i}"
+                )
             )
-        )
             
         # 累積ペナルティがある場合は「パス」ではなく「累積枚数を引き取る」表記に変える
         if game.pending_draw_count > 0:
