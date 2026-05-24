@@ -535,21 +535,58 @@ class Uno(commands.Cog):
                 game.uno_declared = True
                 await message.reply("[!] 「ウノ！」宣言が確認されました！セーフ！")
 
+
+    @discord.ui.button(label="UNO!", style=discord.ButtonStyle.red)
+    async def declare_uno(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.player_id:
+            return await interaction.response.send_message("あなたのUNOボタンではありません。", ephemeral=True)
+
+        self.game.uno_declared = True
+
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+
+        await interaction.followup.send(
+            f"[!] <@{self.player_id}> さんの「UNO！」宣言が確認されました！",
+            ephemeral=False
+        )
+
+
     async def uno_declaration_timer(self, channel, game: UnoGame, player_id: int):
-        """カードを出してから5秒間、UNO発言を待つタイマー"""
-        await asyncio.sleep(5.0)
         
+
+        view = UnoDeclareView(game, player_id)
+
+        uno_msg = await channel.send(
+            f"<@{player_id}> さん、5秒以内にUNOを宣言してください！",
+            view=view
+        )
+
+        await asyncio.sleep(5.0)
+
+        try:
+            for child in view.children:
+                child.disabled = True
+
+            await uno_msg.edit(view=view)
+        except:
+            pass
+
         if game.channel_id in self.games and len(game.hands.get(player_id, [])) == 1:
             if not game.uno_declared:
                 drawn = game.draw_card(player_id, 1)
                 drawn_str = f"（{drawn[0]}）" if drawn else ""
-                
+
                 await channel.send(
                     f"[!] ペナルティ！ <@{player_id}> さんは5秒以内に「UNO」の宣言がなかったため、山札から1枚引きました。{drawn_str}"
                 )
-                
-                await self.send_game_panel(channel, game, info_msg=f"[!] <@{player_id}> さんにUNO未宣言ペナルティが適用されました。")
-            
+
+                await self.send_game_panel(
+                    channel,
+                    game,
+                    info_msg=f"[!] <@{player_id}> さんにUNO未宣言ペナルティが適用されました。"
+                )
+
             game.waiting_for_uno = False
             game.uno_declared = False
 
