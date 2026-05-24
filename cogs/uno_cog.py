@@ -198,8 +198,15 @@ class CardSelect(discord.ui.Select):
         if interaction.user.id != current_player_id:
             return await interaction.response.send_message("あなたの番ではありません！", ephemeral=True)
 
-        selected_card = self.values[0]
+        selected_value = self.values[0]
         await interaction.response.defer()
+
+        # index付きvalueから元カードを復元
+        if selected_value.startswith("DRAW_"):
+            selected_card = selected_value
+        else:
+            card_index = int(selected_value.rsplit("_", 1)[1])
+            selected_card = self.game.get_playable_cards(current_player_id)[card_index]
 
         # ペナルティ（溜まったプラスカード）を引き受ける処理
         if selected_card == "DRAW_PUNISH":
