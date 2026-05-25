@@ -1231,7 +1231,7 @@ class PublicVoteView(discord.ui.View):
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         self.game.voted_count[p_id] = self.children[0].values[0]
-        await interaction.response.send_message(f"<u:success:1490985168100659322>{interaction.user.display_name} さんが投票を完了しました。")
+        await interaction.response.send_message(f"<:success:1490985168100659322> {interaction.user.display_name} さんが投票を完了しました。")
 
 
 class ChairmanVoteView(discord.ui.View):
