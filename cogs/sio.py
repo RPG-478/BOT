@@ -10,9 +10,11 @@ import json
 import io
 import yt_dlp
 import struct
+import math  # 追加: Timerクラスのサイン波計算で必要
 from discord.ext import voice_recv
 import threading
 import random
+
 # yt-dlpの設定（ストリーミング再生用）
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -51,6 +53,7 @@ def decode_full_id(b62_id: str):
 def we(description: str = None, title: str = None) -> discord.Embed:
     """白色embedを生成するヘルパー"""
     return discord.Embed(title=title, description=description, color=0xFFFFFF)
+
 
 class Voice(commands.Cog):
 
@@ -220,21 +223,14 @@ class Voice(commands.Cog):
         """yt-dlpを使用して動画情報とストリームURLを取得"""
         loop = asyncio.get_event_loop()
         with yt_dlp.YoutubeDL(YTDL_OPTIONS) as ydl:
-            # ネットワークI/Oをブロックしないよう別スレッドで実行
             data = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
             return {
                 'url': data.get('url'),
                 'title': data.get('title'),
                 'duration': data.get('duration', 0)
             }
-    
+
     # =====================
-    # Playback Logic
-    # =====================
-    # =====================
-    # Playback Logic & UI Panel
-    # =====================
-        # =====================
     # Playback Logic & UI Panel
     # =====================
     class VoiceControlView(discord.ui.View):
@@ -244,7 +240,6 @@ class Voice(commands.Cog):
             self.cog = cog
             self.guild_id = guild_id
             
-            # 再生速度と音量のセレクトメニューを追加
             self.add_item(self.SpeedSelect(cog, guild_id))
             self.add_item(self.VolumeSelect(cog, guild_id))
 
@@ -453,25 +448,26 @@ class Voice(commands.Cog):
         else:
             await ctx.send(f"✅ キューに追加: **{filename}**")
 
-        @commands.command()
-        async def stop(self, ctx):
-            vc = ctx.voice_client
-            state = self.get_state(ctx.guild.id)
-            if vc:
-                state['current_track'] = None
-                while not state['queue'].empty(): 
-                    state['queue'].get_nowait()
-                vc.stop()
-                await ctx.send(embed=we("停止しました。"))
-    
-        @commands.command()
-        async def skip(self, ctx):
-            vc = ctx.voice_client
-            state = self.get_state(ctx.guild.id)
-            if vc and vc.is_playing():
-                state['current_track'] = None
-                vc.stop()
-                await ctx.send(embed=we("スキップしました。"))
+    # インデント修正: playコマンドの中から外に独立させました
+    @commands.command()
+    async def stop(self, ctx):
+        vc = ctx.voice_client
+        state = self.get_state(ctx.guild.id)
+        if vc:
+            state['current_track'] = None
+            while not state['queue'].empty(): 
+                state['queue'].get_nowait()
+            vc.stop()
+            await ctx.send(embed=we("停止しました。"))
+
+    @commands.command()
+    async def skip(self, ctx):
+        vc = ctx.voice_client
+        state = self.get_state(ctx.guild.id)
+        if vc and vc.is_playing():
+            state['current_track'] = None
+            vc.stop()
+            await ctx.send(embed=we("スキップしました。"))
 
     @commands.command()
     async def list(self, ctx, limit: int = 20):
@@ -602,13 +598,11 @@ class Voice(commands.Cog):
         m_p, used, total = self.get_mem_usage()
         desc = f"CPU: `{cpu:.1f}%` / Mem: `{m_p:.1f}%` ({used/1024:.0f}/{total/1024:.0f}MB)"
         await ctx.send(embed=we(desc))
+
+
 # =====================
 # SaitoRelay Cog (通話系)
 # =====================
-# SaitoRelayクラス内の修正・変更箇所のみ
-
-# SaitoRelayクラスの修正版
-
 class SaitoRelay(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -623,7 +617,6 @@ class SaitoRelay(commands.Cog):
         if ctx.voice_client:
             return await ctx.send("このサーバーでは既に接続中です。")
 
-        # サーバー単位の待機キャンセル
         self.matching_queue = [c for c in self.matching_queue if c.guild.id != ctx.guild.id]
 
         target_peer = None
@@ -640,13 +633,10 @@ class SaitoRelay(commands.Cog):
         await target_peer.send(f"🤝 **{ctx.guild.name}** と接続中...")
 
         try:
-            # VoiceRecvClientを使用して接続
             vc1 = await ctx.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
             vc2 = await target_peer.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
 
-            # --- 重要: エンコーダーを初期化するために無音を再生する ---
-            # これを行わないと send_audio_packet 時にエンコーダー未初期化エラーが出ます
-            silence_src1 = discord.FFmpegPCMAudio("/dev/null") # Linux環境
+            silence_src1 = discord.FFmpegPCMAudio("/dev/null") 
             silence_src2 = discord.FFmpegPCMAudio("/dev/null")
             vc1.play(silence_src1)
             vc2.play(silence_src2)
@@ -657,15 +647,11 @@ class SaitoRelay(commands.Cog):
                     self.dest_vc = dest_vc
 
                 def wants_opus(self) -> bool:
-                    # 受信したパケットをそのまま送るためTrue
                     return True
 
                 def write(self, user, data: voice_recv.VoiceData):
-                    # data.packet は RTPヘッダーを含む生データ
-                    # data.data は 純粋なOpusペイロード
                     if self.dest_vc and self.dest_vc.is_connected():
                         try:
-                            # エンコーダーが初期化されていれば、data.data(Opus)を送信可能
                             self.dest_vc.send_audio_packet(data.data)
                         except Exception:
                             pass
@@ -673,7 +659,6 @@ class SaitoRelay(commands.Cog):
                 def cleanup(self):
                     self.dest_vc = None
 
-            # 相互リレー開始
             vc1.listen(RelaySink(vc2))
             vc2.listen(RelaySink(vc1))
 
@@ -690,13 +675,18 @@ class SaitoRelay(commands.Cog):
         if ctx.voice_client:
             await ctx.voice_client.disconnect()
             await ctx.send("通話を終了しました。")
-            
+
+
+# =====================
+# Timer Cog
+# =====================
 class Timer(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.active_timers = {}
         self.ambient_running = {}
         self.sample_rate = 48000
+        self.work_stats = {}  # 修正: 不足していた work_stats の初期化を追加
 
     def format_time(self, seconds: int) -> str:
         m, s = divmod(seconds, 60)
@@ -710,9 +700,8 @@ class Timer(commands.Cog):
             samples = int(self.sample_rate * 0.15)
             beep = bytearray()
             for i in range(samples):
-                # 880Hzのサイン波を生成
                 v = int(32767.0 * math.sin(2.0 * math.pi * 880.0 * i / self.sample_rate))
-                beep.extend(struct.pack('<hh', v, v)) # ステレオ
+                beep.extend(struct.pack('<hh', v, v)) 
             
             for _ in range(3):
                 if ctx.voice_client:
@@ -729,9 +718,7 @@ class Timer(commands.Cog):
         if ctx.voice_client.is_playing():
             ctx.voice_client.stop()
         
-        # from_probe の第一引数に lavfi 形式のコマンドを入れることで、1行で再生が完結します
         ctx.voice_client.play(await discord.FFmpegOpusAudio.from_probe('anoisesrc=d=0:c=brown:r=48000:a=0.5,pan=stereo|c0=c0|c1=c0', method='fallback', before_options='-f lavfi'))
-        
         await ctx.send(embed=we("🌊 FFmpeg純正機能でブラウンノイズを再生中..."))
 
     @commands.command()
@@ -757,7 +744,7 @@ class Timer(commands.Cog):
     @commands.command()
     async def stop_pomo(self, ctx):
         """タイマーと環境音をすべて停止"""
-        self.stop_ambient(ctx.guild.id)
+        # 修正: 存在しなかった self.stop_ambient の呼び出しエラーを防ぐ処理に変更
         task = self.active_timers.pop(ctx.guild.id, None)
         if task: task.cancel()
         if ctx.voice_client: ctx.voice_client.stop()
@@ -797,6 +784,7 @@ class Timer(commands.Cog):
         
         status = " (現在計測中)" if 'last_start' in data else ""
         await ctx.send(embed=we(f"📊 {ctx.author.display_name} さんの累計作業時間: `{total_str}`{status}"))
+
 
 async def setup(bot):
     await bot.add_cog(Voice(bot))
