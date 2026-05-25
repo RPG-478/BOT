@@ -574,7 +574,6 @@ class UnoDeclareView(discord.ui.View):
                 game.uno_declared = False
 
     async def finish_game(self, channel_id: int, winner_id: int):
-        """ゲーム終了時の勝者発表処理"""
         channel = self.bot.get_channel(channel_id)
         
         embed = discord.Embed(
