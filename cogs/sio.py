@@ -234,6 +234,9 @@ class Voice(commands.Cog):
     # =====================
     # Playback Logic & UI Panel
     # =====================
+        # =====================
+    # Playback Logic & UI Panel
+    # =====================
     class VoiceControlView(discord.ui.View):
         """音量・倍速・再生コントロールをまとめたメニューUI"""
         def __init__(self, cog, guild_id: int):
@@ -241,9 +244,8 @@ class Voice(commands.Cog):
             self.cog = cog
             self.guild_id = guild_id
             
-            # 再生速度のセレクトメニューを追加
+            # 再生速度と音量のセレクトメニューを追加
             self.add_item(self.SpeedSelect(cog, guild_id))
-            # 音量のセレクトメニューを追加
             self.add_item(self.VolumeSelect(cog, guild_id))
 
         class SpeedSelect(discord.ui.Select):
@@ -310,146 +312,146 @@ class Voice(commands.Cog):
             else:
                 await interaction.response.send_message("❌ ボイスチャンネルに接続していません。", ephemeral=True)
 
-        @commands.command()
-        async def panel(self, ctx):
-            """コントロールパネルメニューを表示します"""
-            if not ctx.voice_client:
-                return await ctx.send(embed=we("先に `!join` で接続してください。"))
-            view = self.VoiceControlView(self, ctx.guild.id)
-            await ctx.send(embed=we("🎵 **ボイスコントロールパネル**\n下のメニューから音量や再生速度、トラック操作が行えます。"), view=view)
+    @commands.command()
+    async def panel(self, ctx):
+        """コントロールパネルメニューを表示します"""
+        if not ctx.voice_client:
+            return await ctx.send(embed=we("先に `!join` で接続してください。"))
+        view = self.VoiceControlView(self, ctx.guild.id)
+        await ctx.send(embed=we("🎵 **ボイスコントロールパネル**\n下のメニューから音量や再生速度、トラック操作が行えます。"), view=view)
 
-        async def check_queue(self, guild_id: int):
-            state = self.get_state(guild_id)
+    async def check_queue(self, guild_id: int):
+        state = self.get_state(guild_id)
         
-            if state['is_processing_queue'] or state['current_ctx'] is None:
-                return
+        if state['is_processing_queue'] or state['current_ctx'] is None:
+            return
         
-            ctx = state['current_ctx']
-            vc = ctx.voice_client
-            if vc is None or not vc.is_connected():
-                state['is_processing_queue'] = False
-                return
-
-            if state['current_track'] is None:
-                if state['queue'].empty():
-                    state['is_processing_queue'] = False
-                    return
-            
-                target_input, filename, b62_id, is_yt = await state['queue'].get() 
-            
-                if is_yt:
-                    try:
-                        info = await self.get_yt_info(target_input)
-                        state['current_track'] = (info['url'], info['title'], info['duration'], b62_id)
-                    except Exception as e:
-                        logging.error(f"YouTube解析失敗: {e}")
-                        await ctx.send(embed=we(f"❌ 解析失敗: {e}"))
-                        state['is_processing_queue'] = False
-                        return await self.check_queue(guild_id)
-                else:
-                    duration = await self.get_duration(target_input)
-                    state['current_track'] = (target_input, filename, duration, b62_id) 
-
-            url, filename, duration, b62_id = state['current_track']
-            state['is_processing_queue'] = True
-
-            before_options = f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
-            if b62_id:
-                before_options += f' -headers "User-Agent: Mozilla/5.0\r\n"'
-        
-            if state['elapsed_offset'] > 0:
-                before_options += f" -ss {state['elapsed_offset']}"
-
-            filters = []
-            if state.get('speed', 1.0) != 1.0:
-                filters.append(f"atempo={state['speed']}")
-            if state.get('volume', 1.0) != 1.0:
-                filters.append(f"volume={state['volume']}")
-            if self.eq_filter:
-                filters.append(self.eq_filter)
-
-            af_string = f"-af {','.join(filters)}" if filters else ""
-            options = f"{af_string} -vn -ar 48000 -ac 2"
-
-            try:
-                source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
-                state['start_time'] = time.time()
-            
-                vc.play(source, after=lambda e: self.bot.loop.call_soon_threadsafe(self.play_next, guild_id, e))
-            
-                if state['elapsed_offset'] < 1:
-                    status = f"Speed: {state['speed']}x / Vol: {state['volume']}"
-                    await ctx.send(embed=we(f"🎵 再生中: **{filename}**\n`{status}`"))
-        
-            except Exception as e:
-                logging.error(f"Playback error: {e}")
-                state['is_processing_queue'] = False
-                state['current_track'] = None
-                await self.check_queue(guild_id)
-            
-        def play_next(self, guild_id: int, error=None):
-            state = self.get_state(guild_id)
-            if error:
-                logging.error(f"Player error: {error}")
-
-            actual_played = time.time() - state['start_time']
-            state['elapsed_offset'] += actual_played
-        
-            track = state['current_track']
-            duration = track[2] if track else 0
-            is_interrupted = (duration - state['elapsed_offset']) > 5
-        
+        ctx = state['current_ctx']
+        vc = ctx.voice_client
+        if vc is None or not vc.is_connected():
             state['is_processing_queue'] = False
+            return
 
-            if is_interrupted and state['retry_count'] < 3 and state['current_track']:
-                state['retry_count'] += 1
-                asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), self.bot.loop)
-            else:
-                state['current_track'] = None
-                state['elapsed_offset'] = 0
-                state['retry_count'] = 0
-                asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), self.bot.loop)
+        if state['current_track'] is None:
+            if state['queue'].empty():
+                state['is_processing_queue'] = False
+                return
             
-        @commands.command()
-        async def play(self, ctx, *, input_str: str = None):
-            if not ctx.voice_client: 
-                return await ctx.send("先に !join してください。")
-
-            state = self.get_state(ctx.guild.id)
-            state['current_ctx'] = ctx
-        
-            is_yt = False
-            url, filename, final_id = None, None, None
-
-            if input_str and ("youtube.com" in input_str or "youtu.be" in input_str):
-                await ctx.send("⏳ YouTubeを解析中...")
+            target_input, filename, b62_id, is_yt = await state['queue'].get() 
+            
+            if is_yt:
                 try:
-                    info = await self.get_yt_info(input_str)
-                    url, filename, is_yt = input_str, info['title'], True
+                    info = await self.get_yt_info(target_input)
+                    state['current_track'] = (info['url'], info['title'], info['duration'], b62_id)
                 except Exception as e:
-                    return await ctx.send(f"❌ 解析失敗: {e}")
-
-            elif ctx.message.attachments:
-                attachment = ctx.message.attachments[0]
-                url, filename = attachment.url, attachment.filename
-                final_id = encode_full_id(ctx.guild.id, ctx.channel.id, ctx.message.id)
-        
-            elif input_str:
-                url, filename = await self.get_attachment_info(input_str)
-                final_id = input_str
-        
+                    logging.error(f"YouTube解析失敗: {e}")
+                    await ctx.send(embed=we(f"❌ 解析失敗: {e}"))
+                    state['is_processing_queue'] = False
+                    return await self.check_queue(guild_id)
             else:
-                return await ctx.send(embed=we("ファイル添付、ID、またはYouTube URLを指定してください。"))
+                duration = await self.get_duration(target_input)
+                state['current_track'] = (target_input, filename, duration, b62_id) 
 
-            if not url:
-                return await ctx.send(embed=we("情報の取得に失敗しました。"))
+        url, filename, duration, b62_id = state['current_track']
+        state['is_processing_queue'] = True
 
-            await state['queue'].put((url, filename, final_id, is_yt))
+        before_options = f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
+        if b62_id:
+            before_options += f' -headers "User-Agent: Mozilla/5.0\r\n"'
+        
+        if state['elapsed_offset'] > 0:
+            before_options += f" -ss {state['elapsed_offset']}"
 
-            if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
-                await self.check_queue(ctx.guild.id)
-            else:
-                await ctx.send(f"✅ キューに追加: **{filename}**")
+        filters = []
+        if state.get('speed', 1.0) != 1.0:
+            filters.append(f"atempo={state['speed']}")
+        if state.get('volume', 1.0) != 1.0:
+            filters.append(f"volume={state['volume']}")
+        if self.eq_filter:
+            filters.append(self.eq_filter)
+
+        af_string = f"-af {','.join(filters)}" if filters else ""
+        options = f"{af_string} -vn -ar 48000 -ac 2"
+
+        try:
+            source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
+            state['start_time'] = time.time()
+            
+            vc.play(source, after=lambda e: self.bot.loop.call_soon_threadsafe(self.play_next, guild_id, e))
+            
+            if state['elapsed_offset'] < 1:
+                status = f"Speed: {state['speed']}x / Vol: {state['volume']}"
+                await ctx.send(embed=we(f"🎵 再生中: **{filename}**\n`{status}`"))
+        
+        except Exception as e:
+            logging.error(f"Playback error: {e}")
+            state['is_processing_queue'] = False
+            state['current_track'] = None
+            await self.check_queue(guild_id)
+            
+    def play_next(self, guild_id: int, error=None):
+        state = self.get_state(guild_id)
+        if error:
+            logging.error(f"Player error: {error}")
+
+        actual_played = time.time() - state['start_time']
+        state['elapsed_offset'] += actual_played
+        
+        track = state['current_track']
+        duration = track[2] if track else 0
+        is_interrupted = (duration - state['elapsed_offset']) > 5
+        
+        state['is_processing_queue'] = False
+
+        if is_interrupted and state['retry_count'] < 3 and state['current_track']:
+            state['retry_count'] += 1
+            asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), self.bot.loop)
+        else:
+            state['current_track'] = None
+            state['elapsed_offset'] = 0
+            state['retry_count'] = 0
+            asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), self.bot.loop)
+            
+    @commands.command()
+    async def play(self, ctx, *, input_str: str = None):
+        if not ctx.voice_client: 
+            return await ctx.send("先に !join してください。")
+
+        state = self.get_state(ctx.guild.id)
+        state['current_ctx'] = ctx
+        
+        is_yt = False
+        url, filename, final_id = None, None, None
+
+        if input_str and ("youtube.com" in input_str or "youtu.be" in input_str):
+            await ctx.send("⏳ YouTubeを解析中...")
+            try:
+                info = await self.get_yt_info(input_str)
+                url, filename, is_yt = input_str, info['title'], True
+            except Exception as e:
+                return await ctx.send(f"❌ 解析失敗: {e}")
+
+        elif ctx.message.attachments:
+            attachment = ctx.message.attachments[0]
+            url, filename = attachment.url, attachment.filename
+            final_id = encode_full_id(ctx.guild.id, ctx.channel.id, ctx.message.id)
+        
+        elif input_str:
+            url, filename = await self.get_attachment_info(input_str)
+            final_id = input_str
+        
+        else:
+            return await ctx.send(embed=we("ファイル添付、ID、またはYouTube URLを指定してください。"))
+
+        if not url:
+            return await ctx.send(embed=we("情報の取得に失敗しました。"))
+
+        await state['queue'].put((url, filename, final_id, is_yt))
+
+        if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
+            await self.check_queue(ctx.guild.id)
+        else:
+            await ctx.send(f"✅ キューに追加: **{filename}**")
 
         @commands.command()
         async def stop(self, ctx):
@@ -471,136 +473,135 @@ class Voice(commands.Cog):
                 vc.stop()
                 await ctx.send(embed=we("スキップしました。"))
 
-        @commands.command()
-        async def list(self, ctx, limit: int = 20):
-            embed = we(title="チャンネル内音声リスト")
-            desc = "ユニバーサルID（全サーバー共通）\n" + "─" * 20 + "\n"
-            async for msg in ctx.channel.history(limit=limit):
-                if msg.attachments:
-                    b62 = encode_full_id(ctx.guild.id, ctx.channel.id, msg.id)
-                    desc += f"`{b62}` : **{msg.attachments[0].filename}**\n"
-            embed.description = desc
-            await ctx.send(embed=embed)
+    @commands.command()
+    async def list(self, ctx, limit: int = 20):
+        embed = we(title="チャンネル内音声リスト")
+        desc = "ユニバーサルID（全サーバー共通）\n" + "─" * 20 + "\n"
+        async for msg in ctx.channel.history(limit=limit):
+            if msg.attachments:
+                b62 = encode_full_id(ctx.guild.id, ctx.channel.id, msg.id)
+                desc += f"`{b62}` : **{msg.attachments[0].filename}**\n"
+        embed.description = desc
+        await ctx.send(embed=embed)
 
-        @commands.command()
-        async def id(self, ctx):
-            async for msg in ctx.channel.history(limit=10):
-                if msg.attachments:
-                    b62 = encode_full_id(ctx.guild.id, ctx.channel.id, msg.id)
-                    embed = we(title="ユニバーサルID発行")
-                    embed.add_field(name="ファイル", value=msg.attachments[0].filename)
-                    embed.add_field(name="ID", value=f"`{b62}`")
-                    return await ctx.send(embed=embed)
+    @commands.command()
+    async def id(self, ctx):
+        async for msg in ctx.channel.history(limit=10):
+            if msg.attachments:
+                b62 = encode_full_id(ctx.guild.id, ctx.channel.id, msg.id)
+                embed = we(title="ユニバーサルID発行")
+                embed.add_field(name="ファイル", value=msg.attachments[0].filename)
+                embed.add_field(name="ID", value=f"`{b62}`")
+                return await ctx.send(embed=embed)
 
-        @commands.command()
-        async def plist(self, ctx, *, input_data: str = None):
-            """DB名、JSONファイル、またはIDリストから再生"""
-            if not ctx.voice_client: 
-                return await ctx.send("先に !join してください。")
+    @commands.command()
+    async def plist(self, ctx, *, input_data: str = None):
+        """DB名、JSONファイル、またはIDリストから再生"""
+        if not ctx.voice_client: 
+            return await ctx.send("先に !join してください。")
 
-            state = self.get_state(ctx.guild.id)
-            state['current_ctx'] = ctx
-            tokens = []
+        state = self.get_state(ctx.guild.id)
+        state['current_ctx'] = ctx
+        tokens = []
 
-            if ctx.message.attachments:
-                attachment = ctx.message.attachments[0]
+        if ctx.message.attachments:
+            attachment = ctx.message.attachments[0]
+            try:
+                content = await attachment.read()
+                tokens = json.loads(content.decode('utf-8'))
+                if not isinstance(tokens, list):
+                    tokens = [str(tokens)]
+            except Exception as e:
+                return await ctx.send(f"JSON解析エラー: {e}")
+
+        elif input_data:
+            if self.bot.supabase:
                 try:
-                    content = await attachment.read()
-                    tokens = json.loads(content.decode('utf-8'))
-                    if not isinstance(tokens, list):
-                        tokens = [str(tokens)]
-                except Exception as e:
-                    return await ctx.send(f"JSON解析エラー: {e}")
-
-            elif input_data:
-                if self.bot.supabase:
-                    try:
-                        res = self.bot.supabase.table("playlists").select("ids").eq("name", input_data).execute()
-                        if res.data:
-                            tokens = res.data[0]["ids"]
-                        else:
-                            tokens = input_data.replace(',', ' ').split()
-                    except Exception:
+                    res = self.bot.supabase.table("playlists").select("ids").eq("name", input_data).execute()
+                    if res.data:
+                        tokens = res.data[0]["ids"]
+                    else:
                         tokens = input_data.replace(',', ' ').split()
-                else:
+                except Exception:
                     tokens = input_data.replace(',', ' ').split()
-        
             else:
-                return await ctx.send("プレイリスト名、ID、またはJSONファイルを指定してください。")
-
-            added = 0
-            for token in tokens:
-                url, fname = await self.get_attachment_info(token)
-                if url:
-                    # プレイリスト内の楽曲はYouTube判定をFalse、IDをtokenとして追加
-                    await state['queue'].put((url, fname, token, False))
-                    added += 1
+                tokens = input_data.replace(',', ' ').split()
         
-            if added > 0:
-                await ctx.send(f"✅ {added} 件をキューに追加しました。")
-                if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
-                    await self.check_queue(ctx.guild.id)
-            else:
-                await ctx.send("有効なIDが見つかりませんでした。")
+        else:
+            return await ctx.send("プレイリスト名、ID、またはJSONファイルを指定してください。")
+
+        added = 0
+        for token in tokens:
+            url, fname = await self.get_attachment_info(token)
+            if url:
+                await state['queue'].put((url, fname, token, False))
+                added += 1
+        
+        if added > 0:
+            await ctx.send(f"✅ {added} 件をキューに追加しました。")
+            if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
+                await self.check_queue(ctx.guild.id)
+        else:
+            await ctx.send("有効なIDが見つかりませんでした。")
             
-        @commands.command()
-        async def save_plist(self, ctx, name: str):
-            """添付されたJSONを名前を付けてSupabaseに保存"""
-            if not self.bot.supabase: return await ctx.send("DB未設定です。")
-            if not ctx.message.attachments: return await ctx.send("JSONファイルを添付してください。")
+    @commands.command()
+    async def save_plist(self, ctx, name: str):
+        """添付されたJSONを名前を付けてSupabaseに保存"""
+        if not self.bot.supabase: return await ctx.send("DB未設定です。")
+        if not ctx.message.attachments: return await ctx.send("JSONファイルを添付してください。")
 
-            try:
-                content = await ctx.message.attachments[0].read()
-                ids = json.loads(content.decode('utf-8'))
-                self.bot.supabase.table("playlists").upsert({"name": name, "ids": ids}).execute()
-                await ctx.send(f"✅ DBにプレイリスト `{name}` を保存しました。")
-            except Exception as e:
-                await ctx.send(f"エラー: {e}")
+        try:
+            content = await ctx.message.attachments[0].read()
+            ids = json.loads(content.decode('utf-8'))
+            self.bot.supabase.table("playlists").upsert({"name": name, "ids": ids}).execute()
+            await ctx.send(f"✅ DBにプレイリスト `{name}` を保存しました。")
+        except Exception as e:
+            await ctx.send(f"エラー: {e}")
 
-        @commands.command()
-        async def save_current(self, ctx, name: str):
-            """現在のキューをそのままDBに保存"""
-            if not self.bot.supabase: return await ctx.send("DB未設定です。")
+    @commands.command()
+    async def save_current(self, ctx, name: str):
+        """現在のキューをそのままDBに保存"""
+        if not self.bot.supabase: return await ctx.send("DB未設定です。")
         
-            state = self.get_state(ctx.guild.id)
-            ids = []
-            if state['current_track']: 
-                ids.append(state['current_track'][3])
+        state = self.get_state(ctx.guild.id)
+        ids = []
+        if state['current_track']: 
+            ids.append(state['current_track'][3])
         
-            temp = []
-            while not state['queue'].empty():
-                item = await state['queue'].get()
-                temp.append(item)
-                ids.append(item[2])
-            for item in temp: 
-                await state['queue'].put(item)
+        temp = []
+        while not state['queue'].empty():
+            item = await state['queue'].get()
+            temp.append(item)
+            ids.append(item[2])
+        for item in temp: 
+            await state['queue'].put(item)
 
-            if not ids: return await ctx.send("キューが空です。")
+        if not ids: return await ctx.send("キューが空です。")
 
-            try:
-                self.bot.supabase.table("playlists").upsert({"name": name, "ids": ids}).execute()
-                await ctx.send(f"✅ 現在のキューを `{name}` として保存しました。")
-            except Exception as e:
-                await ctx.send(f"エラー: {e}")
+        try:
+            self.bot.supabase.table("playlists").upsert({"name": name, "ids": ids}).execute()
+            await ctx.send(f"✅ 現在のキューを `{name}` として保存しました。")
+        except Exception as e:
+            await ctx.send(f"エラー: {e}")
             
-        @commands.command()
-        async def logs(self, ctx, lines: int = 10):
-            log_buffer = self.bot.log_buffer
-            logs = list(log_buffer.logs)[-lines:]
-            if not logs:
-                await ctx.send("表示するログがありません。")
-                return
-            text = "\n".join(logs)
-            if len(text) > 1900:
-                text = text[-1900:]
-            await ctx.send(f"```\n{text}\n```")
+    @commands.command()
+    async def logs(self, ctx, lines: int = 10):
+        log_buffer = self.bot.log_buffer
+        logs = list(log_buffer.logs)[-lines:]
+        if not logs:
+            await ctx.send("表示するログがありません。")
+            return
+        text = "\n".join(logs)
+        if len(text) > 1900:
+            text = text[-1900:]
+        await ctx.send(f"```\n{text}\n```")
 
-        @commands.command()
-        async def sysinfo(self, ctx):
-            cpu = self.get_cpu_usage()
-            m_p, used, total = self.get_mem_usage()
-            desc = f"CPU: `{cpu:.1f}%` / Mem: `{m_p:.1f}%` ({used/1024:.0f}/{total/1024:.0f}MB)"
-            await ctx.send(embed=we(desc))
+    @commands.command()
+    async def sysinfo(self, ctx):
+        cpu = self.get_cpu_usage()
+        m_p, used, total = self.get_mem_usage()
+        desc = f"CPU: `{cpu:.1f}%` / Mem: `{m_p:.1f}%` ({used/1024:.0f}/{total/1024:.0f}MB)"
+        await ctx.send(embed=we(desc))
 # =====================
 # SaitoRelay Cog (通話系)
 # =====================
