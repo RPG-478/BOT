@@ -231,6 +231,93 @@ class Voice(commands.Cog):
     # =====================
     # Playback Logic
     # =====================
+    # =====================
+    # Playback Logic & UI Panel
+    # =====================
+class VoiceControlView(discord.ui.View):
+    """音量・倍速・再生コントロールをまとめたメニューUI"""
+    def __init__(self, cog, guild_id: int):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.guild_id = guild_id
+            
+        # 再生速度のセレクトメニューを追加
+        self.add_item(self.SpeedSelect(cog, guild_id))
+        # 音量のセレクトメニューを追加
+        self.add_item(self.VolumeSelect(cog, guild_id))
+
+    class SpeedSelect(discord.ui.Select):
+        def __init__(self, cog, guild_id):
+            self.cog = cog
+            self.guild_id = guild_id
+            state = cog.get_state(guild_id)
+            options = [
+                discord.SelectOption(label="0.5x (遅め)", value="0.5"),
+                discord.SelectOption(label="0.8x", value="0.8"),
+                discord.SelectOption(label="1.0x (標準)", value="1.0"),
+                discord.SelectOption(label="1.2x", value="1.2"),
+                discord.SelectOption(label="1.5x", value="1.5"),
+                discord.SelectOption(label="2.0x (倍速)", value="2.0"),
+            ]
+            super().__init__(placeholder=f"⚡ 速度変更 (現在: {state['speed']}x)", min_values=1, max_values=1, options=options, row=0)
+
+        async def callback(self, interaction: discord.Interaction):
+            state = self.cog.get_state(self.guild_id)
+            state['speed'] = float(self.values[0])
+            await interaction.response.send_message(f"⚡ 再生速度を `{state['speed']}` 倍に設定しました（次回再生から適用）。", ephemeral=True)
+
+    class VolumeSelect(discord.ui.Select):
+        def __init__(self, cog, guild_id):
+            self.cog = cog
+            self.guild_id = guild_id
+            state = cog.get_state(guild_id)
+            options = [
+                discord.SelectOption(label="10%", value="0.1"),
+                discord.SelectOption(label="50%", value="0.5"),
+                discord.SelectOption(label="80%", value="0.8"),
+                discord.SelectOption(label="100% (標準)", value="1.0"),
+                discord.SelectOption(label="150%", value="1.5"),
+                discord.SelectOption(label="200% (最大)", value="2.0"),
+            ]
+            super().__init__(placeholder=f"🔊 音量変更 (現在: {int(state['volume']*100)}%)", min_values=1, max_values=1, options=options, row=1)
+
+        async def callback(self, interaction: discord.Interaction):
+            state = self.cog.get_state(self.guild_id)
+            state['volume'] = float(self.values[0])
+            await interaction.response.send_message(f"🔊 音量を `{int(state['volume']*100)}%` に設定しました（次回再生から適用）。", ephemeral=True)
+
+    @discord.ui.button(label="⏮️ スキップ", style=discord.ButtonStyle.secondary, row=2)
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        state = self.cog.get_state(self.guild_id)
+        if vc and vc.is_playing():
+            state['current_track'] = None
+            vc.stop()
+            await interaction.response.send_message("⏭️ トラックをスキップしました。", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ 現在再生中の楽曲がありません。", ephemeral=True)
+
+    @discord.ui.button(label="⏹️ 全停止", style=discord.ButtonStyle.danger, row=2)
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        state = self.cog.get_state(self.guild_id)
+        if vc:
+            state['current_track'] = None
+            while not state['queue'].empty():
+                state['queue'].get_nowait()
+            vc.stop()
+            await interaction.response.send_message("⏹️ 再生を停止し、キューをクリアしました。", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ ボイスチャンネルに接続していません。", ephemeral=True)
+
+    @commands.command()
+    async def panel(self, ctx):
+        """コントロールパネルメニューを表示します"""
+        if not ctx.voice_client:
+            return await ctx.send(embed=we("先に `!join` で接続してください。"))
+        view = self.VoiceControlView(self, ctx.guild.id)
+        await ctx.send(embed=we("🎵 **ボイスコントロールパネル**\n下のメニューから音量や再生速度、トラック操作が行えます。"), view=view)
+
     async def check_queue(self, guild_id: int):
         state = self.get_state(guild_id)
         
@@ -243,7 +330,6 @@ class Voice(commands.Cog):
             state['is_processing_queue'] = False
             return
 
-        # キュー処理（既存ロジック）
         if state['current_track'] is None:
             if state['queue'].empty():
                 state['is_processing_queue'] = False
@@ -267,7 +353,6 @@ class Voice(commands.Cog):
         url, filename, duration, b62_id = state['current_track']
         state['is_processing_queue'] = True
 
-        # --- FFmpeg オプションの構築 ---
         before_options = f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
         if b62_id:
             before_options += f' -headers "User-Agent: Mozilla/5.0\r\n"'
@@ -275,18 +360,11 @@ class Voice(commands.Cog):
         if state['elapsed_offset'] > 0:
             before_options += f" -ss {state['elapsed_offset']}"
 
-        # サーバーごとの設定をFFmpegフィルター(af)に反映
         filters = []
-        
-        # 1. 倍速 (atempo)
         if state.get('speed', 1.0) != 1.0:
             filters.append(f"atempo={state['speed']}")
-        
-        # 2. 音量 (volume)
         if state.get('volume', 1.0) != 1.0:
             filters.append(f"volume={state['volume']}")
-        
-        # 3. 既存のEQエフェクト (Cog共通変数を使用している場合)
         if self.eq_filter:
             filters.append(self.eq_filter)
 
@@ -310,9 +388,7 @@ class Voice(commands.Cog):
             await self.check_queue(guild_id)
             
     def play_next(self, guild_id: int, error=None):
-        """再生終了後の処理。guild_idからstateを特定する"""
-        state = self.get_state(guild_id) # ここで state を定義！
-        
+        state = self.get_state(guild_id)
         if error:
             logging.error(f"Player error: {error}")
 
@@ -339,14 +415,12 @@ class Voice(commands.Cog):
         if not ctx.voice_client: 
             return await ctx.send("先に !join してください。")
 
-        # サーバー個別の状態を取得
         state = self.get_state(ctx.guild.id)
         state['current_ctx'] = ctx
         
         is_yt = False
         url, filename, final_id = None, None, None
 
-        # YouTube解析ロジック (yt-dlpを使用)
         if input_str and ("youtube.com" in input_str or "youtu.be" in input_str):
             await ctx.send("⏳ YouTubeを解析中...")
             try:
@@ -355,13 +429,11 @@ class Voice(commands.Cog):
             except Exception as e:
                 return await ctx.send(f"❌ 解析失敗: {e}")
 
-        # 添付ファイルがある場合
         elif ctx.message.attachments:
             attachment = ctx.message.attachments[0]
             url, filename = attachment.url, attachment.filename
             final_id = encode_full_id(ctx.guild.id, ctx.channel.id, ctx.message.id)
         
-        # IDが指定された場合
         elif input_str:
             url, filename = await self.get_attachment_info(input_str)
             final_id = input_str
@@ -372,7 +444,6 @@ class Voice(commands.Cog):
         if not url:
             return await ctx.send(embed=we("情報の取得に失敗しました。"))
 
-        # キューに追加 (4つの要素を渡す)
         await state['queue'].put((url, filename, final_id, is_yt))
 
         if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
@@ -383,17 +454,20 @@ class Voice(commands.Cog):
     @commands.command()
     async def stop(self, ctx):
         vc = ctx.voice_client
+        state = self.get_state(ctx.guild.id)
         if vc:
-            self.current_track = None
-            while not self.queue.empty(): self.queue.get_nowait()
+            state['current_track'] = None
+            while not state['queue'].empty(): 
+                state['queue'].get_nowait()
             vc.stop()
             await ctx.send(embed=we("停止しました。"))
 
     @commands.command()
     async def skip(self, ctx):
         vc = ctx.voice_client
+        state = self.get_state(ctx.guild.id)
         if vc and vc.is_playing():
-            self.current_track = None
+            state['current_track'] = None
             vc.stop()
             await ctx.send(embed=we("スキップしました。"))
 
@@ -424,10 +498,10 @@ class Voice(commands.Cog):
         if not ctx.voice_client: 
             return await ctx.send("先に !join してください。")
 
-        self.current_ctx = ctx
+        state = self.get_state(ctx.guild.id)
+        state['current_ctx'] = ctx
         tokens = []
 
-        # 1. ファイル添付がある場合 (JSONファイルを読み込む)
         if ctx.message.attachments:
             attachment = ctx.message.attachments[0]
             try:
@@ -438,16 +512,13 @@ class Voice(commands.Cog):
             except Exception as e:
                 return await ctx.send(f"JSON解析エラー: {e}")
 
-        # 2. 引数がある場合
         elif input_data:
-            # DBにその名前のプレイリストがあるか確認
             if self.bot.supabase:
                 try:
                     res = self.bot.supabase.table("playlists").select("ids").eq("name", input_data).execute()
                     if res.data:
                         tokens = res.data[0]["ids"]
                     else:
-                        # DBになければIDの羅列(スペース区切り)として扱う
                         tokens = input_data.replace(',', ' ').split()
                 except Exception:
                     tokens = input_data.replace(',', ' ').split()
@@ -457,18 +528,18 @@ class Voice(commands.Cog):
         else:
             return await ctx.send("プレイリスト名、ID、またはJSONファイルを指定してください。")
 
-        # 再生処理
         added = 0
         for token in tokens:
             url, fname = await self.get_attachment_info(token)
             if url:
-                await self.queue.put((url, fname, token))
+                # プレイリスト内の楽曲はYouTube判定をFalse、IDをtokenとして追加
+                await state['queue'].put((url, fname, token, False))
                 added += 1
         
         if added > 0:
             await ctx.send(f"✅ {added} 件をキューに追加しました。")
-            if not ctx.voice_client.is_playing() and not self.is_processing_queue:
-                await self.check_queue()
+            if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
+                await self.check_queue(ctx.guild.id)
         else:
             await ctx.send("有効なIDが見つかりませんでした。")
             
@@ -491,16 +562,18 @@ class Voice(commands.Cog):
         """現在のキューをそのままDBに保存"""
         if not self.bot.supabase: return await ctx.send("DB未設定です。")
         
+        state = self.get_state(ctx.guild.id)
         ids = []
-        if self.current_track: ids.append(self.current_track[3])
+        if state['current_track']: 
+            ids.append(state['current_track'][3])
         
-        # キューの中身を回収
         temp = []
-        while not self.queue.empty():
-            item = await self.queue.get()
+        while not state['queue'].empty():
+            item = await state['queue'].get()
             temp.append(item)
             ids.append(item[2])
-        for item in temp: await self.queue.put(item)
+        for item in temp: 
+            await state['queue'].put(item)
 
         if not ids: return await ctx.send("キューが空です。")
 
@@ -528,8 +601,6 @@ class Voice(commands.Cog):
         m_p, used, total = self.get_mem_usage()
         desc = f"CPU: `{cpu:.1f}%` / Mem: `{m_p:.1f}%` ({used/1024:.0f}/{total/1024:.0f}MB)"
         await ctx.send(embed=we(desc))
-
-
 # =====================
 # SaitoRelay Cog (通話系)
 # =====================
