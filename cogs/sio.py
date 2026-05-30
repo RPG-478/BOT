@@ -246,34 +246,49 @@ class Voice(commands.Cog):
     # =====================
     # YouTube 検索 & ボタン選択 UI
     # =====================
+    # =====================
+    # YouTube 検索 & セレクトメニュー選択 UI
+    # =====================
     class SearchView(discord.ui.View):
-        """検索結果の上位10件をボタンとして配置するビュー"""
+        """検索結果の上位10件をセレクトメニューとして配置するビュー"""
         def __init__(self, cog, guild_id, ctx, tracks):
             super().__init__(timeout=60.0)  # 1分でタイムアウト
             self.cog = cog
             self.guild_id = guild_id
             self.ctx = ctx
-            self.tracks = tracks  # [{'title': ..., 'url': ...}, ...] のリスト
+            self.tracks = tracks
             self.message = None
 
-            # 上位10件のボタンを動的に生成
+            # セレクトメニューの選択肢を作成
+            options = []
             for idx, track in enumerate(self.tracks):
-                # 1行に最大5ボタンまで配置されるため、10件なら2行に綺麗に収まります
-                button = discord.ui.Button(
-                    label=f"選択 {idx + 1}", 
-                    style=discord.ButtonStyle.primary,
-                    custom_id=str(idx),
-                    row=0 if idx < 5 else 1
-                )
-                button.callback = self.button_callback
-                self.add_item(button)
+                # メニューに表示するタイトル（長すぎる場合はカット）
+                label = f"{idx + 1}. {track['title']}"
+                if len(label) > 100:
+                    label = label[:97] + "..."
 
-        async def button_callback(self, interaction: discord.Interaction):
+                options.append(discord.SelectOption(
+                    label=label,
+                    value=str(idx),
+                    description="この楽曲を再生・キューに追加します"
+                ))
+
+            # セレクトメニューを動的に生成して追加
+            self.select_menu = discord.ui.Select(
+                placeholder="🎵 再生したい楽曲を選んでください...",
+                min_values=1,
+                max_values=1,
+                options=options
+            )
+            self.select_menu.callback = self.select_callback
+            self.add_item(self.select_menu)
+
+        async def select_callback(self, interaction: discord.Interaction):
             # コマンド実行者本人しか選べないように制限
             if interaction.user.id != self.ctx.author.id:
                 return await interaction.response.send_message("❌ この検索結果は他のユーザーのものです。", ephemeral=True)
 
-            idx = int(interaction.data['custom_id'])
+            idx = int(self.select_menu.values[0])
             selected_track = self.tracks[idx]
 
             state = self.cog.get_state(self.guild_id)
@@ -289,11 +304,10 @@ class Voice(commands.Cog):
             else:
                 await interaction.response.send_message(f"✅ キューに追加しました: **{selected_track['title']}**")
 
-            # 反応後はボタンを無効化
+            # 反応後はメニューを無効化
             await self.disable_all_items()
 
         async def on_timeout(self):
-            # タイムアウトしたらボタンを消すか無効化する
             await self.disable_all_items()
 
         async def disable_all_items(self):
@@ -308,7 +322,7 @@ class Voice(commands.Cog):
 
     @commands.command()
     async def search(self, ctx, *, keyword: str = None):
-        """YouTubeからキーワードで上位10件を検索し、ボタンで選択して再生します"""
+        """YouTubeからキーワードで上位10件を検索し、セレクトメニューで選択して再生します"""
         if not ctx.voice_client:
             return await ctx.send("先に `!join` してください。")
         if not keyword:
@@ -316,9 +330,8 @@ class Voice(commands.Cog):
 
         await ctx.send(f"🔎 YouTubeで「{keyword}」の上位10件を検索中...")
 
-        # yt-dlpの検索数を10に設定して情報を取得
         search_options = YTDL_OPTIONS.copy()
-        search_options['default_search'] = 'ytsearch10'  # 10件検索指定
+        search_options['default_search'] = 'ytsearch10'
 
         loop = asyncio.get_event_loop()
         try:
@@ -331,23 +344,20 @@ class Voice(commands.Cog):
                 tracks = []
                 description_lines = []
                 
-                # 最大10件のデータを整形
                 for idx, entry in enumerate(data['entries'][:10]):
                     title = entry.get('title', '不明なタイトル')
                     url = entry.get('webpage_url') or entry.get('url')
                     duration_sec = entry.get('duration', 0)
                     
-                    # 再生時間を 分:秒 にフォーマット
                     m, s = divmod(duration_sec, 60)
                     duration_str = f"{m}:{s:02d}" if duration_sec else "不明"
 
                     tracks.append({'title': title, 'url': url})
                     description_lines.append(f"**{idx + 1}.** {title} `[{duration_str}]`")
 
-                # 結果表示用のEmbed
                 embed = we(
                     title=f"「{keyword}」の検索結果 (上位10件)",
-                    description="\n".join(description_lines) + "\n\n再生したい番号のボタンを押してください。"
+                    description="\n".join(description_lines) + "\n\n下のメニューから曲を選択してください。"
                 )
 
                 # ビューを表示してメッセージを保持
