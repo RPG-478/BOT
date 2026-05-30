@@ -15,13 +15,13 @@ from discord.ext import voice_recv
 import threading
 import random
 
-# yt-dlpの設定（ストリーミング再生用）
+# yt-dlpの設定（ストリーミング再生用および検索用）
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
     'noplaylist': True,
     'quiet': True,
     'no_warnings': True,
-    'default_search': 'auto',
+    'default_search': 'ytsearch',  # 'auto' から 'ytsearch' に変更（検索の有効化）
     'source_address': '0.0.0.0',
 }
 # BASE62の定義
@@ -116,7 +116,7 @@ class Voice(commands.Cog):
             return 0
 
     # =====================
-    # CPU / Memory Info (省略せず保持)
+    # CPU / Memory Info
     # =====================
     def get_cpu_usage(self):
         def read_cpu():
@@ -136,8 +136,8 @@ class Voice(commands.Cog):
         try:
             mem = {}
             with open("/proc/meminfo") as f:
-                for line in f:
-                    parts = line.split(":")
+                for line_str in f:
+                    parts = line_str.split(":")
                     if len(parts) == 2: mem[parts[0]] = int(parts[1].split()[0])
             total = mem.get("MemTotal", 1)
             used = total - mem.get("MemAvailable", mem.get("MemFree", 0))
@@ -191,7 +191,7 @@ class Voice(commands.Cog):
             "superbass": "firequalizer=gain_entry='entry(31, 15); entry(62, 10); entry(125, 5)'",
             "live": "aecho=0.8:0.88:60:0.4,lowpass=f=15000,surround,extrastereo=m=1.5",
             "rotate": "apulsator=hz=0.125:amount=1",
-            "reverb": "afir", # 内部処理用フラグ
+            "reverb": "afir", 
             "flat": None
         }
         if mode not in eq_settings:
@@ -219,13 +219,21 @@ class Voice(commands.Cog):
         state['speed'] = speed
         await ctx.send(embed=we(f"⚡ このサーバーの再生速度を `{speed}` 倍に設定しました。\n(次回の再生から適用されます)"))
 
-    async def get_yt_info(self, url):
-        """yt-dlpを使用して動画情報とストリームURLを取得"""
+    async def get_yt_info(self, url_or_search):
+        """yt-dlpを使用して動画情報とストリームURLを取得 (検索対応)"""
         loop = asyncio.get_event_loop()
         with yt_dlp.YoutubeDL(YTDL_OPTIONS) as ydl:
-            data = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=False))
+            data = await loop.run_in_executor(None, lambda: ydl.extract_info(url_or_search, download=False))
+            
+            # 検索結果（entries）が含まれている場合、最初の動画を取得
+            if 'entries' in data:
+                if not data['entries']:
+                    raise Exception("検索結果が見つかりませんでした。")
+                data = data['entries'][0]
+                
             return {
-                'url': data.get('url'),
+                'url': data.get('webpage_url') or data.get('url'),
+                'stream_url': data.get('url'),
                 'title': data.get('title'),
                 'duration': data.get('duration', 0)
             }
@@ -336,8 +344,9 @@ class Voice(commands.Cog):
             
             if is_yt:
                 try:
+                    # ストリーム用URLとタイトル等の最新情報を再取得
                     info = await self.get_yt_info(target_input)
-                    state['current_track'] = (info['url'], info['title'], info['duration'], b62_id)
+                    state['current_track'] = (info['stream_url'], info['title'], info['duration'], b62_id)
                 except Exception as e:
                     logging.error(f"YouTube解析失敗: {e}")
                     await ctx.send(embed=we(f"❌ 解析失敗: {e}"))
@@ -418,6 +427,7 @@ class Voice(commands.Cog):
         is_yt = False
         url, filename, final_id = None, None, None
 
+        # 1. 入力があり、YouTubeの直URLである場合
         if input_str and ("youtube.com" in input_str or "youtu.be" in input_str):
             await ctx.send("⏳ YouTubeを解析中...")
             try:
@@ -426,17 +436,29 @@ class Voice(commands.Cog):
             except Exception as e:
                 return await ctx.send(f"❌ 解析失敗: {e}")
 
+        # 2. ファイル添付がある場合
         elif ctx.message.attachments:
             attachment = ctx.message.attachments[0]
             url, filename = attachment.url, attachment.filename
             final_id = encode_full_id(ctx.guild.id, ctx.channel.id, ctx.message.id)
         
-        elif input_str:
+        # 3. 入力があり、かつスペースを含まないBase62のユニバーサルIDらしき文字列の場合
+        elif input_str and len(input_str.split()) == 1 and all(c in BASE62 for c in input_str):
             url, filename = await self.get_attachment_info(input_str)
             final_id = input_str
+
+        # 4. 【新規追加】それ以外の文字列（キーワード）の場合、YouTube検索を行う
+        elif input_str:
+            await ctx.send(f"🔎 YouTubeで「{input_str}」を検索中...")
+            try:
+                # ytsearch:キーワード の形式でyt-dlpに渡し、1番上の動画を取得
+                info = await self.get_yt_info(f"ytsearch:{input_str}")
+                url, filename, is_yt = info['url'], info['title'], True
+            except Exception as e:
+                return await ctx.send(f"❌ 検索失敗: {e}")
         
         else:
-            return await ctx.send(embed=we("ファイル添付、ID、またはYouTube URLを指定してください。"))
+            return await ctx.send(embed=we("ファイル添付、ID、YouTube URL、または検索キーワードを指定してください。"))
 
         if not url:
             return await ctx.send(embed=we("情報の取得に失敗しました。"))
@@ -448,7 +470,6 @@ class Voice(commands.Cog):
         else:
             await ctx.send(f"✅ キューに追加: **{filename}**")
 
-    # インデント修正: playコマンドの中から外に独立させました
     @commands.command()
     async def stop(self, ctx):
         vc = ctx.voice_client
@@ -686,7 +707,7 @@ class Timer(commands.Cog):
         self.active_timers = {}
         self.ambient_running = {}
         self.sample_rate = 48000
-        self.work_stats = {}  # 修正: 不足していた work_stats の初期化を追加
+        self.work_stats = {}  
 
     def format_time(self, seconds: int) -> str:
         m, s = divmod(seconds, 60)
@@ -744,7 +765,6 @@ class Timer(commands.Cog):
     @commands.command()
     async def stop_pomo(self, ctx):
         """タイマーと環境音をすべて停止"""
-        # 修正: 存在しなかった self.stop_ambient の呼び出しエラーを防ぐ処理に変更
         task = self.active_timers.pop(ctx.guild.id, None)
         if task: task.cancel()
         if ctx.voice_client: ctx.voice_client.stop()
