@@ -145,16 +145,22 @@ class Voice(commands.Cog):
         except: return 0, 0, 0
             
     async def get_attachment_info(self, b62_id: str):
-        """ユニバーサルIDから情報を取得"""
+        """ユニバーサルIDから情報を取得。失敗時は None, None を返す"""
         try:
             guild_id, channel_id, message_id = decode_full_id(b62_id)
+            # ギルドやメッセージが取得できるかチェック
             guild = self.bot.get_guild(guild_id) or await self.bot.fetch_guild(guild_id)
+            if not guild:
+                return None, None
             channel = guild.get_channel(channel_id) or await guild.fetch_channel(channel_id)
+            if not channel:
+                return None, None
             msg = await channel.fetch_message(message_id)
             if msg.attachments:
                 return msg.attachments[0].url, msg.attachments[0].filename
         except Exception as e:
-            logging.error(f"Universal ID error ({b62_id}): {e}")
+            # ログには出すが、処理を止めずに None を返して検索に回せるようにする
+            logging.debug(f"Universal ID format match but lookup failed ({b62_id}): {e}")
         return None, None
 
     # =====================
@@ -444,14 +450,24 @@ class Voice(commands.Cog):
         
         # 3. 入力があり、かつスペースを含まないBase62のユニバーサルIDらしき文字列の場合
         elif input_str and len(input_str.split()) == 1 and all(c in BASE62 for c in input_str):
+            # まずIDとしてDiscord内を探す
             url, filename = await self.get_attachment_info(input_str)
             final_id = input_str
+            
+            # もしIDでの取得に失敗した（Discord上に存在しない）なら、検索キーワードとして扱う
+            if not url:
+                await ctx.send(f"🔎 YouTubeで「{input_str}」を検索中...")
+                try:
+                    info = await self.get_yt_info(f"ytsearch:{input_str}")
+                    url, filename, is_yt = info['url'], info['title'], True
+                    final_id = None # 検索なのでIDはリセット
+                except Exception as e:
+                    return await ctx.send(f"❌ 検索失敗: {e}")
 
-        # 4. 【新規追加】それ以外の文字列（キーワード）の場合、YouTube検索を行う
+        # 4. それ以外の文字列（キーワード）の場合、YouTube検索を行う
         elif input_str:
             await ctx.send(f"🔎 YouTubeで「{input_str}」を検索中...")
             try:
-                # ytsearch:キーワード の形式でyt-dlpに渡し、1番上の動画を取得
                 info = await self.get_yt_info(f"ytsearch:{input_str}")
                 url, filename, is_yt = info['url'], info['title'], True
             except Exception as e:
