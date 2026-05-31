@@ -193,10 +193,39 @@ class MMOCog(commands.Cog):
         self.db: Client = None  # type: ignore
 
     async def cog_load(self) -> None:
-        self.db = self.bot.supabase  # type: ignore
+        class SafePostgrestBuilder:
+            def __init__(self, builder):
+                self._builder = builder
+            def __getattr__(self, name):
+                attr = getattr(self._builder, name)
+                if callable(attr):
+                    def wrapper(*args, **kwargs):
+                        res = attr(*args, **kwargs)
+                        if name == "execute":
+                            if res is None:
+                                class FakeResponse:
+                                    data = None
+                                return FakeResponse()
+                            return res
+                        if res and res.__class__.__module__.startswith("postgrest"):
+                            return SafePostgrestBuilder(res)
+                        return res
+                    return wrapper
+                return attr
+
+        class SafeDB:
+            def __init__(self, db):
+                self._db = db
+            def table(self, *args, **kwargs):
+                return SafePostgrestBuilder(self._db.table(*args, **kwargs))
+            def __getattr__(self, name):
+                return getattr(self._db, name)
+
+        self.db = SafeDB(self.bot.supabase)  # type: ignore
         self.hunger_decay_task.start()
         self.farm_maintenance_task.start()
         self.capture_check_task.start()
+
 
     async def cog_unload(self) -> None:
         self.hunger_decay_task.cancel()
