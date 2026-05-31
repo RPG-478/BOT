@@ -8,29 +8,24 @@ import config
 import defining as df
 from keep_alive import keep_alive
 import logging
-from collections import deque  # deque のインポートが抜けていたので追加
+from collections import deque
 from supabase import create_client, Client
 
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-# 16-17行目の client = discord.Client(...) と client.supabase = supabase は削除
-
-bot = MyBot()
-bot.supabase = supabase
 
 NOTIFY_CHANNEL_ID = 1407389497016193177
 DEBUG_CHANNEL_ID = 1407389497016193177
 
-# ===== LogBuffer クラスは bot より先に定義する =====
 class LogBuffer(logging.Handler):
-    def __init__(self, maxlen=100):          # self のみ・bot は不要
+    def __init__(self, maxlen=100):
         logging.Handler.__init__(self)
         self.logs = deque(maxlen=maxlen)
  
-    def emit(self, record):                  # self を引数に追加
-        log_entry = self.format(record)      # bot→self に修正
-        self.logs.append(log_entry)          # bot→self に修正
+    def emit(self, record):
+        log_entry = self.format(record)
+        self.logs.append(log_entry)
 
 class MyBot(commands.Bot):
     def __init__(self):
@@ -42,7 +37,6 @@ class MyBot(commands.Bot):
         print(df.format_log("--- COGS LOADING PROCESS START ---"))
         
         if os.path.exists('./cogs'):
-            # フォルダ内の全ファイルを表示（認識チェック）
             files = os.listdir('./cogs')
             print(df.format_log(f"Files found in ./cogs: {files}"))
             
@@ -54,7 +48,6 @@ class MyBot(commands.Bot):
                         await self.load_extension(ext_name)
                         print(df.format_log(f"SUCCESS: {filename} loaded."))
                     except Exception:
-                        # ここでエラーの全詳細を出力
                         err_detail = traceback.format_exc()
                         print(df.format_log(f"FAILED: {filename}\n{err_detail}"))
         else:
@@ -69,7 +62,6 @@ class MyBot(commands.Bot):
     async def on_ready(self):
         print(df.format_log(f"Logged in as {self.user} (ID: {self.user.id})"))
         
-        # ロード済みのCogを一覧表示
         print(df.format_log(f"Active Cogs: {list(self.cogs.keys())}"))
         if not self.updated_notified:
             channel = self.get_channel(NOTIFY_CHANNEL_ID)
@@ -81,8 +73,8 @@ class MyBot(commands.Bot):
             self.updated_notified = True 
 
 bot = MyBot()
+bot.supabase = supabase
 
-# ===== ログ設定 =====
 log_buffer = LogBuffer(maxlen=100)
 log_buffer.setFormatter(logging.Formatter(
     "[%(levelname)s] %(asctime)s | %(message)s",
