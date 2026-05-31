@@ -906,7 +906,7 @@ class MMOCog(commands.Cog):
             await interaction.response.send_message("❌ あなたは同盟に所属していません。", ephemeral=True)
             return
 
-        if u.get("role") not in ["leader", "minister", "king"]: # あなたのソースコード上の国王(king)も考慮
+        if u.get("role") not in ["leader", "minister", "king"]:
             await interaction.response.send_message("❌ このコマンドは大臣（minister）以上の役職を持つメンバーのみ使用可能です。", ephemeral=True)
             return
 
@@ -918,14 +918,15 @@ class MMOCog(commands.Cog):
         TARGET_COINS = 1000000
 
         try:
-            # 外部キーエラー防止策（item_typeを除外して、item_id と name のみに修正）
+            # 外部キー＆NOT-NULLエラー防止策（"type" カラムに "material" を指定）
             ivs = self._get_tile(u["pos_x"], u["pos_y"]).get("individual_values") or {}
             selected_crop = ivs.get("crop", "tomato")
             existing = self.db.table("items").select("item_id").eq("item_id", selected_crop).maybe_single().execute()
             if not existing or not getattr(existing, "data", None):
                 self.db.table("items").insert({
                     "item_id": selected_crop,
-                    "name": CROP_NAMES.get(selected_crop, selected_crop)
+                    "name": CROP_NAMES.get(selected_crop, selected_crop),
+                    "type": "material"  # ← NOT-NULL制約を満たすために追加
                 }).execute()
 
             self.db.table("guilds").update({
