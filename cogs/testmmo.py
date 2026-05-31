@@ -751,24 +751,31 @@ class MMOCog(commands.Cog):
         if existing and existing.get("owner_guild_id"):
             await interaction.response.send_message("そのマスはすでに占有されています。")
             return
-        ivs     = generate_ivs(tile_type)
+
+        # 確率付き作物用の定義があれば反映
+        ivs = generate_ivs(tile_type)
+        
+        # ─── 外部キー・スキーマキャッシュエラー（item_type等）対策 ───
+        if tile_type == "farm":
+            # 確率作物対応：選ばれた作物を安全にitemsテーブルに登録
+            selected_crop = ivs.get("crop", "tomato")
+            try:
+                existing_item = self.db.table("items").select("item_id").eq("item_id", selected_crop).maybe_single().execute()
+                if not existing_item or not getattr(existing_item, "data", None):
+                    # NOT-NULL制約の 'type' カラムを満たしつつ、エラーの出る 'item_type' は含めない
+                    self.db.table("items").insert({
+                        "item_id": selected_crop,
+                        "name": CROP_NAMES.get(selected_crop, selected_crop) if 'CROP_NAMES' in globals() else "作物",
+                        "type": "material"
+                    }).execute()
+            except Exception:
+                pass # 既に登録されている場合などのエラーは無視して続行
+        # ────────────────────────────────────────────────────────
+
         hp      = WALL_HP    if tile_type == "wall" else PLAIN_HP
         max_hp  = WALL_MAX_HP if tile_type == "wall" else PLAIN_HP
         base_def = WALL_BASE_DEF if tile_type == "wall" else DEFAULT_DEF
-
-        # ─── 追加: 開拓された作物のマスタデータが存在するかチェックして自動挿入 ───
-        if tile_type == "farm":
-            crop_id = ivs.get("crop", "tomato")
-            # すでに登録されているかチェック
-            existing = self.db.table("items").select("item_id").eq("item_id", crop_id).maybe_single().execute()
-            if not existing or not getattr(existing, "data", None):
-                self.db.table("items").insert({
-                    "item_id": crop_id,
-                    "name": CROP_NAMES.get(crop_id, crop_id),
-                    "item_type": "material"
-                }).execute()
-        # ────────────────────────────────────────────────────────────────────────
-
+        
         self.db.table("tiles").upsert({
             "x": u["pos_x"], "y": u["pos_y"],
             "owner_guild_id": gid,
@@ -776,10 +783,18 @@ class MMOCog(commands.Cog):
             "tile_type": tile_type, "individual_values": ivs,
             "hp": hp, "max_hp": max_hp, "def": base_def, "connected": False,
         }).execute()
+        
         self.db.table("users").update({"hunger": u["hunger"] - 20}).eq("user_id", uid).execute()
         self._update_connections(gid)
+        
+        # 表示用テキストの調整（確率作物の名前を取得）
+        crop_disp = ""
+        if tile_type == "farm" and "crop" in ivs:
+            c_name = CROP_NAMES.get(ivs["crop"], ivs["crop"]) if 'CROP_NAMES' in globals() else ivs["crop"]
+            crop_disp = f"\n🌾 決定した栽培作物: **{c_name}**"
+
         embed = discord.Embed(title="🏗️ 開拓完了", color=discord.Color.gold(),
-            description=f"({u['pos_x']}, {u['pos_y']}) を **{tile_type}** に開拓！\n個体値: {ivs}")
+            description=f"({u['pos_x']}, {u['pos_y']}) を **{tile_type}** に開拓！\n個体値: {ivs}{crop_disp}")
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="maintain", description="マスのHPを国庫から回復します（大臣以上）")
