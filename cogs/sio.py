@@ -68,6 +68,41 @@ def we(description: str = None, title: str = None) -> discord.Embed:
     return discord.Embed(title=title, description=description, color=0xFFFFFF)
 
 
+# =====================
+# Custom EQ Modal UI
+# =====================
+class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルター入力)"):
+    """パネルから呼び出される、FFmpegオーディオフィルターの直接入力用モーダル窓"""
+    filter_input = discord.ui.TextInput(
+        label="FFmpegオーディオフィルター文字列",
+        placeholder="例: vibrato=f=4,tremolo=f=5 (空欄でフラットに戻す)",
+        required=False,
+        max_length=400,
+        style=discord.TextStyle.paragraph
+    )
+
+    def __init__(self, cog, guild_id: int):
+        super().__init__()
+        self.cog = cog
+        self.guild_id = guild_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        state = self.cog.get_state(self.guild_id)
+        user_filter = self.filter_input.value.strip()
+
+        if not user_filter:
+            state['eq'] = "flat"
+            state['custom_eq_filter'] = None
+            await interaction.response.send_message("⚙️ カスタムEQを解除しました（Flatに戻します）。", ephemeral=True)
+        else:
+            state['eq'] = "custom"
+            state['custom_eq_filter'] = user_filter
+            await interaction.response.send_message(f"⚙️ カスタムEQを設定しました:\n`{user_filter}`\n即時反映します。", ephemeral=True)
+
+        ctx = state['current_ctx'] or interaction
+        await self.cog.apply_immediate_setting(ctx)
+
+
 class Voice(commands.Cog):
 
     def __init__(self, bot):
@@ -104,7 +139,8 @@ class Voice(commands.Cog):
                 'retry_count': 0,
                 'volume': self.default_volume, # サーバーごとの音量
                 'speed': self.default_speed,     # サーバーごとの倍速
-                'eq': self.default_eq,           # サーバーごとのEQモード名
+                'eq': self.default_eq,           # サーバーごとのEQモード名（"custom" の場合はカスタムEQを適用）
+                'custom_eq_filter': None,      # 自由入力されたFFmpegフィルター文字列
                 'is_paused': False,            # 一時停止状態フラグ
                 'is_changing_setting': False   # 即時適応のための内部切り替えフラグ
             }
@@ -220,14 +256,20 @@ class Voice(commands.Cog):
             await self.check_queue(ctx.guild.id)
 
     @commands.command()
-    async def eq(self, ctx, mode: str = "flat"):
-        """音響エフェクト設定 ※即時反映"""
-        if mode not in EQ_SETTINGS:
-            return await ctx.send(embed=we(f"利用可能: {', '.join(EQ_SETTINGS.keys())}"))
-        
+    async def eq(self, ctx, *, mode: str = "flat"):
+        """音響エフェクト設定（手動直接指定対応） ※即時反映"""
         state = self.get_state(ctx.guild.id)
-        state['eq'] = mode
-        await ctx.send(embed=we(f"🎬 エフェクトを `{mode}` に変更しました。即時反映します。"))
+        
+        # プリセットに存在しない文字列の場合は、FFmpegの直接指定カスタムフィルターとして扱う
+        if mode in EQ_SETTINGS:
+            state['eq'] = mode
+            state['custom_eq_filter'] = None
+            await ctx.send(embed=we(f"🎬 エフェクトをプリセット `{mode}` に変更しました。即時反映します。"))
+        else:
+            state['eq'] = "custom"
+            state['custom_eq_filter'] = mode
+            await ctx.send(embed=we(f"⚙️ カスタムEQフィルターを設定しました:\n`{mode}`\n即時反映します。"))
+            
         await self.apply_immediate_setting(ctx)
         
     @commands.command()
@@ -396,7 +438,7 @@ class Voice(commands.Cog):
             
             self.add_item(self.SpeedSelect(cog, guild_id))
             self.add_item(self.VolumeSelect(cog, guild_id))
-            self.add_item(self.EQSelect(cog, guild_id)) # EQセレクトメニューを追加
+            self.add_item(self.EQSelect(cog, guild_id))
 
         class SpeedSelect(discord.ui.Select):
             def __init__(self, cog, guild_id):
@@ -460,15 +502,23 @@ class Voice(commands.Cog):
                     discord.SelectOption(label="Live (ライブ風)", value="live"),
                     discord.SelectOption(label="Rotate (回転音響)", value="rotate"),
                 ]
-                super().__init__(placeholder=f"🎬 EQ・エフェクト変更 (現在: {state['eq']})", min_values=1, max_values=1, options=options, row=2)
+                current_eq = state['eq'] if state['eq'] != "custom" else "custom (自由指定)"
+                super().__init__(placeholder=f"🎬 プリセットEQ選択 (現在: {current_eq})", min_values=1, max_values=1, options=options, row=2)
 
             async def callback(self, interaction: discord.Interaction):
                 state = self.cog.get_state(self.guild_id)
                 state['eq'] = self.values[0]
+                state['custom_eq_filter'] = None # プリセット選択時はカスタムをクリア
                 await interaction.response.send_message(f"🎬 エフェクトを `{state['eq']}` に変更し、即時反映します。", ephemeral=True)
                 
                 ctx = state['current_ctx'] or interaction
                 await self.cog.apply_immediate_setting(ctx)
+
+        @discord.ui.button(label="⚙️ カスタムEQ設定", style=discord.ButtonStyle.secondary, row=3)
+        async def custom_eq_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            """FFmpegフィルターを直接入力できるポップアップを表示"""
+            modal = CustomEQModal(self.cog, self.guild_id)
+            await interaction.response.send_modal(modal)
 
         @discord.ui.button(label="⏸️ 一時停止", style=discord.ButtonStyle.primary, row=3)
         async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -494,7 +544,7 @@ class Voice(commands.Cog):
             else:
                 await interaction.response.send_message("❌ 再開できる一時停止中のトラックがありません。", ephemeral=True)
 
-        @discord.ui.button(label="⏮️ スキップ", style=discord.ButtonStyle.secondary, row=3)
+        @discord.ui.button(label="⏮️ スキップ", style=discord.ButtonStyle.secondary, row=4)
         async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
             vc = interaction.guild.voice_client
             state = self.cog.get_state(self.guild_id)
@@ -507,7 +557,7 @@ class Voice(commands.Cog):
             else:
                 await interaction.response.send_message("❌ 現在再生中の楽曲がありません。", ephemeral=True)
 
-        @discord.ui.button(label="⏹️ 全停止", style=discord.ButtonStyle.danger, row=3)
+        @discord.ui.button(label="⏹️ 全停止", style=discord.ButtonStyle.danger, row=4)
         async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
             vc = interaction.guild.voice_client
             state = self.cog.get_state(self.guild_id)
@@ -590,11 +640,16 @@ class Voice(commands.Cog):
         if state.get('volume', 1.0) != 1.0:
             filters.append(f"volume={state['volume']}")
         
-        # サーバー別のEQを適用
+        # EQ・音響エフェクトの適用ロジック
         current_eq_mode = state.get('eq', 'flat')
-        eq_filter_str = EQ_SETTINGS.get(current_eq_mode)
-        if eq_filter_str:
-            filters.append(eq_filter_str)
+        if current_eq_mode == "custom" and state.get('custom_eq_filter'):
+            # 直接入力されたカスタムFFmpegフィルターを差し込む
+            filters.append(state['custom_eq_filter'])
+        else:
+            # プリセットからフィルター文字列を検索して追加
+            eq_filter_str = EQ_SETTINGS.get(current_eq_mode)
+            if eq_filter_str:
+                filters.append(eq_filter_str)
 
         af_string = f"-af {','.join(filters)}" if filters else ""
         options = f"{af_string} -vn -ar 48000 -ac 2"
@@ -607,7 +662,8 @@ class Voice(commands.Cog):
             
             # 初回再生時のみ通常のアナウンスを出す
             if state['elapsed_offset'] < 1:
-                status = f"Speed: {state['speed']}x / Vol: {state['volume']} / EQ: {current_eq_mode}"
+                eq_label = "custom" if current_eq_mode == "custom" else current_eq_mode
+                status = f"Speed: {state['speed']}x / Vol: {state['volume']} / EQ: {eq_label}"
                 await ctx.send(embed=we(f"🎵 再生中: **{filename}**\n`{status}`"))
         
         except Exception as e:
