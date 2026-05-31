@@ -90,6 +90,51 @@ TILE_EMOJI = {
 # ■ 純粋ヘルパー関数
 # ══════════════════════════════════════════════════════════════
 
+def _fade(t: float) -> float:
+    """Perlinノイズ用の5次エルミート補間（なめらかにする計算）"""
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+
+def _lerp(t: float, a: float, b: float) -> float:
+    """線形補間"""
+    return a + t * (b - a)
+
+def _dot_grid_gradient(ix: int, iy: int, x: float, y: float, seed: int) -> float:
+    """格子点(ix, iy)のランダムな勾配ベクトルと、点(x, y)へのベクトルとの内積を計算"""
+    state = (ix * 1836311903 + iy * 2971215073 + seed * 42342347) & 0xFFFFFFFF
+    rg = random.Random(state)
+    angle = rg.random() * 2.0 * math.pi
+    dx = math.cos(angle)
+    dy = math.sin(angle)
+    xf = x - float(ix)
+    yf = y - float(iy)
+    return (xf * dx + yf * dy)
+
+def get_perlin_noise(x: float, y: float, seed: int) -> float:
+    """指定した座標(x, y)におけるPerlinノイズの値を返します"""
+    x0 = math.floor(x)
+    x1 = x0 + 1
+    y0 = math.floor(y)
+    y1 = y0 + 1
+    sx = _fade(x - float(x0))
+    sy = _fade(y - float(y0))
+    n00 = _dot_grid_gradient(x0, y0, x, y, seed)
+    n10 = _dot_grid_gradient(x1, y0, x, y, seed)
+    n01 = _dot_grid_gradient(x0, y1, x, y, seed)
+    n11 = _dot_grid_gradient(x1, y1, x, y, seed)
+    ix0 = _lerp(sx, n00, n10)
+    ix1 = _lerp(sx, n01, n11)
+    return _lerp(sy, ix0, ix1)
+
+def get_individual_value_perlin(x: int, y: int, seed: int = 0, max_iv: int = 31) -> int:
+    """メイン関数：Perlinノイズを用いて座標(x, y)の個体値を 0 〜 max_iv の間で返します"""
+    frequency = 15.0
+    nx = x / frequency
+    ny = y / frequency
+    noise_val = get_perlin_noise(nx, ny, seed)
+    normalized = (noise_val / 1.414) + 0.5
+    normalized = max(0.0, min(1.0, normalized))
+    return round(normalized * max_iv)
+    
 def calc_maintenance_cost(tile_count: int) -> int:
     return int(MAINTENANCE_BASE_COST * (MAINTENANCE_SCALE ** max(0, tile_count - 1)))
 
