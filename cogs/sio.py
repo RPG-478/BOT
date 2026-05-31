@@ -27,6 +27,19 @@ YTDL_OPTIONS = {
 # BASE62の定義
 BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
 
+# 音響エフェクト（EQ）の設定マップ
+EQ_SETTINGS = {
+    "flat": None,
+    "bass": "bass=g=10,dynaudnorm",
+    "echo": "aecho=0.8:0.8:200:0.4",
+    "hall": "extrastereo=m=2.5",
+    "vocal": "firequalizer=gain_entry='entry(100, -5); entry(1000, 5); entry(4000, 5); entry(8000, 0)'",
+    "superbass": "firequalizer=gain_entry='entry(31, 15); entry(62, 10); entry(125, 5)'",
+    "live": "aecho=0.8:0.88:60:0.4,lowpass=f=15000,surround,extrastereo=m=1.5",
+    "rotate": "apulsator=hz=0.125:amount=1",
+    "reverb": "afir"
+}
+
 def encode_full_id(guild_id: int, channel_id: int, message_id: int) -> str:
     """サーバー・チャンネル・メッセージの3つのIDを1つの62進数に統合"""
     combined = (guild_id << 128) | (channel_id << 64) | message_id
@@ -63,7 +76,6 @@ class Voice(commands.Cog):
         self.emoji_sounds = {}
         self.states = {} # サーバーごとのデータを格納
         self.log_buffer = bot.log_buffer
-        self.eq_filter = None
         self.queue = asyncio.Queue()
         self.current_ctx = None
         self.is_processing_queue = False
@@ -77,9 +89,10 @@ class Voice(commands.Cog):
         self.ir_r_id = "d424KTRkAlaetACCuFZOCjUtFO0p0TMN"
         self.default_volume = 1.0
         self.default_speed = 1.0
+        self.default_eq = "flat"
 
     def get_state(self, guild_id: int):
-        """サーバーごとの状態を取得。音量と倍速の設定を保持"""
+        """サーバーごとの状態を取得。音量と倍速、EQの設定を保持"""
         if guild_id not in self.states:
             self.states[guild_id] = {
                 'queue': asyncio.Queue(),
@@ -91,6 +104,7 @@ class Voice(commands.Cog):
                 'retry_count': 0,
                 'volume': self.default_volume, # サーバーごとの音量
                 'speed': self.default_speed,     # サーバーごとの倍速
+                'eq': self.default_eq,           # サーバーごとのEQモード名
                 'is_paused': False,            # 一時停止状態フラグ
                 'is_changing_setting': False   # 即時適応のための内部切り替えフラグ
             }
@@ -187,25 +201,6 @@ class Voice(commands.Cog):
             await vc.disconnect()
             await ctx.send(embed=we("切断しました。"))
 
-    @commands.command()
-    async def eq(self, ctx, mode: str = "flat"):
-        """音響エフェクト設定"""
-        eq_settings = {
-            "bass": "bass=g=10,dynaudnorm",
-            "echo": "aecho=0.8:0.8:200:0.4",
-            "hall": "extrastereo=m=2.5",
-            "vocal": "firequalizer=gain_entry='entry(100, -5); entry(1000, 5); entry(4000, 5); entry(8000, 0)'",
-            "superbass": "firequalizer=gain_entry='entry(31, 15); entry(62, 10); entry(125, 5)'",
-            "live": "aecho=0.8:0.88:60:0.4,lowpass=f=15000,surround,extrastereo=m=1.5",
-            "rotate": "apulsator=hz=0.125:amount=1",
-            "reverb": "afir", 
-            "flat": None
-        }
-        if mode not in eq_settings:
-            return await ctx.send(embed=we(f"利用可能: {', '.join(eq_settings.keys())}"))
-        self.eq_filter = eq_settings[mode]
-        await ctx.send(embed=we(f"エフェクトを `{mode}` に変更しました。"))
-        
     async def apply_immediate_setting(self, ctx):
         """設定変更時に現在の秒数を保持して、即時再生成・再生させる内部ヘルパー"""
         vc = ctx.voice_client
@@ -224,6 +219,17 @@ class Voice(commands.Cog):
             state['is_changing_setting'] = False
             await self.check_queue(ctx.guild.id)
 
+    @commands.command()
+    async def eq(self, ctx, mode: str = "flat"):
+        """音響エフェクト設定 ※即時反映"""
+        if mode not in EQ_SETTINGS:
+            return await ctx.send(embed=we(f"利用可能: {', '.join(EQ_SETTINGS.keys())}"))
+        
+        state = self.get_state(ctx.guild.id)
+        state['eq'] = mode
+        await ctx.send(embed=we(f"🎬 エフェクトを `{mode}` に変更しました。即時反映します。"))
+        await self.apply_immediate_setting(ctx)
+        
     @commands.command()
     async def volume(self, ctx, vol: float):
         """音量を変更 (0.1 ～ 2.0) ※即時反映"""
@@ -382,7 +388,7 @@ class Voice(commands.Cog):
     # Playback Logic & UI Panel
     # =====================
     class VoiceControlView(discord.ui.View):
-        """音量・倍速・再生コントロールをまとめたメニューUI"""
+        """音量・倍速・EQ・再生コントロールをまとめたメニューUI"""
         def __init__(self, cog, guild_id: int):
             super().__init__(timeout=None)
             self.cog = cog
@@ -390,6 +396,7 @@ class Voice(commands.Cog):
             
             self.add_item(self.SpeedSelect(cog, guild_id))
             self.add_item(self.VolumeSelect(cog, guild_id))
+            self.add_item(self.EQSelect(cog, guild_id)) # EQセレクトメニューを追加
 
         class SpeedSelect(discord.ui.Select):
             def __init__(self, cog, guild_id):
@@ -437,7 +444,33 @@ class Voice(commands.Cog):
                 ctx = state['current_ctx'] or interaction
                 await self.cog.apply_immediate_setting(ctx)
 
-        @discord.ui.button(label="⏸️ 一時停止", style=discord.ButtonStyle.primary, row=2)
+        class EQSelect(discord.ui.Select):
+            def __init__(self, cog, guild_id):
+                self.cog = cog
+                self.guild_id = guild_id
+                state = cog.get_state(guild_id)
+                
+                options = [
+                    discord.SelectOption(label="Flat (標準)", value="flat"),
+                    discord.SelectOption(label="Bass (低音強調)", value="bass"),
+                    discord.SelectOption(label="SuperBass (超重低音)", value="superbass"),
+                    discord.SelectOption(label="Vocal (ボーカル強調)", value="vocal"),
+                    discord.SelectOption(label="Echo (エコー)", value="echo"),
+                    discord.SelectOption(label="Hall (ホール感)", value="hall"),
+                    discord.SelectOption(label="Live (ライブ風)", value="live"),
+                    discord.SelectOption(label="Rotate (回転音響)", value="rotate"),
+                ]
+                super().__init__(placeholder=f"🎬 EQ・エフェクト変更 (現在: {state['eq']})", min_values=1, max_values=1, options=options, row=2)
+
+            async def callback(self, interaction: discord.Interaction):
+                state = self.cog.get_state(self.guild_id)
+                state['eq'] = self.values[0]
+                await interaction.response.send_message(f"🎬 エフェクトを `{state['eq']}` に変更し、即時反映します。", ephemeral=True)
+                
+                ctx = state['current_ctx'] or interaction
+                await self.cog.apply_immediate_setting(ctx)
+
+        @discord.ui.button(label="⏸️ 一時停止", style=discord.ButtonStyle.primary, row=3)
         async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
             vc = interaction.guild.voice_client
             state = self.cog.get_state(self.guild_id)
@@ -450,7 +483,7 @@ class Voice(commands.Cog):
             else:
                 await interaction.response.send_message("❌ 現在再生中ではないか、既に一時停止されています。", ephemeral=True)
 
-        @discord.ui.button(label="▶️ 再開", style=discord.ButtonStyle.success, row=2)
+        @discord.ui.button(label="▶️ 再開", style=discord.ButtonStyle.success, row=3)
         async def resume_button(self, interaction: discord.Interaction, button: discord.ui.Button):
             vc = interaction.guild.voice_client
             state = self.cog.get_state(self.guild_id)
@@ -461,7 +494,7 @@ class Voice(commands.Cog):
             else:
                 await interaction.response.send_message("❌ 再開できる一時停止中のトラックがありません。", ephemeral=True)
 
-        @discord.ui.button(label="⏮️ スキップ", style=discord.ButtonStyle.secondary, row=2)
+        @discord.ui.button(label="⏮️ スキップ", style=discord.ButtonStyle.secondary, row=3)
         async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
             vc = interaction.guild.voice_client
             state = self.cog.get_state(self.guild_id)
@@ -474,7 +507,7 @@ class Voice(commands.Cog):
             else:
                 await interaction.response.send_message("❌ 現在再生中の楽曲がありません。", ephemeral=True)
 
-        @discord.ui.button(label="⏹️ 全停止", style=discord.ButtonStyle.danger, row=2)
+        @discord.ui.button(label="⏹️ 全停止", style=discord.ButtonStyle.danger, row=3)
         async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
             vc = interaction.guild.voice_client
             state = self.cog.get_state(self.guild_id)
@@ -497,7 +530,7 @@ class Voice(commands.Cog):
         state = self.get_state(ctx.guild.id)
         state['current_ctx'] = ctx # コントロール対象のコンテキストを保持
         view = self.VoiceControlView(self, ctx.guild.id)
-        await ctx.send(embed=we("🎵 **ボイスコントロールパネル**\n下のメニューから音量や再生速度、トラック操作が行えます。"), view=view)
+        await ctx.send(embed=we("🎵 **ボイスコントロールパネル**\n下のメニューから音量や再生速度、EQ（エフェクト）、トラック操作が行えます。"), view=view)
 
     async def check_queue(self, guild_id: int):
         state = self.get_state(guild_id)
@@ -556,8 +589,12 @@ class Voice(commands.Cog):
             filters.append(f"atempo={state['speed']}")
         if state.get('volume', 1.0) != 1.0:
             filters.append(f"volume={state['volume']}")
-        if self.eq_filter:
-            filters.append(self.eq_filter)
+        
+        # サーバー別のEQを適用
+        current_eq_mode = state.get('eq', 'flat')
+        eq_filter_str = EQ_SETTINGS.get(current_eq_mode)
+        if eq_filter_str:
+            filters.append(eq_filter_str)
 
         af_string = f"-af {','.join(filters)}" if filters else ""
         options = f"{af_string} -vn -ar 48000 -ac 2"
@@ -570,7 +607,7 @@ class Voice(commands.Cog):
             
             # 初回再生時のみ通常のアナウンスを出す
             if state['elapsed_offset'] < 1:
-                status = f"Speed: {state['speed']}x / Vol: {state['volume']}"
+                status = f"Speed: {state['speed']}x / Vol: {state['volume']} / EQ: {current_eq_mode}"
                 await ctx.send(embed=we(f"🎵 再生中: **{filename}**\n`{status}`"))
         
         except Exception as e:
