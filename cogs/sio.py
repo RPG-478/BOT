@@ -67,7 +67,7 @@ class Voice(commands.Cog):
         self.queue = asyncio.Queue()
         self.current_ctx = None
         self.is_processing_queue = False
-        self.current_track = None  # (url, filename, total_duration, b62_id)
+        self.current_track = None  # (url, filename, total_duration, b62_id, is_yt)
         self.start_time = 0
         self.elapsed_offset = 0
         self.retry_count = 0
@@ -90,7 +90,8 @@ class Voice(commands.Cog):
                 'elapsed_offset': 0,
                 'retry_count': 0,
                 'volume': self.default_volume, # サーバーごとの音量
-                'speed': self.default_speed     # サーバーごとの倍速
+                'speed': self.default_speed,     # サーバーごとの倍速
+                'is_paused': False             # 一時停止フラグ
             }
         return self.states[guild_id]
 
@@ -182,7 +183,8 @@ class Voice(commands.Cog):
     async def leave(self, ctx):
         vc = ctx.voice_client
         if vc:
-            while not self.queue.empty(): self.queue.get_nowait()
+            state = self.get_state(ctx.guild.id)
+            while not state['queue'].empty(): state['queue'].get_nowait()
             await vc.disconnect()
             await ctx.send(embed=we("切断しました。"))
 
@@ -243,9 +245,7 @@ class Voice(commands.Cog):
                 'title': data.get('title'),
                 'duration': data.get('duration', 0)
             }
-    # =====================
-    # YouTube 検索 & ボタン選択 UI
-    # =====================
+
     # =====================
     # YouTube 検索 & セレクトメニュー選択 UI
     # =====================
@@ -421,12 +421,39 @@ class Voice(commands.Cog):
                 state['volume'] = float(self.values[0])
                 await interaction.response.send_message(f"🔊 音量を `{int(state['volume']*100)}%` に設定しました（次回再生から適用）。", ephemeral=True)
 
+        @discord.ui.button(label="⏸️ 一時停止", style=discord.ButtonStyle.primary, row=2)
+        async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            vc = interaction.guild.voice_client
+            state = self.cog.get_state(self.guild_id)
+            if vc and vc.is_playing():
+                # 再生時間を計算して保持
+                actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
+                state['elapsed_offset'] += actual_played
+                state['is_paused'] = True
+                vc.stop()
+                await interaction.response.send_message(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ 現在再生中ではないか、既に一時停止されています。", ephemeral=True)
+
+        @discord.ui.button(label="▶️ 再開", style=discord.ButtonStyle.success, row=2)
+        async def resume_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            vc = interaction.guild.voice_client
+            state = self.cog.get_state(self.guild_id)
+            if vc and state['is_paused'] and state['current_track']:
+                state['is_paused'] = False
+                await self.cog.check_queue(self.guild_id)
+                await interaction.response.send_message("▶️ 一時停止から再生を再開しました。", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ 再開できる一時停止中のトラックがありません。", ephemeral=True)
+
         @discord.ui.button(label="⏮️ スキップ", style=discord.ButtonStyle.secondary, row=2)
         async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
             vc = interaction.guild.voice_client
             state = self.cog.get_state(self.guild_id)
-            if vc and vc.is_playing():
+            if vc and (vc.is_playing() or state['is_paused']):
                 state['current_track'] = None
+                state['elapsed_offset'] = 0
+                state['is_paused'] = False
                 vc.stop()
                 await interaction.response.send_message("⏭️ トラックをスキップしました。", ephemeral=True)
             else:
@@ -438,6 +465,8 @@ class Voice(commands.Cog):
             state = self.cog.get_state(self.guild_id)
             if vc:
                 state['current_track'] = None
+                state['elapsed_offset'] = 0
+                state['is_paused'] = False
                 while not state['queue'].empty():
                     state['queue'].get_nowait()
                 vc.stop()
@@ -476,7 +505,7 @@ class Voice(commands.Cog):
                 try:
                     # ストリーム用URLとタイトル等の最新情報を再取得
                     info = await self.get_yt_info(target_input)
-                    state['current_track'] = (info['stream_url'], info['title'], info['duration'], b62_id)
+                    state['current_track'] = (info['stream_url'], info['title'], info['duration'], b62_id, is_yt)
                 except Exception as e:
                     logging.error(f"YouTube解析失敗: {e}")
                     await ctx.send(embed=we(f"❌ 解析失敗: {e}"))
@@ -484,15 +513,25 @@ class Voice(commands.Cog):
                     return await self.check_queue(guild_id)
             else:
                 duration = await self.get_duration(target_input)
-                state['current_track'] = (target_input, filename, duration, b62_id) 
+                state['current_track'] = (target_input, filename, duration, b62_id, is_yt) 
 
-        url, filename, duration, b62_id = state['current_track']
+        url, filename, duration, b62_id, is_yt = state['current_track']
+        
+        # もしYouTube楽曲でかつ再開時の場合、ストリームURLが切れている可能性を考慮して最新URLを再取得する
+        if state['is_paused'] and is_yt:
+            try:
+                info = await self.get_yt_info(url)
+                url = info['stream_url']
+            except Exception as e:
+                logging.debug(f"Resume URL refresh failed, original will be used: {e}")
+
         state['is_processing_queue'] = True
 
         before_options = f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
         if b62_id:
             before_options += f' -headers "User-Agent: Mozilla/5.0\r\n"'
         
+        # 一時停止から再開、またはシーク用の秒数指定
         if state['elapsed_offset'] > 0:
             before_options += f" -ss {state['elapsed_offset']}"
 
@@ -516,6 +555,8 @@ class Voice(commands.Cog):
             if state['elapsed_offset'] < 1:
                 status = f"Speed: {state['speed']}x / Vol: {state['volume']}"
                 await ctx.send(embed=we(f"🎵 再生中: **{filename}**\n`{status}`"))
+            elif not state['is_paused']:
+                await ctx.send(embed=we(f"▶️ `{int(state['elapsed_offset'])}秒` から再生を再開しました: **{filename}**"))
         
         except Exception as e:
             logging.error(f"Playback error: {e}")
@@ -528,7 +569,13 @@ class Voice(commands.Cog):
         if error:
             logging.error(f"Player error: {error}")
 
-        actual_played = time.time() - state['start_time']
+        # 手動で一時停止(pause)されたことによる停止の場合は、内部での自動play_nextをスキップして保留する
+        if state['is_paused']:
+            state['is_processing_queue'] = False
+            return
+
+        # 実際に再生された時間を計算（倍速設定を考慮）
+        actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
         state['elapsed_offset'] += actual_played
         
         track = state['current_track']
@@ -605,28 +652,59 @@ class Voice(commands.Cog):
 
         await state['queue'].put((url, filename, final_id, is_yt))
 
-        if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
+        if not ctx.voice_client.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
             await self.check_queue(ctx.guild.id)
         else:
             await ctx.send(f"✅ キューに追加: **{filename}**")
 
     @commands.command()
-    async def stop(self, ctx):
+    async def stop_all(self, ctx):
+        """再生を完全に停止し、キューと一時停止状態をクリアします"""
         vc = ctx.voice_client
         state = self.get_state(ctx.guild.id)
         if vc:
             state['current_track'] = None
+            state['elapsed_offset'] = 0
+            state['is_paused'] = False
             while not state['queue'].empty(): 
                 state['queue'].get_nowait()
             vc.stop()
-            await ctx.send(embed=we("停止しました。"))
+            await ctx.send(embed=we("完全に停止し、キューをクリアしました。"))
+
+    @commands.command()
+    async def pause(self, ctx):
+        """現在の楽曲を現在の秒数で一時停止します"""
+        vc = ctx.voice_client
+        state = self.get_state(ctx.guild.id)
+        if vc and vc.is_playing():
+            # 現在までの秒数を計算して保持
+            actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
+            state['elapsed_offset'] += actual_played
+            state['is_paused'] = True
+            vc.stop()  # コアが停止され、play_nextがトリガーされますが、is_paused判定で保留されます
+            await ctx.send(embed=we(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)\n`!resume` で再開できます。"))
+        else:
+            await ctx.send(embed=we("現在楽曲を再生していません。"))
+
+    @commands.command()
+    async def resume(self, ctx):
+        """一時停止した秒数から再生を再開します"""
+        vc = ctx.voice_client
+        state = self.get_state(ctx.guild.id)
+        if vc and state['is_paused'] and state['current_track']:
+            state['is_paused'] = False
+            await self.check_queue(ctx.guild.id)
+        else:
+            await ctx.send(embed=we("一時停止中のトラックがありません。"))
 
     @commands.command()
     async def skip(self, ctx):
         vc = ctx.voice_client
         state = self.get_state(ctx.guild.id)
-        if vc and vc.is_playing():
+        if vc and (vc.is_playing() or state['is_paused']):
             state['current_track'] = None
+            state['elapsed_offset'] = 0
+            state['is_paused'] = False
             vc.stop()
             await ctx.send(embed=we("スキップしました。"))
 
@@ -696,7 +774,7 @@ class Voice(commands.Cog):
         
         if added > 0:
             await ctx.send(f"✅ {added} 件をキューに追加しました。")
-            if not ctx.voice_client.is_playing() and not state['is_processing_queue']:
+            if not ctx.voice_client.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
                 await self.check_queue(ctx.guild.id)
         else:
             await ctx.send("有効なIDが見つかりませんでした。")
