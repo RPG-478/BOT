@@ -787,7 +787,7 @@ class MMOCog(commands.Cog):
     async def cmd_farm_work(self, interaction: discord.Interaction) -> None:
         uid = str(interaction.user.id)
         gid = str(interaction.guild_id)
-        u   = self._get_user(uid)
+        u = self._get_user(uid)
         if not u:
             await interaction.response.send_message("`/join` で参加してください。")
             return
@@ -808,24 +808,45 @@ class MMOCog(commands.Cog):
         if not g or g["treasury_coins"] < g["labor_reward"]:
             await interaction.response.send_message("国庫が不足しており給料を支払えません。")
             return
-        fertility = (tile.get("individual_values") or {}).get("fertility", 50)
+
+        # ─── 修正箇所: タイルの個体値からあらかじめ決まっている作物を取得 ───
+        ivs = tile.get("individual_values") or {}
+        fertility = ivs.get("fertility", 50)
+        selected_crop = ivs.get("crop", "tomato") # 決まっていない古いマスの場合はトマト
+        # ──────────────────────────────────────────────────────────────
+
         yield_qty = calc_farm_yield(fertility)
-        is_foreign  = u["guild_id"] != tile["owner_guild_id"]
-        reward      = g["labor_reward"]
+        is_foreign = u["guild_id"] != tile["owner_guild_id"]
+        reward = g["labor_reward"]
         foreign_fee = int(reward * 0.20) if is_foreign else 0
-        reward     -= foreign_fee
-        net, tax    = self._apply_tax(u["guild_id"], reward)
+        reward -= foreign_fee
+        net, tax = self._apply_tax(u["guild_id"], reward)
+        
         self.db.table("guilds").update({
             "treasury_coins": g["treasury_coins"] - g["labor_reward"] + foreign_fee
         }).eq("guild_id", gid).execute()
-        self._add_stack_item(tile["owner_guild_id"], "tomato", yield_qty)
+        
+        # 決定された作物を国庫倉庫に格納
+        self._add_stack_item(tile["owner_guild_id"], selected_crop, yield_qty)
+        
         self.db.table("users").update({
-            "coins":  u["coins"] + net,
+            "coins": u["coins"] + net,
             "hunger": max(0, u["hunger"] - HUNGER_COST_LABOR),
         }).eq("user_id", uid).execute()
+        
+        # ログ表示用の日本語名マッピング
+        crop_names = {
+            "tomato": "トマト",
+            "cabbage": "キャベツ",
+            "potato": "ジャガイモ",
+            "carrot": "ニンジン",
+            "strawberry": "イチゴ"
+        }
+        crop_display = crop_names.get(selected_crop, selected_crop)
+
         embed = discord.Embed(title="🌾 ファーム労働完了", color=discord.Color.green())
-        embed.add_field(name="収穫量（国庫倉庫へ）", value=f"トマト × {yield_qty}")
-        embed.add_field(name="給料（税引後）",       value=f"{net} コイン（税: {tax}）")
+        embed.add_field(name="収穫量（国庫倉庫へ）", value=f"{crop_display} × {yield_qty}")
+        embed.add_field(name="給料（税引後）", value=f"{net} コイン（税: {tax}）")
         if is_foreign:
             embed.add_field(name="外国人手数料", value=f"{foreign_fee} コイン")
         await interaction.response.send_message(embed=embed)
