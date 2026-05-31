@@ -771,11 +771,11 @@ class MMOCog(commands.Cog):
             try:
                 existing_item = self.db.table("items").select("item_id").eq("item_id", selected_crop).maybe_single().execute()
                 if not existing_item or not getattr(existing_item, "data", None):
-                    # NOT-NULL制約の 'type' カラムを満たしつつ、エラーの出る 'item_type' は含めない
+                    # 【ここが置き換わっています】"type" に CROP_TYPES から取得した値を入れます
                     self.db.table("items").insert({
                         "item_id": selected_crop,
                         "name": CROP_NAMES.get(selected_crop, selected_crop) if 'CROP_NAMES' in globals() else "作物",
-                        "type": "material"
+                        "type": CROP_TYPES.get(selected_crop, "material")
                     }).execute()
             except Exception:
                 pass # 既に登録されている場合などのエラーは無視して続行
