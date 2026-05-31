@@ -527,6 +527,51 @@ class MMOCog(commands.Cog):
                         f"新たな国王の誕生を称えましょう！"
         )
         await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="transfer_item", description="手持ちのアイテムを他のプレイヤーに譲渡します")
+    @app_commands.describe(target="譲渡先のプレイヤー", item_id="アイテムID", quantity="数量")
+    async def cmd_transfer_item(self, interaction: discord.Interaction, target: discord.Member, item_id: str, quantity: int) -> None:
+        uid = str(interaction.user.id)
+        target_uid = str(target.id)
+
+        # 1. 参加状況のチェック
+        u = self._get_user(uid)
+        if not u:
+            await interaction.response.send_message("❌ `/join` でゲームに参加してください。", ephemeral=True)
+            return
+
+        target_user = self._get_user(target_uid)
+        if not target_user:
+            await interaction.response.send_message("❌ 譲渡対象のプレイヤーはゲームに参加していません。", ephemeral=True)
+            return
+
+        # 2. 自分自身への譲渡を禁止
+        if uid == target_uid:
+            await interaction.response.send_message("❌ 自分自身にアイテムを譲渡することはできません。", ephemeral=True)
+            return
+
+        # 3. 数量の不正値チェック
+        if quantity <= 0:
+            await interaction.response.send_message("❌ 数量は1以上を指定してください。", ephemeral=True)
+            return
+
+        # 4. アイテムの消費・付与処理
+        # _consume_stack_itemはアイテムが足りていれば消費してTrueを返し、足りなければFalseを返します
+        if not self._consume_stack_item(uid, item_id, quantity):
+            await interaction.response.send_message(f"❌ インベントリに `{item_id}` が不足しているか、所持していません。", ephemeral=True)
+            return
+
+        # 譲渡先にアイテムを追加
+        self._add_stack_item(target_uid, item_id, quantity)
+
+        # 5. 完了メッセージの送信
+        embed = discord.Embed(
+            title="🎁 アイテム譲渡完了",
+            color=discord.Color.green(),
+            description=f"{interaction.user.mention} から {target.mention} へアイテムが譲渡されました。"
+        )
+        embed.add_field(name="譲渡アイテム", value=f"`{item_id}` × {quantity}")
+        await interaction.response.send_message(embed=embed)
     
     @app_commands.command(name="status", description="自分のステータスを確認します")
     async def cmd_status(self, interaction: discord.Interaction) -> None:
