@@ -208,20 +208,20 @@ class MMOCog(commands.Cog):
     # ──────────────────────────────────────────
 
     def _get_user(self, uid: str) -> Optional[dict]:
-        return self.db.table("users").select("*").eq(
-            "user_id", uid).maybe_single().execute().data
+        res = self.db.table("users").select("*").eq("user_id", uid).maybe_single().execute()
+        return res.data if res else None
 
     def _get_guild(self, gid: str) -> Optional[dict]:
-        return self.db.table("guilds").select("*").eq(
-            "guild_id", gid).maybe_single().execute().data
+        res = self.db.table("guilds").select("*").eq("guild_id", gid).maybe_single().execute()
+        return res.data if res else None
 
     def _get_tile(self, x: int, y: int) -> Optional[dict]:
-        return self.db.table("tiles").select("*").eq(
-            "x", x).eq("y", y).maybe_single().execute().data
+        res = self.db.table("tiles").select("*").eq("x", x).eq("y", y).maybe_single().execute()
+        return res.data if res else None
 
     def _get_railway(self, x: int, y: int) -> Optional[dict]:
-        return self.db.table("railways").select("*").eq(
-            "x", x).eq("y", y).maybe_single().execute().data
+        res = self.db.table("railways").select("*").eq("x", x).eq("y", y).maybe_single().execute()
+        return res.data if res else None
 
     def _ensure_guild(self, guild_id: str) -> dict:
         res = self.db.table("guilds").select("*").eq(
