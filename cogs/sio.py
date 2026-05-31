@@ -91,7 +91,8 @@ class Voice(commands.Cog):
                 'retry_count': 0,
                 'volume': self.default_volume, # サーバーごとの音量
                 'speed': self.default_speed,     # サーバーごとの倍速
-                'is_paused': False             # 一時停止フラグ
+                'is_paused': False,            # 一時停止状態フラグ
+                'is_changing_setting': False   # 即時適応のための内部切り替えフラグ
             }
         return self.states[guild_id]
 
@@ -149,7 +150,6 @@ class Voice(commands.Cog):
         """ユニバーサルIDから情報を取得。失敗時は None, None を返す"""
         try:
             guild_id, channel_id, message_id = decode_full_id(b62_id)
-            # ギルドやメッセージが取得できるかチェック
             guild = self.bot.get_guild(guild_id) or await self.bot.fetch_guild(guild_id)
             if not guild:
                 return None, None
@@ -160,7 +160,6 @@ class Voice(commands.Cog):
             if msg.attachments:
                 return msg.attachments[0].url, msg.attachments[0].filename
         except Exception as e:
-            # ログには出すが、処理を止めずに None を返して検索に回せるようにする
             logging.debug(f"Universal ID format match but lookup failed ({b62_id}): {e}")
         return None, None
 
@@ -207,25 +206,45 @@ class Voice(commands.Cog):
         self.eq_filter = eq_settings[mode]
         await ctx.send(embed=we(f"エフェクトを `{mode}` に変更しました。"))
         
+    async def apply_immediate_setting(self, ctx):
+        """設定変更時に現在の秒数を保持して、即時再生成・再生させる内部ヘルパー"""
+        vc = ctx.voice_client
+        state = self.get_state(ctx.guild.id)
+        if vc and vc.is_playing() and state['current_track']:
+            # 変更前の速度で進んだ実時間を計算してオフセットに加算
+            actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
+            state['elapsed_offset'] += actual_played
+            
+            # play_nextでの次トラック移行処理を防ぐフラグを立てて停止
+            state['is_changing_setting'] = True
+            vc.stop()
+            
+            # 少し待ってから新しい設定で再生を再開
+            await asyncio.sleep(0.2)
+            state['is_changing_setting'] = False
+            await self.check_queue(ctx.guild.id)
+
     @commands.command()
     async def volume(self, ctx, vol: float):
-        """音量を変更 (0.1 ～ 2.0) ※サーバー個別保存"""
+        """音量を変更 (0.1 ～ 2.0) ※即時反映"""
         if not 0.1 <= vol <= 2.0:
             return await ctx.send(embed=we("音量は 0.1 から 2.0 の間で指定してください。"))
         
         state = self.get_state(ctx.guild.id)
         state['volume'] = vol
-        await ctx.send(embed=we(f"🔊 このサーバーの音量を `{vol}` に設定しました。\n(次回の再生から適用されます)"))
+        await ctx.send(embed=we(f"🔊 音量を `{vol}` に設定しました。即時反映します。"))
+        await self.apply_immediate_setting(ctx)
 
     @commands.command()
     async def speed(self, ctx, speed: float):
-        """再生速度を変更 (0.5 ～ 2.0) ※サーバー個別保存"""
+        """再生速度を変更 (0.5 ～ 2.0) ※即時反映"""
         if not 0.5 <= speed <= 2.0:
             return await ctx.send(embed=we("速度は 0.5 から 2.0 の間で指定してください。"))
         
         state = self.get_state(ctx.guild.id)
         state['speed'] = speed
-        await ctx.send(embed=we(f"⚡ このサーバーの再生速度を `{speed}` 倍に設定しました。\n(次回の再生から適用されます)"))
+        await ctx.send(embed=we(f"⚡ 再生速度を `{speed}` 倍に設定しました。即時反映します。"))
+        await self.apply_immediate_setting(ctx)
 
     async def get_yt_info(self, url_or_search):
         """yt-dlpを使用して動画情報とストリームURLを取得 (検索対応)"""
@@ -233,7 +252,6 @@ class Voice(commands.Cog):
         with yt_dlp.YoutubeDL(YTDL_OPTIONS) as ydl:
             data = await loop.run_in_executor(None, lambda: ydl.extract_info(url_or_search, download=False))
             
-            # 検索結果（entries）が含まれている場合、最初の動画を取得
             if 'entries' in data:
                 if not data['entries']:
                     raise Exception("検索結果が見つかりませんでした。")
@@ -252,17 +270,15 @@ class Voice(commands.Cog):
     class SearchView(discord.ui.View):
         """検索結果の上位10件をセレクトメニューとして配置するビュー"""
         def __init__(self, cog, guild_id, ctx, tracks):
-            super().__init__(timeout=60.0)  # 1分でタイムアウト
+            super().__init__(timeout=60.0)
             self.cog = cog
             self.guild_id = guild_id
             self.ctx = ctx
             self.tracks = tracks
             self.message = None
 
-            # セレクトメニューの選択肢を作成
             options = []
             for idx, track in enumerate(self.tracks):
-                # メニューに表示するタイトル（長すぎる場合はカット）
                 label = f"{idx + 1}. {track['title']}"
                 if len(label) > 100:
                     label = label[:97] + "..."
@@ -273,7 +289,6 @@ class Voice(commands.Cog):
                     description="この楽曲を再生・キューに追加します"
                 ))
 
-            # セレクトメニューを動的に生成して追加
             self.select_menu = discord.ui.Select(
                 placeholder="🎵 再生したい楽曲を選んでください...",
                 min_values=1,
@@ -284,7 +299,6 @@ class Voice(commands.Cog):
             self.add_item(self.select_menu)
 
         async def select_callback(self, interaction: discord.Interaction):
-            # コマンド実行者本人しか選べないように制限
             if interaction.user.id != self.ctx.author.id:
                 return await interaction.response.send_message("❌ この検索結果は他のユーザーのものです。", ephemeral=True)
 
@@ -294,17 +308,14 @@ class Voice(commands.Cog):
             state = self.cog.get_state(self.guild_id)
             state['current_ctx'] = self.ctx
 
-            # キューにタプル形式で格納 (url, filename, final_id, is_yt)
             await state['queue'].put((selected_track['url'], selected_track['title'], None, True))
 
-            # 再生中でなければ再生を開始
-            if not self.ctx.voice_client.is_playing() and not state['is_processing_queue']:
+            if not self.ctx.voice_client.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
                 await self.cog.check_queue(self.guild_id)
                 await interaction.response.send_message(f"🎵 **{selected_track['title']}** を再生します！")
             else:
                 await interaction.response.send_message(f"✅ キューに追加しました: **{selected_track['title']}**")
 
-            # 反応後はメニューを無効化
             await self.disable_all_items()
 
         async def on_timeout(self):
@@ -360,7 +371,6 @@ class Voice(commands.Cog):
                     description="\n".join(description_lines) + "\n\n下のメニューから曲を選択してください。"
                 )
 
-                # ビューを表示してメッセージを保持
                 view = self.SearchView(self, ctx.guild.id, ctx, tracks)
                 view.message = await ctx.send(embed=embed, view=view)
 
@@ -399,7 +409,10 @@ class Voice(commands.Cog):
             async def callback(self, interaction: discord.Interaction):
                 state = self.cog.get_state(self.guild_id)
                 state['speed'] = float(self.values[0])
-                await interaction.response.send_message(f"⚡ 再生速度を `{state['speed']}` 倍に設定しました（次回再生から適用）。", ephemeral=True)
+                await interaction.response.send_message(f"⚡ 再生速度を `{state['speed']}` 倍に設定し、即時反映します。", ephemeral=True)
+                
+                ctx = state['current_ctx'] or interaction
+                await self.cog.apply_immediate_setting(ctx)
 
         class VolumeSelect(discord.ui.Select):
             def __init__(self, cog, guild_id):
@@ -419,14 +432,16 @@ class Voice(commands.Cog):
             async def callback(self, interaction: discord.Interaction):
                 state = self.cog.get_state(self.guild_id)
                 state['volume'] = float(self.values[0])
-                await interaction.response.send_message(f"🔊 音量を `{int(state['volume']*100)}%` に設定しました（次回再生から適用）。", ephemeral=True)
+                await interaction.response.send_message(f"🔊 音量を `{int(state['volume']*100)}%` に設定し、即時反映します。", ephemeral=True)
+                
+                ctx = state['current_ctx'] or interaction
+                await self.cog.apply_immediate_setting(ctx)
 
         @discord.ui.button(label="⏸️ 一時停止", style=discord.ButtonStyle.primary, row=2)
         async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
             vc = interaction.guild.voice_client
             state = self.cog.get_state(self.guild_id)
             if vc and vc.is_playing():
-                # 再生時間を計算して保持
                 actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
                 state['elapsed_offset'] += actual_played
                 state['is_paused'] = True
@@ -442,7 +457,7 @@ class Voice(commands.Cog):
             if vc and state['is_paused'] and state['current_track']:
                 state['is_paused'] = False
                 await self.cog.check_queue(self.guild_id)
-                await interaction.response.send_message("▶️ 一時停止から再生を再開しました。", ephemeral=True)
+                await interaction.response.send_message("▶️ 再生を再開しました。", ephemeral=True)
             else:
                 await interaction.response.send_message("❌ 再開できる一時停止中のトラックがありません。", ephemeral=True)
 
@@ -470,7 +485,7 @@ class Voice(commands.Cog):
                 while not state['queue'].empty():
                     state['queue'].get_nowait()
                 vc.stop()
-                await interaction.response.send_message("⏹️ 再生を停止し、キューをクリアしました。", ephemeral=True)
+                await interaction.response.send_message("⏹️ 再生を完全に停止し、キューをクリアしました。", ephemeral=True)
             else:
                 await interaction.response.send_message("❌ ボイスチャンネルに接続していません。", ephemeral=True)
 
@@ -479,6 +494,8 @@ class Voice(commands.Cog):
         """コントロールパネルメニューを表示します"""
         if not ctx.voice_client:
             return await ctx.send(embed=we("先に `!join` で接続してください。"))
+        state = self.get_state(ctx.guild.id)
+        state['current_ctx'] = ctx # コントロール対象のコンテキストを保持
         view = self.VoiceControlView(self, ctx.guild.id)
         await ctx.send(embed=we("🎵 **ボイスコントロールパネル**\n下のメニューから音量や再生速度、トラック操作が行えます。"), view=view)
 
@@ -503,7 +520,6 @@ class Voice(commands.Cog):
             
             if is_yt:
                 try:
-                    # ストリーム用URLとタイトル等の最新情報を再取得
                     info = await self.get_yt_info(target_input)
                     state['current_track'] = (info['stream_url'], info['title'], info['duration'], b62_id, is_yt)
                 except Exception as e:
@@ -517,13 +533,13 @@ class Voice(commands.Cog):
 
         url, filename, duration, b62_id, is_yt = state['current_track']
         
-        # もしYouTube楽曲でかつ再開時の場合、ストリームURLが切れている可能性を考慮して最新URLを再取得する
-        if state['is_paused'] and is_yt:
+        # 一時停止から復帰時のYouTubeストリーム切れ対策としてURLを再リフレッシュ
+        if state['elapsed_offset'] > 0 and is_yt:
             try:
                 info = await self.get_yt_info(url)
                 url = info['stream_url']
-            except Exception as e:
-                logging.debug(f"Resume URL refresh failed, original will be used: {e}")
+            except Exception:
+                pass
 
         state['is_processing_queue'] = True
 
@@ -531,7 +547,7 @@ class Voice(commands.Cog):
         if b62_id:
             before_options += f' -headers "User-Agent: Mozilla/5.0\r\n"'
         
-        # 一時停止から再開、またはシーク用の秒数指定
+        # 一時停止・音量変更位置からのシーク設定
         if state['elapsed_offset'] > 0:
             before_options += f" -ss {state['elapsed_offset']}"
 
@@ -552,11 +568,10 @@ class Voice(commands.Cog):
             
             vc.play(source, after=lambda e: self.bot.loop.call_soon_threadsafe(self.play_next, guild_id, e))
             
+            # 初回再生時のみ通常のアナウンスを出す
             if state['elapsed_offset'] < 1:
                 status = f"Speed: {state['speed']}x / Vol: {state['volume']}"
                 await ctx.send(embed=we(f"🎵 再生中: **{filename}**\n`{status}`"))
-            elif not state['is_paused']:
-                await ctx.send(embed=we(f"▶️ `{int(state['elapsed_offset'])}秒` から再生を再開しました: **{filename}**"))
         
         except Exception as e:
             logging.error(f"Playback error: {e}")
@@ -569,12 +584,15 @@ class Voice(commands.Cog):
         if error:
             logging.error(f"Player error: {error}")
 
-        # 手動で一時停止(pause)されたことによる停止の場合は、内部での自動play_nextをスキップして保留する
+        # 手動で一時停止された、もしくは設定即時反映のために意図的に停止された場合は保留する
         if state['is_paused']:
             state['is_processing_queue'] = False
             return
+        if state['is_changing_setting']:
+            state['is_processing_queue'] = False
+            return
 
-        # 実際に再生された時間を計算（倍速設定を考慮）
+        # 実際に進んだ時間（設定速度を考慮）を加算
         actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
         state['elapsed_offset'] += actual_played
         
@@ -619,23 +637,21 @@ class Voice(commands.Cog):
             url, filename = attachment.url, attachment.filename
             final_id = encode_full_id(ctx.guild.id, ctx.channel.id, ctx.message.id)
         
-        # 3. 入力があり、かつスペースを含まないBase62のユニバーサルIDらしき文字列の場合
+        # 3. 入力があり、Base62のユニバーサルIDらしき文字列の場合
         elif input_str and len(input_str.split()) == 1 and all(c in BASE62 for c in input_str):
-            # まずIDとしてDiscord内を探す
             url, filename = await self.get_attachment_info(input_str)
             final_id = input_str
             
-            # もしIDでの取得に失敗した（Discord上に存在しない）なら、検索キーワードとして扱う
             if not url:
                 await ctx.send(f"🔎 YouTubeで「{input_str}」を検索中...")
                 try:
                     info = await self.get_yt_info(f"ytsearch:{input_str}")
                     url, filename, is_yt = info['url'], info['title'], True
-                    final_id = None # 検索なのでIDはリセット
+                    final_id = None
                 except Exception as e:
                     return await ctx.send(f"❌ 検索失敗: {e}")
 
-        # 4. それ以外の文字列（キーワード）の場合、YouTube検索を行う
+        # 4. キーワード検索の場合
         elif input_str:
             await ctx.send(f"🔎 YouTubeで「{input_str}」を検索中...")
             try:
@@ -673,27 +689,27 @@ class Voice(commands.Cog):
 
     @commands.command()
     async def pause(self, ctx):
-        """現在の楽曲を現在の秒数で一時停止します"""
+        """現在の楽曲を一時停止します（再生位置を保持）"""
         vc = ctx.voice_client
         state = self.get_state(ctx.guild.id)
         if vc and vc.is_playing():
-            # 現在までの秒数を計算して保持
             actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
             state['elapsed_offset'] += actual_played
             state['is_paused'] = True
-            vc.stop()  # コアが停止され、play_nextがトリガーされますが、is_paused判定で保留されます
+            vc.stop()
             await ctx.send(embed=we(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)\n`!resume` で再開できます。"))
         else:
             await ctx.send(embed=we("現在楽曲を再生していません。"))
 
     @commands.command()
     async def resume(self, ctx):
-        """一時停止した秒数から再生を再開します"""
+        """一時停止した位置から再生を再開します"""
         vc = ctx.voice_client
         state = self.get_state(ctx.guild.id)
         if vc and state['is_paused'] and state['current_track']:
             state['is_paused'] = False
             await self.check_queue(ctx.guild.id)
+            await ctx.send(embed=we(f"▶️ 一時停止位置から再生を再開しました。"))
         else:
             await ctx.send(embed=we("一時停止中のトラックがありません。"))
 
