@@ -947,10 +947,11 @@ class MMOCog(commands.Cog):
             selected_crop = ivs.get("crop", "tomato")
             existing = self.db.table("items").select("item_id").eq("item_id", selected_crop).maybe_single().execute()
             if not existing or not getattr(existing, "data", None):
+                # 【ここが置き換わっています】"type" に CROP_TYPES から取得した値を入れます
                 self.db.table("items").insert({
                     "item_id": selected_crop,
                     "name": CROP_NAMES.get(selected_crop, selected_crop),
-                    "type": "material"  # データベースのNOT-NULL制約用
+                    "type": CROP_TYPES.get(selected_crop, "material")
                 }).execute()
 
             # 国庫残高を100万に更新
