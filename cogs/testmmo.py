@@ -37,8 +37,8 @@ FARM_REPAIR_HOURS      = 12
 
 # --- プレイヤー ---
 INITIAL_COINS          = 500
-INITIAL_HUNGER         = 100
-HUNGER_MAX             = 100
+INITIAL_HUNGER         = 1000
+HUNGER_MAX             = 1000
 HUNGER_MIN             = 0
 HUNGER_DECAY_PER_HOUR  = 5
 HUNGER_COST_MOVE       = 10
