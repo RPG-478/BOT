@@ -918,7 +918,7 @@ class MMOCog(commands.Cog):
         TARGET_COINS = 1000000
 
         try:
-            # 外部キー＆NOT-NULLエラー防止策（"type" カラムに "material" を指定）
+            # 外部キー＆NOT-NULL制約の対策
             ivs = self._get_tile(u["pos_x"], u["pos_y"]).get("individual_values") or {}
             selected_crop = ivs.get("crop", "tomato")
             existing = self.db.table("items").select("item_id").eq("item_id", selected_crop).maybe_single().execute()
@@ -926,19 +926,23 @@ class MMOCog(commands.Cog):
                 self.db.table("items").insert({
                     "item_id": selected_crop,
                     "name": CROP_NAMES.get(selected_crop, selected_crop),
-                    "type": "material"  # ← NOT-NULL制約を満たすために追加
+                    "type": "material"  # データベースのNOT-NULL制約用
                 }).execute()
 
+            # 国庫残高を100万に更新
             self.db.table("guilds").update({
                 "treasury_coins": TARGET_COINS
             }).eq("guild_id", gid).execute()
 
+            # 元のコードに合わせて g["guild_name"] ではなく g["name"] に修正
+            guild_display_name = g.get("name", "あなたの同盟")
+
             embed = discord.Embed(
                 title="🏛️ 国庫金の設定完了（管理者）", 
                 color=discord.Color.gold(),
-                description=f"同盟 **{g['guild_name']}** の国庫残高を更新しました。"
+                description=f"同盟 **{guild_display_name}** の国庫残高を更新しました。"
             )
-            embed.add_field(name="元の残高", value=f"{g['treasury_coins']:,} コイン", inline=True)
+            embed.add_field(name="元の残高", value=f"{g.get('treasury_coins', 0):,} コイン", inline=True)
             embed.add_field(name="新しい残高", value=f"{TARGET_COINS:,} コイン", inline=True)
             embed.set_footer(text=f"実行者: {interaction.user.display_name} ({u['role']})")
             
