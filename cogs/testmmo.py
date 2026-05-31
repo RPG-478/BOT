@@ -292,6 +292,26 @@ class MMOCog(commands.Cog):
                 return getattr(self._db, name)
 
         self.db = SafeDB(self.bot.supabase)  # type: ignore
+
+        # ─── 【追加】新しい作物のマスタデータを自動同期 ───
+        try:
+            new_crops = [
+                {"item_id": "cabbage", "name": "キャベツ", "item_type": "material"},
+                {"item_id": "potato", "name": "ジャガイモ", "item_type": "material"},
+                {"item_id": "carrot", "name": "ニンジン", "item_type": "material"},
+                {"item_id": "strawberry", "name": "イチゴ", "item_type": "material"},
+            ]
+            for crop in new_crops:
+                # 既に登録されているか確認
+                existing = self.db.table("items").select("item_id").eq("item_id", crop["item_id"]).maybe_single().execute()
+                # データがなければデータベースに自動挿入
+                if not existing or not getattr(existing, "data", None):
+                    self.db.table("items").insert(crop).execute()
+                    print(f"[Master Sync] 不足アイテムを追加しました: {crop['name']}")
+        except Exception as e:
+            print(f"[Warning] 作物マスタの自動追加に失敗しました: {e}")
+        # ──────────────────────────────────────────────────
+
         self.hunger_decay_task.start()
         self.farm_maintenance_task.start()
         self.capture_check_task.start()
