@@ -892,6 +892,61 @@ class MMOCog(commands.Cog):
             embed.add_field(name="外国人手数料", value=f"{foreign_fee} コイン")
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(name="set_treasury_debug", description="【大臣以上専用】所属している同盟の国庫残高を1,000,000コインに設定します")
+    async def cmd_set_treasury_debug(self, interaction: discord.Interaction) -> None:
+        uid = str(interaction.user.id)
+        u = self._get_user(uid)
+        
+        if not u:
+            await interaction.response.send_message("❌ `/join` で参加してから実行してください。", ephemeral=True)
+            return
+
+        gid = u.get("guild_id")
+        if not gid:
+            await interaction.response.send_message("❌ あなたは同盟に所属していません。", ephemeral=True)
+            return
+
+        if u.get("role") not in ["leader", "minister"]:
+            await interaction.response.send_message("❌ このコマンドは大臣（minister）以上の役職を持つメンバーのみ使用可能です。", ephemeral=True)
+            return
+
+        g = self._get_guild(gid)
+        if not g:
+            await interaction.response.send_message("❌ 同盟の情報が見つかりませんでした。", ephemeral=True)
+            return
+
+        TARGET_COINS = 1000000
+
+        try:
+            # 外部キーエラー防止策として、新アイテムが存在しない場合はitemsテーブルにその場で登録する処理
+            ivs = self._get_tile(u["pos_x"], u["pos_y"]).get("individual_values") or {}
+            selected_crop = ivs.get("crop", "tomato")
+            existing = self.db.table("items").select("item_id").eq("item_id", selected_crop).maybe_single().execute()
+            if not existing or not getattr(existing, "data", None):
+                self.db.table("items").insert({
+                    "item_id": selected_crop,
+                    "name": CROP_NAMES.get(selected_crop, selected_crop),
+                    "item_type": "material"
+                }).execute()
+
+            self.db.table("guilds").update({
+                "treasury_coins": TARGET_COINS
+            }).eq("guild_id", gid).execute()
+
+            embed = discord.Embed(
+                title="🏛️ 国庫金の設定完了（管理者）", 
+                color=discord.Color.gold(),
+                description=f"同盟 **{g['guild_name']}** の国庫残高を更新しました。"
+            )
+            embed.add_field(name="元の残高", value=f"{g['treasury_coins']:,} コイン", inline=True)
+            embed.add_field(name="新しい残高", value=f"{TARGET_COINS:,} コイン", inline=True)
+            embed.set_footer(text=f"実行者: {interaction.user.display_name} ({u['role']})")
+            
+            await interaction.response.send_message(embed=embed)
+
+        except Exception as e:
+            await interaction.response.send_message(f"❌ データベースの更新中にエラーが発生しました: {e}", ephemeral=True)
+
     @app_commands.command(name="mine_work", description="現在地の鉱山で国策労働します")
     async def cmd_mine_work(self, interaction: discord.Interaction) -> None:
         uid = str(interaction.user.id)
