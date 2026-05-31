@@ -156,14 +156,14 @@ def calc_maintenance_cost(tile_count: int) -> int:
 
 def generate_ivs(tile_type: str) -> dict:
     if tile_type == "farm":
-        # 定数で設定した確率（重み）に従ってランダムに1つ選定
+        # 設定された確率に基づいてランダムに作物を1つ決定
         population = list(FARM_CROP_WEIGHTS.keys())
         weights = list(FARM_CROP_WEIGHTS.values())
         selected_crop = random.choices(population, weights=weights, k=1)[0]
         
         return {
             "fertility": random.randint(1, 100),
-            "crop": selected_crop  # 開拓時に確定した作物を保存
+            "crop": selected_crop  # 開拓したマスに作物を固定保存
         }
     if tile_type == "mine":
         return {"purity": random.randint(1, 100)}
