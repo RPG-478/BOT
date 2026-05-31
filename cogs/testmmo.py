@@ -226,7 +226,7 @@ class MMOCog(commands.Cog):
     def _ensure_guild(self, guild_id: str) -> dict:
         res = self.db.table("guilds").select("*").eq(
             "guild_id", guild_id).maybe_single().execute()
-        if res.data:
+        if res and res.data:  # ← res が None でないことも確認する
             return res.data
         new_guild = {"guild_id": guild_id, "treasury_coins": 1000}
         self.db.table("guilds").insert(new_guild).execute()
