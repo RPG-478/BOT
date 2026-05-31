@@ -423,15 +423,65 @@ class MMOCog(commands.Cog):
             return
         g = self._ensure_guild(gid)
         sx, sy = g.get("capital_x", 0), g.get("capital_y", 0)
+
+        # サーバー（国家）に既に他のユーザーが所属しているかチェック
+        existing_citizens = self.db.table("users").select("user_id").eq("guild_id", gid).execute().data or []
+        
+        # 最初の参加者なら国王(king)、それ以外は一般国民(citizen)にする
+        assigned_role = "king" if len(existing_citizens) == 0 else "citizen"
+
         self.db.table("users").insert({
             "user_id": uid, "guild_id": gid,
             "coins": INITIAL_COINS, "hunger": INITIAL_HUNGER,
-            "pos_x": sx, "pos_y": sy, "role": "citizen",
+            "pos_x": sx, "pos_y": sy, "role": assigned_role,
         }).execute()
-        embed = discord.Embed(title="🎉 参加完了", color=discord.Color.green(),
-            description=f"国家 `{gid}` に参加！\n初期所持金: **{INITIAL_COINS}コイン** / 出現地: ({sx}, {sy})")
+
+        role_text = "👑 国王" if assigned_role == "king" else "国民"
+        embed = discord.Embed(
+            title="🎉 参加完了", 
+            color=discord.Color.green(),
+            description=f"国家 `{gid}` に参加！\n役職: **{role_text}**\n初期所持金: **{INITIAL_COINS}コイン** / 出現地: ({sx}, {sy})"
+        )
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(name="transfer_king", description="【国王専用】国王の座を他の国民に譲渡します")
+    @app_commands.describe(target="譲渡対象の国民")
+    async def cmd_transfer_king(self, interaction: discord.Interaction, target: discord.Member) -> None:
+        uid = str(interaction.user.id)
+        gid = str(interaction.guild_id)
+        target_uid = str(target.id)
+
+        # 1. 自分が国王であるかチェック
+        current_user = self._get_user(uid)
+        if not current_user or current_user.get("guild_id") != gid or current_user.get("role") != "king":
+            await interaction.response.send_message("❌ このコマンドは国王のみが実行できます。", ephemeral=True)
+            return
+
+        # 2. 自分自身に譲渡しようとしていないかチェック
+        if uid == target_uid:
+            await interaction.response.send_message("❌ 自分自身に国王を譲渡することはできません。", ephemeral=True)
+            return
+
+        # 3. 譲渡対象が同じ国の国民かチェック
+        target_user = self._get_user(target_uid)
+        if not target_user or target_user.get("guild_id") != gid:
+            await interaction.response.send_message("❌ 対象のユーザーはこの国家の国民ではありません。", ephemeral=True)
+            return
+
+        # 4. 役職の更新処理 (トランザクション的に2件とも確実にアップデート)
+        # 対象者を国王に昇格
+        self.db.table("users").update({"role": "king"}).eq("user_id", target_uid).execute()
+        # 元の国王(自分)を一般国民に降格
+        self.db.table("users").update({"role": "citizen"}).eq("user_id", uid).execute()
+
+        embed = discord.Embed(
+            title="👑 国王位譲渡",
+            color=discord.Color.gold(),
+            description=f"{interaction.user.mention} 様から {target.mention} へ国王の座が譲渡されました！\n"
+                        f"新たな国王の誕生を称えましょう！"
+        )
+        await interaction.response.send_message(embed=embed)
+    
     @app_commands.command(name="status", description="自分のステータスを確認します")
     async def cmd_status(self, interaction: discord.Interaction) -> None:
         u = self._get_user(str(interaction.user.id))
