@@ -14,9 +14,11 @@ from supabase import create_client, Client
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# 16-17行目の client = discord.Client(...) と client.supabase = supabase は削除
 
-client = discord.Client(intents=discord.Intents.default())
-client.supabase = supabase  # ★ 重要：Cogが自動でこれを取得します
+bot = MyBot()
+bot.supabase = supabase
+
 NOTIFY_CHANNEL_ID = 1407389497016193177
 DEBUG_CHANNEL_ID = 1407389497016193177
 
