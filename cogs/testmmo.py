@@ -296,10 +296,10 @@ class MMOCog(commands.Cog):
         # ─── 【追加】新しい作物のマスタデータを自動同期 ───
         try:
             new_crops = [
-                {"item_id": "cabbage", "name": "キャベツ", "item_type": "material"},
-                {"item_id": "potato", "name": "ジャガイモ", "item_type": "material"},
-                {"item_id": "carrot", "name": "ニンジン", "item_type": "material"},
-                {"item_id": "strawberry", "name": "イチゴ", "item_type": "material"},
+                {"item_id": "cabbage", "name": "キャベツ", "item_type": "food"},
+                {"item_id": "potato", "name": "ジャガイモ", "item_type": "food"},
+                {"item_id": "carrot", "name": "ニンジン", "item_type": "food"},
+                {"item_id": "strawberry", "name": "イチゴ", "item_type": "food"},
             ]
             for crop in new_crops:
                 # 既に登録されているか確認
