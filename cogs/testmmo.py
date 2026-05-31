@@ -735,6 +735,20 @@ class MMOCog(commands.Cog):
         hp      = WALL_HP    if tile_type == "wall" else PLAIN_HP
         max_hp  = WALL_MAX_HP if tile_type == "wall" else PLAIN_HP
         base_def = WALL_BASE_DEF if tile_type == "wall" else DEFAULT_DEF
+
+        # ─── 追加: 開拓された作物のマスタデータが存在するかチェックして自動挿入 ───
+        if tile_type == "farm":
+            crop_id = ivs.get("crop", "tomato")
+            # すでに登録されているかチェック
+            existing = self.db.table("items").select("item_id").eq("item_id", crop_id).maybe_single().execute()
+            if not existing or not getattr(existing, "data", None):
+                self.db.table("items").insert({
+                    "item_id": crop_id,
+                    "name": CROP_NAMES.get(crop_id, crop_id),
+                    "item_type": "material"
+                }).execute()
+        # ────────────────────────────────────────────────────────────────────────
+
         self.db.table("tiles").upsert({
             "x": u["pos_x"], "y": u["pos_y"],
             "owner_guild_id": gid,
