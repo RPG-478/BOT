@@ -1,7 +1,4 @@
-"""
-cogs/mmo.py — Discord仮想国家経済MMO 統合Cog
-（WorldCog / PlayerCog / EconomyCog / PoliticsCog / RailwayCog / RaidCog を1ファイルに統合）
-"""
+
 from __future__ import annotations
 import datetime
 import random
