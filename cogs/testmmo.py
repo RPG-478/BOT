@@ -419,8 +419,8 @@ class MMOMainView(discord.ui.View):
     @discord.ui.button(label="⬆", style=discord.ButtonStyle.secondary, row=0, custom_id="mmo_u")
     async def move_u(self, i, b): await self._move(i, 0, -1)
 
-    @discord.ui.button(label="↗", style=discord.ButtonStyle.secondary, row=0, custom_id="mmo_ru")
-    async def move_ru(self, i, b): await self._move(i, 1, -1)
+    @discord.ui.button(label="↖", style=discord.ButtonStyle.secondary, row=0, custom_id="mmo_lu")
+    async def move_lu(self, interaction: discord.Interaction, button: discord.ui.Button): await self._move(interaction, -1, -1)
 
     # ── 移動ボタン Row 1 ──────────────────────────────
     @discord.ui.button(label="⬅", style=discord.ButtonStyle.secondary, row=1, custom_id="mmo_l")
