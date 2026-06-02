@@ -298,7 +298,7 @@ class ImmigrationConfirmView(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         uid = str(interaction.user.id)
         new_gid = self.target_guild["guild_id"]
-        new_coins = self.user["coins"] - self.exit_fee - self.entry_fee
+        new_coins = self.user.get("coins", 0) - self.exit_fee - self.entry_fee
         if self.old_gid and self.exit_fee > 0:
             old_g = self.db.table("guilds").select("treasury_coins").eq(
                 "guild_id", self.old_gid).maybe_single().execute().data
