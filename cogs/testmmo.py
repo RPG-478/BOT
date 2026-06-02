@@ -413,35 +413,35 @@ class MMOMainView(discord.ui.View):
         await self._refresh(interaction, f"移動 → ({nx}, {ny})")
 
     # ── 移動ボタン Row 0 ──────────────────────────────
-    @discord.ui.button(label="↖", style=discord.ButtonStyle.secondary, row=0, custom_id="mmo_lu")
+    @discord.ui.button(label="↖️", style=discord.ButtonStyle.secondary, row=0, custom_id="mmo_lu")
     async def move_lu(self, i, b): await self._move(i, -1, -1)
 
     @discord.ui.button(label="⬆", style=discord.ButtonStyle.secondary, row=0, custom_id="mmo_u")
     async def move_u(self, i, b): await self._move(i, 0, -1)
 
-    @discord.ui.button(label="↖", style=discord.ButtonStyle.secondary, row=0, custom_id="mmo_lu")
-    async def move_lu(self, interaction: discord.Interaction, button: discord.ui.Button): await self._move(interaction, -1, -1)
+    @discord.ui.button(label="↗️", style=discord.ButtonStyle.secondary, row=0, custom_id="mmo_lu")
+    async def move_lu(self, interaction: discord.Interaction, button: discord.ui.Button): await self._move(interaction, 1, -1)
 
     # ── 移動ボタン Row 1 ──────────────────────────────
     @discord.ui.button(label="⬅", style=discord.ButtonStyle.secondary, row=1, custom_id="mmo_l")
     async def move_l(self, i, b): await self._move(i, -1, 0)
 
-    @discord.ui.button(label="●", style=discord.ButtonStyle.secondary, row=1, custom_id="mmo_c")
+    @discord.ui.button(label="🔄", style=discord.ButtonStyle.secondary, row=1, custom_id="mmo_c")
     async def move_c(self, i, b):
         await i.response.defer()
         await self._refresh(i, "現在地を確認")
 
-    @discord.ui.button(label="➡", style=discord.ButtonStyle.secondary, row=1, custom_id="mmo_r")
+    @discord.ui.button(label="➡️", style=discord.ButtonStyle.secondary, row=1, custom_id="mmo_r")
     async def move_r(self, i, b): await self._move(i, 1, 0)
 
     # ── 移動ボタン Row 2 ──────────────────────────────
-    @discord.ui.button(label="↙", style=discord.ButtonStyle.secondary, row=2, custom_id="mmo_ld")
+    @discord.ui.button(label="↙️", style=discord.ButtonStyle.secondary, row=2, custom_id="mmo_ld")
     async def move_ld(self, i, b): await self._move(i, -1, 1)
 
     @discord.ui.button(label="⬇", style=discord.ButtonStyle.secondary, row=2, custom_id="mmo_d")
     async def move_d(self, i, b): await self._move(i, 0, 1)
 
-    @discord.ui.button(label="↘", style=discord.ButtonStyle.secondary, row=2, custom_id="mmo_rd")
+    @discord.ui.button(label="↘️", style=discord.ButtonStyle.secondary, row=2, custom_id="mmo_rd")
     async def move_rd(self, i, b): await self._move(i, 1, 1)
 
     # ── メニューボタン Row 3 ──────────────────────────
