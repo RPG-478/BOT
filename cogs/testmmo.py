@@ -1315,7 +1315,7 @@ class MMOCog(commands.Cog):
     # ■ メインコマンド（ゲーム画面）
     # ══════════════════════════════════════════
 
-    @app_commands.command(name="play", description="MMOゲーム画面を開きます")
+    @app_commands.command(name="playmmo", description="MMOゲーム画面を開きます")
     async def cmd_play(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         uid = str(interaction.user.id)
@@ -1358,7 +1358,7 @@ class MMOCog(commands.Cog):
         embed = discord.Embed(
             title="🎉 参加完了",
             color=discord.Color.green(),
-            description=f"国家 `{gid}` に参加！\n役職: **{role_text}**\n初期所持金: **{INITIAL_COINS}コイン**\n出現地: ({sx}, {sy})\n\n`/play` でゲーム画面を開けます！"
+            description=f"国家 `{gid}` に参加！\n役職: **{role_text}**\n初期所持金: **{INITIAL_COINS}コイン**\n出現地: ({sx}, {sy})\n\n`/playmmo` でゲーム画面を開けます！"
         )
         await interaction.response.send_message(embed=embed)
 
