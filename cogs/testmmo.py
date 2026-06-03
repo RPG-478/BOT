@@ -275,19 +275,18 @@ def mmo_build_map_image(tiles_data: list[dict], cx: int, cy: int,
         (t["x"], t["y"]): t for t in tiles_data
     }
 
+    # mmo_build_map_image 内のループ
     for vy_i, vy in enumerate(range(cy - VIEW_RADIUS, cy + VIEW_RADIUS + 1)):
         for vx_i, vx in enumerate(range(cx - VIEW_RADIUS, cx + VIEW_RADIUS + 1)):
             is_player = (vx == cx and vy == cy)
-            in_bounds = (0 <= vx < MAP_SIZE_X and 0 <= vy < MAP_SIZE_Y)
-            
-            tile_data = tile_map.get((vx, vy)) if in_bounds else None
+        
+            # ❌【修正前】 in_bounds = (0 <= vx < MAP_SIZE_X and 0 <= vy < MAP_SIZE_Y)
+            # ⭕【修正後】 制限を無くし、マイナス側でも tile_map から安全にデータを取得できるようにする
+            tile_type = tile_map.get((vx, vy)) # データベースになければ自動的に None（未開拓）になります
+        
             is_cap = (capital_pos is not None and (vx, vy) == capital_pos)
-            
-            # 【変更点】引数に実際のマップ座標である vx と vy を追加で渡す
-            _draw_mmo_tile(draw, img, vx_i, vy_i, tile_data,
-                           real_x=vx, real_y=vy,
+            _draw_mmo_tile(draw, img, vx_i, vy_i, tile_type,
                            is_player=is_player, is_capital=is_cap)
-
     # グリッド線
     for i in range(size + 1):
         draw.line([(i * TILE, 0), (i * TILE, size * TILE - 1)], fill=(40, 40, 50), width=1)
