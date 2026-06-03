@@ -126,6 +126,74 @@ CROP_NAMES = {
 }
 CROP_TYPES = {k: "food" for k in CROP_NAMES}
 
+# --- 高度と個体値生成用の定数（シード値やスケール） ---
+NOISE_SEED_ALTITUDE  = 12345  # 高度用のノイズシード
+NOISE_SEED_IV        = 67890  # 個体値(IV)用のノイズシード
+MAP_SCALE_ALTITUDE   = 0.05   # 高度ノイズの滑らかさ（小さいほど広大な地形に）
+MAP_SCALE_IV         = 0.1    # 個体値ノイズの滑らかさ（小さいほど大きな資源地帯に）
+
+def get_altitude_at(x: int, y: int) -> int:
+    """
+    パーリンノイズから 0 ～ 100 の高度値を算出する
+    """
+    # get_perlin_noise は概ね -0.7 ～ 0.7 程度の値を返すため、0.0 ～ 1.0 に正規化
+    noise_val = get_perlin_noise(x * MAP_SCALE_ALTITUDE, y * MAP_SCALE_ALTITUDE, NOISE_SEED_ALTITUDE)
+    normalized = (noise_val + 0.7) / 1.4
+    # 0 ～ 100 の範囲にクリップ
+    return max(0, min(100, int(normalized * 100)))
+
+def get_noise_iv_at(x: int, y: int) -> int:
+    """
+    パーリンノイズから 1 ～ 100 の個体値(IV)のベース値を算出する
+    """
+    noise_val = get_perlin_noise(x * MAP_SCALE_IV, y * MAP_SCALE_IV, NOISE_SEED_IV)
+    normalized = (noise_val + 0.7) / 1.4
+    return max(1, min(100, int(normalized * 100)))
+
+def generate_noise_tile_data(x: int, y: int) -> dict:
+    """
+    座標(x, y)の高度を基に初期の地形タイプと個体値を一括生成する
+    """
+    altitude = get_altitude_at(x, y)
+    iv_base = get_noise_iv_at(x, y)
+    
+    # 高度に応じたデフォルト地形タイプの決定ロジック例
+    if altitude < 25:
+        tile_type = "plain"  # 低地は平原
+    elif altitude < 65:
+        # 中高度：個体値ノイズによって農場か鉱山かが綺麗に分かれるようにする
+        tile_type = "farm" if iv_base < 50 else "mine"
+    else:
+        tile_type = "wall"   # 高高度は進入不可の壁・山岳
+
+    # 地形に応じた個体値(IV)の格納
+    ivs = {"altitude": altitude}
+    if tile_type == "farm":
+        pop = list(FARM_CROP_WEIGHTS.keys())
+        wts = list(FARM_CROP_WEIGHTS.values())
+        ivs["fertility"] = iv_base  # ノイズ由来の肥沃度
+        ivs["crop"] = random.choices(pop, weights=wts, k=1)[0]
+    elif tile_type == "mine":
+        ivs["purity"] = iv_base     # ノイズ由来の純度
+    
+    # 各地形ごとの初期HP/DEFの設定
+    max_hp = PLAIN_HP
+    base_def = DEFAULT_DEF
+    if tile_type == "wall":
+        max_hp = WALL_MAX_HP
+        base_def = WALL_BASE_DEF
+
+    return {
+        "x": x,
+        "y": y,
+        "tile_type": tile_type,
+        "hp": max_hp,
+        "max_hp": max_hp,
+        "def": base_def,
+        "individual_values": ivs,
+        "connected": False
+    }
+
 # ══════════════════════════════════════════════════════════════
 # ■ Pillow マップ描画（dangeon_11.py 流用）
 # ══════════════════════════════════════════════════════════════
