@@ -937,7 +937,30 @@ class DevelopModal(discord.ui.Modal, title="🏗️ 開拓"):
                     msg = "❌ そのマスはすでに占有されています。"
                     color = discord.Color.red()
                 else:
+                    x, y = u["pos_x"], u["pos_y"]
+
+                    # ══════════════════════════════════════════════════════════════
+                    # 【追加】パーリンノイズによる高度値と個体値ベースの算出
+                    # ══════════════════════════════════════════════════════════════
+                    # 高度用ノイズ（シード: 12345, スケール: 0.05 で緩やかな起伏）
+                    alt_noise = get_perlin_noise(x * 0.05, y * 0.05, 12345)
+                    altitude = max(0, min(100, int(((alt_noise + 0.7) / 1.4) * 100)))
+
+                    # 資源・個体値用ノイズ（シード: 67890, スケール: 0.1 で資源の脈を形成）
+                    iv_noise = get_perlin_noise(x * 0.1, y * 0.1, 67890)
+                    iv_base = max(1, min(100, int(((iv_noise + 0.7) / 1.4) * 100)))
+
+                    # 既存のランダムIV生成を取得し、ノイズベースの値で上書き・追加する
                     ivs = generate_ivs(ttype)
+                    ivs["altitude"] = altitude  # 高度値を個体値に記録
+
+                    # タイルタイプに応じた個別ノイズ特性の適用
+                    if ttype == "farm":
+                        ivs["fertility"] = iv_base  # 肥沃度をノイズ由来（土地の脈）にする
+                    elif ttype == "mine":
+                        ivs["purity"] = iv_base     # 純度をノイズ由来にする
+                    # ══════════════════════════════════════════════════════════════
+
                     if ttype == "farm":
                         selected_crop = ivs.get("crop", "tomato")
                         try:
@@ -955,7 +978,7 @@ class DevelopModal(discord.ui.Modal, title="🏗️ 開拓"):
                     max_hp = WALL_MAX_HP if ttype == "wall" else PLAIN_HP
                     base_def = WALL_BASE_DEF if ttype == "wall" else DEFAULT_DEF
                     self.cog.db.table("tiles").upsert({
-                        "x": u["pos_x"], "y": u["pos_y"],
+                        "x": x, "y": y,
                         "owner_guild_id": gid,
                         "owner_user_id": uid if ttype not in {"farm", "mine"} else None,
                         "tile_type": ttype, "individual_values": ivs,
@@ -968,12 +991,16 @@ class DevelopModal(discord.ui.Modal, title="🏗️ 開拓"):
                     if ttype == "farm" and "crop" in ivs:
                         cname = CROP_NAMES.get(ivs["crop"], ivs["crop"])
                         crop_disp = f"\n🌾 決定した栽培作物: **{cname}**"
-                    msg = f"✅ ({u['pos_x']}, {u['pos_y']}) を **{ttype}** に開拓！\n個体値: {ivs}{crop_disp}"
+                    
+                    msg = (
+                        f"✅ ({x}, {y}) を **{ttype}** に開拓！\n"
+                        f"⛰️ 土地の高度: `{altitude}`\n"
+                        f"📊 個体値データ: {ivs}{crop_disp}"
+                    )
 
         em = discord.Embed(title="🏗️ 開拓", description=msg, color=color)
         view = MMOActionView(self.cog, self.uid)
         await interaction.edit_original_response(embed=em, view=view, attachments=[])
-
 
 class CasinoModal(discord.ui.Modal, title="🎰 カジノ"):
     bet_input = discord.ui.TextInput(
