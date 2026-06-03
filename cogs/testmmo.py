@@ -198,68 +198,84 @@ def generate_noise_tile_data(x: int, y: int) -> dict:
 # ■ Pillow マップ描画（dangeon_11.py 流用）
 # ══════════════════════════════════════════════════════════════
 
+def get_altitude_step_at(x: int, y: int) -> int:
+    """
+    指定された座標(x, y)の高度ノイズを計算し、1〜10の10段階のステップ値として返す。
+    （定数シード 12345、スケール 0.05 を使用）
+    """
+    # 既存の get_perlin_noise を利用
+    alt_noise = get_perlin_noise(x * 0.05, y * 0.05, 12345)
+    # -0.7〜0.7 程度を 0.0〜1.0 に正規化
+    normalized = (alt_noise + 0.7) / 1.4
+    normalized = max(0.0, min(1.0, normalized))
+    
+    # 0.0〜1.0 を 1〜10 の10段階の整数に変換
+    step = int(normalized * 9) + 1  # 1〜10
+    return step
+
 def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
                    vx: int, vy: int, tile_data: Optional[dict],
+                   real_x: int, real_y: int,  # 実際のマップ座標(x, y)を受け取るように拡張
                    is_player: bool = False, is_capital: bool = False) -> None:
-    """1タイルを描画する（高度による明暗変化付き）"""
+    """1タイルを描画する（未開拓・開拓済みの両方に10段階の高度明暗を適用）"""
     px, py = vx * TILE, vy * TILE
 
+    # ══════════════════════════════════════════════════════════════
+    # 【高度の10段階計算】
+    # 開拓・未開拓に関わらず、その座標の絶対的な高度ステップ(1〜10)を取得
+    # ══════════════════════════════════════════════════════════════
+    alt_step = get_altitude_step_at(real_x, real_y)
+    
+    # 高度ステップ(1〜10)を明暗倍率(0.6 〜 1.3倍)にマッピングする
+    # ステップ5か6を基準(約1.0倍)とし、低いと暗く、高いと明るくなる
+    factor = 0.5 + (alt_step / 10.0) * 0.8
+
     if tile_data is None:
-        # 未開拓地
-        draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=(20, 20, 30))
+        # 未開拓地（ベース色を少しだけ明るめにして陰影がわかるように調整）
+        base_col = (25, 25, 35)
+        col_with_alt = (
+            max(0, min(255, int(base_col[0] * factor))),
+            max(0, min(255, int(base_col[1] * factor))),
+            max(0, min(255, int(base_col[2] * factor)))
+        )
+        draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=col_with_alt)
         return
 
-    # タイルデータ(dict)から施設タイプを取得
+    # 開拓済みタイルの処理
     tile_type = tile_data.get("tile_type", "unknown")
     col = TILE_COLORS.get(tile_type, TILE_COLORS["unknown"])
     
-    # ══════════════════════════════════════════════════════════════
-    # 【高度値による色の明暗処理】
-    # 個体値(individual_values)から高度(altitude)を取得し、色に乗算する
-    # ══════════════════════════════════════════════════════════════
-    ivs = tile_data.get("individual_values") or {}
-    altitude = ivs.get("altitude", 50)  # デフォルト高度は 50
-    
-    # 高度50を基準に、±30%（0.7〜1.3倍）の明暗倍率を計算
-    factor = 0.7 + (altitude / 100.0) * 0.6
-    
-    # RGB値をそれぞれ補正（0〜255の範囲にクリップ）
+    # 開拓済みタイルにも同じ高度の明暗倍率を適用
     col_with_alt = (
         max(0, min(255, int(col[0] * factor))),
         max(0, min(255, int(col[1] * factor))),
         max(0, min(255, int(col[2] * factor)))
     )
-    # ══════════════════════════════════════════════════════════════
 
     draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=col_with_alt)
 
-    # ラベル文字
+    # ラベル文字の描画
     label = TILE_LABEL.get(tile_type, "")
     if label:
         try:
-            draw.text((px + TILE // 2 - 4, py + TILE // 2 - 6), label,
-                      fill=(255, 255, 255))
+            draw.text((px + TILE // 2 - 4, py + TILE // 2 - 6), label, fill=(255, 255, 255))
         except Exception:
             pass
 
-    # プレイヤーアイコン（緑の円）
+    # プレイヤー位置の描画
     if is_player:
         mg = 5
-        draw.ellipse([px + mg, py + mg, px + TILE - mg - 1, py + TILE - mg - 1],
-                     fill=TILE_COLORS["player"])
+        draw.ellipse([px + mg, py + mg, px + TILE - mg - 1, py + TILE - mg - 1], fill=TILE_COLORS["player"])
 
 
 def mmo_build_map_image(tiles_data: list[dict], cx: int, cy: int,
                         capital_pos: Optional[tuple[int, int]] = None) -> Image.Image:
-    """
-    Pillow で周辺マップ画像を生成する
-    tiles_data: DBから取得したタイルリスト [{x, y, tile_type, ...}, ...]
-    """
+    """Pillow で周辺マップ画像を生成する"""
     size = VIEW_RADIUS * 2 + 1
     img = Image.new("RGB", (size * TILE, size * TILE), (15, 15, 25))
     draw = ImageDraw.Draw(img)
 
-    # 【修正箇所】文字列の代わりに、タイルデータ(dict)そのものを座標にマッピングする
+    # 座標にタイルデータをマッピング
     tile_map: dict[tuple[int, int], dict] = {
         (t["x"], t["y"]): t for t in tiles_data
     }
@@ -269,15 +285,15 @@ def mmo_build_map_image(tiles_data: list[dict], cx: int, cy: int,
             is_player = (vx == cx and vy == cy)
             in_bounds = (0 <= vx < MAP_SIZE_X and 0 <= vy < MAP_SIZE_Y)
             
-            # 修正：型が Optional[dict] になる
             tile_data = tile_map.get((vx, vy)) if in_bounds else None
             is_cap = (capital_pos is not None and (vx, vy) == capital_pos)
             
-            # 修正：tile_type だった部分に、辞書オブジェクト(tile_data)をそのまま流し込む
+            # 【変更点】引数に実際のマップ座標である vx と vy を追加で渡す
             _draw_mmo_tile(draw, img, vx_i, vy_i, tile_data,
+                           real_x=vx, real_y=vy,
                            is_player=is_player, is_capital=is_cap)
 
-    # グリッド線（薄め）
+    # グリッド線
     for i in range(size + 1):
         draw.line([(i * TILE, 0), (i * TILE, size * TILE - 1)], fill=(40, 40, 50), width=1)
         draw.line([(0, i * TILE), (size * TILE - 1, i * TILE)], fill=(40, 40, 50), width=1)
