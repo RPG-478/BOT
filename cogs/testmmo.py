@@ -201,7 +201,7 @@ def generate_noise_tile_data(x: int, y: int) -> dict:
 def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
                    vx: int, vy: int, tile_data: Optional[dict],
                    is_player: bool = False, is_capital: bool = False) -> None:
-    """引数を tile_type から tile_data(dict) に変更して高度を取得できるように拡張"""
+    """1タイルを描画する（高度による明暗変化付き）"""
     px, py = vx * TILE, vy * TILE
 
     if tile_data is None:
@@ -209,33 +209,44 @@ def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
         draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=(20, 20, 30))
         return
 
-    tile_type = tile_data.get("tile_type")
+    # タイルデータ(dict)から施設タイプを取得
+    tile_type = tile_data.get("tile_type", "unknown")
     col = TILE_COLORS.get(tile_type, TILE_COLORS["unknown"])
     
-    # --- 高度値を色に反映させるロジック ---
+    # ══════════════════════════════════════════════════════════════
+    # 【高度値による色の明暗処理】
+    # 個体値(individual_values)から高度(altitude)を取得し、色に乗算する
+    # ══════════════════════════════════════════════════════════════
     ivs = tile_data.get("individual_values") or {}
-    altitude = ivs.get("altitude", 50)
-    # 高度50を基準に、±20% の明暗変化を与える
-    factor = 0.8 + (altitude / 100.0) * 0.4
+    altitude = ivs.get("altitude", 50)  # デフォルト高度は 50
+    
+    # 高度50を基準に、±30%（0.7〜1.3倍）の明暗倍率を計算
+    factor = 0.7 + (altitude / 100.0) * 0.6
+    
+    # RGB値をそれぞれ補正（0〜255の範囲にクリップ）
     col_with_alt = (
         max(0, min(255, int(col[0] * factor))),
         max(0, min(255, int(col[1] * factor))),
         max(0, min(255, int(col[2] * factor)))
     )
+    # ══════════════════════════════════════════════════════════════
 
     draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=col_with_alt)
 
-    # (以下、既存のラベル描画やプレイヤーアイコン描画を継続)
+    # ラベル文字
     label = TILE_LABEL.get(tile_type, "")
     if label:
         try:
-            draw.text((px + TILE // 2 - 4, py + TILE // 2 - 6), label, fill=(255, 255, 255))
+            draw.text((px + TILE // 2 - 4, py + TILE // 2 - 6), label,
+                      fill=(255, 255, 255))
         except Exception:
             pass
 
+    # プレイヤーアイコン（緑の円）
     if is_player:
         mg = 5
-        draw.ellipse([px + mg, py + mg, px + TILE - mg - 1, py + TILE - mg - 1], fill=TILE_COLORS["player"])
+        draw.ellipse([px + mg, py + mg, px + TILE - mg - 1, py + TILE - mg - 1],
+                     fill=TILE_COLORS["player"])
 
 
 def mmo_build_map_image(tiles_data: list[dict], cx: int, cy: int,
