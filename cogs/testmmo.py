@@ -202,7 +202,6 @@ def get_altitude_step_at(x: int, y: int) -> int:
     """
     指定された座標(x, y)の高度ノイズを計算し、1〜10の10段階のステップ値として返す。
     """
-    # 既存の get_perlin_noise を流用（小数を掛けて滑らかにする）
     scale = 0.08
     alt_noise = get_perlin_noise(float(x) * scale, float(y) * scale, 12345)
     normalized = (alt_noise + 0.7) / 1.4
@@ -250,50 +249,76 @@ def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
         draw.ellipse([px + mg, py + mg, px + TILE - mg - 1, py + TILE - mg - 1], fill=TILE_COLORS["player"])
 
 
-def mmo_build_map_image(tiles_data: list[dict], cx: int, cy: int,
+def mmo_build_map_image(cog: "MMOCog", tiles_data: list[dict], cx: int, cy: int,
                         capital_pos: Optional[tuple[int, int]] = None) -> Image.Image:
     """
-    Pillow で周辺マップ画像を生成する（dangeon_11.d_build_map_image 相当）
-    tiles_data: DBから取得したタイルリスト [{x, y, tile_type, ...}, ...]
+    Pillow で周辺マップ画像を生成する
+    ※データベース更新を行うため、第1引数に `cog` (または `self`) を受け取るように変更します。
     """
     size = VIEW_RADIUS * 2 + 1
     img = Image.new("RGB", (size * TILE, size * TILE), (15, 15, 25))
     draw = ImageDraw.Draw(img)
 
-    # タイルを座標辞書化
-    tile_map: dict[tuple[int, int], str] = {
-        (t["x"], t["y"]): t["tile_type"] for t in tiles_data
+    # 座標にタイルデータをマッピング
+    tile_map: dict[tuple[int, int], dict] = {
+        (t["x"], t["y"]): t for t in tiles_data
     }
 
     for vy_i, vy in enumerate(range(cy - VIEW_RADIUS, cy + VIEW_RADIUS + 1)):
         for vx_i, vx in enumerate(range(cx - VIEW_RADIUS, cx + VIEW_RADIUS + 1)):
             is_player = (vx == cx and vy == cy)
             
-            # ⭕【修正】マイナス座標（北・西）でも虚無にならず、tile_map からデータを取得できるようにします
-            tile_type = tile_map.get((vx, vy))
-            
+            tile_data = tile_map.get((vx, vy))
             is_cap = (capital_pos is not None and (vx, vy) == capital_pos)
             
-            # ⭕【修正】_draw_mmo_tile に実際のマップ座標 real_x, real_y を渡す
-            _draw_mmo_tile(draw, img, vx_i, vy_i, tile_type,
+            # ══════════════════════════════════════════════════════════════
+            # 【追加】開拓済みだが高度データ（altitude）が無い場合、強制生成してDB保存
+            # ══════════════════════════════════════════════════════════════
+            if tile_data is not None:
+                ivs = tile_data.get("individual_values") or {}
+                if "altitude" not in ivs:
+                    # この座標が本来持つべき高度（1〜100スケールに換算）を計算
+                    # ここでは get_altitude_step_at をベースに 10〜100 の値にマッピングします
+                    alt_step = get_altitude_step_at(vx, vy)
+                    calculated_altitude = alt_step * 10
+                    
+                    # データを補完
+                    ivs["altitude"] = calculated_altitude
+                    tile_data["individual_values"] = ivs
+                    
+                    # データベースを強制非同期アップデート（同期実行用に例外処理付きで即時反映）
+                    try:
+                        cog.db.table("tiles").update({
+                            "individual_values": ivs
+                        }).eq("x", vx).eq("y", vy).execute()
+                    except Exception as e:
+                        print(f"[DEBUG] 高度自動生成アップデート失敗 ({vx}, {vy}): {e}")
+            # ══════════════════════════════════════════════════════════════
+
+            # tile_data そのものを渡すか、あるいは tile_type 文字列のままにするかに合わせて呼び出します。
+            # 今回は前回の引数エラー対策を反映し、real_x, real_y 方式で呼び出します。
+            # （_draw_mmo_tile側で tile_data が辞書型か文字列型か、プロジェクトの設定に合わせてください。以下は文字列型の場合の例です）
+            tile_type_str = tile_data.get("tile_type") if tile_data else None
+            
+            _draw_mmo_tile(draw, img, vx_i, vy_i, tile_type_str,
                            real_x=vx, real_y=vy,
                            is_player=is_player, is_capital=is_cap)
 
-    # グリッド線（薄め）
+    # グリッド線
     for i in range(size + 1):
         draw.line([(i * TILE, 0), (i * TILE, size * TILE - 1)], fill=(40, 40, 50), width=1)
         draw.line([(0, i * TILE), (size * TILE - 1, i * TILE)], fill=(40, 40, 50), width=1)
 
     return img
 
-def mmo_render_pillow(tiles_data: list[dict], cx: int, cy: int,
+def mmo_render_pillow(cog: "MMOCog", tiles_data: list[dict], cx: int, cy: int,
                       capital_pos: Optional[tuple[int, int]] = None) -> discord.File:
-    """Pillow 画像を discord.File として返す（dangeon_11.d_render_pillow 相当）"""
-    img = mmo_build_map_image(tiles_data, cx, cy, capital_pos)
+    # 変更: 引数に cog を追加し、mmo_build_map_image に引き渡す
+    img = mmo_build_map_image(cog, tiles_data, cx, cy, capital_pos)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
-    return discord.File(fp=buf, filename="mmo_map.png")
+    return discord.File(buf, filename="mmo_map.png")
 
 
 # ══════════════════════════════════════════════════════════════
