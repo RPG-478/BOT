@@ -507,7 +507,7 @@ class MMOMainView(discord.ui.View):
             return
         tiles = self._get_tiles(u["pos_x"], u["pos_y"])
         cap = self._capital_pos(u.get("guild_id", ""))
-        map_file = mmo_render_pillow(tiles, u["pos_x"], u["pos_y"], cap)
+        map_file = mmo_render_pillow(self, tiles, u["pos_x"], u["pos_y"], cap)
         await interaction.edit_original_response(
             embed=self._make_embed(u, msg),
             attachments=[map_file],
@@ -579,7 +579,7 @@ class MMOMainView(discord.ui.View):
         u = self.cog._get_user(self.uid)
         tiles = self._get_tiles(u["pos_x"], u["pos_y"]) if u else []
         cap = self._capital_pos(u.get("guild_id", "")) if u else None
-        map_file = mmo_render_pillow(tiles, u["pos_x"], u["pos_y"], cap) if u else None
+        map_file = mmo_render_pillow(self, tiles, u["pos_x"], u["pos_y"], cap) if u else None
         em = discord.Embed(title="📋 メニュー", description="アクションまたはその他を選んでください。", color=discord.Color.blurple())
         em.set_image(url="attachment://mmo_map.png")
         kwargs = {"embed": em, "view": view}
@@ -1483,7 +1483,7 @@ class MMOCog(commands.Cog):
         tiles = view._get_tiles(u["pos_x"], u["pos_y"])
         gid = u.get("guild_id", "")
         cap = view._capital_pos(gid) if gid else None
-        map_file = mmo_render_pillow(tiles, u["pos_x"], u["pos_y"], cap)
+        map_file = mmo_render_pillow(self, tiles, u["pos_x"], u["pos_y"], cap)
         em = view._make_embed(u, "ゲームへようこそ！移動ボタンで探索しましょう。")
         await interaction.followup.send(embed=em, file=map_file, view=view)
 
