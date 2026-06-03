@@ -5,7 +5,6 @@ import uuid
 import math
 import io
 import os
-import json
 from typing import Optional
 
 import discord
@@ -203,41 +202,41 @@ def get_altitude_step_at(x: int, y: int) -> int:
     """
     指定された座標(x, y)の高度ノイズを計算し、1〜10の10段階のステップ値として返す。
     """
+    # 既存の get_perlin_noise を流用（小数を掛けて滑らかにする）
     scale = 0.08
     alt_noise = get_perlin_noise(float(x) * scale, float(y) * scale, 12345)
     normalized = (alt_noise + 0.7) / 1.4
     normalized = max(0.0, min(1.0, normalized))
     return int(normalized * 9) + 1
 
-
 def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
                    vx: int, vy: int, tile_type: Optional[str],
-                   real_x: int, real_y: int,
+                   real_x: int, real_y: int,  # ⭕ ここに引数を追加
                    is_player: bool = False, is_capital: bool = False) -> None:
-    """1タイルを描画する（高度による明暗を元の土地の色にブレンド）"""
+    """1タイルを描画する（未開拓・開拓済みの両方に10段階の高度明暗を適用）"""
     px, py = vx * TILE, vy * TILE
 
-    # 10段階の高度ステップから明暗比率を算出 (0.5倍 〜 1.5倍)
+    # 10段階の高度ステップを取得して明暗倍率を算出
     alt_step = get_altitude_step_at(real_x, real_y)
-    factor = 0.5 + (alt_step / 10.0) * 1.0
+    factor = 0.4 + (alt_step / 10.0) * 1.0  # 明暗比率を好みに合わせて調整
 
     if tile_type is None:
-        # 未開拓地
-        base_col = (20, 20, 30)
+        # 未開拓地（ベース色を少しだけ明るめにして陰影がわかるように調整）
+        base_col = (30, 32, 45)
         r = max(0, min(255, int(base_col[0] * factor)))
         g = max(0, min(255, int(base_col[1] * factor)))
         b = max(0, min(255, int(base_col[2] * factor)))
         draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=(r, g, b))
         return
 
-    # 開拓済みタイル（farm、mine、plain などの元の色は100%保持されます）
+    # 開拓済みタイルの処理
     col = TILE_COLORS.get(tile_type, TILE_COLORS["unknown"])
     r = max(0, min(255, int(col[0] * factor)))
     g = max(0, min(255, int(col[1] * factor)))
     b = max(0, min(255, int(col[2] * factor)))
     draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=(r, g, b))
 
-    # ラベル文字 (F, M, W など) の描画
+    # ラベル文字
     label = TILE_LABEL.get(tile_type, "")
     if label:
         try:
@@ -245,7 +244,7 @@ def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
         except Exception:
             pass
 
-    # プレイヤーアイコン（緑の円）
+    # プレイヤーアイコン
     if is_player:
         mg = 5
         draw.ellipse([px + mg, py + mg, px + TILE - mg - 1, py + TILE - mg - 1], fill=TILE_COLORS["player"])
@@ -254,13 +253,14 @@ def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
 def mmo_build_map_image(tiles_data: list[dict], cx: int, cy: int,
                         capital_pos: Optional[tuple[int, int]] = None) -> Image.Image:
     """
-    Pillow で周辺マップ画像を生成する
+    Pillow で周辺マップ画像を生成する（dangeon_11.d_build_map_image 相当）
+    tiles_data: DBから取得したタイルリスト [{x, y, tile_type, ...}, ...]
     """
     size = VIEW_RADIUS * 2 + 1
     img = Image.new("RGB", (size * TILE, size * TILE), (15, 15, 25))
     draw = ImageDraw.Draw(img)
 
-    # 元のコード通り、座標から正確に tile_type（文字列）を取得できるように辞書化
+    # タイルを座標辞書化
     tile_map: dict[tuple[int, int], str] = {
         (t["x"], t["y"]): t["tile_type"] for t in tiles_data
     }
@@ -269,12 +269,12 @@ def mmo_build_map_image(tiles_data: list[dict], cx: int, cy: int,
         for vx_i, vx in enumerate(range(cx - VIEW_RADIUS, cx + VIEW_RADIUS + 1)):
             is_player = (vx == cx and vy == cy)
             
-            # マイナス座標でも問題なくマップチップ種別を取得できるように、境界チェックを排除
+            # ⭕【修正】マイナス座標（北・西）でも虚無にならず、tile_map からデータを取得できるようにします
             tile_type = tile_map.get((vx, vy))
             
             is_cap = (capital_pos is not None and (vx, vy) == capital_pos)
             
-            # 安全に本来のマップ種別(tile_type)と、影計算用の実座標(vx, vy)を渡して描画
+            # ⭕【修正】_draw_mmo_tile に実際のマップ座標 real_x, real_y を渡す
             _draw_mmo_tile(draw, img, vx_i, vy_i, tile_type,
                            real_x=vx, real_y=vy,
                            is_player=is_player, is_capital=is_cap)
@@ -289,7 +289,6 @@ def mmo_build_map_image(tiles_data: list[dict], cx: int, cy: int,
 def mmo_render_pillow(tiles_data: list[dict], cx: int, cy: int,
                       capital_pos: Optional[tuple[int, int]] = None) -> discord.File:
     """Pillow 画像を discord.File として返す（dangeon_11.d_render_pillow 相当）"""
-    # 修正: mmo_build_map_image に余分な cog 引数を渡さないようにします
     img = mmo_build_map_image(tiles_data, cx, cy, capital_pos)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -477,22 +476,18 @@ class MMOMainView(discord.ui.View):
         return em
 
     async def _refresh(self, interaction: discord.Interaction, msg: str = ""):
-    u = self.cog._get_user(self.uid)
-    if not u:
-        await interaction.edit_original_response(content="プレイヤーデータが見つかりません。", view=None)
-        return
-    tiles = self._get_tiles(u["pos_x"], u["pos_y"])
-    cap = self._capital_pos(u.get("guild_id", ""))
-    
-    # ❌ 修正前: map_file = mmo_render_pillow(self, tiles, u["pos_x"], u["pos_y"], cap)
-    # ⭕ 修正後: こちらも self を削除します
-    map_file = mmo_render_pillow(tiles, u["pos_x"], u["pos_y"], cap)
-    
-    await interaction.edit_original_response(
-        embed=self._make_embed(u, msg),
-        attachments=[map_file],
-        view=self
-    )
+        u = self.cog._get_user(self.uid)
+        if not u:
+            await interaction.edit_original_response(content="プレイヤーデータが見つかりません。", view=None)
+            return
+        tiles = self._get_tiles(u["pos_x"], u["pos_y"])
+        cap = self._capital_pos(u.get("guild_id", ""))
+        map_file = mmo_render_pillow(tiles, u["pos_x"], u["pos_y"], cap)
+        await interaction.edit_original_response(
+            embed=self._make_embed(u, msg),
+            attachments=[map_file],
+            view=self
+        )
 
     async def _move(self, interaction: discord.Interaction, dx: int, dy: int):
         await interaction.response.defer()
