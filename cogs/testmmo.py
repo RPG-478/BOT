@@ -209,34 +209,35 @@ def get_altitude_step_at(x: int, y: int) -> int:
     normalized = max(0.0, min(1.0, normalized))
     return int(normalized * 9) + 1
 
+
 def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
                    vx: int, vy: int, tile_type: Optional[str],
-                   real_x: int, real_y: int,  # ⭕ ここに引数を追加
+                   real_x: int, real_y: int,
                    is_player: bool = False, is_capital: bool = False) -> None:
-    """1タイルを描画する（未開拓・開拓済みの両方に10段階の高度明暗を適用）"""
+    """1タイルを描画する（高度による明暗を元の土地の色にブレンド）"""
     px, py = vx * TILE, vy * TILE
 
-    # 10段階の高度ステップを取得して明暗倍率を算出
+    # 10段階の高度ステップから明暗比率を算出 (0.5倍 〜 1.5倍)
     alt_step = get_altitude_step_at(real_x, real_y)
-    factor = 0.4 + (alt_step / 10.0) * 1.0  # 明暗比率を好みに合わせて調整
+    factor = 0.5 + (alt_step / 10.0) * 1.0
 
     if tile_type is None:
-        # 未開拓地（ベース色を少しだけ明るめにして陰影がわかるように調整）
-        base_col = (30, 32, 45)
+        # 未開拓地
+        base_col = (20, 20, 30)
         r = max(0, min(255, int(base_col[0] * factor)))
         g = max(0, min(255, int(base_col[1] * factor)))
         b = max(0, min(255, int(base_col[2] * factor)))
         draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=(r, g, b))
         return
 
-    # 開拓済みタイルの処理
+    # 開拓済みタイル（farm、mine、plain などの元の色は100%保持されます）
     col = TILE_COLORS.get(tile_type, TILE_COLORS["unknown"])
     r = max(0, min(255, int(col[0] * factor)))
     g = max(0, min(255, int(col[1] * factor)))
     b = max(0, min(255, int(col[2] * factor)))
     draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=(r, g, b))
 
-    # ラベル文字
+    # ラベル文字 (F, M, W など) の描画
     label = TILE_LABEL.get(tile_type, "")
     if label:
         try:
@@ -244,75 +245,41 @@ def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
         except Exception:
             pass
 
-    # プレイヤーアイコン
+    # プレイヤーアイコン（緑の円）
     if is_player:
         mg = 5
         draw.ellipse([px + mg, py + mg, px + TILE - mg - 1, py + TILE - mg - 1], fill=TILE_COLORS["player"])
 
 
-def mmo_build_map_image(cog: "MMOCog", tiles_data: list[dict], cx: int, cy: int,
+def mmo_build_map_image(tiles_data: list[dict], cx: int, cy: int,
                         capital_pos: Optional[tuple[int, int]] = None) -> Image.Image:
-    """Pillow で周辺マップ画像を生成する（既存の個体値を破壊しない安全版）"""
+    """
+    Pillow で周辺マップ画像を生成する
+    """
     size = VIEW_RADIUS * 2 + 1
     img = Image.new("RGB", (size * TILE, size * TILE), (15, 15, 25))
     draw = ImageDraw.Draw(img)
 
-    # 座標にタイルデータをマッピング
-    tile_map: dict[tuple[int, int], dict] = {
-        (t["x"], t["y"]): t for t in tiles_data
+    # 元のコード通り、座標から正確に tile_type（文字列）を取得できるように辞書化
+    tile_map: dict[tuple[int, int], str] = {
+        (t["x"], t["y"]): t["tile_type"] for t in tiles_data
     }
 
     for vy_i, vy in enumerate(range(cy - VIEW_RADIUS, cy + VIEW_RADIUS + 1)):
         for vx_i, vx in enumerate(range(cx - VIEW_RADIUS, cx + VIEW_RADIUS + 1)):
             is_player = (vx == cx and vy == cy)
             
-            tile_data = tile_map.get((vx, vy))
+            # マイナス座標でも問題なくマップチップ種別を取得できるように、境界チェックを排除
+            tile_type = tile_map.get((vx, vy))
+            
             is_cap = (capital_pos is not None and (vx, vy) == capital_pos)
             
-            # ══════════════════════════════════════════════════════════════
-            # 【安全な高度データの追加ロジック】
-            # ══════════════════════════════════════════════════════════════
-            if tile_data is not None:
-                raw_ivs = tile_data.get("individual_values")
-                
-                # 1. データベースの型が文字列(JSON)だった場合の安全なデコード
-                if isinstance(raw_ivs, str):
-                    try:
-                        ivs = json.loads(raw_ivs)
-                    except Exception:
-                        ivs = {}
-                elif isinstance(raw_ivs, dict):
-                    # 既に辞書型なら、元のデータを壊さないようにコピーを作成
-                    ivs = dict(raw_ivs)
-                else:
-                    ivs = {}
-
-                # 2. 高度データ（altitude）が本当に無い場合だけ追記処理をする
-                if "altitude" not in ivs:
-                    alt_step = get_altitude_step_at(vx, vy)
-                    calculated_altitude = alt_step * 10
-                    
-                    # 💡 元々あった ivs の中身（cropやfertilityなど）を保持したまま、
-                    # altitude だけを辞書に追加します（上書き破壊を防ぐ）
-                    ivs["altitude"] = calculated_altitude
-                    tile_data["individual_values"] = ivs
-                    
-                    # データベースへの反映も、このタイル専用に調整された ivs を書き込む
-                    try:
-                        cog.db.table("tiles").update({
-                            "individual_values": ivs
-                        }).eq("x", vx).eq("y", vy).execute()
-                    except Exception as e:
-                        print(f"[DEBUG] 高度自動生成アップデート失敗 ({vx}, {vy}): {e}")
-            # ══════════════════════════════════════════════════════════════
-
-            tile_type_str = tile_data.get("tile_type") if tile_data else None
-            
-            _draw_mmo_tile(draw, img, vx_i, vy_i, tile_type_str,
+            # 安全に本来のマップ種別(tile_type)と、影計算用の実座標(vx, vy)を渡して描画
+            _draw_mmo_tile(draw, img, vx_i, vy_i, tile_type,
                            real_x=vx, real_y=vy,
                            is_player=is_player, is_capital=is_cap)
 
-    # グリッド線
+    # グリッド線（薄め）
     for i in range(size + 1):
         draw.line([(i * TILE, 0), (i * TILE, size * TILE - 1)], fill=(40, 40, 50), width=1)
         draw.line([(0, i * TILE), (size * TILE - 1, i * TILE)], fill=(40, 40, 50), width=1)
