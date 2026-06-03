@@ -286,14 +286,15 @@ def mmo_build_map_image(tiles_data: list[dict], cx: int, cy: int,
 
     return img
 
-def mmo_render_pillow(cog: "MMOCog", tiles_data: list[dict], cx: int, cy: int,
+def mmo_render_pillow(tiles_data: list[dict], cx: int, cy: int,
                       capital_pos: Optional[tuple[int, int]] = None) -> discord.File:
-    # 変更: 引数に cog を追加し、mmo_build_map_image に引き渡す
-    img = mmo_build_map_image(cog, tiles_data, cx, cy, capital_pos)
+    """Pillow 画像を discord.File として返す（dangeon_11.d_render_pillow 相当）"""
+    # 修正: mmo_build_map_image に余分な cog 引数を渡さないようにします
+    img = mmo_build_map_image(tiles_data, cx, cy, capital_pos)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
-    return discord.File(buf, filename="mmo_map.png")
+    return discord.File(fp=buf, filename="mmo_map.png")
 
 
 # ══════════════════════════════════════════════════════════════
