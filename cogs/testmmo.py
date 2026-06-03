@@ -252,25 +252,29 @@ def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
 def mmo_build_map_image(tiles_data: list[dict], cx: int, cy: int,
                         capital_pos: Optional[tuple[int, int]] = None) -> Image.Image:
     """
-    Pillow で周辺マップ画像を生成する（dangeon_11.d_build_map_image 相当）
+    Pillow で周辺マップ画像を生成する
     tiles_data: DBから取得したタイルリスト [{x, y, tile_type, ...}, ...]
     """
     size = VIEW_RADIUS * 2 + 1
     img = Image.new("RGB", (size * TILE, size * TILE), (15, 15, 25))
     draw = ImageDraw.Draw(img)
 
-    # タイルを座標辞書化
-    tile_map: dict[tuple[int, int], str] = {
-        (t["x"], t["y"]): t["tile_type"] for t in tiles_data
+    # 【修正箇所】文字列の代わりに、タイルデータ(dict)そのものを座標にマッピングする
+    tile_map: dict[tuple[int, int], dict] = {
+        (t["x"], t["y"]): t for t in tiles_data
     }
 
     for vy_i, vy in enumerate(range(cy - VIEW_RADIUS, cy + VIEW_RADIUS + 1)):
         for vx_i, vx in enumerate(range(cx - VIEW_RADIUS, cx + VIEW_RADIUS + 1)):
             is_player = (vx == cx and vy == cy)
             in_bounds = (0 <= vx < MAP_SIZE_X and 0 <= vy < MAP_SIZE_Y)
-            tile_type = tile_map.get((vx, vy)) if in_bounds else None
+            
+            # 修正：型が Optional[dict] になる
+            tile_data = tile_map.get((vx, vy)) if in_bounds else None
             is_cap = (capital_pos is not None and (vx, vy) == capital_pos)
-            _draw_mmo_tile(draw, img, vx_i, vy_i, tile_type,
+            
+            # 修正：tile_type だった部分に、辞書オブジェクト(tile_data)をそのまま流し込む
+            _draw_mmo_tile(draw, img, vx_i, vy_i, tile_data,
                            is_player=is_player, is_capital=is_cap)
 
     # グリッド線（薄め）
@@ -279,7 +283,6 @@ def mmo_build_map_image(tiles_data: list[dict], cx: int, cy: int,
         draw.line([(0, i * TILE), (size * TILE - 1, i * TILE)], fill=(40, 40, 50), width=1)
 
     return img
-
 
 def mmo_render_pillow(tiles_data: list[dict], cx: int, cy: int,
                       capital_pos: Optional[tuple[int, int]] = None) -> discord.File:
