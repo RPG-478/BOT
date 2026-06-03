@@ -5,6 +5,7 @@ import uuid
 import math
 import io
 import os
+import json
 from typing import Optional
 
 import discord
@@ -251,10 +252,7 @@ def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
 
 def mmo_build_map_image(cog: "MMOCog", tiles_data: list[dict], cx: int, cy: int,
                         capital_pos: Optional[tuple[int, int]] = None) -> Image.Image:
-    """
-    Pillow で周辺マップ画像を生成する
-    ※データベース更新を行うため、第1引数に `cog` (または `self`) を受け取るように変更します。
-    """
+    """Pillow で周辺マップ画像を生成する（既存の個体値を破壊しない安全版）"""
     size = VIEW_RADIUS * 2 + 1
     img = Image.new("RGB", (size * TILE, size * TILE), (15, 15, 25))
     draw = ImageDraw.Draw(img)
@@ -272,21 +270,34 @@ def mmo_build_map_image(cog: "MMOCog", tiles_data: list[dict], cx: int, cy: int,
             is_cap = (capital_pos is not None and (vx, vy) == capital_pos)
             
             # ══════════════════════════════════════════════════════════════
-            # 【追加】開拓済みだが高度データ（altitude）が無い場合、強制生成してDB保存
+            # 【安全な高度データの追加ロジック】
             # ══════════════════════════════════════════════════════════════
             if tile_data is not None:
-                ivs = tile_data.get("individual_values") or {}
+                raw_ivs = tile_data.get("individual_values")
+                
+                # 1. データベースの型が文字列(JSON)だった場合の安全なデコード
+                if isinstance(raw_ivs, str):
+                    try:
+                        ivs = json.loads(raw_ivs)
+                    except Exception:
+                        ivs = {}
+                elif isinstance(raw_ivs, dict):
+                    # 既に辞書型なら、元のデータを壊さないようにコピーを作成
+                    ivs = dict(raw_ivs)
+                else:
+                    ivs = {}
+
+                # 2. 高度データ（altitude）が本当に無い場合だけ追記処理をする
                 if "altitude" not in ivs:
-                    # この座標が本来持つべき高度（1〜100スケールに換算）を計算
-                    # ここでは get_altitude_step_at をベースに 10〜100 の値にマッピングします
                     alt_step = get_altitude_step_at(vx, vy)
                     calculated_altitude = alt_step * 10
                     
-                    # データを補完
+                    # 💡 元々あった ivs の中身（cropやfertilityなど）を保持したまま、
+                    # altitude だけを辞書に追加します（上書き破壊を防ぐ）
                     ivs["altitude"] = calculated_altitude
                     tile_data["individual_values"] = ivs
                     
-                    # データベースを強制非同期アップデート（同期実行用に例外処理付きで即時反映）
+                    # データベースへの反映も、このタイル専用に調整された ivs を書き込む
                     try:
                         cog.db.table("tiles").update({
                             "individual_values": ivs
@@ -295,9 +306,6 @@ def mmo_build_map_image(cog: "MMOCog", tiles_data: list[dict], cx: int, cy: int,
                         print(f"[DEBUG] 高度自動生成アップデート失敗 ({vx}, {vy}): {e}")
             # ══════════════════════════════════════════════════════════════
 
-            # tile_data そのものを渡すか、あるいは tile_type 文字列のままにするかに合わせて呼び出します。
-            # 今回は前回の引数エラー対策を反映し、real_x, real_y 方式で呼び出します。
-            # （_draw_mmo_tile側で tile_data が辞書型か文字列型か、プロジェクトの設定に合わせてください。以下は文字列型の場合の例です）
             tile_type_str = tile_data.get("tile_type") if tile_data else None
             
             _draw_mmo_tile(draw, img, vx_i, vy_i, tile_type_str,
