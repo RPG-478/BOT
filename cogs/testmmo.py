@@ -202,54 +202,41 @@ def get_altitude_step_at(x: int, y: int) -> int:
     """
     指定された座標(x, y)の高度ノイズを計算し、1〜10の10段階のステップ値として返す。
     """
-    # 【最重要】整数ではなく、0.05 などの小数を掛け算して渡すことで滑らかな波を作る
-    scale = 0.08  # この数値を大きくすると起伏が激しくなり、小さくすると広大な地形になります
-    
+    # 既存の get_perlin_noise を流用（小数を掛けて滑らかにする）
+    scale = 0.08
     alt_noise = get_perlin_noise(float(x) * scale, float(y) * scale, 12345)
-    
-    # get_perlin_noise の戻り値（だいたい -0.7 〜 0.7）を 0.0 〜 1.0 に安全に変換
     normalized = (alt_noise + 0.7) / 1.4
     normalized = max(0.0, min(1.0, normalized))
-    
-    # 1〜10 の10段階の整数に変換
-    step = int(normalized * 9) + 1
-    return step
+    return int(normalized * 9) + 1
 
 def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
-                   vx: int, vy: int, tile_data: Optional[dict],
-                   real_x: int, real_y: int,
+                   vx: int, vy: int, tile_type: Optional[str],
+                   real_x: int, real_y: int,  # ⭕ ここに引数を追加
                    is_player: bool = False, is_capital: bool = False) -> None:
     """1タイルを描画する（未開拓・開拓済みの両方に10段階の高度明暗を適用）"""
     px, py = vx * TILE, vy * TILE
 
-    # 10段階の高度ステップ(1〜10)を取得
+    # 10段階の高度ステップを取得して明暗倍率を算出
     alt_step = get_altitude_step_at(real_x, real_y)
-    
-    # 【明暗比率の調整】
-    # 最暗(ステップ1)で 0.4倍、最明(ステップ10)で 1.4倍 になるように調整
-    factor = 0.3 + (alt_step / 10.0) * 1.1
+    factor = 0.4 + (alt_step / 10.0) * 1.0  # 明暗比率を好みに合わせて調整
 
-    if tile_data is None:
-        # 未開拓地（ベース色を少し明るめのグレー(40, 45, 60)にして陰影を見やすくします）
-        base_col = (40, 42, 55)
+    if tile_type is None:
+        # 未開拓地（ベース色を少しだけ明るめにして陰影がわかるように調整）
+        base_col = (30, 32, 45)
         r = max(0, min(255, int(base_col[0] * factor)))
         g = max(0, min(255, int(base_col[1] * factor)))
         b = max(0, min(255, int(base_col[2] * factor)))
-        
         draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=(r, g, b))
         return
 
     # 開拓済みタイルの処理
-    tile_type = tile_data.get("tile_type", "unknown")
     col = TILE_COLORS.get(tile_type, TILE_COLORS["unknown"])
-    
     r = max(0, min(255, int(col[0] * factor)))
     g = max(0, min(255, int(col[1] * factor)))
     b = max(0, min(255, int(col[2] * factor)))
-
     draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=(r, g, b))
 
-    # ラベル文字の描画
+    # ラベル文字
     label = TILE_LABEL.get(tile_type, "")
     if label:
         try:
@@ -257,7 +244,7 @@ def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
         except Exception:
             pass
 
-    # プレイヤー位置の描画
+    # プレイヤーアイコン
     if is_player:
         mg = 5
         draw.ellipse([px + mg, py + mg, px + TILE - mg - 1, py + TILE - mg - 1], fill=TILE_COLORS["player"])
@@ -265,29 +252,34 @@ def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
 
 def mmo_build_map_image(tiles_data: list[dict], cx: int, cy: int,
                         capital_pos: Optional[tuple[int, int]] = None) -> Image.Image:
-    """Pillow で周辺マップ画像を生成する"""
+    """
+    Pillow で周辺マップ画像を生成する（dangeon_11.d_build_map_image 相当）
+    tiles_data: DBから取得したタイルリスト [{x, y, tile_type, ...}, ...]
+    """
     size = VIEW_RADIUS * 2 + 1
     img = Image.new("RGB", (size * TILE, size * TILE), (15, 15, 25))
     draw = ImageDraw.Draw(img)
 
-    # 座標にタイルデータをマッピング
-    tile_map: dict[tuple[int, int], dict] = {
-        (t["x"], t["y"]): t for t in tiles_data
+    # タイルを座標辞書化
+    tile_map: dict[tuple[int, int], str] = {
+        (t["x"], t["y"]): t["tile_type"] for t in tiles_data
     }
 
-    # mmo_build_map_image 内のループ
     for vy_i, vy in enumerate(range(cy - VIEW_RADIUS, cy + VIEW_RADIUS + 1)):
         for vx_i, vx in enumerate(range(cx - VIEW_RADIUS, cx + VIEW_RADIUS + 1)):
             is_player = (vx == cx and vy == cy)
-        
-            # ❌【修正前】 in_bounds = (0 <= vx < MAP_SIZE_X and 0 <= vy < MAP_SIZE_Y)
-            # ⭕【修正後】 制限を無くし、マイナス側でも tile_map から安全にデータを取得できるようにする
-            tile_type = tile_map.get((vx, vy)) # データベースになければ自動的に None（未開拓）になります
-        
+            
+            # ⭕【修正】マイナス座標（北・西）でも虚無にならず、tile_map からデータを取得できるようにします
+            tile_type = tile_map.get((vx, vy))
+            
             is_cap = (capital_pos is not None and (vx, vy) == capital_pos)
+            
+            # ⭕【修正】_draw_mmo_tile に実際のマップ座標 real_x, real_y を渡す
             _draw_mmo_tile(draw, img, vx_i, vy_i, tile_type,
+                           real_x=vx, real_y=vy,
                            is_player=is_player, is_capital=is_cap)
-    # グリッド線
+
+    # グリッド線（薄め）
     for i in range(size + 1):
         draw.line([(i * TILE, 0), (i * TILE, size * TILE - 1)], fill=(40, 40, 50), width=1)
         draw.line([(0, i * TILE), (size * TILE - 1, i * TILE)], fill=(40, 40, 50), width=1)
@@ -507,14 +499,12 @@ class MMOMainView(discord.ui.View):
             await self._refresh(interaction, "❌ スタミナ不足！食事で回復してください。")
             return
 
-        # ══════════════════════════════════════════════════════════════
-        # ❌【修正前】 max(0, min(MAP_SIZE_X - 1, u["pos_x"] + dx)) 
-        # ⭕【修正後】 下限(0)の制限を取り除き、マイナスへの進入を許可します
-        # ══════════════════════════════════════════════════════════════
+        # ❌【修正前】 nx = max(0, min(MAP_SIZE_X - 1, u["pos_x"] + dx))
+        # ⭕【修正後】 下限(0)の制限をなくし、マイナス座標に移動可能にします
         nx = u["pos_x"] + dx
         ny = u["pos_y"] + dy
 
-        # 必要に応じて最大値側の上限だけ、または十分広大な世界（例:-10000〜10000）で制限します
+        # 世界の果てを設定したい場合は、例えば上下左右に -10000〜10000 マスなどで制限します
         # nx = max(-10000, min(10000, nx))
         # ny = max(-10000, min(10000, ny))
 
