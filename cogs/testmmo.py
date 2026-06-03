@@ -477,18 +477,22 @@ class MMOMainView(discord.ui.View):
         return em
 
     async def _refresh(self, interaction: discord.Interaction, msg: str = ""):
-        u = self.cog._get_user(self.uid)
-        if not u:
-            await interaction.edit_original_response(content="プレイヤーデータが見つかりません。", view=None)
-            return
-        tiles = self._get_tiles(u["pos_x"], u["pos_y"])
-        cap = self._capital_pos(u.get("guild_id", ""))
-        map_file = mmo_render_pillow(tiles, u["pos_x"], u["pos_y"], cap)
-        await interaction.edit_original_response(
-            embed=self._make_embed(u, msg),
-            attachments=[map_file],
-            view=self
-        )
+    u = self.cog._get_user(self.uid)
+    if not u:
+        await interaction.edit_original_response(content="プレイヤーデータが見つかりません。", view=None)
+        return
+    tiles = self._get_tiles(u["pos_x"], u["pos_y"])
+    cap = self._capital_pos(u.get("guild_id", ""))
+    
+    # ❌ 修正前: map_file = mmo_render_pillow(self, tiles, u["pos_x"], u["pos_y"], cap)
+    # ⭕ 修正後: こちらも self を削除します
+    map_file = mmo_render_pillow(tiles, u["pos_x"], u["pos_y"], cap)
+    
+    await interaction.edit_original_response(
+        embed=self._make_embed(u, msg),
+        attachments=[map_file],
+        view=self
+    )
 
     async def _move(self, interaction: discord.Interaction, dx: int, dy: int):
         await interaction.response.defer()
