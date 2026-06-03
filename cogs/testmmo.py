@@ -201,58 +201,53 @@ def generate_noise_tile_data(x: int, y: int) -> dict:
 def get_altitude_step_at(x: int, y: int) -> int:
     """
     指定された座標(x, y)の高度ノイズを計算し、1〜10の10段階のステップ値として返す。
-    （定数シード 12345、スケール 0.05 を使用）
     """
-    # 既存の get_perlin_noise を利用
-    alt_noise = get_perlin_noise(x * 0.05, y * 0.05, 12345)
-    # -0.7〜0.7 程度を 0.0〜1.0 に正規化
+    # 【最重要】整数ではなく、0.05 などの小数を掛け算して渡すことで滑らかな波を作る
+    scale = 0.08  # この数値を大きくすると起伏が激しくなり、小さくすると広大な地形になります
+    
+    alt_noise = get_perlin_noise(float(x) * scale, float(y) * scale, 12345)
+    
+    # get_perlin_noise の戻り値（だいたい -0.7 〜 0.7）を 0.0 〜 1.0 に安全に変換
     normalized = (alt_noise + 0.7) / 1.4
     normalized = max(0.0, min(1.0, normalized))
     
-    # 0.0〜1.0 を 1〜10 の10段階の整数に変換
-    step = int(normalized * 9) + 1  # 1〜10
+    # 1〜10 の10段階の整数に変換
+    step = int(normalized * 9) + 1
     return step
 
 def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
                    vx: int, vy: int, tile_data: Optional[dict],
-                   real_x: int, real_y: int,  # 実際のマップ座標(x, y)を受け取るように拡張
+                   real_x: int, real_y: int,
                    is_player: bool = False, is_capital: bool = False) -> None:
     """1タイルを描画する（未開拓・開拓済みの両方に10段階の高度明暗を適用）"""
     px, py = vx * TILE, vy * TILE
 
-    # ══════════════════════════════════════════════════════════════
-    # 【高度の10段階計算】
-    # 開拓・未開拓に関わらず、その座標の絶対的な高度ステップ(1〜10)を取得
-    # ══════════════════════════════════════════════════════════════
+    # 10段階の高度ステップ(1〜10)を取得
     alt_step = get_altitude_step_at(real_x, real_y)
     
-    # 高度ステップ(1〜10)を明暗倍率(0.6 〜 1.3倍)にマッピングする
-    # ステップ5か6を基準(約1.0倍)とし、低いと暗く、高いと明るくなる
-    factor = 0.5 + (alt_step / 10.0) * 0.8
+    # 【明暗比率の調整】
+    # 最暗(ステップ1)で 0.4倍、最明(ステップ10)で 1.4倍 になるように調整
+    factor = 0.3 + (alt_step / 10.0) * 1.1
 
     if tile_data is None:
-        # 未開拓地（ベース色を少しだけ明るめにして陰影がわかるように調整）
-        base_col = (25, 25, 35)
-        col_with_alt = (
-            max(0, min(255, int(base_col[0] * factor))),
-            max(0, min(255, int(base_col[1] * factor))),
-            max(0, min(255, int(base_col[2] * factor)))
-        )
-        draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=col_with_alt)
+        # 未開拓地（ベース色を少し明るめのグレー(40, 45, 60)にして陰影を見やすくします）
+        base_col = (40, 42, 55)
+        r = max(0, min(255, int(base_col[0] * factor)))
+        g = max(0, min(255, int(base_col[1] * factor)))
+        b = max(0, min(255, int(base_col[2] * factor)))
+        
+        draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=(r, g, b))
         return
 
     # 開拓済みタイルの処理
     tile_type = tile_data.get("tile_type", "unknown")
     col = TILE_COLORS.get(tile_type, TILE_COLORS["unknown"])
     
-    # 開拓済みタイルにも同じ高度の明暗倍率を適用
-    col_with_alt = (
-        max(0, min(255, int(col[0] * factor))),
-        max(0, min(255, int(col[1] * factor))),
-        max(0, min(255, int(col[2] * factor)))
-    )
+    r = max(0, min(255, int(col[0] * factor)))
+    g = max(0, min(255, int(col[1] * factor)))
+    b = max(0, min(255, int(col[2] * factor)))
 
-    draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=col_with_alt)
+    draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=(r, g, b))
 
     # ラベル文字の描画
     label = TILE_LABEL.get(tile_type, "")
