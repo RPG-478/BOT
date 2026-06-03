@@ -199,33 +199,43 @@ def generate_noise_tile_data(x: int, y: int) -> dict:
 # ══════════════════════════════════════════════════════════════
 
 def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
-                   vx: int, vy: int, tile_type: Optional[str],
+                   vx: int, vy: int, tile_data: Optional[dict],
                    is_player: bool = False, is_capital: bool = False) -> None:
-    """1タイルを描画する（dangeon_11._draw_tile 相当）"""
+    """引数を tile_type から tile_data(dict) に変更して高度を取得できるように拡張"""
     px, py = vx * TILE, vy * TILE
 
-    if tile_type is None:
+    if tile_data is None:
         # 未開拓地
         draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=(20, 20, 30))
         return
 
+    tile_type = tile_data.get("tile_type")
     col = TILE_COLORS.get(tile_type, TILE_COLORS["unknown"])
-    draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=col)
+    
+    # --- 高度値を色に反映させるロジック ---
+    ivs = tile_data.get("individual_values") or {}
+    altitude = ivs.get("altitude", 50)
+    # 高度50を基準に、±20% の明暗変化を与える
+    factor = 0.8 + (altitude / 100.0) * 0.4
+    col_with_alt = (
+        max(0, min(255, int(col[0] * factor))),
+        max(0, min(255, int(col[1] * factor))),
+        max(0, min(255, int(col[2] * factor)))
+    )
 
-    # ラベル文字
+    draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=col_with_alt)
+
+    # (以下、既存のラベル描画やプレイヤーアイコン描画を継続)
     label = TILE_LABEL.get(tile_type, "")
     if label:
         try:
-            draw.text((px + TILE // 2 - 4, py + TILE // 2 - 6), label,
-                      fill=(255, 255, 255))
+            draw.text((px + TILE // 2 - 4, py + TILE // 2 - 6), label, fill=(255, 255, 255))
         except Exception:
             pass
 
-    # プレイヤーアイコン（緑の円）
     if is_player:
         mg = 5
-        draw.ellipse([px + mg, py + mg, px + TILE - mg - 1, py + TILE - mg - 1],
-                     fill=TILE_COLORS["player"])
+        draw.ellipse([px + mg, py + mg, px + TILE - mg - 1, py + TILE - mg - 1], fill=TILE_COLORS["player"])
 
 
 def mmo_build_map_image(tiles_data: list[dict], cx: int, cy: int,
