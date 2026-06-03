@@ -507,8 +507,18 @@ class MMOMainView(discord.ui.View):
         if u["hunger"] <= HUNGER_MIN and HUNGER_COST_MOVE > 0:
             await self._refresh(interaction, "❌ スタミナ不足！食事で回復してください。")
             return
-        nx = max(0, min(MAP_SIZE_X - 1, u["pos_x"] + dx))
-        ny = max(0, min(MAP_SIZE_Y - 1, u["pos_y"] + dy))
+
+        # ══════════════════════════════════════════════════════════════
+        # ❌【修正前】 max(0, min(MAP_SIZE_X - 1, u["pos_x"] + dx)) 
+        # ⭕【修正後】 下限(0)の制限を取り除き、マイナスへの進入を許可します
+        # ══════════════════════════════════════════════════════════════
+        nx = u["pos_x"] + dx
+        ny = u["pos_y"] + dy
+
+        # 必要に応じて最大値側の上限だけ、または十分広大な世界（例:-10000〜10000）で制限します
+        # nx = max(-10000, min(10000, nx))
+        # ny = max(-10000, min(10000, ny))
+
         new_hunger = max(HUNGER_MIN, u["hunger"] - HUNGER_COST_MOVE)
         self.cog.db.table("users").update({
             "pos_x": nx, "pos_y": ny, "hunger": new_hunger
