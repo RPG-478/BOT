@@ -1,5 +1,8 @@
+
 from __future__ import annotations
+import asyncio
 import datetime
+import logging
 import random
 import uuid
 import math
@@ -12,6 +15,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from supabase import Client
 from PIL import Image, ImageDraw, ImageFont
+
+logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════
 # ■ 定数
@@ -77,6 +82,7 @@ CAPTURE_RESET_DEF      = 0
 RAID_LOG_CHANNEL_NAME  = "raid-log"
 
 # --- タイル色 (RGB) ---
+FOG_COLOR = (20, 20, 28)   # 未開拓地の固定フォグ色（ノイズ計算なし）
 TILE_COLORS = {
     "plain":      (80, 140, 60),
     "farm":       (160, 200, 80),
@@ -126,158 +132,85 @@ CROP_NAMES = {
 }
 CROP_TYPES = {k: "food" for k in CROP_NAMES}
 
-# --- 高度と個体値生成用の定数（シード値やスケール） ---
-NOISE_SEED_ALTITUDE  = 12345  # 高度用のノイズシード
-NOISE_SEED_IV        = 67890  # 個体値(IV)用のノイズシード
-MAP_SCALE_ALTITUDE   = 0.05   # 高度ノイズの滑らかさ（小さいほど広大な地形に）
-MAP_SCALE_IV         = 0.1    # 個体値ノイズの滑らかさ（小さいほど大きな資源地帯に）
-
-def get_altitude_at(x: int, y: int) -> int:
-    """
-    パーリンノイズから 0 ～ 100 の高度値を算出する
-    """
-    # get_perlin_noise は概ね -0.7 ～ 0.7 程度の値を返すため、0.0 ～ 1.0 に正規化
-    noise_val = get_perlin_noise(x * MAP_SCALE_ALTITUDE, y * MAP_SCALE_ALTITUDE, NOISE_SEED_ALTITUDE)
-    normalized = (noise_val + 0.7) / 1.4
-    # 0 ～ 100 の範囲にクリップ
-    return max(0, min(100, int(normalized * 100)))
-
-def get_noise_iv_at(x: int, y: int) -> int:
-    """
-    パーリンノイズから 1 ～ 100 の個体値(IV)のベース値を算出する
-    """
-    noise_val = get_perlin_noise(x * MAP_SCALE_IV, y * MAP_SCALE_IV, NOISE_SEED_IV)
-    normalized = (noise_val + 0.7) / 1.4
-    return max(1, min(100, int(normalized * 100)))
-
-def generate_noise_tile_data(x: int, y: int) -> dict:
-    """
-    座標(x, y)の高度を基に初期の地形タイプと個体値を一括生成する
-    """
-    altitude = get_altitude_at(x, y)
-    iv_base = get_noise_iv_at(x, y)
-    
-    # 高度に応じたデフォルト地形タイプの決定ロジック例
-    if altitude < 25:
-        tile_type = "plain"  # 低地は平原
-    elif altitude < 65:
-        # 中高度：個体値ノイズによって農場か鉱山かが綺麗に分かれるようにする
-        tile_type = "farm" if iv_base < 50 else "mine"
-    else:
-        tile_type = "wall"   # 高高度は進入不可の壁・山岳
-
-    # 地形に応じた個体値(IV)の格納
-    ivs = {"altitude": altitude}
-    if tile_type == "farm":
-        pop = list(FARM_CROP_WEIGHTS.keys())
-        wts = list(FARM_CROP_WEIGHTS.values())
-        ivs["fertility"] = iv_base  # ノイズ由来の肥沃度
-        ivs["crop"] = random.choices(pop, weights=wts, k=1)[0]
-    elif tile_type == "mine":
-        ivs["purity"] = iv_base     # ノイズ由来の純度
-    
-    # 各地形ごとの初期HP/DEFの設定
-    max_hp = PLAIN_HP
-    base_def = DEFAULT_DEF
-    if tile_type == "wall":
-        max_hp = WALL_MAX_HP
-        base_def = WALL_BASE_DEF
-
-    return {
-        "x": x,
-        "y": y,
-        "tile_type": tile_type,
-        "hp": max_hp,
-        "max_hp": max_hp,
-        "def": base_def,
-        "individual_values": ivs,
-        "connected": False
-    }
-
 # ══════════════════════════════════════════════════════════════
 # ■ Pillow マップ描画（dangeon_11.py 流用）
 # ══════════════════════════════════════════════════════════════
 
-def get_altitude_step_at(x: int, y: int) -> int:
-    """
-    指定された座標(x, y)の高度ノイズを計算し、1〜10の10段階のステップ値として返す。
-    """
-    # 既存の get_perlin_noise を流用（小数を掛けて滑らかにする）
-    scale = 0.08
-    alt_noise = get_perlin_noise(float(x) * scale, float(y) * scale, 12345)
-    normalized = (alt_noise + 0.7) / 1.4
-    normalized = max(0.0, min(1.0, normalized))
-    return int(normalized * 9) + 1
-
 def _draw_mmo_tile(draw: ImageDraw.ImageDraw, img: Image.Image,
                    vx: int, vy: int, tile_type: Optional[str],
-                   real_x: int, real_y: int,  # ⭕ ここに引数を追加
-                   is_player: bool = False, is_capital: bool = False) -> None:
-    """1タイルを描画する（未開拓・開拓済みの両方に10段階の高度明暗を適用）"""
+                   altitude: int = 50,
+                   is_player: bool = False) -> None:
+    """
+    1タイルを描画する（dangeon_11._draw_tile 相当）
+
+    altitude: DBに保存済みの高度値 (0-100)。明暗に使用。
+              未開拓タイルには使用しない（固定フォグ）。
+    """
     px, py = vx * TILE, vy * TILE
 
-    # 10段階の高度ステップを取得して明暗倍率を算出
-    alt_step = get_altitude_step_at(real_x, real_y)
-    factor = 0.4 + (alt_step / 10.0) * 1.0  # 明暗比率を好みに合わせて調整
-
+    # ── 未開拓地: 固定フォグ（ノイズ計算なし） ──────────────
     if tile_type is None:
-        # 未開拓地（ベース色を少しだけ明るめにして陰影がわかるように調整）
-        base_col = (30, 32, 45)
-        r = max(0, min(255, int(base_col[0] * factor)))
-        g = max(0, min(255, int(base_col[1] * factor)))
-        b = max(0, min(255, int(base_col[2] * factor)))
-        draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=(r, g, b))
+        draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=FOG_COLOR)
         return
 
-    # 開拓済みタイルの処理
-    col = TILE_COLORS.get(tile_type, TILE_COLORS["unknown"])
-    r = max(0, min(255, int(col[0] * factor)))
-    g = max(0, min(255, int(col[1] * factor)))
-    b = max(0, min(255, int(col[2] * factor)))
-    draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=(r, g, b))
+    # ── 開拓済みタイル: 保存済み altitude で明暗を決定 ───────
+    base_col = TILE_COLORS.get(tile_type, TILE_COLORS["unknown"])
+    # altitude 0〜100 → 明暗倍率 0.70〜1.15
+    bright = 0.70 + (altitude / 100) * 0.45
+    col = tuple(min(255, int(c * bright)) for c in base_col)
+
+    draw.rectangle([px, py, px + TILE - 1, py + TILE - 1], fill=col)
 
     # ラベル文字
     label = TILE_LABEL.get(tile_type, "")
     if label:
         try:
-            draw.text((px + TILE // 2 - 4, py + TILE // 2 - 6), label, fill=(255, 255, 255))
-        except Exception:
-            pass
+            draw.text((px + TILE // 2 - 4, py + TILE // 2 - 6), label,
+                      fill=(255, 255, 255))
+        except Exception as e:
+            logger.warning("タイルラベル描画失敗 tile_type=%s: %s", tile_type, e)
 
-    # プレイヤーアイコン
+    # プレイヤーアイコン（緑の円）
     if is_player:
         mg = 5
-        draw.ellipse([px + mg, py + mg, px + TILE - mg - 1, py + TILE - mg - 1], fill=TILE_COLORS["player"])
+        draw.ellipse([px + mg, py + mg, px + TILE - mg - 1, py + TILE - mg - 1],
+                     fill=TILE_COLORS["player"])
 
 
 def mmo_build_map_image(tiles_data: list[dict], cx: int, cy: int,
                         capital_pos: Optional[tuple[int, int]] = None) -> Image.Image:
     """
     Pillow で周辺マップ画像を生成する（dangeon_11.d_build_map_image 相当）
-    tiles_data: DBから取得したタイルリスト [{x, y, tile_type, ...}, ...]
+    tiles_data: DBから取得したタイルリスト [{x, y, tile_type, individual_values, ...}, ...]
+
+    ★ パフォーマンス改善:
+      - 未開拓地は FOG_COLOR で固定塗り（ノイズ計算なし）
+      - 開拓済みタイルは DB保存済みの altitude を使用して明暗決定（再計算なし）
     """
     size = VIEW_RADIUS * 2 + 1
-    img = Image.new("RGB", (size * TILE, size * TILE), (15, 15, 25))
+    img = Image.new("RGB", (size * TILE, size * TILE), FOG_COLOR)
     draw = ImageDraw.Draw(img)
 
-    # タイルを座標辞書化
-    tile_map: dict[tuple[int, int], str] = {
-        (t["x"], t["y"]): t["tile_type"] for t in tiles_data
+    # タイルを座標辞書化（individual_values も含む）
+    tile_map: dict[tuple[int, int], dict] = {
+        (t["x"], t["y"]): t for t in tiles_data
     }
 
     for vy_i, vy in enumerate(range(cy - VIEW_RADIUS, cy + VIEW_RADIUS + 1)):
         for vx_i, vx in enumerate(range(cx - VIEW_RADIUS, cx + VIEW_RADIUS + 1)):
             is_player = (vx == cx and vy == cy)
-            
-            # ⭕【修正】マイナス座標（北・西）でも虚無にならず、tile_map からデータを取得できるようにします
-            tile_type = tile_map.get((vx, vy))
-            
-            is_cap = (capital_pos is not None and (vx, vy) == capital_pos)
-            
-            # ⭕【修正】_draw_mmo_tile に実際のマップ座標 real_x, real_y を渡す
-            _draw_mmo_tile(draw, img, vx_i, vy_i, tile_type,
-                           real_x=vx, real_y=vy,
-                           is_player=is_player, is_capital=is_cap)
+            in_bounds = (0 <= vx < MAP_SIZE_X and 0 <= vy < MAP_SIZE_Y)
+            tile = tile_map.get((vx, vy)) if in_bounds else None
+
+            if tile is None:
+                # 未開拓 or 範囲外: フォグのみ（_draw_mmo_tile が FOG_COLOR で塗る）
+                _draw_mmo_tile(draw, img, vx_i, vy_i, None)
+            else:
+                tile_type = tile.get("tile_type")
+                ivs = tile.get("individual_values") or {}
+                altitude = ivs.get("altitude", 50)  # 保存済み altitude を使用
+                _draw_mmo_tile(draw, img, vx_i, vy_i, tile_type,
+                               altitude=altitude, is_player=is_player)
 
     # グリッド線（薄め）
     for i in range(size + 1):
@@ -286,13 +219,23 @@ def mmo_build_map_image(tiles_data: list[dict], cx: int, cy: int,
 
     return img
 
-def mmo_render_pillow(tiles_data: list[dict], cx: int, cy: int,
-                      capital_pos: Optional[tuple[int, int]] = None) -> discord.File:
-    """Pillow 画像を discord.File として返す（dangeon_11.d_render_pillow 相当）"""
-    img = mmo_build_map_image(tiles_data, cx, cy, capital_pos)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
+
+async def mmo_render_pillow(tiles_data: list[dict], cx: int, cy: int,
+                            capital_pos: Optional[tuple[int, int]] = None) -> discord.File:
+    """
+    Pillow 画像を discord.File として返す（dangeon_11.d_render_pillow 相当）
+
+    ★ asyncio.to_thread() で CPU バウンドな描画処理をワーカースレッドに逃がし、
+      イベントループをブロックしない。
+    """
+    def _render() -> io.BytesIO:
+        img = mmo_build_map_image(tiles_data, cx, cy, capital_pos)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return buf
+
+    buf = await asyncio.to_thread(_render)
     return discord.File(fp=buf, filename="mmo_map.png")
 
 
@@ -392,7 +335,7 @@ class ImmigrationConfirmView(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         uid = str(interaction.user.id)
         new_gid = self.target_guild["guild_id"]
-        new_coins = self.user.get("coins", 0) - self.exit_fee - self.entry_fee
+        new_coins = self.user["coins"] - self.exit_fee - self.entry_fee
         if self.old_gid and self.exit_fee > 0:
             old_g = self.db.table("guilds").select("treasury_coins").eq(
                 "guild_id", self.old_gid).maybe_single().execute().data
@@ -446,7 +389,7 @@ class MMOMainView(discord.ui.View):
 
     # ── ヘルパー ──────────────────────────────────────
     def _get_tiles(self, cx: int, cy: int) -> list[dict]:
-        res = self.cog.db.table("tiles").select("x,y,tile_type,owner_guild_id") \
+        res = self.cog.db.table("tiles").select("x,y,tile_type,owner_guild_id,individual_values") \
             .gte("x", cx - VIEW_RADIUS).lte("x", cx + VIEW_RADIUS) \
             .gte("y", cy - VIEW_RADIUS).lte("y", cy + VIEW_RADIUS).execute()
         return res.data or []
@@ -482,7 +425,7 @@ class MMOMainView(discord.ui.View):
             return
         tiles = self._get_tiles(u["pos_x"], u["pos_y"])
         cap = self._capital_pos(u.get("guild_id", ""))
-        map_file = mmo_render_pillow(tiles, u["pos_x"], u["pos_y"], cap)
+        map_file = await mmo_render_pillow(tiles, u["pos_x"], u["pos_y"], cap)
         await interaction.edit_original_response(
             embed=self._make_embed(u, msg),
             attachments=[map_file],
@@ -498,16 +441,8 @@ class MMOMainView(discord.ui.View):
         if u["hunger"] <= HUNGER_MIN and HUNGER_COST_MOVE > 0:
             await self._refresh(interaction, "❌ スタミナ不足！食事で回復してください。")
             return
-
-        # ❌【修正前】 nx = max(0, min(MAP_SIZE_X - 1, u["pos_x"] + dx))
-        # ⭕【修正後】 下限(0)の制限をなくし、マイナス座標に移動可能にします
-        nx = u["pos_x"] + dx
-        ny = u["pos_y"] + dy
-
-        # 世界の果てを設定したい場合は、例えば上下左右に -10000〜10000 マスなどで制限します
-        # nx = max(-10000, min(10000, nx))
-        # ny = max(-10000, min(10000, ny))
-
+        nx = max(0, min(MAP_SIZE_X - 1, u["pos_x"] + dx))
+        ny = max(0, min(MAP_SIZE_Y - 1, u["pos_y"] + dy))
         new_hunger = max(HUNGER_MIN, u["hunger"] - HUNGER_COST_MOVE)
         self.cog.db.table("users").update({
             "pos_x": nx, "pos_y": ny, "hunger": new_hunger
@@ -515,35 +450,35 @@ class MMOMainView(discord.ui.View):
         await self._refresh(interaction, f"移動 → ({nx}, {ny})")
 
     # ── 移動ボタン Row 0 ──────────────────────────────
-    @discord.ui.button(label="↖️", style=discord.ButtonStyle.secondary, row=0, custom_id="mmo_lu")
+    @discord.ui.button(label="↖", style=discord.ButtonStyle.secondary, row=0, custom_id="mmo_lu")
     async def move_lu(self, i, b): await self._move(i, -1, -1)
 
     @discord.ui.button(label="⬆", style=discord.ButtonStyle.secondary, row=0, custom_id="mmo_u")
     async def move_u(self, i, b): await self._move(i, 0, -1)
 
-    @discord.ui.button(label="↗️", style=discord.ButtonStyle.secondary, row=0, custom_id="mmo_ru")
-    async def move_lu(self, interaction: discord.Interaction, button: discord.ui.Button): await self._move(interaction, 1, -1)
+    @discord.ui.button(label="↗", style=discord.ButtonStyle.secondary, row=0, custom_id="mmo_ru")
+    async def move_ru(self, i, b): await self._move(i, 1, -1)
 
     # ── 移動ボタン Row 1 ──────────────────────────────
     @discord.ui.button(label="⬅", style=discord.ButtonStyle.secondary, row=1, custom_id="mmo_l")
     async def move_l(self, i, b): await self._move(i, -1, 0)
 
-    @discord.ui.button(label="🔄", style=discord.ButtonStyle.secondary, row=1, custom_id="mmo_c")
+    @discord.ui.button(label="●", style=discord.ButtonStyle.secondary, row=1, custom_id="mmo_c")
     async def move_c(self, i, b):
         await i.response.defer()
         await self._refresh(i, "現在地を確認")
 
-    @discord.ui.button(label="➡️", style=discord.ButtonStyle.secondary, row=1, custom_id="mmo_r")
+    @discord.ui.button(label="➡", style=discord.ButtonStyle.secondary, row=1, custom_id="mmo_r")
     async def move_r(self, i, b): await self._move(i, 1, 0)
 
     # ── 移動ボタン Row 2 ──────────────────────────────
-    @discord.ui.button(label="↙️", style=discord.ButtonStyle.secondary, row=2, custom_id="mmo_ld")
+    @discord.ui.button(label="↙", style=discord.ButtonStyle.secondary, row=2, custom_id="mmo_ld")
     async def move_ld(self, i, b): await self._move(i, -1, 1)
 
     @discord.ui.button(label="⬇", style=discord.ButtonStyle.secondary, row=2, custom_id="mmo_d")
     async def move_d(self, i, b): await self._move(i, 0, 1)
 
-    @discord.ui.button(label="↘️", style=discord.ButtonStyle.secondary, row=2, custom_id="mmo_rd")
+    @discord.ui.button(label="↘", style=discord.ButtonStyle.secondary, row=2, custom_id="mmo_rd")
     async def move_rd(self, i, b): await self._move(i, 1, 1)
 
     # ── メニューボタン Row 3 ──────────────────────────
@@ -554,7 +489,7 @@ class MMOMainView(discord.ui.View):
         u = self.cog._get_user(self.uid)
         tiles = self._get_tiles(u["pos_x"], u["pos_y"]) if u else []
         cap = self._capital_pos(u.get("guild_id", "")) if u else None
-        map_file = mmo_render_pillow(tiles, u["pos_x"], u["pos_y"], cap) if u else None
+        map_file = await mmo_render_pillow(tiles, u["pos_x"], u["pos_y"], cap) if u else None
         em = discord.Embed(title="📋 メニュー", description="アクションまたはその他を選んでください。", color=discord.Color.blurple())
         em.set_image(url="attachment://mmo_map.png")
         kwargs = {"embed": em, "view": view}
@@ -647,6 +582,10 @@ class MMOActionView(discord.ui.View):
             if not tile or tile["tile_type"] != "farm":
                 msg = "❌ 現在地はファームではありません。"
                 color = discord.Color.red()
+            elif tile.get("owner_guild_id") != u["guild_id"]:
+                # ★ バグ修正: 外国籍労働による国庫搾取を防止（自国領土のみ労働可能）
+                msg = "❌ 自国が所有するファームでのみ労働できます。"
+                color = discord.Color.red()
             elif not tile.get("connected"):
                 msg = "❌ 首都と接続されていません。"
                 color = discord.Color.red()
@@ -663,13 +602,10 @@ class MMOActionView(discord.ui.View):
                     fertility = ivs.get("fertility", 50)
                     selected_crop = ivs.get("crop", "tomato")
                     yield_qty = calc_farm_yield(fertility)
-                    is_foreign = u["guild_id"] != tile["owner_guild_id"]
                     reward = g["labor_reward"]
-                    foreign_fee = int(reward * 0.20) if is_foreign else 0
-                    reward -= foreign_fee
                     net, tax = self.cog._apply_tax(u["guild_id"], reward)
                     self.cog.db.table("guilds").update({
-                        "treasury_coins": g["treasury_coins"] - g["labor_reward"] + foreign_fee
+                        "treasury_coins": g["treasury_coins"] - g["labor_reward"]
                     }).eq("guild_id", gid).execute()
                     self.cog._add_stack_item(tile["owner_guild_id"], selected_crop, yield_qty)
                     self.cog.db.table("users").update({
@@ -698,6 +634,10 @@ class MMOActionView(discord.ui.View):
             if not tile or tile["tile_type"] != "mine":
                 msg = "❌ 現在地は鉱山ではありません。"
                 color = discord.Color.red()
+            elif tile.get("owner_guild_id") != u["guild_id"]:
+                # ★ バグ修正: 外国籍労働による国庫搾取を防止（自国領土のみ労働可能）
+                msg = "❌ 自国が所有する鉱山でのみ労働できます。"
+                color = discord.Color.red()
             elif not tile.get("connected"):
                 msg = "❌ 首都と接続されていません。"
                 color = discord.Color.red()
@@ -709,13 +649,10 @@ class MMOActionView(discord.ui.View):
                 else:
                     purity = (tile.get("individual_values") or {}).get("purity", 50)
                     coins_earned, ore = calc_mine_reward(purity)
-                    is_foreign = u["guild_id"] != tile["owner_guild_id"]
                     reward = g["labor_reward"]
-                    foreign_fee = int(reward * 0.20) if is_foreign else 0
-                    reward -= foreign_fee
                     net, tax = self.cog._apply_tax(u["guild_id"], reward)
                     self.cog.db.table("guilds").update({
-                        "treasury_coins": g["treasury_coins"] - g["labor_reward"] + coins_earned + foreign_fee
+                        "treasury_coins": g["treasury_coins"] - g["labor_reward"] + coins_earned
                     }).eq("guild_id", gid).execute()
                     if ore:
                         self.cog._add_stack_item(tile["owner_guild_id"], "iron_ore", 1)
@@ -971,30 +908,7 @@ class DevelopModal(discord.ui.Modal, title="🏗️ 開拓"):
                     msg = "❌ そのマスはすでに占有されています。"
                     color = discord.Color.red()
                 else:
-                    x, y = u["pos_x"], u["pos_y"]
-
-                    # ══════════════════════════════════════════════════════════════
-                    # 【追加】パーリンノイズによる高度値と個体値ベースの算出
-                    # ══════════════════════════════════════════════════════════════
-                    # 高度用ノイズ（シード: 12345, スケール: 0.05 で緩やかな起伏）
-                    alt_noise = get_perlin_noise(x * 0.05, y * 0.05, 12345)
-                    altitude = max(0, min(100, int(((alt_noise + 0.7) / 1.4) * 100)))
-
-                    # 資源・個体値用ノイズ（シード: 67890, スケール: 0.1 で資源の脈を形成）
-                    iv_noise = get_perlin_noise(x * 0.1, y * 0.1, 67890)
-                    iv_base = max(1, min(100, int(((iv_noise + 0.7) / 1.4) * 100)))
-
-                    # 既存のランダムIV生成を取得し、ノイズベースの値で上書き・追加する
                     ivs = generate_ivs(ttype)
-                    ivs["altitude"] = altitude  # 高度値を個体値に記録
-
-                    # タイルタイプに応じた個別ノイズ特性の適用
-                    if ttype == "farm":
-                        ivs["fertility"] = iv_base  # 肥沃度をノイズ由来（土地の脈）にする
-                    elif ttype == "mine":
-                        ivs["purity"] = iv_base     # 純度をノイズ由来にする
-                    # ══════════════════════════════════════════════════════════════
-
                     if ttype == "farm":
                         selected_crop = ivs.get("crop", "tomato")
                         try:
@@ -1006,13 +920,13 @@ class DevelopModal(discord.ui.Modal, title="🏗️ 開拓"):
                                     "name": CROP_NAMES.get(selected_crop, selected_crop),
                                     "type": CROP_TYPES.get(selected_crop, "material")
                                 }).execute()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning("作物アイテムマスタ挿入失敗 crop=%s: %s", selected_crop, e)
                     hp = WALL_HP if ttype == "wall" else PLAIN_HP
                     max_hp = WALL_MAX_HP if ttype == "wall" else PLAIN_HP
                     base_def = WALL_BASE_DEF if ttype == "wall" else DEFAULT_DEF
                     self.cog.db.table("tiles").upsert({
-                        "x": x, "y": y,
+                        "x": u["pos_x"], "y": u["pos_y"],
                         "owner_guild_id": gid,
                         "owner_user_id": uid if ttype not in {"farm", "mine"} else None,
                         "tile_type": ttype, "individual_values": ivs,
@@ -1025,16 +939,12 @@ class DevelopModal(discord.ui.Modal, title="🏗️ 開拓"):
                     if ttype == "farm" and "crop" in ivs:
                         cname = CROP_NAMES.get(ivs["crop"], ivs["crop"])
                         crop_disp = f"\n🌾 決定した栽培作物: **{cname}**"
-                    
-                    msg = (
-                        f"✅ ({x}, {y}) を **{ttype}** に開拓！\n"
-                        f"⛰️ 土地の高度: `{altitude}`\n"
-                        f"📊 個体値データ: {ivs}{crop_disp}"
-                    )
+                    msg = f"✅ ({u['pos_x']}, {u['pos_y']}) を **{ttype}** に開拓！\n個体値: {ivs}{crop_disp}"
 
         em = discord.Embed(title="🏗️ 開拓", description=msg, color=color)
         view = MMOActionView(self.cog, self.uid)
         await interaction.edit_original_response(embed=em, view=view, attachments=[])
+
 
 class CasinoModal(discord.ui.Modal, title="🎰 カジノ"):
     bet_input = discord.ui.TextInput(
@@ -1256,7 +1166,7 @@ class MMOCog(commands.Cog):
                 if not existing or not getattr(existing, "data", None):
                     self.db.table("items").insert(crop).execute()
         except Exception as e:
-            print(f"[Warning] 作物マスタ自動追加失敗: {e}")
+            logger.warning("作物マスタ自動追加失敗: %s", e)
 
         self.hunger_decay_task.start()
         self.farm_maintenance_task.start()
@@ -1444,7 +1354,7 @@ class MMOCog(commands.Cog):
     # ■ メインコマンド（ゲーム画面）
     # ══════════════════════════════════════════
 
-    @app_commands.command(name="playmmo", description="MMOゲーム画面を開きます")
+    @app_commands.command(name="play", description="MMOゲーム画面を開きます")
     async def cmd_play(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         uid = str(interaction.user.id)
@@ -1458,7 +1368,7 @@ class MMOCog(commands.Cog):
         tiles = view._get_tiles(u["pos_x"], u["pos_y"])
         gid = u.get("guild_id", "")
         cap = view._capital_pos(gid) if gid else None
-        map_file = mmo_render_pillow(tiles, u["pos_x"], u["pos_y"], cap)
+        map_file = await mmo_render_pillow(tiles, u["pos_x"], u["pos_y"], cap)
         em = view._make_embed(u, "ゲームへようこそ！移動ボタンで探索しましょう。")
         await interaction.followup.send(embed=em, file=map_file, view=view)
 
@@ -1487,7 +1397,7 @@ class MMOCog(commands.Cog):
         embed = discord.Embed(
             title="🎉 参加完了",
             color=discord.Color.green(),
-            description=f"国家 `{gid}` に参加！\n役職: **{role_text}**\n初期所持金: **{INITIAL_COINS}コイン**\n出現地: ({sx}, {sy})\n\n`/playmmo` でゲーム画面を開けます！"
+            description=f"国家 `{gid}` に参加！\n役職: **{role_text}**\n初期所持金: **{INITIAL_COINS}コイン**\n出現地: ({sx}, {sy})\n\n`/play` でゲーム画面を開けます！"
         )
         await interaction.response.send_message(embed=embed)
 
