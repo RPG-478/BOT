@@ -297,13 +297,14 @@ class JinrouCog(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="jinrou_help", description="各役職の詳細な説明を表示します")
-    async def jinrou_help(self, interaction: discord.Interaction):
+    @app_commands.describe(private="自分だけに表示する場合はTrue、全員に表示する場合はFalse")
+    async def jinrou_help(self, interaction: discord.Interaction, private: bool = True):
         view = HelpView()
         embed, file = view.make_embed_and_file()
         if file:
-            await interaction.response.send_message(embed=embed, file=file, view=view)
+            await interaction.response.send_message(embed=embed, file=file, view=view, ephemeral=private)
         else:
-            await interaction.response.send_message(embed=embed, view=view)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=private)
 
     @app_commands.command(name="jinrou", description="人狼ゲームを開始します")
     async def jinrou(self, interaction: discord.Interaction):
