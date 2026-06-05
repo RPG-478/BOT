@@ -48,9 +48,9 @@ HELP_ROLES = [
     ("ハゲ", "第三者陣営", "追放されたら勝利。髪の毛が観測できないバグのせいで目立ちすぎる。", "HAGE.PNG"),
     ("コウモリむに", "第三者陣営", "ハゲの上位職。ただし最後まで生き残れば追加勝利できる。", "KOUMORI.PNG"),
     ("メンヘラ", "第三者陣営", "自分に関与した（占う、守る、食べる）者を物理的に消去する。占うと黒判定が出る。", "MENHERA.PNG"),
-    ("あごむに破道砲", "第三者陣営", "自爆して対象を道連れにする。さらにもう1人も誤発で巻き込む。（※3日目の夜以降に使用可能）", "AGOMUNIHADOHOU.PNG"),
+    ("あごむに破道砲", "第三者陣営", "<a:BAKUHATU:1490259644717993995>自爆して対象を道連れにする。さらにもう1人も誤発で巻き込む。（※3日目の夜以降に使用可能）", "AGOMUNIHADOHOU.PNG"),
     ("ワンころ", "第三者陣営", "最初に飼い主を決める。飼い主が死ぬかいない場合は野良化して人狼になる。占うと黒判定が出る。", "WANKORO.PNG"),
-    ("もくもく", "第三者陣営", "ビー玉ブレイカーの発展職。生きている間は全員の役職構成が非公開になる。死ぬと役職構成が公開される。夜のアクション終了時のゲームマスタログ報告が全てもくもくに差し替わる。効果は3ターンで終了。", "MOKUMOKU.PNG"),
+    ("もくもく", "第三者陣営", "ビー玉ブレイカーの発展職。生きている間は全員の役職構成が非公開になる。死ぬと役職構成が公開される。夜のアクション終了時のゲームマスタログ報告が全てもくもくに差し替わる。効果は3ターンで終了。タバコではなくココアシガレット愛好家。", "MOKUMOKU.PNG"),
 ]
 
 # ======================================================
@@ -554,7 +554,7 @@ class JinrouCog(commands.Cog):
                             victim_m = game.game_channel.guild.get_member(victim_id)
                             if victim_m:
                                 await game.game_channel.send(
-                                    f"🎵 パーティに人狼が紛れ込んでいた！ {victim_m.display_name} が犠牲になりました..."
+                                    f"<:JINROU:1490254581358264382> パーティに人狼が紛れ込んでいた！ {victim_m.display_name} が犠牲になりました..."
                                 )
                 break
 
@@ -574,7 +574,7 @@ class JinrouCog(commands.Cog):
             if t_role in ["人狼", "デカ狼"]:
                 dead_ids.add(p_id)
                 await game.game_channel.send(
-                    f"{yoikya_name} が {target_name} をℳ𝓎𝒽ℴ𝓂ℯに誘ったが人狼に返り討ちにあった..."
+                    f"<:NYUROU:1490254582977134672>{yoikya_name} が {target_name} をℳ𝓎𝒽ℴ𝓂ℯに誘ったが人狼に返り討ちにあった..."
                 )
             elif t_role == "メンヘラ":
                 game.roles[p_id] = "リア充"
@@ -697,7 +697,7 @@ class JinrouCog(commands.Cog):
                 dm = game.game_channel.guild.get_member(did)
                 if dm:
                     dead_names.append(dm.display_name)
-            report_msg += f"死亡者: {', '.join(dead_names)}\n"
+            report_msg += f"<:NYUROU:1490254582977134672>死亡者: {', '.join(dead_names)}\n"
         else:
             report_msg += "夜間に死亡者はいません。\n"
 
