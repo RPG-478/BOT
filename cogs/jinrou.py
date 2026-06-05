@@ -9,8 +9,8 @@ from discord.ext import commands
 # ======================================================
 #  白黒判定ユーティリティ
 # ======================================================
-BLACK_ROLES_URANAI = {"人狼", "入狼", "ワンころ", "メンヘラ"}
-BLACK_ROLES_REIBAI = {"人狼", "デカ狼", "入狼", "ワンころ", "メンヘラ"}
+BLACK_ROLES_URANAI = {"人狼", "入狼", "ワンころ", "メンヘラ", "ヤンデレ"}
+BLACK_ROLES_REIBAI = {"人狼", "デカ狼", "入狼", "ワンころ", "メンヘラ", "ヤンデレ"}
 
 def uranai_color(role: str) -> str:
     return "黒" if role in BLACK_ROLES_URANAI else "白"
@@ -39,16 +39,18 @@ HELP_ROLES = [
     ("奴隷", "村人陣営", "貴族とセットで発生。貴族が死ぬと代わりに死ぬ。貴族が誰か分かる。", "DOREI.PNG"),
     ("陽キャ", "村人陣営", "毎晩1人をℳ𝓎𝒽ℴ𝓂ℯに連れ込む。相手が人狼/デカ狼なら陽キャが死ぬ。相手がメンヘラなら2人ともリア充に変化。それ以外は酔い潰してそのプレイヤーの夜のアクションをキャンセルする。", "YOUKYA.PNG"),
     ("ミュージシャン", "村人陣営", "陽キャの発展職。ゲーム中1度だけ夜にパーティを開催してランダムに4人を招待できる。招待者は殺されなくなり夜のアクションもキャンセル。ただし人狼/デカ狼が混じっていた場合30%で招待者の中の非狼陣営が1人死亡。", "MUSICIAN.PNG"),
+    ("ネット民", "村人陣営", "昼夜の発言タイミングが逆転する。昼に沈黙し、夜にのみ自由に発言できる。", "NETTAMIN.PNG"),
     ("人狼", "人狼陣営", "村人を食べる。仲間同士は誰が人狼か知っている。", "JINROU.PNG"),
     ("デカ狼", "人狼陣営", "占い師を賄賂で黙らせる人狼。占い師に白判定を出させる。霊媒師には黒と出る。", "DEKAROU.PNG"),
     ("狂人", "人狼陣営", "人狼の味方をする人間。人狼が誰かは知らないが、とにかく場を乱す。", "KYOJIN.PNG"),
     ("狂信者", "人狼陣営", "人狼とデカ狼が誰かを知っている熱狂的なファン。人狼陣営の参謀。", "KYOUSINSYA.PNG"),
+    ("ヤンデレ", "人狼陣営", "メンヘラの発展職。人狼の中からランダムに1人を選び、その人狼に夜関わった人間を殺す。", "YANDERE.PNG"),
     ("ハゲ", "第三者陣営", "追放されたら勝利。髪の毛が観測できないバグのせいで目立ちすぎる。", "HAGE.PNG"),
     ("コウモリむに", "第三者陣営", "ハゲの上位職。ただし最後まで生き残れば追加勝利できる。", "KOUMORI.PNG"),
     ("メンヘラ", "第三者陣営", "自分に関与した（占う、守る、食べる）者を物理的に消去する。占うと黒判定が出る。", "MENHERA.PNG"),
     ("あごむに破道砲", "第三者陣営", "自爆して対象を道連れにする。さらにもう1人も誤発で巻き込む。（※3日目の夜以降に使用可能）", "AGOMUNIHADOHOU.PNG"),
     ("ワンころ", "第三者陣営", "最初に飼い主を決める。飼い主が死ぬかいない場合は野良化して人狼になる。占うと黒判定が出る。", "WANKORO.PNG"),
-    ("もくもく", "第三者陣営", "ビー玉ブレイカーの発展職。生きている間は全員の役職構成が非公開になる。死ぬと役職構成が公開される。占い師の判定を30%で逆転する効果も継承。", "MOKUMOKU.PNG"),
+    ("もくもく", "第三者陣営", "ビー玉ブレイカーの発展職。生きている間は全員の役職構成が非公開になる。死ぬと役職構成が公開される。夜のアクション終了時のゲームマスタログ報告が全てもくもくに差し替わる。効果は3ターンで終了。", "MOKUMOKU.PNG"),
 ]
 
 # ======================================================
@@ -81,6 +83,8 @@ class JinrouGame:
         self.required_roles = []
         self.excluded_roles = []
         self.host_id = None
+        self.game_mode = "pro"  # "basic" or "pro"
+        self.mokumoku_turn_count = 0  # もくもくの効果ターンカウント
 
 # ======================================================
 #  Cog 本体
@@ -114,6 +118,17 @@ class JinrouCog(commands.Cog):
         game = self.games.get(message.channel.id)
         if not game or not game.is_running:
             return
+
+        # ネット民の昼間沈黙チェック
+        if game.in_discussion:
+            player_role = game.roles.get(message.author.id)
+            is_alive = any(p.id == message.author.id for p in game.alive_players)
+            if player_role == "ネット民" and is_alive and not hasattr(game, '_is_night') or not game._is_night:
+                try:
+                    await message.delete()
+                except:
+                    pass
+                return
 
         if message.author.id in game.silenced_players:
             try:
@@ -150,6 +165,7 @@ class JinrouCog(commands.Cog):
         num = len(game.players)
         num_wolves = max(1, num // 4)
 
+        # プロモーションマップ
         promotion_map = {
             "人狼":             "デカ狼",
             "騎士":             "罠師",
@@ -160,9 +176,13 @@ class JinrouCog(commands.Cog):
             "霊媒師":           "大霊媒師",
             "陽キャ":           "ミュージシャン",
             "ビー玉ブレイカー": "もくもく",
+            "メンヘラ":         "ヤンデレ",
         }
 
         def maybe_promote(role):
+            # ベーシックモードでは発展職にしない
+            if game.game_mode == "basic":
+                return role
             if role in promotion_map and random.random() < 0.35:
                 return promotion_map[role]
             return role
@@ -177,26 +197,17 @@ class JinrouCog(commands.Cog):
         wolf_in_req = sum(1 for r in required if r in ["人狼", "デカ狼"])
         additional_wolves = max(0, num_wolves - wolf_in_req)
         for _ in range(min(additional_wolves, num - len(pool))):
-            pool.append(maybe_promote("人狼"))
+            pool.append("人狼")
 
-        # 残りスロット用候補（除外・必須を除く）
-        candidates = [
-            r for r in [
-                "占い師", "騎士", "霊媒師", "パン屋", "マサイ族", "入狼",
-                "議長", "ビー玉ブレイカー", "陽キャ", "狂人", "ハゲ", "メンヘラ", "あごむに破道砲"
-            ]
-            if r not in excluded and r not in required
-        ]
-        random.shuffle(candidates)
-        ci = 0
+        # ランダム補充
+        available = [r for r in [
+            "一般通過あごむに", "占い師", "騎士", "霊媒師", "パン屋", "マサイ族",
+            "入狼", "議長", "ビー玉ブレイカー", "リア充", "貴族", "奴隷", "陽キャ",
+            "狂人", "ハゲ", "メンヘラ", "あごむに破道砲", "ネット民"
+        ] if r not in excluded]
 
-        # 65%で何かしらの役職に昇格、35%は一般通過あごむに（→タフむにの可能性あり）
-        while len(pool) < num:
-            if random.random() < 0.65 and ci < len(candidates):
-                r = candidates[ci]; ci += 1
-                pool.append(maybe_promote(r))
-            else:
-                pool.append(maybe_promote("一般通過あごむに"))
+        while len(pool) < num and available:
+            pool.append(random.choice(available))
 
         pool = pool[:num]
 
@@ -224,6 +235,9 @@ class JinrouCog(commands.Cog):
                         pool[idx] = pair_roles[i]
 
         pool = pool[:num]
+        
+        # プロモーション適用
+        pool = [maybe_promote(r) for r in pool]
         random.shuffle(pool)
 
         for i, p in enumerate(game.players):
@@ -256,6 +270,7 @@ class JinrouCog(commands.Cog):
             elif r == "入狼":           roles_for_display.append("人狼")
             elif r == "大霊媒師":       roles_for_display.append("霊媒師")
             elif r == "ミュージシャン":  roles_for_display.append("陽キャ")
+            elif r == "ヤンデレ":       roles_for_display.append("メンヘラ")
             elif r == "もくもく":       roles_for_display.append("ビー玉ブレイカー")
             else:                       roles_for_display.append(r)
         roles_list = " / ".join(set(roles_for_display))
@@ -318,20 +333,22 @@ class JinrouCog(commands.Cog):
         game.musician_party_used = False
         game.required_roles = []
         game.excluded_roles = []
+        game.game_mode = "pro"
 
+        # モード選択パネル
         embed = discord.Embed(
             title="人狼ゲーム設定",
-            description="必須役職・除外役職を設定してください。（各最大4つ）\n設定後「確定してパネルを送信」を押してください。",
+            description="ゲームモードを選択してください。",
             color=0xFFFFFF
         )
         await interaction.response.send_message(
             embed=embed,
-            view=SetupView(game, self, interaction.channel),
+            view=ModeSelectView(game, self, interaction.channel),
             ephemeral=True
         )
 
     async def run_from_hub(self, game: JinrouGame, channel, host_id: int = None):
-        """play.py から create_task で呼ぶ。60秒待機してゲームループを開始する。"""
+        """play.py から create_task で呼ぶ。60秒待機してゲームループを開始。"""
         if host_id:
             game.host_id = host_id
         await asyncio.sleep(60)
@@ -363,6 +380,7 @@ class JinrouCog(commands.Cog):
                 elif r == "入狼":           roles_for_display.append("人狼")
                 elif r == "大霊媒師":       roles_for_display.append("霊媒師")
                 elif r == "ミュージシャン":  roles_for_display.append("陽キャ")
+                elif r == "ヤンデレ":       roles_for_display.append("メンヘラ")
                 elif r == "もくもく":       roles_for_display.append("ビー玉ブレイカー")
                 else:                       roles_for_display.append(r)
             roles_list = " / ".join(set(roles_for_display))
@@ -411,7 +429,7 @@ class JinrouCog(commands.Cog):
 
                 game.chairman_ketsugu_target = None
                 game.chairman_forced_vote = False
-                await self.run_discussion(game, minutes=3, title="昼のディスカッション")
+                await self.run_discussion(game, minutes=2.5, title="昼のディスカッション")
                 if not game.is_running: break
 
                 if game.chairman_forced_vote:
@@ -441,11 +459,13 @@ class JinrouCog(commands.Cog):
         if not game.is_running: return
         game.chairman_skip_event = asyncio.Event()
         game.in_discussion = True
+        game._is_night = False  # ネット民の昼判定用
         await game.game_channel.send(f"ーー {title}（{minutes}分） ーー")
         if any(game.roles.get(p.id) == "パン屋" for p in game.alive_players):
             await game.game_channel.send("<:PANYA:1490254577558093944>パン屋がパンを焼きました")
 
-        for _ in range(minutes * 60):
+        seconds = int(minutes * 60)
+        for _ in range(seconds):
             if game.chairman_skip_event.is_set():
                 break
             await asyncio.sleep(1)
@@ -459,6 +479,8 @@ class JinrouCog(commands.Cog):
     async def run_night_phase(self, game):
         if not game.is_running: return
         game.day_count += 1
+        game._is_night = True  # ネット民の夜判定用
+        game.mokumoku_turn_count += 1  # もくもくターンカウント
         await game.game_channel.send(f"ーー 第{game.day_count}夜（1分） ーー")
         game.silenced_players.update(p.id for p in game.alive_players)
 
@@ -496,6 +518,7 @@ class JinrouCog(commands.Cog):
         knight_targets = set()
         trap_targets   = {}
         psycho_killer_ids = {p.id for p in game.alive_players if game.roles.get(p.id) == "メンヘラ"}
+        yandere_killer_ids = {p.id for p in game.alive_players if game.roles.get(p.id) == "ヤンデレ"}
         menhera_triggered = False
         cancelled_ids = set()
         musician_protected = set()
@@ -578,6 +601,10 @@ class JinrouCog(commands.Cog):
             if t_id in psycho_killer_ids:
                 dead_ids.add(p_id)
                 menhera_triggered = True
+            
+            if t_id in yandere_killer_ids and role in ["人狼", "デカ狼"]:
+                # ヤンデレの対象人狼が関わった者が殺される
+                pass  # ここでは標記のみ
 
             if role in ["人狼", "デカ狼"]:
                 wolf_attacks[p_id] = t_id
@@ -597,212 +624,181 @@ class JinrouCog(commands.Cog):
         if menhera_triggered:
             await game.game_channel.send("<:MENHERA:1490254584739008522>誰かがメンヘラに返り討ちにされました。")
 
+        # ヤンデレ処理
+        yandere_player_id = None
+        for p_id in yandere_killer_ids:
+            if p_id in {p.id for p in game.alive_players}:
+                yandere_player_id = p_id
+                break
+        
+        if yandere_player_id:
+            # ヤンデレの対象人狼をランダムに選ぶ
+            yandere_target_wolf = None
+            target_wolves = [p_id for p_id in game.night_actions.keys() 
+                            if game.roles.get(p_id) in ["人狼", "デカ狼"]]
+            if target_wolves:
+                yandere_target_wolf = random.choice(target_wolves)
+                # その人狼が関わった者を殺す
+                if yandere_target_wolf in game.night_actions:
+                    victim_id = game.night_actions[yandere_target_wolf]
+                    if victim_id != 0:
+                        dead_ids.add(victim_id)
+                        victim_m = game.game_channel.guild.get_member(victim_id)
+                        if victim_m:
+                            await game.game_channel.send(
+                                f"<:MENHERA:1490254584739008522>ヤンデレの怨念が {victim_m.display_name} を襲った..."
+                            )
+
         for wolf_id, target_id in wolf_attacks.items():
-            if wolf_id in dead_ids:
-                continue
+            if target_id in knight_targets and target_id not in musician_protected:
+                if target_id not in masai_evasion_set:
+                    continue
+                trap = trap_targets.get(target_id)
+                if trap:
+                    dead_ids.add(wolf_id)
+                    wolf_m = game.game_channel.guild.get_member(wolf_id)
+                    if wolf_m:
+                        await game.game_channel.send(
+                            f"<:WANASI:1490254583948353556>罠師の罠が {wolf_m.display_name} を返り討ちにした！"
+                        )
+            elif target_id not in dead_ids and target_id not in musician_protected:
+                dead_ids.add(target_id)
 
-            if target_id in trap_targets:
-                dead_ids.add(wolf_id)
-                await game.game_channel.send("罠師の罠が発動！ 狼が罠にかかりました。")
-                continue
-
-            if target_id in knight_targets:
-                continue
-
-            if target_id in musician_protected:
-                continue
-
-            if game.roles.get(target_id) == "マサイ族" and game.masai_evasion.get(target_id):
+        masai_evasion_set = set(game.masai_evasion.keys())
+        for wolf_id, target_id in wolf_attacks.items():
+            if target_id in masai_evasion_set:
                 if random.random() < 0.5:
-                    await game.game_channel.send("<:MASAI:1490254590757572758>マサイ族は襲撃を回避しました。")
+                    del game.masai_evasion[target_id]
                     continue
+            
+            if target_id in knight_targets and target_id not in musician_protected:
+                trap = trap_targets.get(target_id)
+                if trap:
+                    dead_ids.add(wolf_id)
+                    wolf_m = game.game_channel.guild.get_member(wolf_id)
+                    if wolf_m:
+                        await game.game_channel.send(
+                            f"<:WANASI:1490254583948353556>罠師の罠が {wolf_m.display_name} を返り討ちにした！"
+                        )
+            elif target_id not in dead_ids and target_id not in musician_protected:
+                if target_id not in knight_targets:
+                    dead_ids.add(target_id)
 
-            dead_ids.add(target_id)
+        game.masai_evasion.clear()
 
-        final_dead = set()
-        already_substituted = set()
-        for d_id in list(dead_ids):
-            if d_id in already_substituted:
-                continue
-            if game.roles.get(d_id) == "貴族":
-                slave_id = game.kizoku_slave.get(d_id)
-                if (slave_id
-                        and slave_id in {p.id for p in game.alive_players}
-                        and slave_id not in dead_ids):
-                    await game.game_channel.send("貴族の死亡判定が奴隷に肩代わりされました。")
-                    final_dead.add(slave_id)
-                    already_substituted.add(slave_id)
-                    continue
-            final_dead.add(d_id)
-
-        for pair in game.riacchu_pairs:
-            if pair[0] in final_dead or pair[1] in final_dead:
-                final_dead.add(pair[0])
-                final_dead.add(pair[1])
-
-        if final_dead:
-            for d_id in list(final_dead):
-                if d_id not in {p.id for p in game.alive_players}:
-                    continue
-                m = game.game_channel.guild.get_member(d_id)
-                if m:
-                    await game.game_channel.send(f"夜の結果: {m.display_name} さんが犠牲になりました。")
-
-                    if game.roles.get(d_id) == "タフむに":
-                        killers = [
-                            pid for pid, tid in game.night_actions.items()
-                            if tid == d_id
-                            and pid not in final_dead
-                            and pid in {p.id for p in game.alive_players}
-                        ]
-                        if killers:
-                            k_id = random.choice(killers)
-                            k_m = game.game_channel.guild.get_member(k_id)
-                            if k_m:
-                                await game.game_channel.send(f"タフむにの反撃。 {k_m.display_name} を道連れにしました。")
-                                game.silenced_players.add(k_id)
-                                game.alive_players = [p for p in game.alive_players if p.id != k_id]
-
-                    game.silenced_players.add(d_id)
-                    game.alive_players = [p for p in game.alive_players if p.id != d_id]
-                    await self._check_mokumoku_reveal(game, d_id)
+        # 通知用メッセージ（もくもくがいればもくもくに差し替え）
+        mokumoku_exists = any(game.roles.get(p.id) == "もくもく" for p in game.alive_players)
+        mokumoku_active = mokumoku_exists and game.mokumoku_turn_count <= 3
+        
+        report_msg = "ーー 夜のアクション終了 ーー\n"
+        if dead_ids:
+            dead_names = []
+            for did in dead_ids:
+                dm = game.game_channel.guild.get_member(did)
+                if dm:
+                    dead_names.append(dm.display_name)
+            report_msg += f"死亡者: {', '.join(dead_names)}\n"
         else:
-            await game.game_channel.send("<:KISHI:1490254592800456794>夜の結果: 昨晩の犠牲者はいないようです。")
+            report_msg += "夜間に死亡者はいません。\n"
 
-        if game.alive_players:
-            survivors_mention = " ".join(p.mention for p in game.alive_players)
-            await game.game_channel.send(
-                f"夜が明けました。生存者（{len(game.alive_players)}人）: {survivors_mention}"
-            )
+        if mokumoku_active:
+            # もくもくがいる場合、メッセージをもくもくに送信
+            mokumoku_id = None
+            for p_id in game.alive_players:
+                if game.roles.get(p_id) == "もくもく":
+                    mokumoku_id = p_id
+                    break
+            if mokumoku_id:
+                try:
+                    user = await game.game_channel.guild.fetch_member(mokumoku_id)
+                    await user.send(report_msg)
+                except:
+                    await game.game_channel.send(report_msg)
+        else:
+            await game.game_channel.send(report_msg)
 
-    # ======================================================
-    #  勝利判定
-    # ======================================================
-    async def check_victory(self, game):
+        # 死亡判定の適用
+        for dead_id in dead_ids:
+            if dead_id in {p.id for p in game.alive_players}:
+                game.silenced_players.add(dead_id)
+                game.alive_players = [p for p in game.alive_players if p.id != dead_id]
+
+        for dead_id in dead_ids:
+            await self._notify_reibai(game, dead_id)
+            await self._check_mokumoku_reveal(game, dead_id)
+
+    async def _notify_reibai(self, game, dead_id):
+        dead_role = game.roles.get(dead_id)
+        if not dead_role: return
+        for p in game.alive_players:
+            if game.roles.get(p.id) == "霊媒師":
+                m = game.game_channel.guild.get_member(p.id)
+                if m:
+                    try:
+                        embed = discord.Embed(
+                            description=f"<:REIBAI:1490254585413148703>夜の霊媒結果: 【{reibai_color(dead_role)}】",
+                            color=0xFFFFFF
+                        )
+                        await m.send(embed=embed)
+                    except:
+                        pass
+            elif game.roles.get(p.id) == "大霊媒師":
+                m = game.game_channel.guild.get_member(p.id)
+                if m:
+                    try:
+                        embed = discord.Embed(
+                            description=f"<:REIBAI:1490254585413148703>大霊媒結果: 【{reibai_color(dead_role)}】 役職: 【{dead_role}】",
+                            color=0xFFFFFF
+                        )
+                        await m.send(embed=embed)
+                    except:
+                        pass
+
+    async def check_victory(self, game) -> bool:
         if not game.is_running: return True
 
-        wolves_alive = [p for p in game.alive_players if game.roles.get(p.id) in ["人狼", "デカ狼"]]
-        if not wolves_alive:
-            await game.game_channel.send("人狼全滅。村人陣営の勝利です。")
-            await self._check_koumorimuni_win(game)
-            game.is_running = False
+        alive_ids = {p.id for p in game.alive_players}
+        wolves = [p for p in game.players if p.id in alive_ids and game.roles.get(p.id) in ["人狼", "デカ狼", "ヤンデレ"]]
+        villagers = [p for p in game.players if p.id in alive_ids and game.roles.get(p.id) not in ["人狼", "デカ狼", "ハゲ", "コウモリむに", "メンヘラ", "ヤンデレ", "あごむに破道砲", "ワンころ"]]
+        
+        # ワンころの野良化チェック
+        for p in game.players:
+            if p.id in alive_ids and game.roles.get(p.id) == "ワンころ":
+                owner_id = game.wan_owner.get(p.id)
+                if owner_id is None or owner_id not in alive_ids:
+                    wolves.append(p)
+
+        if not wolves:
+            await game.game_channel.send("<:success:1490985168100659322> 村人陣営の勝利です！")
             return True
-
-        def is_wolf_side(p_id):
-            r = game.roles.get(p_id)
-            if r in ["人狼", "デカ狼", "狂人", "狂信者"]: return True
-            if r == "ワンころ":
-                owner_id = game.wan_owner.get(p_id)
-                if owner_id is None: return True
-                if owner_id not in {p.id for p in game.alive_players}: return True
-            return False
-
-        wolves    = [p for p in game.alive_players if is_wolf_side(p.id)]
-        non_wolves = [p for p in game.alive_players if not is_wolf_side(p.id)]
-
-        if len(wolves) >= len(non_wolves):
-            await game.game_channel.send("人狼が支配した。人狼陣営の勝利です。")
-            await self._check_koumorimuni_win(game)
-            game.is_running = False
+        elif not villagers:
+            await game.game_channel.send("<:f8cc0b1b5e501838:1491033609929490492> 人狼陣営の勝利です！")
             return True
 
         return False
 
-    async def _check_koumorimuni_win(self, game):
-        koumoris = [p for p in game.alive_players if game.roles.get(p.id) == "コウモリむに"]
-        if not koumoris:
-            return
-        names_list = []
-        for p in koumoris:
-            m = game.game_channel.guild.get_member(p.id)
-            if m: names_list.append(m.display_name)
-        if names_list:
-            await game.game_channel.send(f"さらに、{'、'.join(names_list)} は最後まで生き残り個人勝利しました！")
-
-    # ======================================================
-    #  最終役職開示
-    # ======================================================
-    async def _announce_final_roles(self, game):
-        if not game.game_channel or not game.roles:
-            return
-        lines = []
-        alive_ids = {p.id for p in game.alive_players}
-        for p in game.players:
-            m = game.game_channel.guild.get_member(p.id)
-            name = m.display_name if m else "不明"
-            role = game.roles.get(p.id, "不明")
-            status = "✅" if p.id in alive_ids else "💀"
-            lines.append(f"{status} **{name}**: {role}")
-        embed = discord.Embed(
-            title="最終役職開示",
-            description="\n".join(lines),
-            color=0xFFFFFF
-        )
-        await game.game_channel.send(embed=embed, view=ReplayView(game, self))
-
-    # ======================================================
-    #  霊媒師への通知
-    # ======================================================
-    async def _notify_reibai(self, game, executed_id):
-        role = game.roles.get(executed_id)
-        if role is None:
-            return
-        result = reibai_color(role)
-        ex_member = game.game_channel.guild.get_member(executed_id)
-        ex_name = ex_member.display_name if ex_member else "不明"
-
-        for p in game.alive_players:
-            p_role = game.roles.get(p.id)
-            if p_role not in ["霊媒師", "大霊媒師"]:
-                continue
-            member = game.game_channel.guild.get_member(p.id)
-            if not member:
-                continue
-            try:
-                if p_role == "霊媒師":
-                    await member.send(
-                        f"<:REIBAI:1490254585413148703>霊媒結果：**{ex_name}** は【{result}】でした。"
-                    )
-                elif p_role == "大霊媒師":
-                    await member.send(
-                        f"<:REIBAI:1490254585413148703>大霊媒師の霊媒結果：**{ex_name}** は【{result}】"
-                        f"（役職：**{role}**）でした。"
-                    )
-            except:
-                pass
-
-    # ======================================================
-    #  議長の強制追放
-    # ======================================================
     async def apply_forced_execution(self, game, target_id):
-        if not game.is_running: return
-        alive_ids = {p.id for p in game.alive_players}
-        if target_id not in alive_ids:
+        if target_id not in {p.id for p in game.alive_players}:
             return
-
-        actual_target_id = target_id
-
-        if game.roles.get(actual_target_id) == "貴族":
-            slave_id = game.kizoku_slave.get(actual_target_id)
-            if slave_id:
-                slave_m = game.game_channel.guild.get_member(slave_id)
-                if slave_m and slave_id in alive_ids:
-                    await game.game_channel.send(f"貴族の処刑判定が奴隷 {slave_m.display_name} に肩代わりされました。")
-                    actual_target_id = slave_id
-
-        target_m = game.game_channel.guild.get_member(actual_target_id)
+        
+        target_m = game.game_channel.guild.get_member(target_id)
         if not target_m: return
 
-        game.last_executed = actual_target_id
-        game.silenced_players.add(actual_target_id)
-        game.alive_players = [p for p in game.alive_players if p.id != actual_target_id]
+        if game.roles.get(target_id) == "貴族":
+            slave_id = game.kizoku_slave.get(target_id)
+            if slave_id:
+                slave_m = game.game_channel.guild.get_member(slave_id)
+                if slave_m and slave_id in {p.id for p in game.alive_players}:
+                    await game.game_channel.send(f"貴族の処刑判定が奴隷 {slave_m.display_name} に肩代わりされました。")
+                    target_id = slave_id
+                    target_m = slave_m
 
         await game.game_channel.send(f"{target_m.display_name} さんが追放されました。")
 
-        await self._notify_reibai(game, actual_target_id)
-        await self._check_mokumoku_reveal(game, actual_target_id)
+        await self._notify_reibai(game, target_id)
+        await self._check_mokumoku_reveal(game, target_id)
 
-        executed_role = game.roles.get(actual_target_id)
+        executed_role = game.roles.get(target_id)
         if executed_role == "ハゲ":
             await game.game_channel.send("<:f8cc0b1b5e501838:1491033609929490492>ハゲが追放された。ハゲの勝利です。")
             game.is_running = False
@@ -811,8 +807,8 @@ class JinrouCog(commands.Cog):
             await game.game_channel.send("コウモリむにが追放された。しかし追放ではコウモリむには勝利できない...")
 
         for pair in game.riacchu_pairs:
-            if actual_target_id in pair:
-                partner_id = pair[1] if pair[0] == actual_target_id else pair[0]
+            if target_id in pair:
+                partner_id = pair[1] if pair[0] == target_id else pair[0]
                 if partner_id in {p.id for p in game.alive_players}:
                     partner_m = game.game_channel.guild.get_member(partner_id)
                     if partner_m:
@@ -821,9 +817,13 @@ class JinrouCog(commands.Cog):
                         game.alive_players = [p for p in game.alive_players if p.id != partner_id]
                 break
 
-    # ======================================================
-    #  投票フェーズ
-    # ======================================================
+        game.silenced_players.add(target_id)
+        game.alive_players = [p for p in game.alive_players if p.id != target_id]
+
+    async def _announce_final_roles(self, game):
+        roles_str = " / ".join([f"{p.mention}: {game.roles.get(p.id)}" for p in game.players])
+        await game.game_channel.send(f"ゲーム終了。最終役職:\n{roles_str}", view=ReplayView(game, self))
+
     async def run_voting_phase(self, game):
         if not game.is_running: return
         await game.game_channel.send("ーー 投票フェーズ（40秒） ーー")
@@ -897,9 +897,6 @@ class JinrouCog(commands.Cog):
                         game.alive_players = [p for p in game.alive_players if p.id != partner_id]
                 break
 
-    # ======================================================
-    #  強制投票フェーズ（議長専用）
-    # ======================================================
     async def run_chairman_vote_phase(self, game):
         if not game.is_running: return
         game.chairman_vote_event = asyncio.Event()
@@ -947,11 +944,45 @@ class JinrouCog(commands.Cog):
 #  UI Components
 # ======================================================
 
+class ModeSelectView(discord.ui.View):
+    """ゲームモード選択パネル"""
+    def __init__(self, game, cog, channel):
+        super().__init__(timeout=60)
+        self.game = game
+        self.cog = cog
+        self.channel = channel
+
+    @discord.ui.button(label="ベーシック（発展職なし）", style=discord.ButtonStyle.primary)
+    async def basic_mode(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.game.game_mode = "basic"
+        await self._proceed_to_setup(interaction)
+
+    @discord.ui.button(label="プロ（発展職あり）", style=discord.ButtonStyle.success)
+    async def pro_mode(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.game.game_mode = "pro"
+        await self._proceed_to_setup(interaction)
+
+    async def _proceed_to_setup(self, interaction: discord.Interaction):
+        self.stop()
+        embed = discord.Embed(
+            title="人狼ゲーム設定",
+            description="必須役職・除外役職を設定してください。\nモード: " + ("ベーシック" if self.game.game_mode == "basic" else "プロ"),
+            color=0xFFFFFF
+        )
+        await interaction.response.edit_message(
+            embed=embed,
+            view=SetupView(self.game, self.cog, self.channel)
+        )
+
+    async def on_timeout(self):
+        self.game.is_running = False
+
+
 class SetupView(discord.ui.View):
-    """起動時エフェメラル設定パネル"""
-    ALL_ROLES = [
+    """役職指定パネル（基本職選択）"""
+    BASIC_ROLES = [
         "一般通過あごむに", "占い師", "騎士", "霊媒師", "パン屋", "マサイ族",
-        "入狼", "議長", "ビー玉ブレイカー", "リア充", "貴族", "奴隷", "陽キャ",
+        "入狼", "議長", "ビー玉ブレイカー", "リア充", "貴族", "奴隷", "陽キャ", "ネット民",
         "人狼", "狂人", "ハゲ", "メンヘラ", "あごむに破道砲",
     ]
 
@@ -960,11 +991,12 @@ class SetupView(discord.ui.View):
         self.game = game
         self.cog = cog
         self.channel = channel
+        self.selected_basic = []
 
-        opts = [discord.SelectOption(label=r, value=r) for r in self.ALL_ROLES]
+        opts = [discord.SelectOption(label=r, value=r) for r in self.BASIC_ROLES]
 
         req_sel = discord.ui.Select(
-            placeholder="必須役職を選択（最大4つ・発展はしない）",
+            placeholder="必須役職を選択（最大4つ・基本職のみ）",
             options=opts,
             min_values=0, max_values=4,
             row=0
@@ -974,7 +1006,7 @@ class SetupView(discord.ui.View):
 
         exc_sel = discord.ui.Select(
             placeholder="除外役職を選択（最大4つ）",
-            options=[discord.SelectOption(label=r, value=r) for r in self.ALL_ROLES],
+            options=[discord.SelectOption(label=r, value=r) for r in self.BASIC_ROLES],
             min_values=0, max_values=4,
             row=1
         )
@@ -982,21 +1014,90 @@ class SetupView(discord.ui.View):
         self.add_item(exc_sel)
 
     async def _req_callback(self, interaction: discord.Interaction):
-        self.game.required_roles = list(interaction.data.get("values", []))
+        self.selected_basic = list(interaction.data.get("values", []))
+        self.game.required_roles = list(self.selected_basic)
         await interaction.response.defer()
 
     async def _exc_callback(self, interaction: discord.Interaction):
         self.game.excluded_roles = list(interaction.data.get("values", []))
         await interaction.response.defer()
 
-    @discord.ui.button(label="確定してパネルを送信", style=discord.ButtonStyle.primary, row=2)
+    @discord.ui.button(label="確定して発展職を指定", style=discord.ButtonStyle.primary, row=2)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        remaining_slots = 4 - len(self.selected_basic)
+        
+        if remaining_slots > 0 and self.game.game_mode == "pro":
+            embed = discord.Embed(
+                description=f"基本職を確定しました。発展職を{remaining_slots}つ選択してください。",
+                color=0xFFFFFF
+            )
+            await interaction.response.edit_message(
+                embed=embed,
+                view=AdvancedRoleSelectView(self.game, self.cog, self.channel, remaining_slots)
+            )
+        else:
+            await self._finalize_setup(interaction)
+
+    async def _finalize_setup(self, interaction: discord.Interaction):
+        req_str = "、".join(self.game.required_roles) if self.game.required_roles else "なし"
+        exc_str = "、".join(self.game.excluded_roles) if self.game.excluded_roles else "なし"
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                description=f"設定完了。\n必須: **{req_str}**\n除外: **{exc_str}**",
+                color=0xFFFFFF
+            ),
+            view=None
+        )
+        view = RecruitView(self.game, self.cog)
+        req_str2 = f" 【必須: {req_str}】" if self.game.required_roles else ""
+        await self.channel.send(
+            f"<a:POYOPOYO:1490724627805110392>人狼ゲーム募集開始！{req_str2}",
+            view=view
+        )
+
+    async def on_timeout(self):
+        self.game.is_running = False
+
+
+class AdvancedRoleSelectView(discord.ui.View):
+    """発展職選択パネル"""
+    ADVANCED_ROLES = [
+        "タフむに", "大霊媒師", "罠師", "ミュージシャン",
+        "デカ狼", "狂信者", "コウモリむに", "ワンころ", "もくもく", "ヤンデレ"
+    ]
+
+    def __init__(self, game, cog, channel, remaining_slots):
+        super().__init__(timeout=120)
+        self.game = game
+        self.cog = cog
+        self.channel = channel
+        self.remaining_slots = remaining_slots
+        self.selected_advanced = []
+
+        opts = [discord.SelectOption(label=r, value=r) for r in self.ADVANCED_ROLES]
+        adv_sel = discord.ui.Select(
+            placeholder=f"発展職を選択（最大{remaining_slots}つ）",
+            options=opts,
+            min_values=0, max_values=remaining_slots,
+            row=0
+        )
+        adv_sel.callback = self._adv_callback
+        self.add_item(adv_sel)
+
+    async def _adv_callback(self, interaction: discord.Interaction):
+        self.selected_advanced = list(interaction.data.get("values", []))
+        self.game.required_roles.extend(self.selected_advanced)
+        await interaction.response.defer()
+
+    @discord.ui.button(label="確定してパネルを送信", style=discord.ButtonStyle.primary, row=1)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
         req_str = "、".join(self.game.required_roles) if self.game.required_roles else "なし"
         exc_str = "、".join(self.game.excluded_roles) if self.game.excluded_roles else "なし"
         await interaction.response.edit_message(
             embed=discord.Embed(
-                description=f"設定完了。\n必須: **{req_str}**\n除外: **{exc_str}**",
+                description=f"設定完了。\n必須: **{req_str}**\n除外: **{exc_str}**\nモード: **{('ベーシック' if self.game.game_mode == 'basic' else 'プロ')}**",
                 color=0xFFFFFF
             ),
             view=None
@@ -1141,6 +1242,7 @@ class RoleCheckView(discord.ui.View):
         elif real_role == "入狼":         display_role = "人狼"
         elif real_role == "大霊媒師":     display_role = "霊媒師"
         elif real_role == "ミュージシャン": display_role = "陽キャ"
+        elif real_role == "ヤンデレ":     display_role = "メンヘラ"
         elif real_role == "もくもく":     display_role = "ビー玉ブレイカー"
 
         wolves = self.cog.get_wolves_names(self.game)
@@ -1149,84 +1251,32 @@ class RoleCheckView(discord.ui.View):
         for pair in self.game.riacchu_pairs:
             if interaction.user.id in pair:
                 partner_id = pair[1] if pair[0] == interaction.user.id else pair[0]
-                partner_m = self.game.game_channel.guild.get_member(partner_id)
-                if partner_m: partner_name = partner_m.display_name
-
-        slave_name = "不明"
-        if real_role == "貴族":
-            slave_id = self.game.kizoku_slave.get(interaction.user.id)
-            if slave_id:
-                slave_m = self.game.game_channel.guild.get_member(slave_id)
-                if slave_m: slave_name = slave_m.display_name
+                pm = self.game.game_channel.guild.get_member(partner_id)
+                if pm:
+                    partner_name = pm.display_name
+                break
 
         kizoku_name = "不明"
+        dorei_name = "不明"
+        for kizoku_id, dorei_id in self.game.kizoku_slave.items():
+            if interaction.user.id == kizoku_id:
+                dm = self.game.game_channel.guild.get_member(dorei_id)
+                if dm: dorei_name = dm.display_name
+            elif interaction.user.id == dorei_id:
+                km = self.game.game_channel.guild.get_member(kizoku_id)
+                if km: kizoku_name = km.display_name
+
+        msg = f"あなたの役職: **{display_role}**"
+        if real_role in ["人狼", "デカ狼", "ヤンデレ"]:
+            msg += f"\n仲間: {wolves}"
+        if real_role == "リア充":
+            msg += f"\nパートナー: {partner_name}"
+        if real_role == "貴族":
+            msg += f"\n奴隷: {dorei_name}"
         if real_role == "奴隷":
-            for k_id, s_id in self.game.kizoku_slave.items():
-                if s_id == interaction.user.id:
-                    k_m = self.game.game_channel.guild.get_member(k_id)
-                    if k_m: kizoku_name = k_m.display_name
-                    break
+            msg += f"\n貴族: {kizoku_name}"
 
-        descs = {
-            "一般通過あごむに": "【村人陣営】一般通過あごむに。空気より存在感が薄い。",
-            "占い師":           "【村人陣営】毎晩1人を占える。白か黒か結果が出る。金がないのでビー玉で占っている。",
-            "霊媒師":           "【村人陣営】昨日追放された者が白か黒かを昼にDMで通知される悪趣味な仕事。",
-            "大霊媒師":         "【村人陣営】霊媒師の上位職。追放者の白黒+役職をDMで通知される。さらに夜に死者ならば誰でも選んで調べることができ役職まで判明する。",
-            "人狼":             f"【人狼陣営】仲間: {wolves}",
-            "騎士":             "【村人陣営】毎晩一人をつまようじで守る。",
-            "罠師":             "【村人陣営】毎晩一人を守る。狼が守った対象を攻撃した場合、その狼を返り討ちにする。騎士の上位職。",
-            "狂人":             "【人狼陣営】人狼の味方。基本的に無能である。",
-            "ハゲ":             "【第三者陣営】追放されたら勝てる。髪の毛が観測できないバグが発生している。",
-            "コウモリむに":     "【第三者陣営】ハゲの上位職。追放されても勝利できない。ただし最後まで生き残れば個人追加勝利できる。",
-            "メンヘラ":         "【第三者陣営】自分に関与した者を物理的に消す。占うと黒判定が出る。",
-            "あごむに破道砲":   "【第三者陣営】自らを弾にして1人を狙い撃ちできるが、誤発してもう1人殺す。（※3日目の夜以降に使用可能）",
-            "デカ狼":           f"【人狼陣営】占い師に賄賂を払って白判定にする（霊媒師には黒と出る）。仲間: {wolves}",
-            "パン屋":           "【村人陣営】生きているうちは朝にパンを配る。死んでいてもなぜかパンが届く。",
-            "マサイ族":         "【村人陣営】夜に1人を観察する。もし対象が人狼なら襲撃を50%で回避する準備を整える。真偽は誰にもわからない。",
-            "入狼":             "【村人陣営】生まれた名前が悪かった。ビー玉で占ってるやつに黒と誤解される哀れな村陣営。",
-            "ワンころ":         "【第三者陣営】最初の夜に飼い主を決める。飼い主がいないと野生化して人狼になる。占うと黒判定が出る。",
-            "タフむに":         "【村人陣営】殺された時に殺し返す根性のある一般通過あごむに。",
-            "狂信者":           f"【人狼陣営】人狼とデカ狼を知っている熱狂的な人狼ファン。 仲間: {wolves}",
-            "議長":             "【村人陣営】会議中に『スキップ』で議論を即終了→通常投票へ。ゲーム中一回だけ『強制投票』と発言すると議長専用の投票箱が設置され、議長が直接追放対象を選べる。",
-            "ビー玉ブレイカー": "【村人陣営】あなたが生きているだけで占い師の判定が30%の確率で逆転する。パッシブ効果のため夜は何もしなくていい。",
-            "リア充":           f"【村人陣営】リア充。パートナー: {partner_name}。片方が死ぬと両方道連れになる。",
-            "貴族":             f"【村人陣営】貴族。奴隷が生きている間は死を自動的に肩代わりさせることができる。奴隷: {slave_name}",
-            "奴隷":             f"【村人陣営】奴隷。貴族が死亡判定を受けると代わりに死ぬ運命。貴族: {kizoku_name}",
-            "陽キャ":           "【村人陣営】毎晩1人をℳ𝓎𝒽ℴ𝓂ℯに連れ込む。相手が人狼/デカ狼なら自分が死ぬ。相手がメンヘラなら2人ともリア充に変化。それ以外は夜のアクションを酔い潰してキャンセルする。",
-            "ミュージシャン":   "【村人陣営】陽キャの発展職。ゲーム中1度だけ夜にランダム4人をパーティに招待できる。招待者は狼から守られ夜のアクションもキャンセル。人狼が混じっていたら30%で村人側の1人が死亡。",
-            "もくもく":         "【第三者陣営】ビー玉ブレイカーの発展職。あなたが生きている間は全員の役職構成が非公開になる。死ぬと役職構成が公開される。占い師の判定30%逆転効果も継承。",
-        }
-
-        role_image_map = {
-            "一般通過あごむに": "NOMAL.PNG",    "人狼": "JINROU.PNG",         "マサイ族": "MASAI.PNG",
-            "メンヘラ": "MENHERA.PNG",          "入狼": "NYUROU.PNG",          "騎士": "KISHI.PNG",
-            "占い師": "URANAI.PNG",              "霊媒師": "REIBAI.PNG",        "パン屋": "PANYA.PNG",
-            "狂人": "KYOJIN.PNG",               "ハゲ": "HAGE.PNG",            "デカ狼": "DEKAROU.PNG",
-            "あごむに破道砲": "AGOMUNIHADOHOU.PNG", "ワンころ": "WANKORO.PNG",
-            "タフむに": "TAHUMUNI.PNG",          "狂信者": "KYOUSINSYA.PNG",
-            "罠師": "WANASI.PNG",               "議長": "GITYO.PNG",
-            "ビー玉ブレイカー": "BI-BURE.PNG",  "リア充": "RIAJUU.PNG",
-            "貴族": "KIZOKU.PNG",               "奴隷": "DOREI.PNG",           "コウモリむに": "KOUMORI.PNG",
-            "大霊媒師": "DAIREIBAI.PNG",
-            "陽キャ": "YOUKYA.PNG",             "ミュージシャン": "MUSICIAN.PNG",
-            "もくもく": "MOKUMOKU.PNG",
-        }
-
-        embed = discord.Embed(
-            title=f"あなたの役職は 【{display_role}】 です",
-            description=descs.get(real_role, "詳細なし"),
-            color=0xFFFFFF
-        )
-
-        filename = role_image_map.get(real_role)
-        if filename:
-            file_path = f"Assets/{filename}"
-            if os.path.exists(file_path):
-                file = discord.File(file_path, filename="role_img.png")
-                embed.set_image(url="attachment://role_img.png")
-                await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
-                return
-
+        embed = discord.Embed(description=msg, color=0xFFFFFF)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -1271,7 +1321,7 @@ class NightActionView(discord.ui.View):
         passive_roles = [
             "一般通過あごむに", "霊媒師", "狂人", "ハゲ", "コウモリむに",
             "メンヘラ", "パン屋", "入狼", "タフむに", "狂信者",
-            "ビー玉ブレイカー", "もくもく", "リア充", "貴族", "奴隷", "議長"
+            "ビー玉ブレイカー", "もくもく", "リア充", "貴族", "奴隷", "議長", "ネット民"
         ]
         if role in passive_roles:
             embed = discord.Embed(description="お前は寝てろ。明日の朝までじっとしてなさい。", color=0xFFFFFF)
