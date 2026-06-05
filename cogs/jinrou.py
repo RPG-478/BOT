@@ -1243,43 +1243,57 @@ class RoleCheckView(discord.ui.View):
         elif real_role == "入狼":         display_role = "人狼"
         elif real_role == "大霊媒師":     display_role = "霊媒師"
         elif real_role == "ミュージシャン": display_role = "陽キャ"
-        elif real_role == "ヤンデレ":     display_role = "メンヘラ"
         elif real_role == "もくもく":     display_role = "ビー玉ブレイカー"
 
-        wolves = self.cog.get_wolves_names(self.game)
+        role_info = next((item for item in HELP_ROLES if item[0] == real_role), None)
+        if not role_info:
+            embed = discord.Embed(description="役職の詳細が見つかりません。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        partner_name = "不明"
-        for pair in self.game.riacchu_pairs:
-            if interaction.user.id in pair:
-                partner_id = pair[1] if pair[0] == interaction.user.id else pair[0]
-                pm = self.game.game_channel.guild.get_member(partner_id)
-                if pm:
-                    partner_name = pm.display_name
-                break
+        role_name, faction, desc, img_filename = role_info
 
-        kizoku_name = "不明"
-        dorei_name = "不明"
-        for kizoku_id, dorei_id in self.game.kizoku_slave.items():
-            if interaction.user.id == kizoku_id:
-                dm = self.game.game_channel.guild.get_member(dorei_id)
-                if dm: dorei_name = dm.display_name
-            elif interaction.user.id == dorei_id:
-                km = self.game.game_channel.guild.get_member(kizoku_id)
-                if km: kizoku_name = km.display_name
+        if real_role in ["人狼", "デカ狼", "狂信者"]:
+            wolves = self.cog.get_wolves_names(self.game)
+            desc += f" 仲間: {wolves}"
+        elif real_role == "リア充":
+            partner_name = "不明"
+            for pair in self.game.riacchu_pairs:
+                if interaction.user.id in pair:
+                    partner_id = pair[1] if pair[0] == interaction.user.id else pair[0]
+                    partner_m = self.game.game_channel.guild.get_member(partner_id)
+                    if partner_m: partner_name = partner_m.display_name
+            desc += f" パートナー: {partner_name}"
+        elif real_role == "貴族":
+            slave_name = "不明"
+            slave_id = self.game.kizoku_slave.get(interaction.user.id)
+            if slave_id:
+                slave_m = self.game.game_channel.guild.get_member(slave_id)
+                if slave_m: slave_name = slave_m.display_name
+            desc += f" 奴隷: {slave_name}"
+        elif real_role == "奴隷":
+            kizoku_name = "不明"
+            for k_id, s_id in self.game.kizoku_slave.items():
+                if s_id == interaction.user.id:
+                    k_m = self.game.game_channel.guild.get_member(k_id)
+                    if k_m: kizoku_name = k_m.display_name
+                    break
+            desc += f" 貴族: {kizoku_name}"
 
-        msg = f"あなたの役職: **{display_role}**"
-        if real_role in ["人狼", "デカ狼", "ヤンデレ"]:
-            msg += f"\n仲間: {wolves}"
-        if real_role == "リア充":
-            msg += f"\nパートナー: {partner_name}"
-        if real_role == "貴族":
-            msg += f"\n奴隷: {dorei_name}"
-        if real_role == "奴隷":
-            msg += f"\n貴族: {kizoku_name}"
+        embed = discord.Embed(
+            title=f"あなたの役職は 【{display_role}】 です",
+            description=f"【{faction}】 {desc}",
+            color=0xFFFFFF
+        )
 
-        embed = discord.Embed(description=msg, color=0xFFFFFF)
+        if img_filename:
+            file_path = f"Assets/{img_filename}"
+            if os.path.exists(file_path):
+                file = discord.File(file_path, filename="role_img.png")
+                embed.set_image(url="attachment://role_img.png")
+                await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
+                return
+
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
 class NightActionView(discord.ui.View):
     def __init__(self, game):
