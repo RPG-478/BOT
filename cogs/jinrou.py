@@ -119,16 +119,39 @@ class JinrouCog(commands.Cog):
         if not game or not game.is_running:
             return
 
-        # ネット民の昼間沈黙チェック
-        if game.in_discussion:
-            player_role = game.roles.get(message.author.id)
-            is_alive = any(p.id == message.author.id for p in game.alive_players)
-            if player_role == "ネット民" and is_alive and not hasattr(game, '_is_night') or not game._is_night:
+        player_role = game.roles.get(message.author.id)
+        is_alive = any(p.id == message.author.id for p in game.alive_players)
+
+        if player_role:
+            if not is_alive:
                 try:
                     await message.delete()
                 except:
                     pass
                 return
+
+            if game.in_discussion:
+                if player_role == "ネット民":
+                    try:
+                        await message.delete()
+                    except:
+                        pass
+                    return
+            else:
+                is_chairman_voting = any(game.roles.get(p.id) == "議長" and p.id not in game.silenced_players for p in game.alive_players)
+                if is_chairman_voting:
+                    if player_role != "議長":
+                        try:
+                            await message.delete()
+                        except:
+                            pass
+                        return
+                elif player_role != "ネット民":
+                    try:
+                        await message.delete()
+                    except:
+                        pass
+                    return
 
         if message.author.id in game.silenced_players:
             try:
