@@ -27,6 +27,11 @@ class SpeechToTextSink(voice_recv.AudioSink):
         self.SILENCE_TIMEOUT = 0.8  # 無音と判定する時間（秒）
         self.monitor_task = asyncio.create_task(self.monitor_silence())
 
+    # 【修正】ライブラリの仕様変更に伴う必須メソッドの実装
+    def wants_opus(self) -> bool:
+        """Opus形式ではなく、デコードされたPCMデータを受け取るためFalseを返す"""
+        return False
+
     def calculate_rms(self, pcm_data):
         """PCMデータの音量（RMS）を計算"""
         count = len(pcm_data) // 2
@@ -183,7 +188,7 @@ class MojiokosiCog(commands.Cog):
                     # 別のVCにいる場合は移動
                     await interaction.guild.voice_client.move_to(voice_channel)
             else:
-                # 正しい接続クライアント指定に修正
+                # 正しい接続クライアント指定
                 await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
 
             # 古いセッションが残っていればタスクをクリーンアップ
