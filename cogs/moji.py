@@ -76,7 +76,74 @@ class SpeechToTextSink(voice_recv.AudioSink):
 
         try:
             loop = asyncio.get_running_loop()
-            text = await loop.
+            text = await loop.run_in_executor(
+                None, 
+                lambda: self.recognizer.recognize_google(audio, language="ja-JP")
+            )
+            
+            if text:
+                channel = self.bot.get_channel(self.channel_id)
+                if not channel:
+                    return
+
+                # Webhookの取得または作成（初回のみ実行）
+                if not self.webhook:
+                    try:
+                        webhooks = await channel.webhooks()
+                        self.webhook = discord.utils.get(webhooks, name="Mojiokosi Webhook")
+                        if not self.webhook:
+                            self.webhook = await channel.create_webhook(name="Mojiokosi Webhook")
+                    except discord.Forbidden:
+                        print("[エラー] ボットに『ウェブフックの管理』権限がありません。")
+                        user = channel.guild.get_member(user_id) or self.bot.get_user(user_id)
+                        username = user.display_name if user else f"User_{user_id}"
+                        await channel.send(f"**{username}** [VCで発言しました]: {text}")
+                        return
+
+                # 発言したメンバーの情報をサーバー内から正確に取得
+                guild = channel.guild
+                member = guild.get_member(user_id)
+                if not member:
+                    try:
+                        member = await guild.fetch_member(user_id)
+                    except Exception:
+                        member = None
+
+                # 名前とアイコンURLの確定
+                if member:
+                    username = member.display_name
+                    avatar_url = member.display_avatar.url
+                else:
+                    user = self.bot.get_user(user_id)
+                    username = user.display_name if user else f"User_{user_id}"
+                    avatar_url = user.display_avatar.url if user else None
+
+                # [VCで発言しました] を先頭に付与し、Webhookで送信
+                formatted_text = f"[VCで発言しました] {text}"
+                await self.webhook.send(
+                    content=formatted_text,
+                    username=username,
+                    avatar_url=avatar_url
+                )
+
+        except sr.UnknownValueError:
+            pass  # 認識不可（ため息やノイズなど）はスルー
+        except Exception as e:
+            print(f"[文字起こしエラー] {e}")
+
+    def pcm_to_wav(self, pcm_data):
+        wav_buf = io.BytesIO()
+        with wave.open(wav_buf, "wb") as wav_file:
+            wav_file.setnchannels(2)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(48000)
+            wav_file.writeframes(pcm_data)
+        return wav_buf.getvalue()
+
+    def cleanup(self):
+        """監視タスクの終了処理"""
+        self.monitor_task.cancel()
+
 
 # ----------------------------------------------------
 # 2. Cog形式のメイン実装 (スラッシュコマンド)
@@ -107,7 +174,7 @@ class MojiokosiCog(commands.Cog):
             
             voice_channel = interaction.user.voice.channel
             
-            # 【修正】interaction.voice_client から interaction.guild.voice_client に変更
+            # ボットが既にどこかのVCに接続しているか確認
             if interaction.guild.voice_client:
                 if interaction.guild.voice_client.channel.id == voice_channel.id:
                     await interaction.response.send_message("既にこのチャンネルで文字起こしが有効です。", ephemeral=True)
@@ -116,8 +183,8 @@ class MojiokosiCog(commands.Cog):
                     # 別のVCにいる場合は移動
                     await interaction.guild.voice_client.move_to(voice_channel)
             else:
-                # 新規接続
-                await voice_channel.connect(cls=voice_recv.VoiceClient)
+                # 正しい接続クライアント指定に修正
+                await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
 
             # 古いセッションが残っていればタスクをクリーンアップ
             if guild.id in self.active_sinks:
@@ -127,7 +194,7 @@ class MojiokosiCog(commands.Cog):
             sink = SpeechToTextSink(self.bot, interaction.channel_id, threshold=800)
             self.active_sinks[guild.id] = sink
             
-            # 【修正】音声受信を開始
+            # 音声受信を開始
             interaction.guild.voice_client.listen(sink)
             await interaction.response.send_message(
                 f"🎤 **{voice_channel.name}** で文字起こしを開始しました！\nこのチャンネル（<#{interaction.channel_id}>）に発言を送信します。",
@@ -138,7 +205,6 @@ class MojiokosiCog(commands.Cog):
         # オフ (終了) の処理
         # --------------------
         elif status == "off":
-            # 【修正】ボットがVCに参加しているか確認
             if not interaction.guild.voice_client:
                 await interaction.response.send_message("ボットはボイスチャンネルに参加していません。", ephemeral=True)
                 return
@@ -148,7 +214,6 @@ class MojiokosiCog(commands.Cog):
                 self.active_sinks[guild.id].cleanup()
                 del self.active_sinks[guild.id]
                 
-            # 【修正】切断処理
             await interaction.guild.voice_client.disconnect()
             await interaction.response.send_message("🛑 文字起こしを終了し、ボイスチャンネルから切断しました。", ephemeral=False)
 
