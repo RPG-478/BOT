@@ -11,6 +11,21 @@ import struct
 import math
 
 # ----------------------------------------------------
+# 0. 【新規】暗号化方式を安定版に制限するカスタムクライアント
+# ----------------------------------------------------
+class CustomVoiceRecvClient(voice_recv.VoiceRecvClient):
+    """
+    Discordの新しい暗号化方式（AEAD等）による復号エラー(corrupted stream)を回避するため、
+    ライブラリが正常に対応している古い暗号化モードのみを許可するように制限します。
+    """
+    supported_modes = (
+        'xsalsa20_poly1305_lite',
+        'xsalsa20_poly1305_suffix',
+        'xsalsa20_poly1305',
+    )
+
+
+# ----------------------------------------------------
 # 1. 音声受信・雑音カット・文字起こし用Sink
 # ----------------------------------------------------
 class SpeechToTextSink(voice_recv.AudioSink):
@@ -160,7 +175,7 @@ class MojiokosiCog(commands.Cog):
     @app_commands.command(name="mojiokosi", description="文字起こし機能のオン/オフを切り替えます")
     @app_commands.choices(status=[
         app_commands.Choice(name="オン (開始)", value="on"),
-        app_commands.Choice(name="off (終了)", value="off")
+        app_commands.Choice(name="オフ (終了)", value="off")
     ])
     async def mojiokosi(self, interaction: discord.Interaction, status: str):
         guild = interaction.guild
@@ -172,8 +187,11 @@ class MojiokosiCog(commands.Cog):
         # オン (開始) の処理
         # --------------------
         if status == "on":
+            # 【修正】処理に時間がかかるため、先にDiscordへ「考え中...」の応答を返してタイムアウトを防ぐ
+            await interaction.response.defer(ephemeral=False)
+
             if interaction.user.voice is None:
-                await interaction.response.send_message("先にボイスチャンネルに入室してください。", ephemeral=True)
+                await interaction.followup.send("先にボイスチャンネルに入室してください。")
                 return
             
             voice_channel = interaction.user.voice.channel
@@ -181,16 +199,16 @@ class MojiokosiCog(commands.Cog):
             # ボットが既にどこかのVCに接続しているか確認
             if interaction.guild.voice_client:
                 if interaction.guild.voice_client.channel.id == voice_channel.id:
-                    await interaction.response.send_message("既にこのチャンネルで文字起こしが有効です。", ephemeral=True)
+                    await interaction.followup.send("既にこのチャンネルで文字起こしが有効です。")
                     return
                 else:
                     # 別のVCにいる場合は移動
                     await interaction.guild.voice_client.move_to(voice_channel)
             else:
-                # 正しい接続クライアント指定
-                await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
+                # 【修正】新しく作った暗号化制限版クライアント（CustomVoiceRecvClient）を指定して接続
+                await voice_channel.connect(cls=CustomVoiceRecvClient)
 
-            # 【修正】接続完了から音声受信開始までに少し待つ（同期ズレによるエラー防止）
+            # 接続完了から音声受信開始までに少し待つ（同期ズレによるエラー防止）
             await asyncio.sleep(1.5)
 
             # 古いセッションが残っていればタスクをクリーンアップ
@@ -203,9 +221,9 @@ class MojiokosiCog(commands.Cog):
             
             # 音声受信を開始
             interaction.guild.voice_client.listen(sink)
-            await interaction.response.send_message(
-                f"🎤 **{voice_channel.name}** で文字起こしを開始しました！\nこのチャンネル（<#{interaction.channel_id}>）に発言を送信します。",
-                ephemeral=False
+            # 【修正】deferしたため、送信はfollowupを使用
+            await interaction.followup.send(
+                f"🎤 **{voice_channel.name}** で文字起こしを開始しました！\nこのチャンネル（<#{interaction.channel_id}>）に発言を送信します。"
             )
 
         # --------------------
