@@ -22,7 +22,7 @@ class SpeechToTextSink(voice_recv.AudioSink):
         self.last_spoken = {}
         self.active_users = set()
         self.recognizer = sr.Recognizer()
-        self.webhook = None  # 【拡張】Webhookのキャッシュ用
+        self.webhook = None  # Webhookのキャッシュ用
         
         self.SILENCE_TIMEOUT = 0.8  # 無音と判定する時間（秒）
         self.monitor_task = asyncio.create_task(self.monitor_silence())
@@ -76,75 +76,7 @@ class SpeechToTextSink(voice_recv.AudioSink):
 
         try:
             loop = asyncio.get_running_loop()
-            text = await loop.run_in_executor(
-                None, 
-                lambda: self.recognizer.recognize_google(audio, language="ja-JP")
-            )
-            
-            if text:
-                channel = self.bot.get_channel(self.channel_id)
-                if not channel:
-                    return
-
-                # 【拡張】Webhookの取得または作成（初回のみ実行）
-                if not self.webhook:
-                    try:
-                        webhooks = await channel.webhooks()
-                        self.webhook = discord.utils.get(webhooks, name="Mojiokosi Webhook")
-                        if not self.webhook:
-                            self.webhook = await channel.create_webhook(name="Mojiokosi Webhook")
-                    except discord.Forbidden:
-                        print("[エラー] ボットに『ウェブフックの管理』権限がありません。")
-                        # 権限がない場合は通常のメッセージ送信にフォールバック
-                        user = channel.guild.get_member(user_id) or self.bot.get_user(user_id)
-                        username = user.display_name if user else f"User_{user_id}"
-                        await channel.send(f"**{username}** [VCで発言しました]: {text}")
-                        return
-
-                # 【拡張】発言したメンバーの情報をサーバー内から正確に取得
-                guild = channel.guild
-                member = guild.get_member(user_id)
-                if not member:
-                    try:
-                        member = await guild.fetch_member(user_id)
-                    except Exception:
-                        member = None
-
-                # 【拡張】名前とアイコンURLの確定
-                if member:
-                    username = member.display_name
-                    avatar_url = member.display_avatar.url
-                else:
-                    user = self.bot.get_user(user_id)
-                    username = user.display_name if user else f"User_{user_id}"
-                    avatar_url = user.display_avatar.url if user else None
-
-                # 【拡張】[VCで発言しました] を先頭に付与し、Webhookで送信
-                formatted_text = f"[VCで発言しました] {text}"
-                await self.webhook.send(
-                    content=formatted_text,
-                    username=username,
-                    avatar_url=avatar_url
-                )
-
-        except sr.UnknownValueError:
-            pass  # 認識不可（ため息やノイズなど）はスルー
-        except Exception as e:
-            print(f"[文字起こしエラー] {e}")
-
-    def pcm_to_wav(self, pcm_data):
-        wav_buf = io.BytesIO()
-        with wave.open(wav_buf, "wb") as wav_file:
-            wav_file.setnchannels(2)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(48000)
-            wav_file.writeframes(pcm_data)
-        return wav_buf.getvalue()
-
-    def cleanup(self):
-        """監視タスクの終了処理"""
-        self.monitor_task.cancel()
-
+            text = await loop.
 
 # ----------------------------------------------------
 # 2. Cog形式のメイン実装 (スラッシュコマンド)
