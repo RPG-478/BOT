@@ -11,31 +11,23 @@ import struct
 import math
 
 # ----------------------------------------------------
-# 0. 【修正】安全なパッチ適用処理（Cogの読み込みエラーを完全に防止）
+# 0. 【根本解決】Opusデコーダのエラーを無音化する安全パッチ
 # ----------------------------------------------------
-try:
-    import discord.ext.voice_recv.opus as vr_opus
-    # ライブラリのバージョンによるクラス名（VoiceDecoder または Decoder）のブレを自動吸収
-    DecoderClass = getattr(vr_opus, 'VoiceDecoder', getattr(vr_opus, 'Decoder', None))
-    
-    if DecoderClass and hasattr(DecoderClass, 'pop_data'):
-        _original_pop_data = DecoderClass.pop_data
+import discord.opus
 
-        def _patched_pop_data(self):
-            try:
-                return _original_pop_data(self)
-            except Exception as e:
-                # 'corrupted stream'（破損パケット）が発生してもログに残して安全にスルー
-                print(f"[音声パッチ] 破損パケットをスキップしました: {e}")
-                return None
+_original_decode = discord.opus.Decoder.decode
 
-        DecoderClass.pop_data = _patched_pop_data
-        print("[音声パッチ] クラッシュ回避パッチが正常に適用されました。")
-    else:
-        print("[音声パッチ警告] 対象のデコーダクラスが見つかりませんでした。パッチをスキップします。")
-except Exception as e:
-    # 万が一パッチ処理自体が失敗しても、Cog（コマンド）の読み込みは絶対に止めない
-    print(f"[音声パッチエラー] パッチ処理で問題が発生しました（Cogの読み込みは続行します）: {e}")
+def _patched_decode(self, data, *, fec=False):
+    try:
+        return _original_decode(self, data, fec=fec)
+    except Exception as e:
+        # 'corrupted stream' 等のエラーパケットを検知したら、安全に20ms分の無音データにすり替える
+        # 48000Hz / ステレオ / 16bit PCM の20ms = 3840バイト
+        return b'\x00' * 3840
+
+# discord.py 本体のデコード処理をパッチ版に差し替え
+discord.opus.Decoder.decode = _patched_decode
+print("[音声パッチ] Opusデコーダのクラッシュ防止パッチが正常に適用されました。")
 
 
 # ----------------------------------------------------
@@ -72,7 +64,7 @@ class SpeechToTextSink(voice_recv.AudioSink):
         if user is None:
             return
         
-        # 雑音処理：計算した音量が設定値未満なら録音しない
+        # 雑音処理：計算した音量が設定値未満なら録音しない（パッチで無音化したデータもここで弾かれます）
         if self.calculate_rms(data.pcm) < self.threshold:
             return
         
@@ -218,7 +210,7 @@ class MojiokosiCog(commands.Cog):
                     # 別のVCにいる場合は移動
                     await interaction.guild.voice_client.move_to(voice_channel)
             else:
-                # 接続クライアントを指定してVCへ参加
+                # 標準の接続クライアントでVCへ参加
                 await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
 
             # 接続完了から音声受信開始までに1.5秒待つ（同期ズレ防止）
