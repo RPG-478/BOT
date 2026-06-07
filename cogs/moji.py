@@ -175,14 +175,14 @@ class MojiokosiCog(commands.Cog):
             
             voice_channel = interaction.user.voice.channel
             
-            # ボットが既にどこかのVCに接続しているか確認
-            if interaction.voice_client:
-                if interaction.voice_client.channel.id == voice_channel.id:
+            # 【修正】interaction.voice_client から interaction.guild.voice_client に変更
+            if interaction.guild.voice_client:
+                if interaction.guild.voice_client.channel.id == voice_channel.id:
                     await interaction.response.send_message("既にこのチャンネルで文字起こしが有効です。", ephemeral=True)
                     return
                 else:
                     # 別のVCにいる場合は移動
-                    await interaction.voice_client.move_to(voice_channel)
+                    await interaction.guild.voice_client.move_to(voice_channel)
             else:
                 # 新規接続
                 await voice_channel.connect(cls=voice_recv.VoiceClient)
@@ -191,12 +191,12 @@ class MojiokosiCog(commands.Cog):
             if guild.id in self.active_sinks:
                 self.active_sinks[guild.id].cleanup()
 
-            # 新しいSinkを作成（しきい値はここで800に設定。ノイズが多いなら1000〜1200に上げてください）
+            # 新しいSinkを作成
             sink = SpeechToTextSink(self.bot, interaction.channel_id, threshold=800)
             self.active_sinks[guild.id] = sink
             
-            # 音声受信を開始
-            interaction.voice_client.listen(sink)
+            # 【修正】音声受信を開始
+            interaction.guild.voice_client.listen(sink)
             await interaction.response.send_message(
                 f"🎤 **{voice_channel.name}** で文字起こしを開始しました！\nこのチャンネル（<#{interaction.channel_id}>）に発言を送信します。",
                 ephemeral=False
@@ -206,7 +206,8 @@ class MojiokosiCog(commands.Cog):
         # オフ (終了) の処理
         # --------------------
         elif status == "off":
-            if not interaction.voice_client:
+            # 【修正】ボットがVCに参加しているか確認
+            if not interaction.guild.voice_client:
                 await interaction.response.send_message("ボットはボイスチャンネルに参加していません。", ephemeral=True)
                 return
             
@@ -215,7 +216,8 @@ class MojiokosiCog(commands.Cog):
                 self.active_sinks[guild.id].cleanup()
                 del self.active_sinks[guild.id]
                 
-            await interaction.voice_client.disconnect()
+            # 【修正】切断処理
+            await interaction.guild.voice_client.disconnect()
             await interaction.response.send_message("🛑 文字起こしを終了し、ボイスチャンネルから切断しました。", ephemeral=False)
 
 # Cogの登録
