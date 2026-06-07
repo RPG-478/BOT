@@ -11,18 +11,22 @@ import struct
 import math
 
 # ----------------------------------------------------
-# 0. 【新規】暗号化方式を安定版に制限するカスタムクライアント
+# 0. 【新規】ライブラリのデコードクラッシュを回避する安全パッチ
 # ----------------------------------------------------
-class CustomVoiceRecvClient(voice_recv.VoiceRecvClient):
-    """
-    Discordの新しい暗号化方式（AEAD等）による復号エラー(corrupted stream)を回避するため、
-    ライブラリが正常に対応している古い暗号化モードのみを許可するように制限します。
-    """
-    supported_modes = (
-        'xsalsa20_poly1305_lite',
-        'xsalsa20_poly1305_suffix',
-        'xsalsa20_poly1305',
-    )
+from discord.ext.voice_recv.opus import VoiceDecoder
+
+_original_pop_data = VoiceDecoder.pop_data
+
+def _patched_pop_data(self):
+    try:
+        return _original_pop_data(self)
+    except Exception as e:
+        # 'corrupted stream'（未知のSSRCによる復号エラーなど）が発生したパケットを安全にスキップ
+        print(f"[音声パッチ] 破損パケットをスキップしました: {e}")
+        return None
+
+# ライブラリの関数を安全なパッチ版に差し替え
+VoiceDecoder.pop_data = _patched_pop_data
 
 
 # ----------------------------------------------------
@@ -187,7 +191,7 @@ class MojiokosiCog(commands.Cog):
         # オン (開始) の処理
         # --------------------
         if status == "on":
-            # 【修正】処理に時間がかかるため、先にDiscordへ「考え中...」の応答を返してタイムアウトを防ぐ
+            # タイムアウトを防ぐため先に「考え中...」の応答を返す
             await interaction.response.defer(ephemeral=False)
 
             if interaction.user.voice is None:
@@ -205,10 +209,10 @@ class MojiokosiCog(commands.Cog):
                     # 別のVCにいる場合は移動
                     await interaction.guild.voice_client.move_to(voice_channel)
             else:
-                # 【修正】新しく作った暗号化制限版クライアント（CustomVoiceRecvClient）を指定して接続
-                await voice_channel.connect(cls=CustomVoiceRecvClient)
+                # 標準の接続クライアント（最新暗号化を受け入れる）に戻す
+                await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
 
-            # 接続完了から音声受信開始までに少し待つ（同期ズレによるエラー防止）
+            # 接続完了から音声受信開始までに1.5秒待つ（同期ズレ防止）
             await asyncio.sleep(1.5)
 
             # 古いセッションが残っていればタスクをクリーンアップ
@@ -221,7 +225,6 @@ class MojiokosiCog(commands.Cog):
             
             # 音声受信を開始
             interaction.guild.voice_client.listen(sink)
-            # 【修正】deferしたため、送信はfollowupを使用
             await interaction.followup.send(
                 f"🎤 **{voice_channel.name}** で文字起こしを開始しました！\nこのチャンネル（<#{interaction.channel_id}>）に発言を送信します。"
             )
