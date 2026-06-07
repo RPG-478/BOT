@@ -27,7 +27,6 @@ class SpeechToTextSink(voice_recv.AudioSink):
         self.SILENCE_TIMEOUT = 0.8  # 無音と判定する時間（秒）
         self.monitor_task = asyncio.create_task(self.monitor_silence())
 
-    # 【修正】ライブラリの仕様変更に伴う必須メソッドの実装
     def wants_opus(self) -> bool:
         """Opus形式ではなく、デコードされたPCMデータを受け取るためFalseを返す"""
         return False
@@ -161,7 +160,7 @@ class MojiokosiCog(commands.Cog):
     @app_commands.command(name="mojiokosi", description="文字起こし機能のオン/オフを切り替えます")
     @app_commands.choices(status=[
         app_commands.Choice(name="オン (開始)", value="on"),
-        app_commands.Choice(name="オフ (終了)", value="off")
+        app_commands.Choice(name="off (終了)", value="off")
     ])
     async def mojiokosi(self, interaction: discord.Interaction, status: str):
         guild = interaction.guild
@@ -190,6 +189,9 @@ class MojiokosiCog(commands.Cog):
             else:
                 # 正しい接続クライアント指定
                 await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
+
+            # 【修正】接続完了から音声受信開始までに少し待つ（同期ズレによるエラー防止）
+            await asyncio.sleep(1.5)
 
             # 古いセッションが残っていればタスクをクリーンアップ
             if guild.id in self.active_sinks:
