@@ -124,7 +124,7 @@ class ChaosDiveView(discord.ui.View):
             selected_route = "A" if roll <= prob else "B"
             route_data = mod[selected_route]
             
-            log_messages.append(f"モジュール {i}: ルート{selected_route}が選択されました。")
+            log_messages.append(f"運命 {i}: ルート{selected_route}が選択されました。")
             
             if route_data["type"] == "plus":
                 val = route_data["val"]
@@ -166,7 +166,7 @@ class ChaosDiveView(discord.ui.View):
         
         fund_change = int(fund * (total_pct / 100))
         fund += fund_change
-        log_messages.append(f"モジュール抽選結果による変動: {fund_change:+,} コイン (累計: {total_pct:+.1f}%)")
+        log_messages.append(f"運命抽選結果による変動: {fund_change:+,} コイン (累計: {total_pct:+.1f}%)")
         
         for b in buffs_list:
             if b["id"] == "regen":
@@ -204,8 +204,9 @@ class ChaosDiveView(discord.ui.View):
         
         if fund <= 0:
             await asyncio.to_thread(config.supabase.table("chaos_dive_saves").delete().eq("user_id", self.user_id).execute)
+            net_change = -bet
             embed_result = discord.Embed(title="ゲームオーバー（破産）", color=0xffffff)
-            embed_result.description = "\n".join(log_messages) + f"\n\n軍資金が0以下になりました。賭け金 {bet:,} コインは没収されました。"
+            embed_result.description = "\n".join(log_messages) + f"\n\n軍資金が0以下になりました。賭け金 {bet:,} コインは没収されました。\n最終損益: {net_change:,} コイン"
             await interaction.followup.send(embed=embed_result)
             return
             
@@ -213,16 +214,21 @@ class ChaosDiveView(discord.ui.View):
             await asyncio.to_thread(config.supabase.table("chaos_dive_saves").delete().eq("user_id", self.user_id).execute)
             res_user = await asyncio.to_thread(config.supabase.table("users").select("balance").eq("user_id", self.user_id).execute)
             current_balance = res_user.data[0]["balance"] if res_user.data else 0
-            await asyncio.to_thread(config.supabase.table("users").upsert({"user_id": self.user_id, "balance": current_balance + fund}).execute)
+            
+            clear_bonus = 1000
+            total_payout = fund + clear_bonus
+            net_change = total_payout - bet
+            
+            await asyncio.to_thread(config.supabase.table("users").upsert({"user_id": self.user_id, "balance": current_balance + total_payout}).execute)
             await asyncio.to_thread(config.supabase.table("transaction_history").insert({
                 "sender_id": "SYSTEM",
                 "receiver_id": self.user_id,
-                "amount": fund,
+                "amount": total_payout,
                 "reason": "カオス・ダイブ生還報酬"
             }).execute)
             
             embed_result = discord.Embed(title="最下層クリア！生還成功", color=0xffffff)
-            embed_result.description = "\n".join(log_messages) + f"\n\n地下30階をクリアしました。現在の軍資金 {fund:,} コインが払い戻されます。"
+            embed_result.description = "\n".join(log_messages) + f"\n\n地下30階をクリアしました。現在の軍資金 {fund:,} コインにクリア報酬 {clear_bonus:,} コインを加えた、計 {total_payout:,} コインが払い戻されます。\n最終損益: {net_change:+,} コイン"
             await interaction.followup.send(embed=embed_result)
             return
             
@@ -270,8 +276,8 @@ class ChaosDive(commands.Cog):
             await self.show_game_screen(interaction, save)
             return
         
-        if bet is None or bet <= 0:
-            await interaction.response.send_message("新しくゲームを開始するには、1以上の賭け金を指定してください。", ephemeral=True)
+        if bet is None or bet < 1000:
+            await interaction.response.send_message("新しくゲームを開始するには、1000以上の賭け金を指定してください。", ephemeral=True)
             return
             
         res_user = await asyncio.to_thread(config.supabase.table("users").select("balance").eq("user_id", user_id).execute)
@@ -349,10 +355,10 @@ class ChaosDive(commands.Cog):
                 
         desc += f"\n--------------------------------------------\n【現在の提示条件】(振り直し回数: {rerolls_used} / 3)\n"
         if has_reverse:
-            desc += "※損得反転適用中！プラスとマイナスが逆転します。\n"
+            desc += "※損得反転適用中！プラスとマイナスが逆逆転します。\n"
             
         for i, mod in enumerate(pending_modules, 1):
-            desc += f"[モジュール {i}]\n"
+            desc += f"[運命 {i}]\n"
             for r in ["A", "B"]:
                 route = mod[r]
                 prob = mod["prob"] if r == "A" else (100 - mod["prob"])
