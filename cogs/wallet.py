@@ -1,8 +1,8 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-import defining
-import traceback  # エラーの発生場所を特定するために追加
+import config  # defining ではなく config を直接インポート
+import traceback
 
 class WalletCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -14,11 +14,12 @@ class WalletCog(commands.Cog):
         user_id = str(interaction.user.id)
 
         try:
-            response = defining.supabase.table("users").select("balance").eq("user_id", user_id).execute()
+            # config.supabase を参照
+            response = config.supabase.table("users").select("balance").eq("user_id", user_id).execute()
             data = response.data
 
             if not data:
-                defining.supabase.table("users").insert({"user_id": user_id, "balance": 10}).execute()
+                config.supabase.table("users").insert({"user_id": user_id, "balance": 10}).execute()
                 balance = 10
             else:
                 balance = data[0]["balance"]
@@ -33,7 +34,6 @@ class WalletCog(commands.Cog):
             await interaction.followup.send(embed=embed)
 
         except Exception as e:
-            # コンソールに詳細なエラーログを出力
             print("\n=== [WALLET COMMAND ERROR START] ===")
             traceback.print_exc()
             print("=== [WALLET COMMAND ERROR END] ===\n")
@@ -56,28 +56,28 @@ class WalletCog(commands.Cog):
             return
 
         try:
-            sender_res = defining.supabase.table("users").select("balance").eq("user_id", sender_id).execute()
+            sender_res = config.supabase.table("users").select("balance").eq("user_id", sender_id).execute()
             if not sender_res.data or sender_res.data[0]["balance"] < amount:
                 await interaction.followup.send("残高が不足しているため、送金できません。", ephemeral=True)
                 return
 
-            update_sender = defining.supabase.table("users").update({
+            update_sender = config.supabase.table("users").update({
                 "balance": sender_res.data[0]["balance"] - amount
             }).eq("user_id", sender_id).gte("balance", amount).execute()
 
             if not update_sender.data:
                 raise Exception("送り手の残高更新に失敗しました。")
 
-            receiver_res = defining.supabase.table("users").select("balance").eq("user_id", receiver_id).execute()
+            receiver_res = config.supabase.table("users").select("balance").eq("user_id", receiver_id).execute()
             
             if not receiver_res.data:
                 new_balance = 10 + amount
-                defining.supabase.table("users").insert({"user_id": receiver_id, "balance": new_balance}).execute()
+                config.supabase.table("users").insert({"user_id": receiver_id, "balance": new_balance}).execute()
             else:
                 new_balance = receiver_res.data[0]["balance"] + amount
-                defining.supabase.table("users").update({"balance": new_balance}).eq("user_id", receiver_id).execute()
+                config.supabase.table("users").update({"balance": new_balance}).eq("user_id", receiver_id).execute()
             
-            defining.supabase.table("transaction_history").insert({
+            config.supabase.table("transaction_history").insert({
                 "sender_id": sender_id,
                 "receiver_id": receiver_id,
                 "amount": amount,
@@ -102,7 +102,7 @@ class WalletCog(commands.Cog):
         await interaction.response.defer()
 
         try:
-            response = defining.supabase.table("users").select("user_id", "balance").order("balance", descending=True).limit(10).execute()
+            response = config.supabase.table("users").select("user_id", "balance").order("balance", descending=True).limit(10).execute()
             data = response.data
 
             if not data:
