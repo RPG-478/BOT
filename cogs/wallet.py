@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import defining
+import traceback  # エラーの発生場所を特定するために追加
 
 class WalletCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -32,7 +33,11 @@ class WalletCog(commands.Cog):
             await interaction.followup.send(embed=embed)
 
         except Exception as e:
-            await interaction.followup.send("データの取得中にエラーが発生しました。", ephemeral=True)
+            # コンソールに詳細なエラーログを出力
+            print("\n=== [WALLET COMMAND ERROR START] ===")
+            traceback.print_exc()
+            print("=== [WALLET COMMAND ERROR END] ===\n")
+            await interaction.followup.send(f"データの取得中にエラーが発生しました。\nエラー内容: `{type(e).__name__}`", ephemeral=True)
 
     @app_commands.command(name="pay", description="他のユーザーにコインを送金します。")
     @app_commands.describe(receiver="送金先のユーザー", amount="送金するコインの数量")
@@ -87,6 +92,9 @@ class WalletCog(commands.Cog):
             await interaction.followup.send(embed=embed)
 
         except Exception as e:
+            print("\n=== [PAY COMMAND ERROR START] ===")
+            traceback.print_exc()
+            print("=== [PAY COMMAND ERROR END] ===\n")
             await interaction.followup.send(f"送金処理中にエラーが発生しました。処理は中断されました。", ephemeral=True)
 
     @app_commands.command(name="leaderboard", description="コイン保有数のランキングを表示します。")
@@ -119,6 +127,9 @@ class WalletCog(commands.Cog):
             await interaction.followup.send(embed=embed)
 
         except Exception as e:
+            print("\n=== [LEADERBOARD ERROR START] ===")
+            traceback.print_exc()
+            print("=== [LEADERBOARD ERROR END] ===\n")
             await interaction.followup.send("ランキングの取得中にエラーが発生しました。", ephemeral=True)
 
 async def setup(bot: commands.Bot):
