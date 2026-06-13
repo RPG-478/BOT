@@ -66,10 +66,12 @@ class ChaosDiveView(discord.ui.View):
             await interaction.response.send_message("他のプレイヤーのゲームです。", ephemeral=True)
             return
             
+        await interaction.response.defer()
+        
         res = await asyncio.to_thread(config.supabase.table("chaos_dive_saves").select("*").eq("user_id", self.user_id).execute)
         save = res.data[0] if res.data else None
         if not save:
-            await interaction.response.send_message("セーブデータが見つかりません。", ephemeral=True)
+            await interaction.followup.send("セーブデータが見つかりません。", ephemeral=True)
             return
             
         rerolls = save["rerolls_used"] + 1
@@ -82,6 +84,11 @@ class ChaosDiveView(discord.ui.View):
             .execute
         )
         
+        try:
+            await interaction.message.delete()
+        except discord.HTTPException:
+            pass
+            
         res_new = await asyncio.to_thread(config.supabase.table("chaos_dive_saves").select("*").eq("user_id", self.user_id).execute)
         await self.cog.show_game_screen(interaction, res_new.data[0])
 
@@ -147,7 +154,7 @@ class ChaosDiveView(discord.ui.View):
                     chronos_triggered += random.randint(1, 3)
                     log_messages.append("  継続ターンプラスを獲得")
                 else:
-                    b_names = {"resurrection": "確定回避", "chaos_reverse": "損得の反転", "regen": "定期報酬"}
+                    b_names = {"resurrection": "確定回避", "chaos_reverse": "損得の反転", "regen": "天啓"}
                     new_buffs.append({
                         "id": route_data["id"],
                         "name": b_names[route_data["id"]],
@@ -158,11 +165,11 @@ class ChaosDiveView(discord.ui.View):
             elif route_data["type"] == "debuff":
                 new_buffs.append({
                     "id": route_data["id"],
-                    "name": "定期マイナス",
+                    "name": "罰",
                     "remaining_turns": route_data.get("turns", 1),
                     "val": route_data.get("val", 0)
                 })
-                log_messages.append("  定期マイナス を獲得")
+                log_messages.append("  罰 を獲得")
         
         fund_change = int(fund * (total_pct / 100))
         fund += fund_change
@@ -172,11 +179,11 @@ class ChaosDiveView(discord.ui.View):
             if b["id"] == "regen":
                 regen_val = int(fund * (b["val"] / 100))
                 fund += regen_val
-                log_messages.append(f"定期報酬による変動: +{regen_val} コイン (+{b['val']}%)")
+                log_messages.append(f"天啓による変動: +{regen_val} コイン (+{b['val']}%)")
             elif b["id"] == "slip":
                 slip_val = int(fund * (b["val"] / 100))
                 fund -= slip_val
-                log_messages.append(f"定期マイナスによる変動: -{slip_val} コイン (-{b['val']}%)")
+                log_messages.append(f"罰による変動: -{slip_val} コイン (-{b['val']}%)")
         
         if chronos_triggered > 0:
             for b in buffs_list:
@@ -202,12 +209,17 @@ class ChaosDiveView(discord.ui.View):
                     buffs_list.remove(res_buff)
                 log_messages.append("確定回避（リザレクション）が発動しました。軍資金1で耐えます。")
         
+        try:
+            await interaction.message.delete()
+        except discord.HTTPException:
+            pass
+            
         if fund <= 0:
             await asyncio.to_thread(config.supabase.table("chaos_dive_saves").delete().eq("user_id", self.user_id).execute)
             net_change = -bet
             embed_result = discord.Embed(title="ゲームオーバー（破産）", color=0xffffff)
             embed_result.description = "\n".join(log_messages) + f"\n\n軍資金が0以下になりました。賭け金 {bet:,} コインは没収されました。\n最終損益: {net_change:,} コイン"
-            await interaction.followup.send(embed=embed_result)
+            await interaction.channel.send(embed=embed_result)
             return
             
         if floor == 30:
@@ -229,7 +241,7 @@ class ChaosDiveView(discord.ui.View):
             
             embed_result = discord.Embed(title="最下層クリア！生還成功", color=0xffffff)
             embed_result.description = "\n".join(log_messages) + f"\n\n地下30階をクリアしました。現在の軍資金 {fund:,} コインにクリア報酬 {clear_bonus:,} コインを加えた、計 {total_payout:,} コインが払い戻されます。\n最終損益: {net_change:+,} コイン"
-            await interaction.followup.send(embed=embed_result)
+            await interaction.channel.send(embed=embed_result)
             return
             
         next_floor = floor + 1
@@ -256,7 +268,7 @@ class ChaosDiveView(discord.ui.View):
         
         embed_log = discord.Embed(title=f"B{floor}F 結果", color=0xffffff)
         embed_log.description = "\n".join(log_messages) + f"\n\n次の階層 B{next_floor}F へ進みます。"
-        await interaction.followup.send(embed=embed_log)
+        await interaction.channel.send(embed=embed_log)
         
         res_next = await asyncio.to_thread(config.supabase.table("chaos_dive_saves").select("*").eq("user_id", self.user_id).execute)
         await self.cog.show_game_screen(interaction, res_next.data[0])
@@ -273,6 +285,7 @@ class ChaosDive(commands.Cog):
         res_save = await asyncio.to_thread(config.supabase.table("chaos_dive_saves").select("*").eq("user_id", user_id).execute)
         save = res_save.data[0] if res_save.data else None
         if save:
+            await interaction.response.send_message("ゲームを再開します。", ephemeral=True)
             await self.show_game_screen(interaction, save)
             return
         
@@ -310,6 +323,7 @@ class ChaosDive(commands.Cog):
             .execute
         )
         
+        await interaction.response.send_message("ゲームを開始します。", ephemeral=True)
         res_new = await asyncio.to_thread(config.supabase.table("chaos_dive_saves").select("*").eq("user_id", user_id).execute)
         await self.show_game_screen(interaction, res_new.data[0])
 
@@ -349,13 +363,13 @@ class ChaosDive(commands.Cog):
             elif b["id"] == "resurrection":
                 desc += f"・確定回避 (残り {b['remaining_turns']} 階層)\n"
             elif b["id"] == "regen":
-                desc += f"・定期報酬 (残り {b['remaining_turns']} 階層: 毎階層 +{b['val']}%)\n"
+                desc += f"・天啓 (残り {b['remaining_turns']} 階層: 毎階層 +{b['val']}%)\n"
             elif b["id"] == "slip":
-                desc += f"・定期マイナス (残り {b['remaining_turns']} 階層: 毎階層 -{b['val']}%)\n"
+                desc += f"・罰 (残り {b['remaining_turns']} 階層: 毎階層 -{b['val']}%)\n"
                 
         desc += f"\n--------------------------------------------\n【現在の提示条件】(振り直し回数: {rerolls_used} / 3)\n"
         if has_reverse:
-            desc += "※損得反転適用中！プラスとマイナスが逆逆転します。\n"
+            desc += "※損得反転適用中！プラスとマイナスが逆転します。\n"
             
         for i, mod in enumerate(pending_modules, 1):
             desc += f"[運命 {i}]\n"
@@ -374,20 +388,17 @@ class ChaosDive(commands.Cog):
                     rev = f"+{route['val']}%" if has_reverse else None
                     details.append(f"軍資金 {orig}" + (f" (逆転: {rev})" if rev else ""))
                 elif route["type"] == "buff":
-                    b_name = {"resurrection": "確定回避", "chaos_reverse": "損得の反転", "chronos": "継続ターンプラス", "regen": "定期報酬"}[route["id"]]
+                    b_name = {"resurrection": "確定回避", "chaos_reverse": "損得の反転", "chronos": "継続ターンプラス", "regen": "天啓"}[route["id"]]
                     details.append(f"[{b_name}]獲得")
                 elif route["type"] == "debuff":
-                    details.append("[定期マイナス]獲得")
+                    details.append("[罰]獲得")
                     
                 desc += f"{prefix}: " + " + ".join(details) + "\n"
                 
         embed.description = desc
         view = ChaosDiveView(self, user_id, rerolls_used)
         
-        if interaction.response.is_done():
-            await interaction.edit_original_response(embed=embed, view=view)
-        else:
-            await interaction.response.send_message(embed=embed, view=view)
+        await interaction.channel.send(embed=embed, view=view)
 
 async def setup(bot):
     await bot.add_cog(ChaosDive(bot))
