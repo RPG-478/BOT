@@ -7,7 +7,7 @@ import asyncio
 import config
 
 def generate_modules(floor):
-    p_f = 10 * (50 ** ((floor - 1) / 29))
+    p_f = 10 * (50 ** ((floor - 1) / 19))
     num_modules = random.randint(1, 5)
     modules = []
     event_types = ["plus", "minus", "buff", "debuff"]
@@ -37,6 +37,40 @@ def generate_modules(floor):
                 routes[r] = {"type": "debuff", "id": "slip", "turns": random.randint(2, 5), "val": random.randint(5, 20)}
         modules.append({"prob": prob, "A": routes["A"], "B": routes["B"]})
     return modules
+
+class ChaosDiveNextView(discord.ui.View):
+    def __init__(self, cog, user_id):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.user_id = user_id
+        
+        next_btn = discord.ui.Button(
+            label="次の運命を開く",
+            style=discord.ButtonStyle.success,
+            custom_id=f"chaos_next_{user_id}"
+        )
+        next_btn.callback = self.next_callback
+        self.add_item(next_btn)
+
+    async def next_callback(self, interaction: discord.Interaction):
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("他のプレイヤーのゲームです。", ephemeral=True)
+            return
+            
+        await interaction.response.defer()
+        
+        try:
+            await interaction.message.delete()
+        except discord.HTTPException:
+            pass
+            
+        res = await asyncio.to_thread(config.supabase.table("chaos_dive_saves").select("*").eq("user_id", self.user_id).execute)
+        save = res.data[0] if res.data else None
+        if not save:
+            await interaction.followup.send("セーブデータが見つかりません。", ephemeral=True)
+            return
+            
+        await self.cog.show_game_screen(interaction, save)
 
 class ChaosDiveView(discord.ui.View):
     def __init__(self, cog, user_id, rerolls_used):
@@ -131,37 +165,35 @@ class ChaosDiveView(discord.ui.View):
             selected_route = "A" if roll <= prob else "B"
             route_data = mod[selected_route]
             
-            log_messages.append(f"運命 {i}: ルート{selected_route}が選択されました。")
-            
             if route_data["type"] == "plus":
                 val = route_data["val"]
                 if has_reverse:
                     total_pct -= val
-                    log_messages.append(f"  軍資金 +{val}% -> 反転により -{val}%")
+                    log_messages.append(f"運命 {i}: 命値 -{val}% (ルート{selected_route} / 堕天反転)")
                 else:
                     total_pct += val
-                    log_messages.append(f"  軍資金 +{val}%")
+                    log_messages.append(f"運命 {i}: 命値 +{val}% (ルート{selected_route})")
             elif route_data["type"] == "minus":
                 val = route_data["val"]
                 if has_reverse:
                     total_pct += val
-                    log_messages.append(f"  軍資金 -{val}% -> 反転により +{val}%")
+                    log_messages.append(f"運命 {i}: 命値 +{val}% (ルート{selected_route} / 堕天反転)")
                 else:
                     total_pct -= val
-                    log_messages.append(f"  軍資金 -{val}%")
+                    log_messages.append(f"運命 {i}: 命値 -{val}% (ルート{selected_route})")
             elif route_data["type"] == "buff":
                 if route_data["id"] == "chronos":
                     chronos_triggered += random.randint(1, 3)
-                    log_messages.append("  継続ターンプラスを獲得")
+                    log_messages.append(f"運命 {i}: アクション [継続ターンプラス] を獲得 (ルート{selected_route})")
                 else:
-                    b_names = {"resurrection": "確定回避", "chaos_reverse": "損得の反転", "regen": "天啓"}
+                    b_names = {"resurrection": "命乞い", "chaos_reverse": "堕天", "regen": "天啓"}
                     new_buffs.append({
                         "id": route_data["id"],
                         "name": b_names[route_data["id"]],
                         "remaining_turns": route_data.get("turns", 1),
                         "val": route_data.get("val", 0)
                     })
-                    log_messages.append(f"  {b_names[route_data['id']]} を獲得")
+                    log_messages.append(f"運命 {i}: アクション [{b_names[route_data['id']]}] を獲得 (ルート{selected_route})")
             elif route_data["type"] == "debuff":
                 new_buffs.append({
                     "id": route_data["id"],
@@ -169,7 +201,7 @@ class ChaosDiveView(discord.ui.View):
                     "remaining_turns": route_data.get("turns", 1),
                     "val": route_data.get("val", 0)
                 })
-                log_messages.append("  罰 を獲得")
+                log_messages.append(f"運命 {i}: アクション [罰] を獲得 (ルート{selected_route})")
         
         fund_change = int(fund * (total_pct / 100))
         fund += fund_change
@@ -207,7 +239,7 @@ class ChaosDiveView(discord.ui.View):
                 res_buff["remaining_turns"] -= 1
                 if res_buff["remaining_turns"] <= 0:
                     buffs_list.remove(res_buff)
-                log_messages.append("確定回避（リザレクション）が発動しました。軍資金1で耐えます。")
+                log_messages.append("命乞いが発動しました。命値1で耐えます。")
         
         try:
             await interaction.message.delete()
@@ -218,11 +250,11 @@ class ChaosDiveView(discord.ui.View):
             await asyncio.to_thread(config.supabase.table("chaos_dive_saves").delete().eq("user_id", self.user_id).execute)
             net_change = -bet
             embed_result = discord.Embed(title="ゲームオーバー（破産）", color=0xffffff)
-            embed_result.description = "\n".join(log_messages) + f"\n\n軍資金が0以下になりました。賭け金 {bet:,} コインは没収されました。\n最終損益: {net_change:,} コイン"
+            embed_result.description = "\n".join(log_messages) + f"\n\n命値が0以下になりました。賭け金 {bet:,} コインは没収されました。\n最終損益: {net_change:,} コイン"
             await interaction.channel.send(embed=embed_result)
             return
             
-        if floor == 30:
+        if floor == 20:
             await asyncio.to_thread(config.supabase.table("chaos_dive_saves").delete().eq("user_id", self.user_id).execute)
             res_user = await asyncio.to_thread(config.supabase.table("users").select("balance").eq("user_id", self.user_id).execute)
             current_balance = res_user.data[0]["balance"] if res_user.data else 0
@@ -240,7 +272,7 @@ class ChaosDiveView(discord.ui.View):
             }).execute)
             
             embed_result = discord.Embed(title="最下層クリア！生還成功", color=0xffffff)
-            embed_result.description = "\n".join(log_messages) + f"\n\n地下30階をクリアしました。現在の軍資金 {fund:,} コインにクリア報酬 {clear_bonus:,} コインを加えた、計 {total_payout:,} コインが払い戻されます。\n最終損益: {net_change:+,} コイン"
+            embed_result.description = "\n".join(log_messages) + f"\n\n地下20階をクリアしました。現在の命値 {fund:,} コインにクリア報酬 {clear_bonus:,} コインを加えた、計 {total_payout:,} コインが払い戻されます。\n最終損益: {net_change:+,} コイン"
             await interaction.channel.send(embed=embed_result)
             return
             
@@ -267,11 +299,10 @@ class ChaosDiveView(discord.ui.View):
         )
         
         embed_log = discord.Embed(title=f"B{floor}F 結果", color=0xffffff)
-        embed_log.description = "\n".join(log_messages) + f"\n\n次の階層 B{next_floor}F へ進みます。"
-        await interaction.channel.send(embed=embed_log)
+        embed_log.description = "\n".join(log_messages) + f"\n\n次の階層 B{next_floor}F へ進む準備ができました。"
         
-        res_next = await asyncio.to_thread(config.supabase.table("chaos_dive_saves").select("*").eq("user_id", self.user_id).execute)
-        await self.cog.show_game_screen(interaction, res_next.data[0])
+        next_view = ChaosDiveNextView(self.cog, self.user_id)
+        await interaction.channel.send(embed=embed_log, view=next_view)
 
 class ChaosDive(commands.Cog):
     def __init__(self, bot):
@@ -348,20 +379,20 @@ class ChaosDive(commands.Cog):
         
         embed = discord.Embed(title=f"B{floor}F - カオス・ダイブ", color=0xffffff)
         
-        bar_cells = 30
+        bar_cells = 20
         bar_str = "■" * floor + "□" * (bar_cells - floor)
         
-        desc = f"現在の軍資金: {fund:,} コイン (初期賭け金: {bet:,})\n"
-        desc += f"進行状況: [{bar_str}] ({floor}/30)\n\n"
+        desc = f"現在の命値: {fund:,} コイン (初期賭け金: {bet:,})\n"
+        desc += f"進行状況: [{bar_str}] ({floor}/20)\n\n"
         desc += "【あなたのステータス】\n"
         
         if not buffs_list:
             desc += "・なし\n"
         for b in buffs_list:
             if b["id"] == "chaos_reverse":
-                desc += f"・損得の反転 (残り {b['remaining_turns']} 階層)\n"
+                desc += f"・堕天 (残り {b['remaining_turns']} 階層)\n"
             elif b["id"] == "resurrection":
-                desc += f"・確定回避 (残り {b['remaining_turns']} 階層)\n"
+                desc += f"・命乞い (残り {b['remaining_turns']} 階層)\n"
             elif b["id"] == "regen":
                 desc += f"・天啓 (残り {b['remaining_turns']} 階層: 毎階層 +{b['val']}%)\n"
             elif b["id"] == "slip":
@@ -369,7 +400,7 @@ class ChaosDive(commands.Cog):
                 
         desc += f"\n--------------------------------------------\n【現在の提示条件】(振り直し回数: {rerolls_used} / 3)\n"
         if has_reverse:
-            desc += "※損得反転適用中！プラスとマイナスが逆転します。\n"
+            desc += "※堕天適用中！プラスとマイナスが逆転します。\n"
             
         for i, mod in enumerate(pending_modules, 1):
             desc += f"[運命 {i}]\n"
@@ -382,13 +413,13 @@ class ChaosDive(commands.Cog):
                 if route["type"] == "plus":
                     orig = f"+{route['val']}%"
                     rev = f"-{route['val']}%" if has_reverse else None
-                    details.append(f"軍資金 {orig}" + (f" (逆転: {rev})" if rev else ""))
+                    details.append(f"命値 {orig}" + (f" (逆転: {rev})" if rev else ""))
                 elif route["type"] == "minus":
                     orig = f"-{route['val']}%"
                     rev = f"+{route['val']}%" if has_reverse else None
-                    details.append(f"軍資金 {orig}" + (f" (逆転: {rev})" if rev else ""))
+                    details.append(f"命値 {orig}" + (f" (逆転: {rev})" if rev else ""))
                 elif route["type"] == "buff":
-                    b_name = {"resurrection": "確定回避", "chaos_reverse": "損得の反転", "chronos": "継続ターンプラス", "regen": "天啓"}[route["id"]]
+                    b_name = {"resurrection": "命乞い", "chaos_reverse": "堕天", "chronos": "継続ターンプラス", "regen": "天啓"}[route["id"]]
                     details.append(f"[{b_name}]獲得")
                 elif route["type"] == "debuff":
                     details.append("[罰]獲得")
