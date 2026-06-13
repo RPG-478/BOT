@@ -4,7 +4,7 @@ from discord import app_commands
 import json
 import random
 import asyncpg
-from config import SUPABASE_URL, SUPABASE_KEY
+import config
 
 def generate_modules(floor):
     p_f = 10 * (50 ** ((floor - 1) / 29))
@@ -248,7 +248,7 @@ class ChaosDive(commands.Cog):
         self.pool = None
 
     async def cog_load(self):
-        self.pool = await asyncpg.create_pool(SUPABASE_URL)
+        self.pool = await asyncpg.create_pool(config.DATABASE_URL)
 
     async def cog_unload(self):
         if self.pool:
