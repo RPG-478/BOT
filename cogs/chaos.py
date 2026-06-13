@@ -4,7 +4,7 @@ from discord import app_commands
 import json
 import random
 import asyncpg
-from config import DATABASE_URL
+from config import SUPABASE_URL, SUPABASE_KEY
 
 def generate_modules(floor):
     p_f = 10 * (50 ** ((floor - 1) / 29))
@@ -45,7 +45,7 @@ class ChaosDiveView(discord.ui.View):
         self.user_id = user_id
         
         reroll_btn = discord.ui.Button(
-            label="🎲 振り直す",
+            label="振り直す",
             style=discord.ButtonStyle.secondary,
             custom_id=f"chaos_reroll_{user_id}",
             disabled=(rerolls_used >= 3)
@@ -54,7 +54,7 @@ class ChaosDiveView(discord.ui.View):
         self.add_item(reroll_btn)
         
         match_btn = discord.ui.Button(
-            label="💥 この条件で勝負する（取る）",
+            label="この条件で勝負する（取る）",
             style=discord.ButtonStyle.primary,
             custom_id=f"chaos_match_{user_id}"
         )
@@ -137,7 +137,7 @@ class ChaosDiveView(discord.ui.View):
                 elif route_data["type"] == "buff":
                     if route_data["id"] == "chronos":
                         chronos_triggered += random.randint(1, 3)
-                        log_messages.append("  ⏳ 継続ターンプラスを獲得")
+                        log_messages.append("  継続ターンプラスを獲得")
                     else:
                         b_names = {"resurrection": "確定回避", "chaos_reverse": "損得の反転", "regen": "定期報酬"}
                         new_buffs.append({
@@ -146,8 +146,7 @@ class ChaosDiveView(discord.ui.View):
                             "remaining_turns": route_data.get("turns", 1),
                             "val": route_data.get("val", 0)
                         })
-                        b_emojis = {"resurrection": "🛡️ 確定回避", "chaos_reverse": "🌀 損得の反転", "regen": "💰 定期報酬"}
-                        log_messages.append(f"  {b_emojis[route_data['id']]} を獲得")
+                        log_messages.append(f"  {b_names[route_data['id']]} を獲得")
                 elif route_data["type"] == "debuff":
                     new_buffs.append({
                         "id": route_data["id"],
@@ -155,7 +154,7 @@ class ChaosDiveView(discord.ui.View):
                         "remaining_turns": route_data.get("turns", 1),
                         "val": route_data.get("val", 0)
                     })
-                    log_messages.append("  💀 定期マイナス を獲得")
+                    log_messages.append("  定期マイナス を獲得")
             
             fund_change = int(fund * (total_pct / 100))
             fund += fund_change
@@ -165,16 +164,16 @@ class ChaosDiveView(discord.ui.View):
                 if b["id"] == "regen":
                     regen_val = int(fund * (b["val"] / 100))
                     fund += regen_val
-                    log_messages.append(f"💰 定期報酬による変動: +{regen_val} コイン (+{b['val']}%)")
+                    log_messages.append(f"定期報酬による変動: +{regen_val} コイン (+{b['val']}%)")
                 elif b["id"] == "slip":
                     slip_val = int(fund * (b["val"] / 100))
                     fund -= slip_val
-                    log_messages.append(f"💀 定期マイナスによる変動: -{slip_val} コイン (-{b['val']}%)")
+                    log_messages.append(f"定期マイナスによる変動: -{slip_val} コイン (-{b['val']}%)")
             
             if chronos_triggered > 0:
                 for b in buffs_list:
                     b["remaining_turns"] += chronos_triggered
-                log_messages.append(f"⏳ クロノス・ブースト発動: 既存バフの持続ターンが +{chronos_triggered} されました。")
+                log_messages.append(f"クロノス・ブースト発動: 既存バフの持続ターンが +{chronos_triggered} されました。")
             
             for nb in new_buffs:
                 match_found = False
@@ -193,11 +192,11 @@ class ChaosDiveView(discord.ui.View):
                     res_buff["remaining_turns"] -= 1
                     if res_buff["remaining_turns"] <= 0:
                         buffs_list.remove(res_buff)
-                    log_messages.append("🛡️ 確定回避（リザレクション）が発動しました。軍資金1で耐えます。")
+                    log_messages.append("確定回避（リザレクション）が発動しました。軍資金1で耐えます。")
             
             if fund <= 0:
                 await conn.execute("DELETE FROM chaos_dive_saves WHERE user_id = $1", self.user_id)
-                embed_result = discord.Embed(title="ゲームオーバー（破産）", color=discord.Color.red())
+                embed_result = discord.Embed(title="ゲームオーバー（破産）", color=0xffffff)
                 embed_result.description = "\n".join(log_messages) + f"\n\n軍資金が0以下になりました。賭け金 {bet:,} コインは没収されました。"
                 await interaction.followup.send(embed=embed_result)
                 return
@@ -213,7 +212,7 @@ class ChaosDiveView(discord.ui.View):
                         "INSERT INTO transaction_history (sender_id, receiver_id, amount, reason) VALUES ($1, $2, $3, $4)",
                         "SYSTEM", self.user_id, fund, "カオス・ダイブ生還報酬"
                     )
-                embed_result = discord.Embed(title="最下層クリア！生還成功", color=discord.Color.gold())
+                embed_result = discord.Embed(title="最下層クリア！生還成功", color=0xffffff)
                 embed_result.description = "\n".join(log_messages) + f"\n\n地下30階をクリアしました。現在の軍資金 {fund:,} コインが払い戻されます。"
                 await interaction.followup.send(embed=embed_result)
                 return
@@ -236,7 +235,7 @@ class ChaosDiveView(discord.ui.View):
                 next_floor, fund, json.dumps(active_buffs), json.dumps(next_modules), self.user_id
             )
             
-            embed_log = discord.Embed(title=f"B{floor}F 結果", color=discord.Color.green())
+            embed_log = discord.Embed(title=f"B{floor}F 結果", color=0xffffff)
             embed_log.description = "\n".join(log_messages) + f"\n\n次の階層 B{next_floor}F へ進みます。"
             await interaction.followup.send(embed=embed_log)
             
@@ -249,7 +248,7 @@ class ChaosDive(commands.Cog):
         self.pool = None
 
     async def cog_load(self):
-        self.pool = await asyncpg.create_pool(DATABASE_URL)
+        self.pool = await asyncpg.create_pool(SUPABASE_URL)
 
     async def cog_unload(self):
         if self.pool:
@@ -307,7 +306,7 @@ class ChaosDive(commands.Cog):
         buffs_list = active_buffs.get("buffs", [])
         has_reverse = any(b["id"] == "chaos_reverse" for b in buffs_list)
         
-        embed = discord.Embed(title=f"B{floor}F - カオス・ダイブ", color=discord.Color.purple())
+        embed = discord.Embed(title=f"B{floor}F - カオス・ダイブ", color=0xffffff)
         
         bar_cells = 30
         bar_str = "■" * floor + "□" * (bar_cells - floor)
@@ -320,13 +319,13 @@ class ChaosDive(commands.Cog):
             desc += "・なし\n"
         for b in buffs_list:
             if b["id"] == "chaos_reverse":
-                desc += f"・🌀 損得の反転 (残り {b['remaining_turns']} 階層)\n"
+                desc += f"・損得の反転 (残り {b['remaining_turns']} 階層)\n"
             elif b["id"] == "resurrection":
-                desc += f"・🛡️ 確定回避 (残り {b['remaining_turns']} 階層)\n"
+                desc += f"・確定回避 (残り {b['remaining_turns']} 階層)\n"
             elif b["id"] == "regen":
-                desc += f"・💰 定期報酬 (残り {b['remaining_turns']} 階層: 毎階層 +{b['val']}%)\n"
+                desc += f"・定期報酬 (残り {b['remaining_turns']} 階層: 毎階層 +{b['val']}%)\n"
             elif b["id"] == "slip":
-                desc += f"・💀 定期マイナス (残り {b['remaining_turns']} 階層: 毎階層 -{b['val']}%)\n"
+                desc += f"・定期マイナス (残り {b['remaining_turns']} 階層: 毎階層 -{b['val']}%)\n"
                 
         desc += f"\n--------------------------------------------\n【現在の提示条件】(振り直し回数: {rerolls_used} / 3)\n"
         if has_reverse:
@@ -337,7 +336,7 @@ class ChaosDive(commands.Cog):
             for r in ["A", "B"]:
                 route = mod[r]
                 prob = mod["prob"] if r == "A" else (100 - mod["prob"])
-                prefix = f"├─ 🔴 ルートA ({prob}%)" if r == "A" else f"└─ 🔵 ルートB ({prob}%)"
+                prefix = f"├─ ルートA ({prob}%)" if r == "A" else f"└─ ルートB ({prob}%)"
                 
                 details = []
                 if route["type"] == "plus":
@@ -349,10 +348,10 @@ class ChaosDive(commands.Cog):
                     rev = f"+{route['val']}%" if has_reverse else None
                     details.append(f"軍資金 {orig}" + (f" (逆転: {rev})" if rev else ""))
                 elif route["type"] == "buff":
-                    b_name = {"resurrection": "🛡️ 確定回避", "chaos_reverse": "🌀 損得の反転", "chronos": "⏳ 継続ターンプラス", "regen": "💰 定期報酬"}[route["id"]]
+                    b_name = {"resurrection": "確定回避", "chaos_reverse": "損得の反転", "chronos": "継続ターンプラス", "regen": "定期報酬"}[route["id"]]
                     details.append(f"[{b_name}]獲得")
                 elif route["type"] == "debuff":
-                    details.append("[💀 定期マイナス]獲得")
+                    details.append("[定期マイナス]獲得")
                     
                 desc += f"{prefix}: " + " + ".join(details) + "\n"
                 
