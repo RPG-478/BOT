@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-import config  # defining ではなく config を直接インポート
+import config
 import traceback
 
 class WalletCog(commands.Cog):
@@ -14,22 +14,24 @@ class WalletCog(commands.Cog):
         user_id = str(interaction.user.id)
 
         try:
-            # config.supabase を参照
-            response = config.supabase.table("users").select("balance").eq("user_id", user_id).execute()
+            response = config.supabase.table("users").select("balance, debt").eq("user_id", user_id).execute()
             data = response.data
 
             if not data:
-                config.supabase.table("users").insert({"user_id": user_id, "balance": 10}).execute()
+                config.supabase.table("users").insert({"user_id": user_id, "balance": 10, "debt": 0}).execute()
                 balance = 10
+                debt = 0
             else:
                 balance = data[0]["balance"]
+                debt = data[0].get("debt", 0)
 
             embed = discord.Embed(
                 title="ウォレット残高確認",
-                description=f"{interaction.user.mention} さんの現在の残高です。",
+                description=f"{interaction.user.mention} さんの現在のステータスです。",
                 color=0xffffff
             )
-            embed.add_field(name="保有コイン", value=f"{balance} AGO", inline=False)
+            embed.add_field(name="保有コイン", value=f"{balance} AGO", inline=True)
+            embed.add_field(name="借金額", value=f"{debt} AGO", inline=True)
             
             await interaction.followup.send(embed=embed)
 
@@ -72,7 +74,7 @@ class WalletCog(commands.Cog):
             
             if not receiver_res.data:
                 new_balance = 10 + amount
-                config.supabase.table("users").insert({"user_id": receiver_id, "balance": new_balance}).execute()
+                config.supabase.table("users").insert({"user_id": receiver_id, "balance": new_balance, "debt": 0}).execute()
             else:
                 new_balance = receiver_res.data[0]["balance"] + amount
                 config.supabase.table("users").update({"balance": new_balance}).eq("user_id", receiver_id).execute()
