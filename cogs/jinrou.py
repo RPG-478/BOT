@@ -1388,7 +1388,7 @@ class ActionSelectView(discord.ui.View):
             else:
                 res = uranai_color(r)
             # ビー玉ブレイカー/もくもく生存で30%逆転
-            if any(self.game.roles.get(p.id) in ["ビー玉ブレイカー"] for p in self.game.alive_players):
+            if any(self.game.roles.get(p.id) in "ビー玉ブレイカー" for p in self.game.alive_players):
                 if random.random() < 0.3:
                     res = "白" if res == "黒" else "黒"
             embed = discord.Embed(description=f"<:URANAI:1490255412837093568>占い結果: 【{res}】", color=0xFFFFFF)
