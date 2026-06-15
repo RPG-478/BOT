@@ -173,11 +173,24 @@ class JinrouCog(commands.Cog):
 
                 escaped_content = discord.utils.escape_mentions(message.content)
 
+                if not hasattr(self, "webhook_cache"):
+                    self.webhook_cache = {}
+
                 for chan in game.channels:
                     if chan.id != message.channel.id:
                         try:
-                            await chan.send(
-                                f"**[{message.guild.name} # {message.channel.name}] {message.author.display_name}**: {escaped_content}",
+                            webhook = self.webhook_cache.get(chan.id)
+                            if not webhook:
+                                webhooks = await chan.webhooks()
+                                webhook = discord.utils.get(webhooks, name="Jinrou-Global")
+                                if not webhook:
+                                    webhook = await chan.create_webhook(name="Jinrou-Global")
+                                self.webhook_cache[chan.id] = webhook
+
+                            await webhook.send(
+                                content=escaped_content,
+                                username=f"{message.author.display_name} ({message.guild.name})",
+                                avatar_url=message.author.display_avatar.url,
                                 allowed_mentions=discord.AllowedMentions.none()
                             )
                         except:
