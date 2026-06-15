@@ -1268,7 +1268,7 @@ class GlobalJoinView(discord.ui.View):
         if interaction.user.id in [p.id for p in self.game.players]:
             return await interaction.response.send_message("既にゲームに参加しています。", ephemeral=True)
         self.game.players.append(interaction.user)
-        await interaction.response.send_message(f"{interaction.user.display_name} さんが参加しました。"
+        await interaction.response.send_message(f"{interaction.user.display_name} さんが参加しました。")
 class HelpView(discord.ui.View):
     """ページめくり型ヘルプ"""
     def __init__(self):
