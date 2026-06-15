@@ -1265,20 +1265,31 @@ class GlobalChannelProxy:
             return res
         else:
             return await self.game._original_channel.send(*args, **kwargs)
-
 class GlobalJoinView(discord.ui.View):
-    def __init__(self, game):
+    def __init__(self, cog, channels):
         super().__init__(timeout=None)
-        self.game = game
+        self.cog = cog
+        self.channels = channels
 
-    @discord.ui.button(label="参加", style=discord.ButtonStyle.green)
-    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.game.day_count > 0:
-            return await interaction.response.send_message("既にゲームが開始されているため参加できません。", ephemeral=True)
-        if interaction.user.id in [p.id for p in self.game.players]:
-            return await interaction.response.send_message("既にゲームに参加しています。", ephemeral=True)
-        self.game.players.append(interaction.user)
+    @discord.ui.button(label='参加', style=discord.ButtonStyle.green, custom_id='global_join')
+    async def join(self, interaction: discord.Interaction):
+        for g in self.cog.games.values():
+            if getattr(g, "is_global", False) and interaction.channel.id in [c.id for c in g.channels]:
+                if g.is_running:
+                    await interaction.response.send_message("ゲームが既に進行中のため、途中参加できません。", ephemeral=True)
+                    return
+
+        p_id = interaction.user.id
+        for g in self.cog.games.values():
+            if getattr(g, "is_global", False) and interaction.channel.id in [c.id for c in g.channels]:
+                if any(p.id == p_id for p in g.players):
+                    await interaction.response.send_message("既にゲームに参加しています。", ephemeral=True)
+                    return
+                g.players.append(interaction.user)
+                g.alive_players.append(interaction.user)
+
         await interaction.response.send_message(f"{interaction.user.display_name} さんが参加しました。")
+
 class HelpView(discord.ui.View):
     """ページめくり型ヘルプ"""
     def __init__(self):
