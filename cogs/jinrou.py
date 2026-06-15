@@ -1276,8 +1276,8 @@ class GlobalJoinView(discord.ui.View):
         self.cog = cog
         self.channels = channels
 
-    @discord.ui.button(label='参加', style=discord.ButtonStyle.green, custom_id='global_join')
-    async def join(self, interaction: discord.Interaction):
+    @discord.ui.button(label="参加", style=discord.ButtonStyle.success)
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
         for g in self.cog.games.values():
             if getattr(g, "is_global", False) and interaction.channel.id in [c.id for c in g.channels]:
                 if g.is_running:
