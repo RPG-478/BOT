@@ -86,7 +86,43 @@ class JinrouGame:
         self.game_mode = "プロ"
         self.mokumoku_turns = 0
         self.yandere_targets = {}
+        self.is_global = False
+        self.channels = []
+        self._original_channel = None
+class GlobalChannelProxy:
+    def __init__(self, game):
+        self.game = game
 
+    def __getattr__(self, name):
+        return getattr(self.game._original_channel, name)
+
+    async def send(self, *args, **kwargs):
+        if getattr(self.game, "is_global", False):
+            res = None
+            for chan in self.game.channels:
+                try:
+                    msg = await chan.send(*args, **kwargs)
+                    if chan.id == self.game._original_channel.id:
+                        res = msg
+                except:
+                    pass
+            return res
+        else:
+            return await self.game._original_channel.send(*args, **kwargs)
+
+class GlobalJoinView(discord.ui.View):
+    def __init__(self, game):
+        super().__init__(timeout=None)
+        self.game = game
+
+    @discord.ui.button(label="参加", style=discord.ButtonStyle.green)
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.game.day_count > 0:
+            return await interaction.response.send_message("既にゲームが開始されているため参加できません。", ephemeral=True)
+        if interaction.user.id in [p.id for p in self.game.players]:
+            return await interaction.response.send_message("既にゲームに参加しています。", ephemeral=True)
+        self.game.players.append(interaction.user)
+        await interaction.response.send_message(f"{interaction.user.display_name} さんが参加しました。"
 # ======================================================
 #  Cog 本体
 # ======================================================
@@ -117,21 +153,25 @@ class JinrouCog(commands.Cog):
             return
 
         game = self.games.get(message.channel.id)
+        # 追加
+        if not game:
+            for g in self.games.values():
+                if g.is_running and getattr(g, "is_global", False) and message.channel.id in [c.id for c in g.channels]:
+                    game = g
+                    break
+
         if not game or not game.is_running:
             return
 
-        # ネット民の処理：昼（in_discussion=True）はミュート、夜（in_discussion=False）は発言許可
         player_role = game.roles.get(message.author.id)
         is_alive = any(p.id == message.author.id for p in game.alive_players)
 
         if is_alive and player_role == "ネット民":
-            # 昼のディスカッション中は発言削除
             if game.in_discussion:
                 try: await message.delete()
                 except: pass
                 return
         else:
-            # 一般役職の夜間ミュート処理
             if message.author.id in game.silenced_players:
                 try: await message.delete()
                 except: pass
@@ -154,6 +194,15 @@ class JinrouCog(commands.Cog):
                     await game.game_channel.send(
                         "議長が強制投票を宣言！ 議論を中断し、議長による投票に移行します。"
                     )
+
+            # 追加
+            if getattr(game, "is_global", False):
+                for chan in game.channels:
+                    if chan.id != message.channel.id:
+                        try:
+                            await chan.send(f"**[{message.guild.name} # {message.channel.name}] {message.author.display_name}**: {message.content}")
+                        except:
+                            pass
 
     # ======================================================
     #  役職割当
@@ -311,15 +360,41 @@ class JinrouCog(commands.Cog):
             await interaction.response.send_message(embed=embed, view=view)
 
     @app_commands.command(name="jinrou", description="人狼ゲームを開始します")
-    async def jinrou(self, interaction: discord.Interaction):
-        game = self.get_game(interaction.channel_id)
-        if game.is_running:
-            embed = discord.Embed(description="このチャンネルでは既にゲームが進行中です。", color=0xFFFFFF)
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="ローカルモード", value="local"),
+        app_commands.Choice(name="グローバルモード", value="global")
+    ])
+    async def jinrou(self, interaction: discord.Interaction, mode: str = "local"):
+        # 追加
+        if mode == "global":
+            game = self.games.get("global")
+            if game and game.is_running:
+                if interaction.channel not in game.channels:
+                    game.channels.append(interaction.channel)
+                embed = discord.Embed(
+                    title="グローバル人狼ゲーム（合流）",
+                    description="既に他サーバーで起動中のグローバル人狼ゲームがあります。\n参加ボタンを押して合流してください。",
+                    color=0xFFFFFF
+                )
+                await interaction.response.send_message(embed=embed, view=GlobalJoinView(game))
+                return
+            else:
+                game = JinrouGame()
+                self.games["global"] = game
+                game.is_global = True
+                game.channels = [interaction.channel]
+                game._original_channel = interaction.channel
+                game.game_channel = GlobalChannelProxy(game)
+        else:
+            game = self.get_game(interaction.channel_id)
+            if game.is_running:
+                embed = discord.Embed(description="このチャンネルでは既にゲームが進行中です。", color=0xFFFFFF)
+                return await interaction.response.send_message(embed=embed, ephemeral=True)
+            game._original_channel = interaction.channel
+            game.game_channel = interaction.channel
 
         game.is_running = True
         game.host_id = interaction.user.id
-        game.game_channel = interaction.channel
         game.players = []
         game.roles = {}
         game.day_count = 0
@@ -346,7 +421,7 @@ class JinrouCog(commands.Cog):
         )
         await interaction.response.send_message(
             embed=embed,
-            view=SetupView(game, self, interaction.channel),
+            view=SetupView(game, self, game.game_channel),
             ephemeral=True
         )
 
