@@ -62,6 +62,7 @@ class JinrouGame:
         self.players = []
         self.roles = {}
         self.alive_players = []
+        self.last_speak_time = {}
         self.night_actions = {}
         self.voted_count = {}
         self.last_executed = None
@@ -97,6 +98,10 @@ class GlobalChannelProxy:
         return getattr(self.game._original_channel, name)
 
     async def send(self, *args, **kwargs):
+        # 追加：デフォルトでメンションを無効化
+        if "allowed_mentions" not in kwargs:
+            kwargs["allowed_mentions"] = discord.AllowedMentions.none()
+
         if getattr(self.game, "is_global", False):
             res = None
             for chan in self.game.channels:
@@ -176,7 +181,6 @@ class JinrouCog(commands.Cog):
                 try: await message.delete()
                 except: pass
                 return
-
         if game.in_discussion:
             if player_role == "議長" and is_alive:
                 content = message.content.strip()
@@ -195,15 +199,30 @@ class JinrouCog(commands.Cog):
                         "議長が強制投票を宣言！ 議論を中断し、議長による投票に移行します。"
                     )
 
-            # 追加
             if getattr(game, "is_global", False):
+                # 追加：1.0秒未満の連投を検知して削除・ブロック
+                import time
+                now = time.time()
+                last_time = game.last_speak_time.get(message.author.id, 0)
+                if now - last_time < 1.0:
+                    try: await message.delete()
+                    except: pass
+                    return
+                game.last_speak_time[message.author.id] = now
+
+                # 追加：テキスト内のメンション（@everyone等）をエスケープ
+                escaped_content = discord.utils.escape_mentions(message.content)
+
                 for chan in game.channels:
                     if chan.id != message.channel.id:
                         try:
-                            await chan.send(f"**[{message.guild.name} # {message.channel.name}] {message.author.display_name}**: {message.content}")
+                            # 変更：allowed_mentions を指定して転送
+                            await chan.send(
+                                f"**[{message.guild.name} # {message.channel.name}] {message.author.display_name}**: {escaped_content}",
+                                allowed_mentions=discord.AllowedMentions.none()
+                            )
                         except:
                             pass
-
     # ======================================================
     #  役職割当
     # ======================================================
