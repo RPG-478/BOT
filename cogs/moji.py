@@ -34,7 +34,7 @@ print("[音声パッチ] Opusデコーダのクラッシュ防止パッチが正
 # 1. 音声受信・雑音カット・文字起こし用Sink
 # ----------------------------------------------------
 class SpeechToTextSink(voice_recv.AudioSink):
-    def __init__(self, bot, text_channel_id, threshold=800):
+    def __init__(self, bot, text_channel_id, threshold=500):
         self.bot = bot
         self.channel_id = text_channel_id
         self.threshold = threshold  # 雑音カットの音量しきい値
