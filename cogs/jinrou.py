@@ -90,44 +90,6 @@ class JinrouGame:
         self.is_global = False
         self.channels = []
         self._original_channel = None
-class GlobalChannelProxy:
-    def __init__(self, game):
-        self.game = game
-
-    def __getattr__(self, name):
-        return getattr(self.game._original_channel, name)
-
-    async def send(self, *args, **kwargs):
-        # 追加：デフォルトでメンションを無効化
-        if "allowed_mentions" not in kwargs:
-            kwargs["allowed_mentions"] = discord.AllowedMentions.none()
-
-        if getattr(self.game, "is_global", False):
-            res = None
-            for chan in self.game.channels:
-                try:
-                    msg = await chan.send(*args, **kwargs)
-                    if chan.id == self.game._original_channel.id:
-                        res = msg
-                except:
-                    pass
-            return res
-        else:
-            return await self.game._original_channel.send(*args, **kwargs)
-
-class GlobalJoinView(discord.ui.View):
-    def __init__(self, game):
-        super().__init__(timeout=None)
-        self.game = game
-
-    @discord.ui.button(label="参加", style=discord.ButtonStyle.green)
-    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.game.day_count > 0:
-            return await interaction.response.send_message("既にゲームが開始されているため参加できません。", ephemeral=True)
-        if interaction.user.id in [p.id for p in self.game.players]:
-            return await interaction.response.send_message("既にゲームに参加しています。", ephemeral=True)
-        self.game.players.append(interaction.user)
-        await interaction.response.send_message(f"{interaction.user.display_name} さんが参加しました。"
 # ======================================================
 #  Cog 本体
 # ======================================================
@@ -1269,7 +1231,44 @@ class ReplayView(discord.ui.View):
             view=RecruitView(new_game, self.cog)
         )
 
+class GlobalChannelProxy:
+    def __init__(self, game):
+        self.game = game
 
+    def __getattr__(self, name):
+        return getattr(self.game._original_channel, name)
+
+    async def send(self, *args, **kwargs):
+        # 追加：デフォルトでメンションを無効化
+        if "allowed_mentions" not in kwargs:
+            kwargs["allowed_mentions"] = discord.AllowedMentions.none()
+
+        if getattr(self.game, "is_global", False):
+            res = None
+            for chan in self.game.channels:
+                try:
+                    msg = await chan.send(*args, **kwargs)
+                    if chan.id == self.game._original_channel.id:
+                        res = msg
+                except:
+                    pass
+            return res
+        else:
+            return await self.game._original_channel.send(*args, **kwargs)
+
+class GlobalJoinView(discord.ui.View):
+    def __init__(self, game):
+        super().__init__(timeout=None)
+        self.game = game
+
+    @discord.ui.button(label="参加", style=discord.ButtonStyle.green)
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.game.day_count > 0:
+            return await interaction.response.send_message("既にゲームが開始されているため参加できません。", ephemeral=True)
+        if interaction.user.id in [p.id for p in self.game.players]:
+            return await interaction.response.send_message("既にゲームに参加しています。", ephemeral=True)
+        self.game.players.append(interaction.user)
+        await interaction.response.send_message(f"{interaction.user.display_name} さんが参加しました。"
 class HelpView(discord.ui.View):
     """ページめくり型ヘルプ"""
     def __init__(self):
