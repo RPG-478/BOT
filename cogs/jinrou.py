@@ -1327,9 +1327,30 @@ class RoleCheckView(discord.ui.View):
         elif real_role == "ヤンデレ":     display_role = "メンヘラ"
 
         wolves = self.cog.get_wolves_names(self.game)
+        partner_name = "なし"
+        slave_name = "なし"
+        kizoku_name = "なし"
 
-        # パートナー名・奴隷名・貴族名の算出ロジック（既存コードのまま維持）
-        # ...
+        if hasattr(self.game, "riacchu_pairs"):
+            for pair in self.game.riacchu_pairs:
+                if interaction.user.id in pair:
+                    other_id = pair[1] if pair[0] == interaction.user.id else pair[0]
+                    other_m = interaction.guild.get_member(other_id)
+                    if other_m:
+                        partner_name = other_m.display_name
+
+        if hasattr(self.game, "kizoku_slave"):
+            slave_id = self.game.kizoku_slave.get(interaction.user.id)
+            if slave_id:
+                slave_m = interaction.guild.get_member(slave_id)
+                if slave_m:
+                    slave_name = slave_m.display_name
+
+            for k_id, s_id in self.game.kizoku_slave.items():
+                if s_id == interaction.user.id:
+                    k_m = interaction.guild.get_member(k_id)
+                    if k_m:
+                        kizoku_name = k_m.display_name
 
         # 新役職の解説テキストを追加
         descs = {
