@@ -549,9 +549,14 @@ class JinrouCog(commands.Cog):
         view = NightActionView(game)
         msg = await game.game_channel.send("アクションを選択してください", view=view)
 
-        req_roles = ["占い師", "騎士", "罠師", "人狼", "デカ狼", "あごむに破道砲", "マサイ族", "陽キャ"]
-        if game.day_count == 1: req_roles.append("ワンころ")
-        req = sum(1 for p in game.alive_players if game.roles.get(p.id) in req_roles)
+        req_roles_single = ["占い師", "騎士", "罠師", "あごむに破道砲", "マサイ族", "陽キャ"]
+        if game.day_count == 1: req_roles_single.append("ワンころ")
+        # 人狼・デカ狼以外の役職の生存者数を数える
+        req = sum(1 for p in game.alive_players if game.roles.get(p.id) in req_roles_single)
+
+        # 人狼・デカ狼が1人でも生存していれば、要求アクション数を +1 する
+        if any(game.roles.get(p.id) in ["人狼", "デカ狼"] for p in game.alive_players):
+            req += 1
 
         alive_ids = {p.id for p in game.alive_players}
         has_dead = any(p.id not in alive_ids for p in game.players)
