@@ -367,7 +367,7 @@ class JinrouCog(commands.Cog):
                     description="既に他サーバーで起動中のグローバル人狼ゲームがあります。\n参加ボタンを押して合流してください。",
                     color=0xFFFFFF
                 )
-                await interaction.response.send_message(embed=embed, view=GlobalJoinView(game))
+                await interaction.response.send_message(embed=embed, view=GlobalJoinView(game, game.channels))
                 return
             else:
                 game = JinrouGame()
