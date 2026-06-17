@@ -8,7 +8,7 @@ import config
 
 def generate_modules(floor):
     p_f = 10 * (50 ** ((floor - 1) / 19))
-    num_modules = random.randint(1, 5)
+    num_modules = random.randint(1, 3)
     modules = []
     event_types = ["plus", "minus", "buff", "debuff"]
     
