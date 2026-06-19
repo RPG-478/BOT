@@ -8,7 +8,8 @@ class MentalAnalysis(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
-        self.model = "llama3-70b-8192"
+        # サポート終了したモデルから、現在推奨されているLlama 3.3モデルに変更
+        self.model = "llama-3.3-70b-versatile"
 
     @commands.command()
     async def mental(self, ctx, member: discord.Member = None):
