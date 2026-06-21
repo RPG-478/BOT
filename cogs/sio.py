@@ -600,7 +600,7 @@ class Voice(commands.Cog):
             return
         
         ctx = state['current_ctx']
-        vc = ctx.voice_client
+        vc = ctx.voice_client if hasattr(ctx, 'voice_client') else ctx.guild.voice_client
         if vc is None or not vc.is_connected():
             state['is_processing_queue'] = False
             return
