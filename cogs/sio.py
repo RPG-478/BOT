@@ -106,7 +106,8 @@ class SearchModal(discord.ui.Modal, title="🎵 YouTube 楽曲検索"):
             await state['queue'].put((url, filename, None, is_yt))
             await interaction.followup.send(f"✅ **{filename}** をキューに追加しました！", ephemeral=True)
 
-            vc = interaction.guild.voice_client
+            # バグ修正: interaction.guild から voice_client を取得するように修正
+            vc = interaction.guild.voice_client if interaction.guild else None
             if vc and not vc.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
                 await self.cog.check_queue(self.guild_id)
             else:
