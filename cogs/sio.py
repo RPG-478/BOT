@@ -455,7 +455,7 @@ class Voice(commands.Cog):
             logging.error(f"Panel update failed: {e}")
 
     async def apply_immediate_setting(self, ctx):
-        vc = ctx.voice_client
+        vc = ctx.voice_client if hasattr(ctx, 'voice_client') else ctx.guild.voice_client
         state = self.get_state(ctx.guild.id)
         if vc and vc.is_playing() and state['current_track']:
             actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
