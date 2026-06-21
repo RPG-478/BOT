@@ -69,8 +69,53 @@ def we(description: str = None, title: str = None) -> discord.Embed:
 
 
 # =====================
-# Custom EQ Modal UI
+# Search & Custom EQ Modals
 # =====================
+class SearchModal(discord.ui.Modal, title="🎵 YouTube 楽曲検索"):
+    """パネルから直接呼び出せるキーワード検索用モーダル窓"""
+    keyword_input = discord.ui.TextInput(
+        label="検索キーワードまたはURL",
+        placeholder="例: 米津玄師 地球儀 / https://...",
+        required=True,
+        max_length=200,
+        style=discord.TextStyle.short
+    )
+
+    def __init__(self, cog, guild_id: int):
+        super().__init__()
+        self.cog = cog
+        self.guild_id = guild_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        keyword = self.keyword_input.value.strip()
+        state = self.cog.get_state(self.guild_id)
+        
+        try:
+            is_yt = False
+            url, filename = None, None
+
+            if "youtube.com" in keyword or "youtu.be" in keyword:
+                info = await self.cog.get_yt_info(keyword)
+                url, filename, is_yt = keyword, info['title'], True
+            else:
+                info = await self.cog.get_yt_info(f"ytsearch:{keyword}")
+                url, filename, is_yt = info['url'], info['title'], True
+
+            state['current_ctx'] = interaction
+            await state['queue'].put((url, filename, None, is_yt))
+            await interaction.followup.send(f"✅ **{filename}** をキューに追加しました！", ephemeral=True)
+
+            vc = interaction.guild.voice_client
+            if vc and not vc.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
+                await self.cog.check_queue(self.guild_id)
+            else:
+                await self.cog.update_panel(self.guild_id)
+
+        except Exception as e:
+            await interaction.followup.send(f"❌ 検索中にエラーが発生しました: {e}", ephemeral=True)
+
+
 class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルター入力)"):
     """パネルから呼び出される、FFmpegオーディオフィルターの直接入力用モーダル窓"""
     filter_input = discord.ui.TextInput(
@@ -103,22 +148,166 @@ class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルタ�
         await self.cog.apply_immediate_setting(ctx)
 
 
+# =====================
+# UI Panel Component
+# =====================
+class VoiceControlView(discord.ui.View):
+    """音量・倍速・EQ・再生コントロールをまとめた常時同期型インタラクティブメニューUI"""
+    def __init__(self, cog, guild_id: int):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.guild_id = guild_id
+        
+        self.add_item(self.SpeedSelect(cog, guild_id))
+        self.add_item(self.VolumeSelect(cog, guild_id))
+        self.add_item(self.EQSelect(cog, guild_id))
+
+    class SpeedSelect(discord.ui.Select):
+        def __init__(self, cog, guild_id):
+            self.cog = cog
+            self.guild_id = guild_id
+            state = cog.get_state(guild_id)
+            options = [
+                discord.SelectOption(label="0.5x (遅め)", value="0.5"),
+                discord.SelectOption(label="0.8x", value="0.8"),
+                discord.SelectOption(label="1.0x (標準)", value="1.0"),
+                discord.SelectOption(label="1.2x", value="1.2"),
+                discord.SelectOption(label="1.5x", value="1.5"),
+                discord.SelectOption(label="2.0x (倍速)", value="2.0"),
+            ]
+            super().__init__(placeholder=f"⚡ 速度変更 (現在: {state['speed']}x)", min_values=1, max_values=1, options=options, row=0)
+
+        async def callback(self, interaction: discord.Interaction):
+            state = self.cog.get_state(self.guild_id)
+            state['speed'] = float(self.values[0])
+            await interaction.response.send_message(f"⚡ 再生速度を `{state['speed']}` 倍に設定しました（即時反映）。", ephemeral=True)
+            ctx = state['current_ctx'] or interaction
+            await self.cog.apply_immediate_setting(ctx)
+
+    class VolumeSelect(discord.ui.Select):
+        def __init__(self, cog, guild_id):
+            self.cog = cog
+            self.guild_id = guild_id
+            state = cog.get_state(guild_id)
+            options = [
+                discord.SelectOption(label="10%", value="0.1"),
+                discord.SelectOption(label="50%", value="0.5"),
+                discord.SelectOption(label="80%", value="0.8"),
+                discord.SelectOption(label="100% (標準)", value="1.0"),
+                discord.SelectOption(label="150%", value="1.5"),
+                discord.SelectOption(label="200% (最大)", value="2.0"),
+            ]
+            super().__init__(placeholder=f"🔊 音量変更 (現在: {int(state['volume']*100)}%)", min_values=1, max_values=1, options=options, row=1)
+
+        async def callback(self, interaction: discord.Interaction):
+            state = self.cog.get_state(self.guild_id)
+            state['volume'] = float(self.values[0])
+            await interaction.response.send_message(f"🔊 音量を `{int(state['volume']*100)}%` に設定しました（即時反映）。", ephemeral=True)
+            ctx = state['current_ctx'] or interaction
+            await self.cog.apply_immediate_setting(ctx)
+
+    class EQSelect(discord.ui.Select):
+        def __init__(self, cog, guild_id):
+            self.cog = cog
+            self.guild_id = guild_id
+            state = cog.get_state(guild_id)
+            options = [
+                discord.SelectOption(label="Flat (標準)", value="flat"),
+                discord.SelectOption(label="Bass (低音強調)", value="bass"),
+                discord.SelectOption(label="SuperBass (超重低音)", value="superbass"),
+                discord.SelectOption(label="Vocal (ボーカル強調)", value="vocal"),
+                discord.SelectOption(label="Echo (エコー)", value="echo"),
+                discord.SelectOption(label="Hall (ホール感)", value="hall"),
+                discord.SelectOption(label="Live (ライブ風)", value="live"),
+                discord.SelectOption(label="Rotate (回転音響)", value="rotate"),
+            ]
+            current_eq = state['eq'] if state['eq'] != "custom" else "custom (自由指定)"
+            super().__init__(placeholder=f"🎬 プリセットEQ選択 (現在: {current_eq})", min_values=1, max_values=1, options=options, row=2)
+
+        async def callback(self, interaction: discord.Interaction):
+            state = self.cog.get_state(self.guild_id)
+            state['eq'] = self.values[0]
+            state['custom_eq_filter'] = None
+            await interaction.response.send_message(f"🎬 エフェクトを `{state['eq']}` に変更しました（即時反映）。", ephemeral=True)
+            ctx = state['current_ctx'] or interaction
+            await self.cog.apply_immediate_setting(ctx)
+
+    @discord.ui.button(label="🔎 楽曲検索", style=discord.ButtonStyle.success, row=3)
+    async def search_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = SearchModal(self.cog, self.guild_id)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="⚙️ カスタムEQ", style=discord.ButtonStyle.secondary, row=3)
+    async def custom_eq_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = CustomEQModal(self.cog, self.guild_id)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="⏸️ 一時停止", style=discord.ButtonStyle.primary, row=3)
+    async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        state = self.cog.get_state(self.guild_id)
+        if vc and vc.is_playing():
+            actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
+            state['elapsed_offset'] += actual_played
+            state['is_paused'] = True
+            vc.stop()
+            await interaction.response.send_message(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)", ephemeral=True)
+            await self.cog.update_panel(self.guild_id)
+        else:
+            await interaction.response.send_message("❌ 現在再生中ではないか、既に一時停止されています。", ephemeral=True)
+
+    @discord.ui.button(label="▶️ 再開", style=discord.ButtonStyle.success, row=4)
+    async def resume_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        state = self.cog.get_state(self.guild_id)
+        if vc and state['is_paused'] and state['current_track']:
+            state['is_paused'] = False
+            await interaction.response.send_message("▶️ 再生を再開します。", ephemeral=True)
+            await self.cog.check_queue(self.guild_id)
+        else:
+            await interaction.response.send_message("❌ 再開できる一時停止中のトラックがありません。", ephemeral=True)
+
+    @discord.ui.button(label="⏭️ スキップ", style=discord.ButtonStyle.secondary, row=4)
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        state = self.cog.get_state(self.guild_id)
+        if vc and (vc.is_playing() or state['is_paused']):
+            state['current_track'] = None
+            state['elapsed_offset'] = 0
+            state['is_paused'] = False
+            vc.stop()
+            await interaction.response.send_message("⏭️ トラックをスキップしました。", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ 現在再生中の楽曲がありません。", ephemeral=True)
+
+    @discord.ui.button(label="⏹️ 全停止", style=discord.ButtonStyle.danger, row=4)
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        state = self.cog.get_state(self.guild_id)
+        if vc:
+            state['current_track'] = None
+            state['elapsed_offset'] = 0
+            state['is_paused'] = False
+            while not state['queue'].empty():
+                state['queue'].get_nowait()
+            vc.stop()
+            await interaction.response.send_message("⏹️ 再生を完全に停止し、キューをクリアしました。", ephemeral=True)
+            await self.cog.update_panel(self.guild_id)
+        else:
+            await interaction.response.send_message("❌ ボイスチャンネルに接続していません。", ephemeral=True)
+
+
+# =====================
+# Main Voice Cog (Updated)
+# =====================
 class Voice(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
         self.reaction_enabled = {}
         self.emoji_sounds = {}
-        self.states = {} # サーバーごとのデータを格納
+        self.states = {} 
         self.log_buffer = bot.log_buffer
-        self.queue = asyncio.Queue()
-        self.current_ctx = None
-        self.is_processing_queue = False
-        self.current_track = None  # (url, filename, total_duration, b62_id, is_yt)
-        self.start_time = 0
-        self.elapsed_offset = 0
-        self.retry_count = 0
-        self.MAX_RETRIES = 3
         self.supabase = getattr(bot, "supabase", None)
         self.ir_l_id = "d424KTRkAlaetACCuFZOCjUtFNjho1t5" 
         self.ir_r_id = "d424KTRkAlaetACCuFZOCjUtFO0p0TMN"
@@ -127,7 +316,6 @@ class Voice(commands.Cog):
         self.default_eq = "flat"
 
     def get_state(self, guild_id: int):
-        """サーバーごとの状態を取得。音量と倍速、EQの設定を保持"""
         if guild_id not in self.states:
             self.states[guild_id] = {
                 'queue': asyncio.Queue(),
@@ -137,12 +325,13 @@ class Voice(commands.Cog):
                 'start_time': 0,
                 'elapsed_offset': 0,
                 'retry_count': 0,
-                'volume': self.default_volume, # サーバーごとの音量
-                'speed': self.default_speed,     # サーバーごとの倍速
-                'eq': self.default_eq,           # サーバーごとのEQモード名（"custom" の場合はカスタムEQを適用）
-                'custom_eq_filter': None,      # 自由入力されたFFmpegフィルター文字列
-                'is_paused': False,            # 一時停止状態フラグ
-                'is_changing_setting': False   # 即時適応のための内部切り替えフラグ
+                'volume': self.default_volume,
+                'speed': self.default_speed,
+                'eq': self.default_eq,
+                'custom_eq_filter': None,
+                'is_paused': False,
+                'is_changing_setting': False,
+                'panel_message': None 
             }
         return self.states[guild_id]
 
@@ -152,7 +341,6 @@ class Voice(commands.Cog):
         await ctx.send(embed=we(f"エラー: {error}"))
     
     async def get_duration(self, url):
-        """ffprobeを使用して音声の長さを取得"""
         try:
             cmd = [
                 'ffprobe', '-v', 'quiet', '-print_format', 'json',
@@ -167,9 +355,6 @@ class Voice(commands.Cog):
         except Exception:
             return 0
 
-    # =====================
-    # CPU / Memory Info
-    # =====================
     def get_cpu_usage(self):
         def read_cpu():
             try:
@@ -197,15 +382,12 @@ class Voice(commands.Cog):
         except: return 0, 0, 0
             
     async def get_attachment_info(self, b62_id: str):
-        """ユニバーサルIDから情報を取得。失敗時は None, None を返す"""
         try:
             guild_id, channel_id, message_id = decode_full_id(b62_id)
             guild = self.bot.get_guild(guild_id) or await self.bot.fetch_guild(guild_id)
-            if not guild:
-                return None, None
+            if not guild: return None, None
             channel = guild.get_channel(channel_id) or await guild.fetch_channel(channel_id)
-            if not channel:
-                return None, None
+            if not channel: return None, None
             msg = await channel.fetch_message(message_id)
             if msg.attachments:
                 return msg.attachments[0].url, msg.attachments[0].filename
@@ -213,9 +395,6 @@ class Voice(commands.Cog):
             logging.debug(f"Universal ID format match but lookup failed ({b62_id}): {e}")
         return None, None
 
-    # =====================
-    # VC Control & 3D EQ
-    # =====================
     @commands.command()
     async def join(self, ctx):
         if ctx.author.voice is None:
@@ -237,74 +416,93 @@ class Voice(commands.Cog):
             await vc.disconnect()
             await ctx.send(embed=we("切断しました。"))
 
+    async def update_panel(self, guild_id: int):
+        """現在の内部ステータスを読み取り、コントロールパネルをリアルタイム更新する"""
+        state = self.get_state(guild_id)
+        msg = state['panel_message']
+        if not msg: return
+
+        if state['is_paused']: status_icon = "⏸️ 一時停止中"
+        elif state['current_track']: status_icon = "▶️ 再生中"
+        else: status_icon = "⏹️ 停止中"
+
+        if state['current_track']:
+            _, filename, duration, _, _ = state['current_track']
+            m, s = divmod(int(duration), 60)
+            duration_str = f"{m}:{s:02d}" if duration else "不明"
+            track_info = f"**{filename}** `[{duration_str}]`"
+        else:
+            track_info = "*楽曲が再生されていません*"
+
+        queue_size = state['queue'].qsize()
+        queue_info = f"`{queue_size} 件` の楽曲が待機中" if queue_size > 0 else "待機中の楽曲はありません"
+
+        current_eq = state['eq']
+        eq_label = f"Custom (`{state['custom_eq_filter']}`)" if current_eq == "custom" else current_eq.capitalize()
+
+        embed = discord.Embed(title="🎵 ボイスコントロールパネル", color=0xFFFFFF)
+        embed.add_field(name="現在のステータス", value=f"`{status_icon}`", inline=True)
+        embed.add_field(name="オーディオパラメータ", value=f"🔊 Vol: `{int(state['volume']*100)}%` \n⚡ Speed: `{state['speed']}x` \n🎬 EQ: `{eq_label}`", inline=False)
+        embed.add_field(name="現在ストリーミング中の楽曲", value=track_info, inline=False)
+        embed.add_field(name="予約キューリスト", value=queue_info, inline=False)
+        embed.set_footer(text="下のインターフェースからリアルタイムに操作・検索できます。")
+
+        try:
+            view = VoiceControlView(self, guild_id)
+            await msg.edit(embed=embed, view=view)
+        except Exception as e:
+            logging.error(f"Panel update failed: {e}")
+
     async def apply_immediate_setting(self, ctx):
-        """設定変更時に現在の秒数を保持して、即時再生成・再生させる内部ヘルパー"""
         vc = ctx.voice_client
         state = self.get_state(ctx.guild.id)
         if vc and vc.is_playing() and state['current_track']:
-            # 変更前の速度で進んだ実時間を計算してオフセットに加算
             actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
             state['elapsed_offset'] += actual_played
-            
-            # play_nextでの次トラック移行処理を防ぐフラグを立てて停止
             state['is_changing_setting'] = True
             vc.stop()
-            
-            # 少し待ってから新しい設定で再生を再開
             await asyncio.sleep(0.2)
             state['is_changing_setting'] = False
             await self.check_queue(ctx.guild.id)
+        else:
+            await self.update_panel(ctx.guild.id)
 
     @commands.command()
     async def eq(self, ctx, *, mode: str = "flat"):
-        """音響エフェクト設定（手動直接指定対応） ※即時反映"""
         state = self.get_state(ctx.guild.id)
-        
-        # プリセットに存在しない文字列の場合は、FFmpegの直接指定カスタムフィルターとして扱う
         if mode in EQ_SETTINGS:
             state['eq'] = mode
             state['custom_eq_filter'] = None
-            await ctx.send(embed=we(f"🎬 エフェクトをプリセット `{mode}` に変更しました。即時反映します。"))
+            await ctx.send(embed=we(f"🎬 エフェクトをプリセット `{mode}` に変更しました。"))
         else:
             state['eq'] = "custom"
             state['custom_eq_filter'] = mode
-            await ctx.send(embed=we(f"⚙️ カスタムEQフィルターを設定しました:\n`{mode}`\n即時反映します。"))
-            
+            await ctx.send(embed=we(f"⚙️ カスタムEQフィルターを設定しました:\n`{mode}`"))
         await self.apply_immediate_setting(ctx)
         
     @commands.command()
     async def volume(self, ctx, vol: float):
-        """音量を変更 (0.1 ～ 2.0) ※即時反映"""
-        if not 0.1 <= vol <= 2.0:
-            return await ctx.send(embed=we("音量は 0.1 から 2.0 の間で指定してください。"))
-        
+        if not 0.1 <= vol <= 2.0: return await ctx.send(embed=we("音量は 0.1 から 2.0 の間で指定してください。"))
         state = self.get_state(ctx.guild.id)
         state['volume'] = vol
-        await ctx.send(embed=we(f"🔊 音量を `{vol}` に設定しました。即時反映します。"))
+        await ctx.send(embed=we(f"🔊 音量を `{vol}` に設定しました。"))
         await self.apply_immediate_setting(ctx)
 
     @commands.command()
     async def speed(self, ctx, speed: float):
-        """再生速度を変更 (0.5 ～ 2.0) ※即時反映"""
-        if not 0.5 <= speed <= 2.0:
-            return await ctx.send(embed=we("速度は 0.5 から 2.0 の間で指定してください。"))
-        
+        if not 0.5 <= speed <= 2.0: return await ctx.send(embed=we("速度は 0.5 から 2.0 の間で指定してください。"))
         state = self.get_state(ctx.guild.id)
         state['speed'] = speed
-        await ctx.send(embed=we(f"⚡ 再生速度を `{speed}` 倍に設定しました。即時反映します。"))
+        await ctx.send(embed=we(f"⚡ 再生速度を `{speed}` 倍に設定しました。"))
         await self.apply_immediate_setting(ctx)
 
     async def get_yt_info(self, url_or_search):
-        """yt-dlpを使用して動画情報とストリームURLを取得 (検索対応)"""
         loop = asyncio.get_event_loop()
         with yt_dlp.YoutubeDL(YTDL_OPTIONS) as ydl:
             data = await loop.run_in_executor(None, lambda: ydl.extract_info(url_or_search, download=False))
-            
             if 'entries' in data:
-                if not data['entries']:
-                    raise Exception("検索結果が見つかりませんでした。")
+                if not data['entries']: raise Exception("検索結果が見つかりませんでした。")
                 data = data['entries'][0]
-                
             return {
                 'url': data.get('webpage_url') or data.get('url'),
                 'stream_url': data.get('url'),
@@ -312,11 +510,7 @@ class Voice(commands.Cog):
                 'duration': data.get('duration', 0)
             }
 
-    # =====================
-    # YouTube 検索 & セレクトメニュー選択 UI
-    # =====================
     class SearchView(discord.ui.View):
-        """検索結果の上位10件をセレクトメニューとして配置するビュー"""
         def __init__(self, cog, guild_id, ctx, tracks):
             super().__init__(timeout=60.0)
             self.cog = cog
@@ -328,34 +522,19 @@ class Voice(commands.Cog):
             options = []
             for idx, track in enumerate(self.tracks):
                 label = f"{idx + 1}. {track['title']}"
-                if len(label) > 100:
-                    label = label[:97] + "..."
+                if len(label) > 100: label = label[:97] + "..."
+                options.append(discord.SelectOption(label=label, value=str(idx), description="この楽曲を再生・キューに追加します"))
 
-                options.append(discord.SelectOption(
-                    label=label,
-                    value=str(idx),
-                    description="この楽曲を再生・キューに追加します"
-                ))
-
-            self.select_menu = discord.ui.Select(
-                placeholder="🎵 再生したい楽曲を選んでください...",
-                min_values=1,
-                max_values=1,
-                options=options
-            )
+            self.select_menu = discord.ui.Select(placeholder="🎵 再生したい楽曲を選んでください...", min_values=1, max_values=1, options=options)
             self.select_menu.callback = self.select_callback
             self.add_item(self.select_menu)
 
         async def select_callback(self, interaction: discord.Interaction):
-            if interaction.user.id != self.ctx.author.id:
-                return await interaction.response.send_message("❌ この検索結果は他のユーザーのものです。", ephemeral=True)
-
+            if interaction.user.id != self.ctx.author.id: return await interaction.response.send_message("❌ この検索結果は他のユーザーのものです。", ephemeral=True)
             idx = int(self.select_menu.values[0])
             selected_track = self.tracks[idx]
-
             state = self.cog.get_state(self.guild_id)
             state['current_ctx'] = self.ctx
-
             await state['queue'].put((selected_track['url'], selected_track['title'], None, True))
 
             if not self.ctx.voice_client.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
@@ -363,224 +542,55 @@ class Voice(commands.Cog):
                 await interaction.response.send_message(f"🎵 **{selected_track['title']}** を再生します！")
             else:
                 await interaction.response.send_message(f"✅ キューに追加しました: **{selected_track['title']}**")
-
+                await self.cog.update_panel(self.guild_id)
             await self.disable_all_items()
 
-        async def on_timeout(self):
-            await self.disable_all_items()
-
+        async def on_timeout(self): await self.disable_all_items()
         async def disable_all_items(self):
-            for item in self.children:
-                item.disabled = True
+            for item in self.children: item.disabled = True
             if self.message:
-                try:
-                    await self.message.edit(view=self)
-                except Exception:
-                    pass
+                try: await self.message.edit(view=self)
+                except Exception: pass
             self.stop()
 
     @commands.command()
     async def search(self, ctx, *, keyword: str = None):
-        """YouTubeからキーワードで上位10件を検索し、セレクトメニューで選択して再生します"""
-        if not ctx.voice_client:
-            return await ctx.send("先に `!join` してください。")
-        if not keyword:
-            return await ctx.send("検索キーワードを入力してください。(例: `!search 米津玄師`)")
-
+        if not ctx.voice_client: return await ctx.send("先に `!join` してください。")
+        if not keyword: return await ctx.send("検索キーワードを入力してください。")
         await ctx.send(f"🔎 YouTubeで「{keyword}」の上位10件を検索中...")
-
         search_options = YTDL_OPTIONS.copy()
         search_options['default_search'] = 'ytsearch10'
-
         loop = asyncio.get_event_loop()
         try:
             with yt_dlp.YoutubeDL(search_options) as ydl:
                 data = await loop.run_in_executor(None, lambda: ydl.extract_info(keyword, download=False))
-                
-                if 'entries' not in data or not data['entries']:
-                    return await ctx.send("❌ 検索結果が見つかりませんでした。")
-
-                tracks = []
-                description_lines = []
-                
+                if 'entries' not in data or not data['entries']: return await ctx.send("❌ 検索結果が見つかりませんでした。")
+                tracks, description_lines = [], []
                 for idx, entry in enumerate(data['entries'][:10]):
                     title = entry.get('title', '不明なタイトル')
                     url = entry.get('webpage_url') or entry.get('url')
                     duration_sec = entry.get('duration', 0)
-                    
                     m, s = divmod(duration_sec, 60)
                     duration_str = f"{m}:{s:02d}" if duration_sec else "不明"
-
                     tracks.append({'title': title, 'url': url})
                     description_lines.append(f"**{idx + 1}.** {title} `[{duration_str}]`")
-
-                embed = we(
-                    title=f"「{keyword}」の検索結果 (上位10件)",
-                    description="\n".join(description_lines) + "\n\n下のメニューから曲を選択してください。"
-                )
-
+                embed = we(title=f"「{keyword}」の検索結果 (上位10件)", description="\n".join(description_lines) + "\n\n下のメニューから曲を選択してください。")
                 view = self.SearchView(self, ctx.guild.id, ctx, tracks)
                 view.message = await ctx.send(embed=embed, view=view)
-
         except Exception as e:
             logging.error(f"Search command error: {e}")
             await ctx.send(f"❌ 検索中にエラーが発生しました: {e}")
-            
-    # =====================
-    # Playback Logic & UI Panel
-    # =====================
-    class VoiceControlView(discord.ui.View):
-        """音量・倍速・EQ・再生コントロールをまとめたメニューUI"""
-        def __init__(self, cog, guild_id: int):
-            super().__init__(timeout=None)
-            self.cog = cog
-            self.guild_id = guild_id
-            
-            self.add_item(self.SpeedSelect(cog, guild_id))
-            self.add_item(self.VolumeSelect(cog, guild_id))
-            self.add_item(self.EQSelect(cog, guild_id))
-
-        class SpeedSelect(discord.ui.Select):
-            def __init__(self, cog, guild_id):
-                self.cog = cog
-                self.guild_id = guild_id
-                state = cog.get_state(guild_id)
-                options = [
-                    discord.SelectOption(label="0.5x (遅め)", value="0.5"),
-                    discord.SelectOption(label="0.8x", value="0.8"),
-                    discord.SelectOption(label="1.0x (標準)", value="1.0"),
-                    discord.SelectOption(label="1.2x", value="1.2"),
-                    discord.SelectOption(label="1.5x", value="1.5"),
-                    discord.SelectOption(label="2.0x (倍速)", value="2.0"),
-                ]
-                super().__init__(placeholder=f"⚡ 速度変更 (現在: {state['speed']}x)", min_values=1, max_values=1, options=options, row=0)
-
-            async def callback(self, interaction: discord.Interaction):
-                state = self.cog.get_state(self.guild_id)
-                state['speed'] = float(self.values[0])
-                await interaction.response.send_message(f"⚡ 再生速度を `{state['speed']}` 倍に設定し、即時反映します。", ephemeral=True)
-                
-                ctx = state['current_ctx'] or interaction
-                await self.cog.apply_immediate_setting(ctx)
-
-        class VolumeSelect(discord.ui.Select):
-            def __init__(self, cog, guild_id):
-                self.cog = cog
-                self.guild_id = guild_id
-                state = cog.get_state(guild_id)
-                options = [
-                    discord.SelectOption(label="10%", value="0.1"),
-                    discord.SelectOption(label="50%", value="0.5"),
-                    discord.SelectOption(label="80%", value="0.8"),
-                    discord.SelectOption(label="100% (標準)", value="1.0"),
-                    discord.SelectOption(label="150%", value="1.5"),
-                    discord.SelectOption(label="200% (最大)", value="2.0"),
-                ]
-                super().__init__(placeholder=f"🔊 音量変更 (現在: {int(state['volume']*100)}%)", min_values=1, max_values=1, options=options, row=1)
-
-            async def callback(self, interaction: discord.Interaction):
-                state = self.cog.get_state(self.guild_id)
-                state['volume'] = float(self.values[0])
-                await interaction.response.send_message(f"🔊 音量を `{int(state['volume']*100)}%` に設定し、即時反映します。", ephemeral=True)
-                
-                ctx = state['current_ctx'] or interaction
-                await self.cog.apply_immediate_setting(ctx)
-
-        class EQSelect(discord.ui.Select):
-            def __init__(self, cog, guild_id):
-                self.cog = cog
-                self.guild_id = guild_id
-                state = cog.get_state(guild_id)
-                
-                options = [
-                    discord.SelectOption(label="Flat (標準)", value="flat"),
-                    discord.SelectOption(label="Bass (低音強調)", value="bass"),
-                    discord.SelectOption(label="SuperBass (超重低音)", value="superbass"),
-                    discord.SelectOption(label="Vocal (ボーカル強調)", value="vocal"),
-                    discord.SelectOption(label="Echo (エコー)", value="echo"),
-                    discord.SelectOption(label="Hall (ホール感)", value="hall"),
-                    discord.SelectOption(label="Live (ライブ風)", value="live"),
-                    discord.SelectOption(label="Rotate (回転音響)", value="rotate"),
-                ]
-                current_eq = state['eq'] if state['eq'] != "custom" else "custom (自由指定)"
-                super().__init__(placeholder=f"🎬 プリセットEQ選択 (現在: {current_eq})", min_values=1, max_values=1, options=options, row=2)
-
-            async def callback(self, interaction: discord.Interaction):
-                state = self.cog.get_state(self.guild_id)
-                state['eq'] = self.values[0]
-                state['custom_eq_filter'] = None # プリセット選択時はカスタムをクリア
-                await interaction.response.send_message(f"🎬 エフェクトを `{state['eq']}` に変更し、即時反映します。", ephemeral=True)
-                
-                ctx = state['current_ctx'] or interaction
-                await self.cog.apply_immediate_setting(ctx)
-
-        @discord.ui.button(label="⚙️ カスタムEQ設定", style=discord.ButtonStyle.secondary, row=3)
-        async def custom_eq_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-            """FFmpegフィルターを直接入力できるポップアップを表示"""
-            modal = CustomEQModal(self.cog, self.guild_id)
-            await interaction.response.send_modal(modal)
-
-        @discord.ui.button(label="⏸️ 一時停止", style=discord.ButtonStyle.primary, row=3)
-        async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-            vc = interaction.guild.voice_client
-            state = self.cog.get_state(self.guild_id)
-            if vc and vc.is_playing():
-                actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
-                state['elapsed_offset'] += actual_played
-                state['is_paused'] = True
-                vc.stop()
-                await interaction.response.send_message(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ 現在再生中ではないか、既に一時停止されています。", ephemeral=True)
-
-        @discord.ui.button(label="▶️ 再開", style=discord.ButtonStyle.success, row=3)
-        async def resume_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-            vc = interaction.guild.voice_client
-            state = self.cog.get_state(self.guild_id)
-            if vc and state['is_paused'] and state['current_track']:
-                state['is_paused'] = False
-                await self.cog.check_queue(self.guild_id)
-                await interaction.response.send_message("▶️ 再生を再開しました。", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ 再開できる一時停止中のトラックがありません。", ephemeral=True)
-
-        @discord.ui.button(label="⏮️ スキップ", style=discord.ButtonStyle.secondary, row=4)
-        async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-            vc = interaction.guild.voice_client
-            state = self.cog.get_state(self.guild_id)
-            if vc and (vc.is_playing() or state['is_paused']):
-                state['current_track'] = None
-                state['elapsed_offset'] = 0
-                state['is_paused'] = False
-                vc.stop()
-                await interaction.response.send_message("⏭️ トラックをスキップしました。", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ 現在再生中の楽曲がありません。", ephemeral=True)
-
-        @discord.ui.button(label="⏹️ 全停止", style=discord.ButtonStyle.danger, row=4)
-        async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-            vc = interaction.guild.voice_client
-            state = self.cog.get_state(self.guild_id)
-            if vc:
-                state['current_track'] = None
-                state['elapsed_offset'] = 0
-                state['is_paused'] = False
-                while not state['queue'].empty():
-                    state['queue'].get_nowait()
-                vc.stop()
-                await interaction.response.send_message("⏹️ 再生を完全に停止し、キューをクリアしました。", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ ボイスチャンネルに接続していません。", ephemeral=True)
 
     @commands.command()
     async def panel(self, ctx):
-        """コントロールパネルメニューを表示します"""
-        if not ctx.voice_client:
-            return await ctx.send(embed=we("先に `!join` で接続してください。"))
+        if not ctx.voice_client: return await ctx.send(embed=we("先に `!join` で接続してください。"))
         state = self.get_state(ctx.guild.id)
-        state['current_ctx'] = ctx # コントロール対象のコンテキストを保持
-        view = self.VoiceControlView(self, ctx.guild.id)
-        await ctx.send(embed=we("🎵 **ボイスコントロールパネル**\n下のメニューから音量や再生速度、EQ（エフェクト）、トラック操作が行えます。"), view=view)
+        state['current_ctx'] = ctx
+        embed = discord.Embed(title="🎵 ボイスコントロールパネル", description="ステータスを同期中...", color=0xFFFFFF)
+        view = VoiceControlView(self, ctx.guild.id)
+        msg = await ctx.send(embed=embed, view=view)
+        state['panel_message'] = msg
+        await self.update_panel(ctx.guild.id)
 
     async def check_queue(self, guild_id: int):
         state = self.get_state(guild_id)
@@ -597,6 +607,7 @@ class Voice(commands.Cog):
         if state['current_track'] is None:
             if state['queue'].empty():
                 state['is_processing_queue'] = False
+                await self.update_panel(guild_id)
                 return
             
             target_input, filename, b62_id, is_yt = await state['queue'].get() 
@@ -607,7 +618,8 @@ class Voice(commands.Cog):
                     state['current_track'] = (info['stream_url'], info['title'], info['duration'], b62_id, is_yt)
                 except Exception as e:
                     logging.error(f"YouTube解析失敗: {e}")
-                    await ctx.send(embed=we(f"❌ 解析失敗: {e}"))
+                    if hasattr(ctx, "send"):
+                        await ctx.send(embed=we(f"❌ 解析失敗: {e}"))
                     state['is_processing_queue'] = False
                     return await self.check_queue(guild_id)
             else:
@@ -616,7 +628,6 @@ class Voice(commands.Cog):
 
         url, filename, duration, b62_id, is_yt = state['current_track']
         
-        # 一時停止から復帰時のYouTubeストリーム切れ対策としてURLを再リフレッシュ
         if state['elapsed_offset'] > 0 and is_yt:
             try:
                 info = await self.get_yt_info(url)
@@ -630,7 +641,6 @@ class Voice(commands.Cog):
         if b62_id:
             before_options += f' -headers "User-Agent: Mozilla/5.0\r\n"'
         
-        # 一時停止・音量変更位置からのシーク設定
         if state['elapsed_offset'] > 0:
             before_options += f" -ss {state['elapsed_offset']}"
 
@@ -640,13 +650,10 @@ class Voice(commands.Cog):
         if state.get('volume', 1.0) != 1.0:
             filters.append(f"volume={state['volume']}")
         
-        # EQ・音響エフェクトの適用ロジック
         current_eq_mode = state.get('eq', 'flat')
         if current_eq_mode == "custom" and state.get('custom_eq_filter'):
-            # 直接入力されたカスタムFFmpegフィルターを差し込む
             filters.append(state['custom_eq_filter'])
         else:
-            # プリセットからフィルター文字列を検索して追加
             eq_filter_str = EQ_SETTINGS.get(current_eq_mode)
             if eq_filter_str:
                 filters.append(eq_filter_str)
@@ -660,8 +667,9 @@ class Voice(commands.Cog):
             
             vc.play(source, after=lambda e: self.bot.loop.call_soon_threadsafe(self.play_next, guild_id, e))
             
-            # 初回再生時のみ通常のアナウンスを出す
-            if state['elapsed_offset'] < 1:
+            await self.update_panel(guild_id)
+            
+            if state['elapsed_offset'] < 1 and hasattr(ctx, "send"):
                 eq_label = "custom" if current_eq_mode == "custom" else current_eq_mode
                 status = f"Speed: {state['speed']}x / Vol: {state['volume']} / EQ: {eq_label}"
                 await ctx.send(embed=we(f"🎵 再生中: **{filename}**\n`{status}`"))
@@ -677,15 +685,10 @@ class Voice(commands.Cog):
         if error:
             logging.error(f"Player error: {error}")
 
-        # 手動で一時停止された、もしくは設定即時反映のために意図的に停止された場合は保留する
-        if state['is_paused']:
-            state['is_processing_queue'] = False
-            return
-        if state['is_changing_setting']:
+        if state['is_paused'] or state['is_changing_setting']:
             state['is_processing_queue'] = False
             return
 
-        # 実際に進んだ時間（設定速度を考慮）を加算
         actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
         state['elapsed_offset'] += actual_played
         
@@ -715,7 +718,6 @@ class Voice(commands.Cog):
         is_yt = False
         url, filename, final_id = None, None, None
 
-        # 1. 入力があり、YouTubeの直URLである場合
         if input_str and ("youtube.com" in input_str or "youtu.be" in input_str):
             await ctx.send("⏳ YouTubeを解析中...")
             try:
@@ -724,13 +726,11 @@ class Voice(commands.Cog):
             except Exception as e:
                 return await ctx.send(f"❌ 解析失敗: {e}")
 
-        # 2. ファイル添付がある場合
         elif ctx.message.attachments:
             attachment = ctx.message.attachments[0]
             url, filename = attachment.url, attachment.filename
             final_id = encode_full_id(ctx.guild.id, ctx.channel.id, ctx.message.id)
         
-        # 3. 入力があり、Base62のユニバーサルIDらしき文字列の場合
         elif input_str and len(input_str.split()) == 1 and all(c in BASE62 for c in input_str):
             url, filename = await self.get_attachment_info(input_str)
             final_id = input_str
@@ -744,7 +744,6 @@ class Voice(commands.Cog):
                 except Exception as e:
                     return await ctx.send(f"❌ 検索失敗: {e}")
 
-        # 4. キーワード検索の場合
         elif input_str:
             await ctx.send(f"🔎 YouTubeで「{input_str}」を検索中...")
             try:
@@ -765,10 +764,10 @@ class Voice(commands.Cog):
             await self.check_queue(ctx.guild.id)
         else:
             await ctx.send(f"✅ キューに追加: **{filename}**")
+            await self.update_panel(ctx.guild.id)
 
     @commands.command()
     async def stop_all(self, ctx):
-        """再生を完全に停止し、キューと一時停止状態をクリアします"""
         vc = ctx.voice_client
         state = self.get_state(ctx.guild.id)
         if vc:
@@ -779,10 +778,10 @@ class Voice(commands.Cog):
                 state['queue'].get_nowait()
             vc.stop()
             await ctx.send(embed=we("完全に停止し、キューをクリアしました。"))
+            await self.update_panel(ctx.guild.id)
 
     @commands.command()
     async def pause(self, ctx):
-        """現在の楽曲を一時停止します（再生位置を保持）"""
         vc = ctx.voice_client
         state = self.get_state(ctx.guild.id)
         if vc and vc.is_playing():
@@ -791,12 +790,12 @@ class Voice(commands.Cog):
             state['is_paused'] = True
             vc.stop()
             await ctx.send(embed=we(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)\n`!resume` で再開できます。"))
+            await self.update_panel(ctx.guild.id)
         else:
             await ctx.send(embed=we("現在楽曲を再生していません。"))
 
     @commands.command()
     async def resume(self, ctx):
-        """一時停止した位置から再生を再開します"""
         vc = ctx.voice_client
         state = self.get_state(ctx.guild.id)
         if vc and state['is_paused'] and state['current_track']:
@@ -816,6 +815,8 @@ class Voice(commands.Cog):
             state['is_paused'] = False
             vc.stop()
             await ctx.send(embed=we("スキップしました。"))
+        else:
+            await ctx.send(embed=we("現在再生中の楽曲がありません。"))
 
     @commands.command()
     async def list(self, ctx, limit: int = 20):
@@ -840,7 +841,6 @@ class Voice(commands.Cog):
 
     @commands.command()
     async def plist(self, ctx, *, input_data: str = None):
-        """DB名、JSONファイル、またはIDリストから再生"""
         if not ctx.voice_client: 
             return await ctx.send("先に !join してください。")
 
@@ -885,12 +885,13 @@ class Voice(commands.Cog):
             await ctx.send(f"✅ {added} 件をキューに追加しました。")
             if not ctx.voice_client.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
                 await self.check_queue(ctx.guild.id)
+            else:
+                await self.update_panel(ctx.guild.id)
         else:
             await ctx.send("有効なIDが見つかりませんでした。")
             
     @commands.command()
     async def save_plist(self, ctx, name: str):
-        """添付されたJSONを名前を付けてSupabaseに保存"""
         if not self.bot.supabase: return await ctx.send("DB未設定です。")
         if not ctx.message.attachments: return await ctx.send("JSONファイルを添付してください。")
 
@@ -904,7 +905,6 @@ class Voice(commands.Cog):
 
     @commands.command()
     async def save_current(self, ctx, name: str):
-        """現在のキューをそのままDBに保存"""
         if not self.bot.supabase: return await ctx.send("DB未設定です。")
         
         state = self.get_state(ctx.guild.id)
@@ -1059,7 +1059,7 @@ class Timer(commands.Cog):
 
     @commands.command()
     async def ambient(self, ctx):
-        """1行でブラウンノイズを生成して再生"""
+        """ブラウンノイズを生成して再生"""
         if not ctx.voice_client:
             return await ctx.send("先に !join してください。")
 
