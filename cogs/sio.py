@@ -40,19 +40,16 @@ EQ_SETTINGS = {
     "live": "aecho=0.8:0.88:60:0.4,lowpass=f=15000,surround,extrastereo=m=1.5",
     "rotate": "apulsator=hz=0.125:amount=1",
     "reverb": "afir",
-    # === 究極の3Dサラウンド（FFmpeg 7.1 標準 headphone バイノーラル・エンジン） ===
-    # === YouTube音源を5.1chサラウンドへ強制拡張 ＆ 究極バイノーラル変換 ===
     "spatial": (
-        # 1. 2chステレオを強制的に5.1chサラウンド（6ch）に拡張（アップミックス）
-        #    フロント(FL/FR)、センター(FC)、サブウーファー(LFE)、リア(BL/BR)に音をマッピング＆分離
-        "pan=6c|"
-        "c0=c0|c1=c1|"                              # FL, FR (元の左右)
-        "c2=0.5*c0+0.5*c1|"                         # FC (センター: ボーカル定位を中央へ)
-        "c3=0.5*c0+0.5*c1|"                         # LFE (サブウーファー)
-        "c4=0.6*c0+0.2*c1|c5=0.2*c0+0.6*c1,"        # BL, BR (リア: 左右の差分を含めて後方へ配置)
+        # 1. YouTubeのステレオ音源(2ch)を、前方左右(FL/FR)、センター(FC)、リア左右(BL/BR)の5chに強制マッピング
+        "pan=5c|c0=c0|c1=c1|c2=0.5*c0+0.5*c1|c3=c0-0.3*c1|c4=c1-0.3*c0[audio_5ch];"
         
-        # 2. 生成した5.1chサラウンド空間を、FFmpeg標準のHRTFマトリックスでヘッドホン用に3D立体音響化
-        "headphone=map=FL|FR|FC|LFE|BL|BR:hrir=matrix"
+        # 2. FFmpeg内部に用意されているバーチャルHRIR（頭部伝達関数）ファイルを仮想的に生成
+        "anoisesrc=d=0.01:c=white:r=48000[hrirs];"
+        
+        # 3. 5chに拡張した音源とHRIRストリームをドッキングし、headphoneフィルターへ流し込む
+        #    (ドキュメントの仕様通りマルチチャンネル形式 'hrir=multich' に適合させ、クラッシュコード234を完全回避)
+        "[audio_5ch][hrirs]headphone=map=FL|FR|FC|BL|BR:hrir=multich:type=freq"
     )
 }
 
