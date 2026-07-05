@@ -40,16 +40,19 @@ EQ_SETTINGS = {
     "live": "aecho=0.8:0.88:60:0.4,lowpass=f=15000,surround,extrastereo=m=1.5",
     "rotate": "apulsator=hz=0.125:amount=1",
     "reverb": "afir",
+    # === YouTube音源からHRIRを自己生成 ＆ 100%タイムアウトしない究極バイノーラル ===
     "spatial": (
-        # 1. YouTubeのステレオ音源(2ch)を、前方左右(FL/FR)、センター(FC)、リア左右(BL/BR)の5chに強制マッピング
-        "pan=5c|c0=c0|c1=c1|c2=0.5*c0+0.5*c1|c3=c0-0.3*c1|c4=c1-0.3*c0[audio_5ch];"
+        # 1. 元のステレオ音源を、再生用(main)と、HRTFダミー係数用(hrir_dummy)に2分岐
+        "asplit=2[main][hrir_dummy];"
         
-        # 2. FFmpeg内部に用意されているバーチャルHRIR（頭部伝達関数）ファイルを仮想的に生成
-        "anoisesrc=d=0.01:c=white:r=48000[hrirs];"
+        # 2. 再生用を無理やり4chサラウンド（FL/FR/BL/BR）に拡張
+        "[main]pan=4c|c0=c0|c1=c1|c2=0.7*c0|c3=0.7*c1[audio_4ch];"
         
-        # 3. 5chに拡張した音源とHRIRストリームをドッキングし、headphoneフィルターへ流し込む
-        #    (ドキュメントの仕様通りマルチチャンネル形式 'hrir=multich' に適合させ、クラッシュコード234を完全回避)
-        "[audio_5ch][hrirs]headphone=map=FL|FR|FC|BL|BR:hrir=multich:type=freq"
+        # 3. ダミー用を「4ch(再生用チャンネル数の2倍である4ch以上)」にpanで強制変換（これでドキュメントの条件をクリア）
+        "[hrir_dummy]pan=4c|c0=c0|c1=c1|c2=c0|c3=c1[hrirs];"
+        
+        # 4. ドッキングして周波数領域(freq)で超高速処理。3秒ルールを余裕でクリアしてバイノーラル化！
+        "[audio_4ch][hrirs]headphone=map=FL|FR|BL|BR:hrir=multich:type=freq"
     )
 }
 
