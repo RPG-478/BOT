@@ -40,20 +40,8 @@ EQ_SETTINGS = {
     "live": "aecho=0.8:0.88:60:0.4,lowpass=f=15000,surround,extrastereo=m=1.5",
     "rotate": "apulsator=hz=0.125:amount=1",
     "reverb": "afir",
-    "spatial": (
-        "asplit=3[main][high][rev_send];"
-        # 1. メイン（低・中域）：音を4つのスピーカー空間（前方左右・後方左右）に展開し、
-        #    さらに0.25Hz（4秒周期）で脳の周りを滑らかにローテーション（回転）させる
-        "[main]surround=level_in=1.0:level_out=1.2:lfe_low=120,apulsator=hz=0.25:amount=0.9:offset=0[main_3d];"
-        # 2. 高域：12kHzで制限をかけつつ、逆相ステレオ（extrastereo）で耳の外側から音が回り込むような広がりを作り、
-        #    メインとは逆位相の周期（offset=0.5）で頭の周りを回す（圧倒的な定位の分離感）
-        "[high]highpass=f=4000,lowpass=f=12000,extrastereo=m=3.0,apulsator=hz=0.15:amount=0.8:offset=0.5[high_3d];"
-        # 3. リバーブ空間：複雑な半角スペース指定を排除。37msのディレイに対して
-        #    フィードバックを0.28（JavaScriptの指定値）にし、ステレオ幅を極限まで広げて「真後ろの広い残響」を完全シミュレート
-        "[rev_send]highpass=f=200,aecho=1.0:0.7:37:0.28,extrastereo=m=4.0,volume=0.40[rev_3d];"
-        # 全ての3Dオーディオ回路をブレンド
-        "[main_3d][high_3d][rev_3d]amix=inputs=3:duration=first"
-    )
+    # === 究極の3Dサラウンド（FFmpeg 7.1 標準 headphone バイノーラル・エンジン） ===
+    "spatial": "headphone=map=FL|FR|FC|LFE|SL|SR:hrir=matrix"
 }
 
 def encode_full_id(guild_id: int, channel_id: int, message_id: int) -> str:
