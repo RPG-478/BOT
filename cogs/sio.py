@@ -41,17 +41,18 @@ EQ_SETTINGS = {
     "rotate": "apulsator=hz=0.125:amount=1",
     "reverb": "afir",
     "spatial": (
-        "asplit=4[low][mid][high][rev_send];"
-        # 1. 低域：中央の少し低い位置にどっしり配置
-        "[low]lowpass=f=140,pan=stereo|c0=0.8*c0+0.2*c1|c1=0.2*c0+0.8*c1[low_3d];"
-        # 2. 中域：超高速で左右〜前後に回転（0.3Hzで滑らかにパンニング）
-        "[mid]biquad=f=1500:type=bandpass:q=1.0,apulsator=hz=0.3:amount=0.9:offset=0[mid_3d];"
-        # 3. 高域：頭部陰影を意識し、逆相ブレンドを加えて耳の外側から聴こえるような超広域ステレオ化
-        "[high]highpass=f=5000,lowpass=f=12000,extrastereo=m=2.5,apulsator=hz=0.15:amount=0.7:offset=0.5[high_3d];"
-        # 4. マルチタップ・ディレイ（FDNシミュレート）：29ms, 37ms, 47ms, 59msの4つの遅延を厳密な構文で指定し、超広域の真後ろに固定配置
-        "[rev_send]highpass=f=200,aecho=1.0:0.7:'29 37 47 59':'0.28 0.24 0.20 0.15',extrastereo=m=3.0,volume=0.35[rev_3d];"
-        # 全回路をアグレッシブにミックス
-        "[low_3d][mid_3d][high_3d][rev_3d]amix=inputs=4:duration=first"
+        "asplit=3[main][high][rev_send];"
+        # 1. メイン（低・中域）：音を4つのスピーカー空間（前方左右・後方左右）に展開し、
+        #    さらに0.25Hz（4秒周期）で脳の周りを滑らかにローテーション（回転）させる
+        "[main]surround=level_in=1.0:level_out=1.2:lfe_low=120,apulsator=hz=0.25:amount=0.9:offset=0[main_3d];"
+        # 2. 高域：12kHzで制限をかけつつ、逆相ステレオ（extrastereo）で耳の外側から音が回り込むような広がりを作り、
+        #    メインとは逆位相の周期（offset=0.5）で頭の周りを回す（圧倒的な定位の分離感）
+        "[high]highpass=f=4000,lowpass=f=12000,extrastereo=m=3.0,apulsator=hz=0.15:amount=0.8:offset=0.5[high_3d];"
+        # 3. リバーブ空間：複雑な半角スペース指定を排除。37msのディレイに対して
+        #    フィードバックを0.28（JavaScriptの指定値）にし、ステレオ幅を極限まで広げて「真後ろの広い残響」を完全シミュレート
+        "[rev_send]highpass=f=200,aecho=1.0:0.7:37:0.28,extrastereo=m=4.0,volume=0.40[rev_3d];"
+        # 全ての3Dオーディオ回路をブレンド
+        "[main_3d][high_3d][rev_3d]amix=inputs=3:duration=first"
     )
 }
 
