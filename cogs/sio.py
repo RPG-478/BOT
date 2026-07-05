@@ -42,15 +42,14 @@ EQ_SETTINGS = {
     "reverb": "afir",
     "spatial": (
         "asplit=4[low][mid][high][rev_send];"
-        # 1. 低域：中央の少し低い位置にどっしり配置（140Hz以下をクロスオーバー、軽くローパス）
+        # 1. 低域：中央の少し低い位置にどっしり配置
         "[low]lowpass=f=140,pan=stereo|c0=0.8*c0+0.2*c1|c1=0.2*c0+0.8*c1[low_3d];"
-        # 2. 中域：超高速で左右〜前後に回転（0.3Hzで滑らかにパンニング）して立体感を強調
-        "[mid]bandpass=f=1500:csg=0,apulsator=hz=0.3:amount=0.9:offset=0[mid_3d];"
-        # 3. 高域：頭部陰影を意識し、逆相ブレンドを加えて耳の外側から聴こえるような超広域ステレオ化（15kHz制限）
-        "[high]highpass=f=5000,lowpass=f=15000,extrastereo=m=2.5,apulsator=hz=0.15:amount=0.7:offset=0.5[high_3d];"
-        # 4. FDNリバーブ回路：JavaScript版の delayTimes を再現するため、異なる4つのディレイ（29ms, 37ms, 47ms, 59ms）を左右に散らし、
-        #    原音を邪魔しない真後ろ（位相反転を混ぜたディープな残響）に完全に固定
-        "[rev_send]highpass=f=200,aecho=1.0:0.7:29|37|47|59:0.28|0.24|0.2|0.15,extrastereo=m=3.0,volume=0.45[rev_3d];"
+        # 2. 中域：超高速で左右〜前後に回転（0.3Hzで滑らかにパンニング）
+        "[mid]biquad=f=1500:type=bandpass:q=1.0,apulsator=hz=0.3:amount=0.9:offset=0[mid_3d];"
+        # 3. 高域：頭部陰影を意識し、逆相ブレンドを加えて耳の外側から聴こえるような超広域ステレオ化
+        "[high]highpass=f=5000,lowpass=f=12000,extrastereo=m=2.5,apulsator=hz=0.15:amount=0.7:offset=0.5[high_3d];"
+        # 4. マルチタップ・ディレイ（FDNシミュレート）：29ms, 37ms, 47ms, 59msの4つの遅延を厳密な構文で指定し、超広域の真後ろに固定配置
+        "[rev_send]highpass=f=200,aecho=1.0:0.7:'29 37 47 59':'0.28 0.24 0.20 0.15',extrastereo=m=3.0,volume=0.35[rev_3d];"
         # 全回路をアグレッシブにミックス
         "[low_3d][mid_3d][high_3d][rev_3d]amix=inputs=4:duration=first"
     )
