@@ -434,6 +434,31 @@ class Voice(commands.Cog):
             await vc.disconnect()
             await ctx.send(embed=we("切断しました。"))
 
+
+    @commands.command()
+    async def ffversion(self, ctx):
+        """FFmpegのバージョン情報を取得して表示します"""
+        try:
+            # 非同期プロセスで 'ffmpeg -version' を実行
+            proc = await asyncio.create_subprocess_exec(
+                'ffmpeg', '-version',
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            stdout, _ = await proc.communicate()
+            
+            if stdout:
+                # 出力の最初の一行（通常ここにバージョンが記載されています）を取得
+                first_line = stdout.decode('utf-8', errors='ignore').split('\n')[0]
+                await ctx.send(embed=we(title="FFmpeg Version Info", description=f"```\n{first_line}\n```"))
+            else:
+                await ctx.send(embed=we("❌ FFmpegのバージョン情報を取得できませんでした。"))
+                
+        except FileNotFoundError:
+            await ctx.send(embed=we("❌ システムに `ffmpeg` コマンドが見つかりません。パスが通っているか確認してください。"))
+        except Exception as e:
+            await ctx.send(embed=we(f"❌ エラーが発生しました: {e}"))
+
     async def update_panel(self, guild_id: int):
         """現在の内部ステータスを読み取り、コントロールパネルをリアルタイム更新する"""
         state = self.get_state(guild_id)
