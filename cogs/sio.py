@@ -41,7 +41,19 @@ EQ_SETTINGS = {
     "rotate": "apulsator=hz=0.125:amount=1",
     "reverb": "afir",
     # === 究極の3Dサラウンド（FFmpeg 7.1 標準 headphone バイノーラル・エンジン） ===
-    "spatial": "headphone=map=FL|FR|FC|LFE|SL|SR:hrir=matrix"
+    # === YouTube音源を5.1chサラウンドへ強制拡張 ＆ 究極バイノーラル変換 ===
+    "spatial": (
+        # 1. 2chステレオを強制的に5.1chサラウンド（6ch）に拡張（アップミックス）
+        #    フロント(FL/FR)、センター(FC)、サブウーファー(LFE)、リア(BL/BR)に音をマッピング＆分離
+        "pan=6c|"
+        "c0=c0|c1=c1|"                              # FL, FR (元の左右)
+        "c2=0.5*c0+0.5*c1|"                         # FC (センター: ボーカル定位を中央へ)
+        "c3=0.5*c0+0.5*c1|"                         # LFE (サブウーファー)
+        "c4=0.6*c0+0.2*c1|c5=0.2*c0+0.6*c1,"        # BL, BR (リア: 左右の差分を含めて後方へ配置)
+        
+        # 2. 生成した5.1chサラウンド空間を、FFmpeg標準のHRTFマトリックスでヘッドホン用に3D立体音響化
+        "headphone=map=FL|FR|FC|LFE|BL|BR:hrir=matrix"
+    )
 }
 
 def encode_full_id(guild_id: int, channel_id: int, message_id: int) -> str:
