@@ -29,6 +29,7 @@ BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
 
 # 音響エフェクト（EQ）の設定マップ
 # JavaScriptの3帯域立体音響、空気吸収マイルド減衰、頭部陰影、およびFDNリバーブ分離回路をFFmpeg用にシミュレート
+# 音響エフェクト（EQ）の設定マップ
 EQ_SETTINGS = {
     "flat": None,
     "bass": "bass=g=10,dynaudnorm",
@@ -39,18 +40,18 @@ EQ_SETTINGS = {
     "live": "aecho=0.8:0.88:60:0.4,lowpass=f=15000,surround,extrastereo=m=1.5",
     "rotate": "apulsator=hz=0.125:amount=1",
     "reverb": "afir",
-    # === 追加: 定位明瞭化・3帯域3Dオーディオエンジンシミュレーション ===
+    # === 修正版: 外部ファイル不要・標準フィルターのみで再現する3帯域3Dオーディオエンジン ===
     "spatial": (
         "asplit=4[low][mid][high][rev_send];"
-        # 1. Low Band (320Hz以下) -> やや後方・中央寄り配置 & ローパス
-        "[low]lowpass=f=320,pan=stereo|c0=c0|c1=c1,sofalizer=radius=2:rotation=180[low_3d];"
-        # 2. Mid Band (1500Hz中心) -> 前方左寄り配置 & バンドパス
-        "[mid]bandpass=f=1500:csg=0,pan=stereo|c0=c0|c1=0.2*c1,sofalizer=radius=1.5:rotation=45[mid_3d];"
-        # 3. High Band (5000Hz以上) -> 前方右寄り・高さを出す & マイルドな空気吸収/頭部陰影（12kHz付近にマイルド制限）
-        "[high]highpass=f=5000,lowpass=f=12000,pan=stereo|c0=0.2*c0|c1=c1,sofalizer=radius=1.2:rotation=-45:elevation=30[high_3d];"
-        # 4. FDN Reverb Circuit -> 200Hz以下をカット、残響の隙間を作るためフィードバックを抑えたクリアな真後ろ配置
-        "[rev_send]highpass=f=200,aecho=1.0:0.7:37:0.28,sofalizer=radius=3:rotation=160,volume=0.4[rev_3d];"
-        # 全てのシミュレーション回路を統合
+        # 1. Low Band (320Hz以下) -> やや後方・中央寄り（左右バランス均等、少し音量を落としてマイルドに）
+        "[low]lowpass=f=320,pan=stereo|c0=0.7*c0+0.3*c1|c1=0.3*c0+0.7*c1[low_3d];"
+        # 2. Mid Band (1500Hz中心) -> 前方左寄り配置 (左c0を強め、右c1を弱めにブレンド)
+        "[mid]bandpass=f=1500:csg=0,pan=stereo|c0=1.0*c0+0.1*c1|c1=0.2*c0[mid_3d];"
+        # 3. High Band (5000Hz以上) -> 前方右寄り配置 & マイルドな空気吸収/頭部陰影（12kHz制限）
+        "[high]highpass=f=5000,lowpass=f=12000,pan=stereo|c0=0.2*c1|c1=0.1*c0+1.0*c1[high_3d];"
+        # 4. FDN Reverb Circuit -> 200Hz以下をカット、残響のすき間を作るクリアなディレイ、左右に広げて真後ろ感をシミュレート
+        "[rev_send]highpass=f=200,aecho=1.0:0.7:37:0.28,extrastereo=m=2.0,volume=0.35[rev_3d];"
+        # 全てのシミュレーション回路をブレンド
         "[low_3d][mid_3d][high_3d][rev_3d]amix=inputs=4:duration=first"
     )
 }
