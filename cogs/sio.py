@@ -83,7 +83,76 @@ def we(description: str = None, title: str = None) -> discord.Embed:
     """白色embedを生成するヘルパー"""
     return discord.Embed(title=title, description=description, color=0xFFFFFF)
 
+class PythonSpatialAudioSource(discord.AudioSource):
+    """FFmpegのフィルターを使わず、Python側でPCMを直接書き換えて脳を揺らす3D立体音響ソース"""
+    def __init__(self, source, state):
+        self.source = source
+        self.state = state
+        self.count = 0
+        # 人間の耳の間の距離による遅延（ITD）を再現するためのミリ秒級バッファ
+        self.delay_buffer_l = [0.0] * 1000
+        self.delay_buffer_r = [0.0] * 1000
+        self.buffer_idx = 0
 
+    def read(self):
+        # FFmpegから純粋な 48kHz / 16bit / 2ch ステレオPCM を読み込み
+        raw_data = self.source.read()
+        if not raw_data:
+            return b""
+        
+        # ユーザー設定が "spatial" ではない場合は、何もせずそのまま生データを返す
+        if self.state.get('eq') != 'spatial':
+            return raw_data
+
+        # 1サンプル = 4バイト（左2ch, 右2ch）
+        num_samples = len(raw_data) // 4
+        fmt = f"<{num_samples * 2}h"
+        samples = list(struct.unpack(fmt, raw_data))
+        
+        out_samples = []
+        
+        # 20ms(1フレーム)ごとに呼び出されるカウンタ。約6秒（300フレーム）で1周する周期を設定
+        self.count += 1
+        angle = (self.count / 300.0) * 2.0 * math.pi
+        
+        # 脳の周りを滑らかに回る動的パンニング（ILD: 耳間レベル差）の計算
+        pan_l = 0.5 + 0.5 * math.sin(angle)
+        pan_r = 1.0 - pan_l
+
+        for i in range(num_samples):
+            # 16bitの整数を一時的に -1.0 〜 1.0 の浮動小数点数に正規化
+            l_val = samples[i * 2] / 32768.0
+            r_val = samples[i * 2 + 1] / 32768.0
+            
+            # 現在の音をディレイバッファに格納
+            self.delay_buffer_l[self.buffer_idx] = l_val
+            self.delay_buffer_r[self.buffer_idx] = r_val
+            
+            # 約0.5ミリ秒（音が頭を回り込む時間差）に相当する過去のサンプル（24サンプル前）を取得
+            idx_delay = (self.buffer_idx - 24) % len(self.delay_buffer_l)
+            dl = self.delay_buffer_l[idx_delay]
+            dr = self.delay_buffer_r[idx_delay]
+            
+            self.buffer_idx = (self.buffer_idx + 1) % len(self.delay_buffer_l)
+            
+            # 【究極のバイノーラルマトリックス】
+            # 元の音（パン）に、反対側の耳から回り込むディレイ音を「逆相（マイナス）」でブレンド
+            # これによりヘッドホンの外側、さらには前後に音が飛び出して聴こえる超3D空間を作ります
+            out_l = l_val * pan_l + (dr * -0.45) * pan_r
+            out_r = r_val * pan_r + (dl * -0.45) * pan_l
+            
+            # 音割れ（クリッピング）を防止する安全弁
+            out_l = max(-1.0, min(1.0, out_l))
+            out_r = max(-1.0, min(1.0, out_r))
+            
+            # 再び16bit整数に戻して追加
+            out_samples.append(int(out_l * 32767))
+            out_samples.append(int(out_r * 32767))
+            
+        return struct.pack(fmt, *out_samples)
+
+    def cleanup(self):
+        self.source.cleanup()
 # =====================
 # Search & Custom EQ Modals
 # =====================
