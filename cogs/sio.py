@@ -770,13 +770,30 @@ class Voice(commands.Cog):
             if eq_filter_str:
                 filters.append(eq_filter_str)
 
-        af_string = f"-af {','.join(filters)}" if filters else ""
+        # spatial の場合はFFmpegのフィルターから除外し、通常のフラットな設定を適用する
+        current_eq_mode = state.get('eq', 'flat')
+        if current_eq_mode == "spatial":
+            # spatialの時はFFmpeg側でフィルターをかけない（Pythonでやるため）
+            af_string = ""
+        elif current_eq_mode == "custom" and state.get('custom_eq_filter'):
+            filters.append(state['custom_eq_filter'])
+            af_string = f"-af {','.join(filters)}" if filters else ""
+        else:
+            eq_filter_str = EQ_SETTINGS.get(current_eq_mode)
+            if eq_filter_str:
+                filters.append(eq_filter_str)
+            af_string = f"-af {','.join(filters)}" if filters else ""
+
         options = f"{af_string} -vn -ar 48000 -ac 2"
 
         try:
-            source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
-            state['start_time'] = time.time()
+            # 1. FFmpegには純粋にデコードだけを行わせる
+            raw_source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
             
+            # 2. 生成したソースを、上で作成したPython側の3Dオーディオエンジンでラップする
+            source = PythonSpatialAudioSource(raw_source, state)
+            
+            state['start_time'] = time.time()
             vc.play(source, after=lambda e: self.bot.loop.call_soon_threadsafe(self.play_next, guild_id, e))
             
             await self.update_panel(guild_id)
