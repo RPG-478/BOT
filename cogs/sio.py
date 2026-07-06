@@ -84,68 +84,81 @@ def we(description: str = None, title: str = None) -> discord.Embed:
     return discord.Embed(title=title, description=description, color=0xFFFFFF)
 
 class PythonSpatialAudioSource(discord.AudioSource):
-    """FFmpegのフィルターを使わず、Python側でPCMを直接書き換えて脳を揺らす3D立体音響ソース"""
+    """FFmpegのフィルターを使わず、Python側でPCMを直接書き換えて脳を揺らすガチHRTF3Dオーディオソース"""
     def __init__(self, source, state):
         self.source = source
         self.state = state
         self.count = 0
-        # 人間の耳の間の距離による遅延（ITD）を再現するためのミリ秒級バッファ
+        
+        # 1. 時間差（ITD）用のミリ秒級遅延バッファ
         self.delay_buffer_l = [0.0] * 1000
         self.delay_buffer_r = [0.0] * 1000
         self.buffer_idx = 0
+        
+        # 2. 頭部陰影効果（HRTFの高域減衰）用の簡易IIRフィルター（ローパス）の過去サンプル保持
+        self.last_lowpass_l = 0.0
+        self.last_lowpass_r = 0.0
 
     def read(self):
-        # FFmpegから純粋な 48kHz / 16bit / 2ch ステレオPCM を読み込み
         raw_data = self.source.read()
         if not raw_data:
             return b""
         
-        # ユーザー設定が "spatial" ではない場合は、何もせずそのまま生データを返す
         if self.state.get('eq') != 'spatial':
             return raw_data
 
-        # 1サンプル = 4バイト（左2ch, 右2ch）
         num_samples = len(raw_data) // 4
         fmt = f"<{num_samples * 2}h"
         samples = list(struct.unpack(fmt, raw_data))
         
         out_samples = []
         
-        # 20ms(1フレーム)ごとに呼び出されるカウンタ。約6秒（300フレーム）で1周する周期を設定
+        # 20ms（1フレーム）ごとに呼び出されるカウンタ。約8秒（400フレーム）で脳の周りを1周する周期
         self.count += 1
-        angle = (self.count / 300.0) * 2.0 * math.pi
+        angle = (self.count / 400.0) * 2.0 * math.pi
         
-        # 脳の周りを滑らかに回る動的パンニング（ILD: 耳間レベル差）の計算
+        # 左右の耳に対する音量差（ILD）の計算
         pan_l = 0.5 + 0.5 * math.sin(angle)
         pan_r = 1.0 - pan_l
 
+        # 【HRTF頭部陰影効果の計算】
+        # 音源が右側にある時（pan_rが大きい時）は、左耳(L)に届く高音を遮断するためにローパスを強くする
+        # フィルター係数 α (0.1 = 強いローパス、1.0 = スルー)
+        lp_alpha_l = 0.2 + 0.8 * pan_l  # 右から音が聞こえる時、左耳のローパスが強くなる
+        lp_alpha_r = 0.2 + 0.8 * pan_r  # 左から音が聞こえる時、右耳のローパスが強くなる
+
         for i in range(num_samples):
-            # 16bitの整数を一時的に -1.0 〜 1.0 の浮動小数点数に正規化
-            l_val = samples[i * 2] / 32768.0
-            r_val = samples[i * 2 + 1] / 32768.0
+            # 16bitの整数を -1.0 〜 1.0 に正規化
+            l_val = samples[i * 2] / 32368.0
+            r_val = samples[i * 2 + 1] / 32368.0
             
-            # 現在の音をディレイバッファに格納
+            # ディレイバッファに現在の音声データを格納
             self.delay_buffer_l[self.buffer_idx] = l_val
             self.delay_buffer_r[self.buffer_idx] = r_val
             
-            # 約0.5ミリ秒（音が頭を回り込む時間差）に相当する過去のサンプル（24サンプル前）を取得
+            # 【HRTF要素1: 時間差(ITD)】 音が反対側の耳に回り込む時間（約0.5ミリ秒＝約24サンプル）の遅延を取得
             idx_delay = (self.buffer_idx - 24) % len(self.delay_buffer_l)
             dl = self.delay_buffer_l[idx_delay]
             dr = self.delay_buffer_r[idx_delay]
             
             self.buffer_idx = (self.buffer_idx + 1) % len(self.delay_buffer_l)
             
-            # 【究極のバイノーラルマトリックス】
-            # 元の音（パン）に、反対側の耳から回り込むディレイ音を「逆相（マイナス）」でブレンド
-            # これによりヘッドホンの外側、さらには前後に音が飛び出して聴こえる超3D空間を作ります
-            out_l = l_val * pan_l + (dr * -0.45) * pan_r
-            out_r = r_val * pan_r + (dl * -0.45) * pan_l
+            # 【HRTF要素2: 頭部陰影効果（周波数特性の動的変化）】
+            # 反対側の耳から回り込んできたディレイ成分に対して、動的ローパスフィルターを適用
+            self.last_lowpass_l = self.last_lowpass_l + lp_alpha_l * (dr - self.last_lowpass_l)
+            self.last_lowpass_r = self.last_lowpass_r + lp_alpha_r * (dl - self.last_lowpass_r)
             
-            # 音割れ（クリッピング）を防止する安全弁
+            # 【究極のバイノーラル合成マトリックス】
+            # 正相の原音に対して、反対側の耳から頭を回り込んできた「遅延＋高域減衰（HRTF）」した成分を
+            # 広がり感を持たせるために「逆相（マイナス）」でブレンド
+            out_l = (l_val * pan_l) + (self.last_lowpass_l * -0.4) * pan_r
+            out_r = (r_val * pan_r) + (self.last_lowpass_r * -0.4) * pan_l
+            
+            # 音割れ（クリッピング）防止
             out_l = max(-1.0, min(1.0, out_l))
             out_r = max(-1.0, min(1.0, out_r))
             
-            # 再び16bit整数に戻して追加
+            # 16bit整数に戻す
             out_samples.append(int(out_l * 32767))
             out_samples.append(int(out_r * 32767))
             
