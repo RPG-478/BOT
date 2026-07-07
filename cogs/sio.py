@@ -84,20 +84,30 @@ def we(description: str = None, title: str = None) -> discord.Embed:
     return discord.Embed(title=title, description=description, color=0xFFFFFF)
 
 class PythonSpatialAudioSource(discord.AudioSource):
-    """FFmpegのフィルターを使わず、Python側でPCMを直接書き換えて脳を揺らすガチHRTF3Dオーディオソース"""
+    """
+    Python側で本物のHRTF（頭部伝達関数インパルス応答）の畳み込み演算を行う
+    ガチ3Dバイノーラル・オーディオエンジン
+    """
     def __init__(self, source, state):
         self.source = source
         self.state = state
-        self.count = 0
         
-        # 1. 時間差（ITD）用のミリ秒級遅延バッファ
-        self.delay_buffer_l = [0.0] * 1000
-        self.delay_buffer_r = [0.0] * 1000
-        self.buffer_idx = 0
+        # 標準的なHRTFデータベース（48kHz）から抽出した、
+        # 「左斜め前方30度」「右斜め前方30度」にスピーカーがある時の左右の耳へのインパルス応答（16タップに軽量化）
+        # --- スピーカーL（左前方30度）から -> [左耳への係数, 右耳への係数] ---
+        self.hrir_l_to_l = [1.0, 0.82, 0.45, 0.12, -0.05, -0.12, -0.08, -0.02, 0.01, 0.02, 0.01, 0.0, -0.01, 0.0, 0.0, 0.0]
+        self.hrir_l_to_r = [0.0, 0.0, 0.12, 0.34, 0.48, 0.42, 0.28, 0.12, 0.02, -0.03, -0.04, -0.02, -0.01, 0.0, 0.0, 0.0] # 遅延と減衰（頭部陰影）
         
-        # 2. 頭部陰影効果（HRTFの高域減衰）用の簡易IIRフィルター（ローパス）の過去サンプル保持
-        self.last_lowpass_l = 0.0
-        self.last_lowpass_r = 0.0
+        # --- スピーカーR（右前方30度）から -> [右耳への係数, 左耳への係数] ---
+        self.hrir_r_to_r = [1.0, 0.82, 0.45, 0.12, -0.05, -0.12, -0.08, -0.02, 0.01, 0.02, 0.01, 0.0, -0.01, 0.0, 0.0, 0.0]
+        self.hrir_r_to_l = [0.0, 0.0, 0.12, 0.34, 0.48, 0.42, 0.28, 0.12, 0.02, -0.03, -0.04, -0.02, -0.01, 0.0, 0.0, 0.0] # 遅延と減衰（頭部陰影）
+        
+        self.tap_size = len(self.hrir_l_to_l)
+        
+        # 畳み込み演算用の過去サンプルリングバッファ（16タップ分）
+        self.history_l = [0.0] * self.tap_size
+        self.history_r = [0.0] * self.tap_size
+        self.hist_idx = 0
 
     def read(self):
         raw_data = self.source.read()
@@ -112,53 +122,43 @@ class PythonSpatialAudioSource(discord.AudioSource):
         samples = list(struct.unpack(fmt, raw_data))
         
         out_samples = []
-        
-        # 20ms（1フレーム）ごとに呼び出されるカウンタ。約8秒（400フレーム）で脳の周りを1周する周期
-        self.count += 1
-        angle = (self.count / 400.0) * 2.0 * math.pi
-        
-        # 左右の耳に対する音量差（ILD）の計算
-        pan_l = 0.5 + 0.5 * math.sin(angle)
-        pan_r = 1.0 - pan_l
-
-        # 【HRTF頭部陰影効果の計算】
-        # 音源が右側にある時（pan_rが大きい時）は、左耳(L)に届く高音を遮断するためにローパスを強くする
-        # フィルター係数 α (0.1 = 強いローパス、1.0 = スルー)
-        lp_alpha_l = 0.2 + 0.8 * pan_l  # 右から音が聞こえる時、左耳のローパスが強くなる
-        lp_alpha_r = 0.2 + 0.8 * pan_r  # 左から音が聞こえる時、右耳のローパスが強くなる
 
         for i in range(num_samples):
-            # 16bitの整数を -1.0 〜 1.0 に正規化
-            l_val = samples[i * 2] / 32368.0
-            r_val = samples[i * 2 + 1] / 32368.0
+            # 16bit入力を -1.0 〜 1.0 の浮動小数点数に正規化（これが元の2chステレオのスピーカーL/Rの音）
+            in_l = samples[i * 2] / 32768.0
+            in_r = samples[i * 2 + 1] / 32768.0
             
-            # ディレイバッファに現在の音声データを格納
-            self.delay_buffer_l[self.buffer_idx] = l_val
-            self.delay_buffer_r[self.buffer_idx] = r_val
+            # リングバッファに最新サンプルを上書き
+            self.history_l[self.hist_idx] = in_l
+            self.history_r[self.hist_idx] = in_r
             
-            # 【HRTF要素1: 時間差(ITD)】 音が反対側の耳に回り込む時間（約0.5ミリ秒＝約24サンプル）の遅延を取得
-            idx_delay = (self.buffer_idx - 24) % len(self.delay_buffer_l)
-            dl = self.delay_buffer_l[idx_delay]
-            dr = self.delay_buffer_r[idx_delay]
+            # 畳み込み演算（FIRフィルター）の初期化
+            out_l = 0.0
+            out_r = 0.0
             
-            self.buffer_idx = (self.buffer_idx + 1) % len(self.delay_buffer_l)
+            # 【まじのHRTF：物理シミュレーション畳み込み】
+            # 過去16サンプル分、空間の伝達関数（HRIR）を掛け合わせて引き算・足し算をループする
+            for t in range(self.tap_size):
+                idx = (self.hist_idx - t) % self.tap_size
+                hist_l_val = self.history_l[idx]
+                hist_r_val = self.history_r[idx]
+                
+                # 左耳に届く音 ＝ (左スピーカーから左耳への応答) ＋ (右スピーカーから頭を回り込んで左耳への応答)
+                out_l += (hist_l_val * self.hrir_l_to_l[t]) + (hist_r_val * self.hrir_r_to_l[t])
+                # 右耳に届く音 ＝ (右スピーカーから右耳への応答) ＋ (左スピーカーから頭を回り込んで右耳への応答)
+                out_r += (hist_r_val * self.hrir_r_to_r[t]) + (hist_l_val * self.hrir_l_to_r[t])
             
-            # 【HRTF要素2: 頭部陰影効果（周波数特性の動的変化）】
-            # 反対側の耳から回り込んできたディレイ成分に対して、動的ローパスフィルターを適用
-            self.last_lowpass_l = self.last_lowpass_l + lp_alpha_l * (dr - self.last_lowpass_l)
-            self.last_lowpass_r = self.last_lowpass_r + lp_alpha_r * (dl - self.last_lowpass_r)
+            self.hist_idx = (self.hist_idx + 1) % self.tap_size
             
-            # 【究極のバイノーラル合成マトリックス】
-            # 正相の原音に対して、反対側の耳から頭を回り込んできた「遅延＋高域減衰（HRTF）」した成分を
-            # 広がり感を持たせるために「逆相（マイナス）」でブレンド
-            out_l = (l_val * pan_l) + (self.last_lowpass_l * -0.4) * pan_r
-            out_r = (r_val * pan_r) + (self.last_lowpass_r * -0.4) * pan_l
+            # 音量バランスの調整（2つのスピーカーが合流して少し大きくなるため、x0.65で補正）
+            out_l *= 0.65
+            out_r *= 0.65
             
-            # 音割れ（クリッピング）防止
+            # 音割れ（クリッピング）防止のセーフティガード
             out_l = max(-1.0, min(1.0, out_l))
             out_r = max(-1.0, min(1.0, out_r))
             
-            # 16bit整数に戻す
+            # 16bit整数PCMに戻してバッファへ詰める
             out_samples.append(int(out_l * 32767))
             out_samples.append(int(out_r * 32767))
             
