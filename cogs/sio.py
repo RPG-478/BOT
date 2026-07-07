@@ -962,50 +962,23 @@ class Voice(commands.Cog):
 
         state['is_processing_queue'] = True
 
-        before_options = f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
+        # --- 【FFmpeg基本設定（フィルターは一切通さない）】 ---
+        before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
         if b62_id:
             before_options += f' -headers "User-Agent: Mozilla/5.0\r\n"'
         
+        # シーク位置が指定されている場合のみオプションに追加
         if state['elapsed_offset'] > 0:
             before_options += f" -ss {state['elapsed_offset']}"
 
-        filters = []
-        if state.get('speed', 1.0) != 1.0:
-            filters.append(f"atempo={state['speed']}")
-        if state.get('volume', 1.0) != 1.0:
-            filters.append(f"volume={state['volume']}")
-        
-        current_eq_mode = state.get('eq', 'flat')
-        if current_eq_mode == "custom" and state.get('custom_eq_filter'):
-            filters.append(state['custom_eq_filter'])
-        else:
-            eq_filter_str = EQ_SETTINGS.get(current_eq_mode)
-            if eq_filter_str:
-                filters.append(eq_filter_str)
-
-        # spatial の場合はFFmpegのフィルターから除外し、通常のフラットな設定を適用する
-        current_eq_mode = state.get('eq', 'flat')
-        if current_eq_mode == "spatial":
-            # spatialの時はFFmpeg側でフィルターをかけない（Pythonでやるため）
-            af_string = ""
-        elif current_eq_mode == "custom" and state.get('custom_eq_filter'):
-            filters.append(state['custom_eq_filter'])
-            af_string = f"-af {','.join(filters)}" if filters else ""
-        else:
-            eq_filter_str = EQ_SETTINGS.get(current_eq_mode)
-            if eq_filter_str:
-                filters.append(eq_filter_str)
-            af_string = f"-af {','.join(filters)}" if filters else ""
-
-        # エフェクトはすべてPython（上記クラス）内で一元処理するため、FFmpegのオプションは常にフラットにする
+        # 音声展開の設定（常にフラット。48kHz/ステレオPCMで出力させる）
         options = "-vn -ar 48000 -ac 2"
-        before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
 
         try:
-            # 純粋なPCM信号の展開のみをFFmpegに任せる
+            # 1. FFmpegには純粋なPCMデコードだけを任せる
             raw_source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
             
-            # 統合された全EQ対応のオーディオエンジンでラップ
+            # 2. 統合された全EQ対応のPythonオーディオエンジン（速度や音量の適用もこちらに集約）でラップ
             source = PythonSpatialAudioSource(raw_source, state)
             
             state['start_time'] = time.time()
@@ -1014,6 +987,7 @@ class Voice(commands.Cog):
             await self.update_panel(guild_id)
             
             if state['elapsed_offset'] < 1 and hasattr(ctx, "send"):
+                current_eq_mode = state.get('eq', 'flat')
                 eq_label = "custom" if current_eq_mode == "custom" else current_eq_mode
                 status = f"Speed: {state['speed']}x / Vol: {state['volume']} / EQ: {eq_label}"
                 await ctx.send(embed=we(f"🎵 再生中: **{filename}**\n`{status}`"))
