@@ -87,33 +87,31 @@ def we(description: str = None, title: str = None) -> discord.Embed:
 
 class PythonSpatialAudioSource(discord.AudioSource):
     """
-    外部ライブラリ（numpy/scipy）を一切使わず、Python標準ライブラリのみで
-    動的HRTFパンニングと4次元FDNリバーブを完全計算するピュアオーディオエンジン
+    外部ライブラリを一切使わず、Python標準ライブラリのみで動作する
+    パラメータ（リバーブ値・解像度・ウェット量）動的調整対応型3Dオーディオエンジン
     """
     def __init__(self, source, state):
         self.source = source
         self.state = state
         self.count = 0
-        self.sr = 48000  # サンプリングレート
+        self.sr = 48000
         
-        # --- 1. 動的HRTFパンニング用ディレイバッファ ---
+        # --- 動的HRTFパンニング用バッファ ---
         self.delay_buf_l = [0.0] * 1000
         self.delay_buf_r = [0.0] * 1000
         self.buf_idx = 0
         
-        # --- 2. 頭部陰影効果（ILDローパス）用の過去サンプル保持用変数 ---
+        # --- 頭部陰影効果用の過去サンプル保持 ---
         self.last_lp_l = 0.0
         self.last_lp_r = 0.0
         
-        # --- 3. 4次元FDNリバーブの初期化 ---
-        # 独立した4本のディレイライン（素数に近いサンプル数で共振を分散）
-        self.fdn_delays = [1391, 1777, 2257, 2833]  # 約29ms, 37ms, 47ms, 59ms相当
+        # --- 8次元対応FDN（Feedback Delay Network）リバーブの初期化 ---
+        # 8本の独立したディレイライン（素数に近いサンプル数で共振を分散）
+        self.fdn_delays = [1391, 1543, 1777, 1999, 2257, 2503, 2833, 3121]
         self.fdn_bufs = [[0.0] * d for d in self.fdn_delays]
-        self.fdn_idxs = [0] * 4
-        self.feedback_gain = 0.28  # 残響の減衰率
+        self.fdn_idxs = [0] * 8
 
     def read(self):
-        # FFmpegから生PCM (48kHz / 16bit / 2ch ステレオ) を読み込み
         raw_data = self.source.read()
         if not raw_data:
             return b""
@@ -123,91 +121,103 @@ class PythonSpatialAudioSource(discord.AudioSource):
 
         num_samples = len(raw_data) // 4
         fmt = f"<{num_samples * 2}h"
-        # バイナリデータをPythonの整数型リストに展開
         samples = list(struct.unpack(fmt, raw_data))
         
         out_samples = []
         
-        # 20ms(1フレーム)ごとに角度を進める（約8秒で脳の周りを1周パンニング）
+        # --- 状態（state）から調整パラメータをリアルタイム取得 ---
+        # fdn_feedback: リバーブの長さ (0.0 〜 0.95, デフォルト: 0.28)
+        feedback = self.state.get('fdn_feedback', 0.28)
+        # fdn_wet: 残響音のミックス量 (0.0 〜 1.0, デフォルト: 0.3)
+        wet = self.state.get('fdn_wet', 0.3)
+        # fdn_resolution: 解像度 (4 または 8, デフォルト: 4)
+        resolution = self.state.get('fdn_resolution', 4)
+        if resolution not in (4, 8):
+            resolution = 4
+
+        # パンニングの角度計算
         self.count += 1
         angle = (self.count / 400.0) * 2.0 * math.pi
-        
-        # 音源の左右位置（-1.0: 左端 〜 0.0: 正面 〜 1.0: 右端）
         pos_x = math.sin(angle)
         
-        # 【HRTF要素1: 時間差(ITD)の計算】 
-        # 音源と反対側の耳への到達時間を最大約0.67ms (32サンプル) 動的に遅らせる
+        # HRTF: 時間差(ITD)と頭部陰影フィルター係数(ILD)
         delay_l = int((1.0 - pos_x) * 16)
         delay_r = int((1.0 + pos_x) * 16)
-        
-        # 【HRTF要素2: 頭部陰影効果(ILD)のフィルター係数算出】
-        # 音源と逆側の耳のローパスフィルターを強くして、高域のこもり感を再現
         lp_alpha_l = 0.15 + 0.85 * (0.5 + 0.5 * pos_x)
         lp_alpha_r = 0.15 + 0.85 * (0.5 - 0.5 * pos_x)
 
         for i in range(num_samples):
-            # 16bit整数入力を -1.0 〜 1.0 の浮動小数点数に正規化
             in_l = samples[i * 2] / 32768.0
             in_r = samples[i * 2 + 1] / 32768.0
-            
-            # --- 【1. FDNリバーブ回路の計算】 ---
-            # 4本のディレイラインから現在の末尾の残響音を取り出す
-            fdn_out = [self.fdn_bufs[ch][self.fdn_idxs[ch]] for ch in range(4)]
-            
-            # ハウスホルダー直交行列によるフィードバックの均等拡散（密な反響壁をシミュレート）
-            # [ 0.5,  0.5,  0.5,  0.5]
-            # [ 0.5, -0.5,  0.5, -0.5]
-            # [ 0.5,  0.5, -0.5, -0.5]
-            # [ 0.5, -0.5, -0.5,  0.5] の行列乗算
-            f0 = ( fdn_out[0] + fdn_out[1] + fdn_out[2] + fdn_out[3]) * 0.5
-            f1 = ( fdn_out[0] - fdn_out[1] + fdn_out[2] - fdn_out[3]) * 0.5
-            f2 = ( fdn_out[0] + fdn_out[1] - fdn_out[2] - fdn_out[3]) * 0.5
-            f3 = ( fdn_out[0] - fdn_out[1] - fdn_out[2] + fdn_out[3]) * 0.5
-            
-            # モノラルミックスされた入力原音を残響マトリックスに注入
             mono_in = (in_l + in_r) * 0.5
             
-            # 次の反響をバッファに書き込んでインデックスを進める
-            self.fdn_bufs[0][self.fdn_idxs[0]] = f0 * self.feedback_gain + mono_in
-            self.fdn_bufs[1][self.fdn_idxs[1]] = f1 * self.feedback_gain + mono_in
-            self.fdn_bufs[2][self.fdn_idxs[2]] = f2 * self.feedback_gain + mono_in
-            self.fdn_bufs[3][self.fdn_idxs[3]] = f3 * self.feedback_gain + mono_in
+            # ディレイラインから現在の末尾の残響音を抽出
+            fdn_out = [self.fdn_bufs[ch][self.fdn_idxs[ch]] for ch in range(8)]
             
-            for ch in range(4):
-                self.fdn_idxs[ch] = (self.fdn_idxs[ch] + 1) % self.fdn_delays[ch]
+            # --- 解像度に応じたハウスホルダー直交行列の演算（動的切り替え） ---
+            if resolution == 8:
+                # 【高解像度モード：8次元マトリックス】
+                # 8本の反響が互いに入り乱れる超高密度な残響
+                s1 = (fdn_out[0] + fdn_out[1] + fdn_out[2] + fdn_out[3])
+                s2 = (fdn_out[4] + fdn_out[5] + fdn_out[6] + fdn_out[7])
+                half_sum = (s1 + s2) * 0.25
+                
+                f = [0.0] * 8
+                f[0] = half_sum - fdn_out[0]; f[1] = half_sum - fdn_out[1]
+                f[2] = half_sum - fdn_out[2]; f[3] = half_sum - fdn_out[3]
+                f[4] = half_sum - fdn_out[4]; f[5] = half_sum - fdn_out[5]
+                f[6] = half_sum - fdn_out[6]; f[7] = half_sum - fdn_out[7]
+                
+                # 次の反響をバッファに書き込んでインデックスを更新 (8チャンネル分)
+                for ch in range(8):
+                    self.fdn_bufs[ch][self.fdn_idxs[ch]] = f[ch] * feedback + mono_in
+                    self.fdn_idxs[ch] = (self.fdn_idxs[ch] + 1) % self.fdn_delays[ch]
+                
+                # 8つの反響をL/Rステレオに分散
+                rev_l = (fdn_out[0] + fdn_out[2] + fdn_out[4] + fdn_out[6]) * 0.2
+                rev_r = (fdn_out[1] + fdn_out[3] + fdn_out[5] + fdn_out[7]) * 0.2
+            else:
+                # 【標準モード：4次元マトリックス】
+                # 4本のディレイラインによる軽量かつクリアな残響
+                f0 = (fdn_out[0] + fdn_out[1] + fdn_out[2] + fdn_out[3]) * 0.5
+                f1 = (fdn_out[0] - fdn_out[1] + fdn_out[2] - fdn_out[3]) * 0.5
+                f2 = (fdn_out[0] + fdn_out[1] - fdn_out[2] - fdn_out[3]) * 0.5
+                f3 = (fdn_out[0] - fdn_out[1] - fdn_out[2] + fdn_out[3]) * 0.5
+                
+                self.fdn_bufs[0][self.fdn_idxs[0]] = f0 * feedback + mono_in
+                self.fdn_bufs[1][self.fdn_idxs[1]] = f1 * feedback + mono_in
+                self.fdn_bufs[2][self.fdn_idxs[2]] = f2 * feedback + mono_in
+                self.fdn_bufs[3][self.fdn_idxs[3]] = f3 * feedback + mono_in
+                
+                for ch in range(4):
+                    self.fdn_idxs[ch] = (self.fdn_idxs[ch] + 1) % self.fdn_delays[ch]
+                
+                rev_l = (fdn_out[0] + fdn_out[2]) * 0.3
+                rev_r = (fdn_out[1] + fdn_out[3]) * 0.3
+
+            # 原音と調整されたウェット（残響）成分のミックス
+            mixed_l = in_l + rev_l * wet
+            mixed_r = in_r + rev_r * wet
             
-            # 4つの独立した反響をL/Rステレオに分散してブレンド
-            rev_l = (fdn_out[0] + fdn_out[2]) * 0.3
-            rev_r = (fdn_out[1] + fdn_out[3]) * 0.3
-            
-            # 原音とリバーブ（残響）をミックス
-            mixed_l = in_l + rev_l
-            mixed_r = in_r + rev_r
-            
-            # --- 【2. 動的HRTF空間パンニングの適用】 ---
-            # 時間差(ITD)用のリングバッファに格納
+            # ITD（時間遅延）の適用
             self.delay_buf_l[self.buf_idx] = mixed_l
             self.delay_buf_r[self.buf_idx] = mixed_r
             
-            # 設定されたサンプル遅延分だけ過去の音声信号を取り出す
             sig_l = self.delay_buf_l[(self.buf_idx - delay_l) % len(self.delay_buf_l)]
             sig_r = self.delay_buf_r[(self.buf_idx - delay_r) % len(self.delay_buf_r)]
-            
             self.buf_idx = (self.buf_idx + 1) % len(self.delay_buf_l)
             
-            # 頭部陰影効果（純正1次IIRローパスフィルター）を適用して高域を遮断
+            # ILD（頭部陰影ローパス）の適用
             self.last_lp_l = self.last_lp_l + lp_alpha_l * (sig_l - self.last_lp_l)
             self.last_lp_r = self.last_lp_r + lp_alpha_r * (sig_r - self.last_lp_r)
             
-            # クリップ（音割れ）防止の安全弁をかけて最終ゲイン調整
+            # クリップ防止と整数パック
             out_l = max(-1.0, min(1.0, self.last_lp_l * 0.65))
             out_r = max(-1.0, min(1.0, self.last_lp_r * 0.65))
             
-            # 16bit符号付き整数に戻して展開用配列に格納
             out_samples.append(int(out_l * 32767))
             out_samples.append(int(out_r * 32767))
             
-        # 再びDiscordに流せるバイノーラル化された生PCMバイナリにパックして返す
         return struct.pack(fmt, *out_samples)
 
     def cleanup(self):
@@ -586,6 +596,42 @@ class Voice(commands.Cog):
             await ctx.send(embed=we("❌ システムに `ffmpeg` コマンドが見つかりません。パスが通っているか確認してください。"))
         except Exception as e:
             await ctx.send(embed=we(f"❌ エラーが発生しました: {e}"))
+    @commands.command()
+    async def rval(self, ctx, feedback: float, wet: float = None):
+        """リバーブ値（減衰・ウェット量）を調整するコマンド
+        例: !rval 0.4 0.5  (フィードバック0.4, ウェット量0.5)
+        """
+        if not 0.0 <= feedback <= 0.95:
+            return await ctx.send(embed=we("フィードバック値（残響の長さ）は 0.0 〜 0.95 の間で指定してください。"))
+        
+        state = self.get_state(ctx.guild.id)
+        state['fdn_feedback'] = feedback
+        
+        msg = f"⏳ リバーブのフィードバック（長さ）を `{feedback}` に設定しました。"
+        if wet is not None:
+            if not 0.0 <= wet <= 1.0:
+                return await ctx.send(embed=we("ウェット量（残響の音量）は 0.0 〜 1.0 の間で指定してください。"))
+            state['fdn_wet'] = wet
+            msg += f"\n💧 残響のミックス（ウェット量）を `{wet}` に設定しました。"
+            
+        await ctx.send(embed=we(msg))
+        # コントロールパネルの表示を更新
+        await self.update_panel(ctx.guild.id)
+
+    @commands.command()
+    async def rres(self, ctx, res: int):
+        """FDNリバーブの空間解像度（ディレイラインの密度）を切り替えるコマンド
+        例: !rres 8  (高解像度8次元マトリックスモード)
+        """
+        if res not in (4, 8):
+            return await ctx.send(embed=we("解像度は `4` (通常) または `8` (高解像度・滑らか) のどちらかを指定してください。"))
+        
+        state = self.get_state(ctx.guild.id)
+        state['fdn_resolution'] = res
+        
+        mode_str = "8次元ハウスホルダー（高密度・シルキー）" if res == 8 else "4次元ハウスホルダー（軽量・クリア）"
+        await ctx.send(embed=we(f"⚙️ リバーブ解像度を `{res}` に切り替えました。\n現在のモード: **{mode_str}**"))
+        await self.update_panel(ctx.guild.id)
 
     async def update_panel(self, guild_id: int):
         """現在の内部ステータスを読み取り、コントロールパネルをリアルタイム更新する"""
