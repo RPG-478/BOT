@@ -14,6 +14,8 @@ import math  # 追加: Timerクラスのサイン波計算で必要
 from discord.ext import voice_recv
 import threading
 import random
+import numpy as np
+from scipy import signal
 
 # yt-dlpの設定（ストリーミング再生用および検索用）
 YTDL_OPTIONS = {
