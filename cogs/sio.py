@@ -596,6 +596,8 @@ class Voice(commands.Cog):
             await ctx.send(embed=we("❌ システムに `ffmpeg` コマンドが見つかりません。パスが通っているか確認してください。"))
         except Exception as e:
             await ctx.send(embed=we(f"❌ エラーが発生しました: {e}"))
+
+    
     @commands.command()
     async def rval(self, ctx, feedback: float, wet: float = None):
         """リバーブ値（減衰・ウェット量）を調整するコマンド
