@@ -405,8 +405,8 @@ class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルタ�
             state['custom_eq_filter'] = user_filter
             await interaction.response.send_message(f"⚙️ カスタムEQを設定しました:\n`{user_filter}`\n即時反映します。", ephemeral=True)
 
-        ctx = state['current_ctx'] or interaction
-        await self.cog.apply_immediate_setting(ctx)
+        # 曲を止めずにパネル表示だけを更新する
+        await self.cog.update_panel(self.guild_id)
 
 
 # =====================
@@ -440,10 +440,11 @@ class VoiceControlView(discord.ui.View):
 
         async def callback(self, interaction: discord.Interaction):
             state = self.cog.get_state(self.guild_id)
-            state['speed'] = float(self.values[0])
-            await interaction.response.send_message(f"⚡ 再生速度を `{state['speed']}` 倍に設定しました（即時反映）。", ephemeral=True)
-            ctx = state['current_ctx'] or interaction
-            await self.cog.apply_immediate_setting(ctx)
+            state['eq'] = self.values[0]
+            state['custom_eq_filter'] = None
+            await interaction.response.send_message(f"🎬 エフェクトを `{state['eq']}` に変更しました（即時反映）。", ephemeral=True)
+            # 曲を止めずにパネルの文字（現在: flat など）だけを最新にする
+            await self.cog.update_panel(self.guild_id)
 
     class VolumeSelect(discord.ui.Select):
         def __init__(self, cog, guild_id):
@@ -803,7 +804,8 @@ class Voice(commands.Cog):
             state['eq'] = "custom"
             state['custom_eq_filter'] = mode
             await ctx.send(embed=we(f"⚙️ カスタムEQフィルターを設定しました:\n`{mode}`"))
-        await self.apply_immediate_setting(ctx)
+        # 曲を止めずにパネルだけ更新
+        await self.update_panel(ctx.guild.id)
         
     @commands.command()
     async def volume(self, ctx, vol: float):
