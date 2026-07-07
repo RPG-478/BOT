@@ -87,31 +87,33 @@ def we(description: str = None, title: str = None) -> discord.Embed:
 
 class PythonSpatialAudioSource(discord.AudioSource):
     """
-    Python側で本物のHRTF（頭部伝達関数インパルス応答）の畳み込み演算を行う
-    ガチ3Dバイノーラル・オーディオエンジン
+    外部ライブラリ（numpy/scipy）を一切使わず、Python標準ライブラリのみで
+    動的HRTFパンニングと4次元FDNリバーブを完全計算するピュアオーディオエンジン
     """
     def __init__(self, source, state):
         self.source = source
         self.state = state
+        self.count = 0
+        self.sr = 48000  # サンプリングレート
         
-        # 標準的なHRTFデータベース（48kHz）から抽出した、
-        # 「左斜め前方30度」「右斜め前方30度」にスピーカーがある時の左右の耳へのインパルス応答（16タップに軽量化）
-        # --- スピーカーL（左前方30度）から -> [左耳への係数, 右耳への係数] ---
-        self.hrir_l_to_l = [1.0, 0.82, 0.45, 0.12, -0.05, -0.12, -0.08, -0.02, 0.01, 0.02, 0.01, 0.0, -0.01, 0.0, 0.0, 0.0]
-        self.hrir_l_to_r = [0.0, 0.0, 0.12, 0.34, 0.48, 0.42, 0.28, 0.12, 0.02, -0.03, -0.04, -0.02, -0.01, 0.0, 0.0, 0.0] # 遅延と減衰（頭部陰影）
+        # --- 1. 動的HRTFパンニング用ディレイバッファ ---
+        self.delay_buf_l = [0.0] * 1000
+        self.delay_buf_r = [0.0] * 1000
+        self.buf_idx = 0
         
-        # --- スピーカーR（右前方30度）から -> [右耳への係数, 左耳への係数] ---
-        self.hrir_r_to_r = [1.0, 0.82, 0.45, 0.12, -0.05, -0.12, -0.08, -0.02, 0.01, 0.02, 0.01, 0.0, -0.01, 0.0, 0.0, 0.0]
-        self.hrir_r_to_l = [0.0, 0.0, 0.12, 0.34, 0.48, 0.42, 0.28, 0.12, 0.02, -0.03, -0.04, -0.02, -0.01, 0.0, 0.0, 0.0] # 遅延と減衰（頭部陰影）
+        # --- 2. 頭部陰影効果（ILDローパス）用の過去サンプル保持用変数 ---
+        self.last_lp_l = 0.0
+        self.last_lp_r = 0.0
         
-        self.tap_size = len(self.hrir_l_to_l)
-        
-        # 畳み込み演算用の過去サンプルリングバッファ（16タップ分）
-        self.history_l = [0.0] * self.tap_size
-        self.history_r = [0.0] * self.tap_size
-        self.hist_idx = 0
+        # --- 3. 4次元FDNリバーブの初期化 ---
+        # 独立した4本のディレイライン（素数に近いサンプル数で共振を分散）
+        self.fdn_delays = [1391, 1777, 2257, 2833]  # 約29ms, 37ms, 47ms, 59ms相当
+        self.fdn_bufs = [[0.0] * d for d in self.fdn_delays]
+        self.fdn_idxs = [0] * 4
+        self.feedback_gain = 0.28  # 残響の減衰率
 
     def read(self):
+        # FFmpegから生PCM (48kHz / 16bit / 2ch ステレオ) を読み込み
         raw_data = self.source.read()
         if not raw_data:
             return b""
@@ -121,49 +123,91 @@ class PythonSpatialAudioSource(discord.AudioSource):
 
         num_samples = len(raw_data) // 4
         fmt = f"<{num_samples * 2}h"
+        # バイナリデータをPythonの整数型リストに展開
         samples = list(struct.unpack(fmt, raw_data))
         
         out_samples = []
+        
+        # 20ms(1フレーム)ごとに角度を進める（約8秒で脳の周りを1周パンニング）
+        self.count += 1
+        angle = (self.count / 400.0) * 2.0 * math.pi
+        
+        # 音源の左右位置（-1.0: 左端 〜 0.0: 正面 〜 1.0: 右端）
+        pos_x = math.sin(angle)
+        
+        # 【HRTF要素1: 時間差(ITD)の計算】 
+        # 音源と反対側の耳への到達時間を最大約0.67ms (32サンプル) 動的に遅らせる
+        delay_l = int((1.0 - pos_x) * 16)
+        delay_r = int((1.0 + pos_x) * 16)
+        
+        # 【HRTF要素2: 頭部陰影効果(ILD)のフィルター係数算出】
+        # 音源と逆側の耳のローパスフィルターを強くして、高域のこもり感を再現
+        lp_alpha_l = 0.15 + 0.85 * (0.5 + 0.5 * pos_x)
+        lp_alpha_r = 0.15 + 0.85 * (0.5 - 0.5 * pos_x)
 
         for i in range(num_samples):
-            # 16bit入力を -1.0 〜 1.0 の浮動小数点数に正規化（これが元の2chステレオのスピーカーL/Rの音）
+            # 16bit整数入力を -1.0 〜 1.0 の浮動小数点数に正規化
             in_l = samples[i * 2] / 32768.0
             in_r = samples[i * 2 + 1] / 32768.0
             
-            # リングバッファに最新サンプルを上書き
-            self.history_l[self.hist_idx] = in_l
-            self.history_r[self.hist_idx] = in_r
+            # --- 【1. FDNリバーブ回路の計算】 ---
+            # 4本のディレイラインから現在の末尾の残響音を取り出す
+            fdn_out = [self.fdn_bufs[ch][self.fdn_idxs[ch]] for ch in range(4)]
             
-            # 畳み込み演算（FIRフィルター）の初期化
-            out_l = 0.0
-            out_r = 0.0
+            # ハウスホルダー直交行列によるフィードバックの均等拡散（密な反響壁をシミュレート）
+            # [ 0.5,  0.5,  0.5,  0.5]
+            # [ 0.5, -0.5,  0.5, -0.5]
+            # [ 0.5,  0.5, -0.5, -0.5]
+            # [ 0.5, -0.5, -0.5,  0.5] の行列乗算
+            f0 = ( fdn_out[0] + fdn_out[1] + fdn_out[2] + fdn_out[3]) * 0.5
+            f1 = ( fdn_out[0] - fdn_out[1] + fdn_out[2] - fdn_out[3]) * 0.5
+            f2 = ( fdn_out[0] + fdn_out[1] - fdn_out[2] - fdn_out[3]) * 0.5
+            f3 = ( fdn_out[0] - fdn_out[1] - fdn_out[2] + fdn_out[3]) * 0.5
             
-            # 【まじのHRTF：物理シミュレーション畳み込み】
-            # 過去16サンプル分、空間の伝達関数（HRIR）を掛け合わせて引き算・足し算をループする
-            for t in range(self.tap_size):
-                idx = (self.hist_idx - t) % self.tap_size
-                hist_l_val = self.history_l[idx]
-                hist_r_val = self.history_r[idx]
-                
-                # 左耳に届く音 ＝ (左スピーカーから左耳への応答) ＋ (右スピーカーから頭を回り込んで左耳への応答)
-                out_l += (hist_l_val * self.hrir_l_to_l[t]) + (hist_r_val * self.hrir_r_to_l[t])
-                # 右耳に届く音 ＝ (右スピーカーから右耳への応答) ＋ (左スピーカーから頭を回り込んで右耳への応答)
-                out_r += (hist_r_val * self.hrir_r_to_r[t]) + (hist_l_val * self.hrir_l_to_r[t])
+            # モノラルミックスされた入力原音を残響マトリックスに注入
+            mono_in = (in_l + in_r) * 0.5
             
-            self.hist_idx = (self.hist_idx + 1) % self.tap_size
+            # 次の反響をバッファに書き込んでインデックスを進める
+            self.fdn_bufs[0][self.fdn_idxs[0]] = f0 * self.feedback_gain + mono_in
+            self.fdn_bufs[1][self.fdn_idxs[1]] = f1 * self.feedback_gain + mono_in
+            self.fdn_bufs[2][self.fdn_idxs[2]] = f2 * self.feedback_gain + mono_in
+            self.fdn_bufs[3][self.fdn_idxs[3]] = f3 * self.feedback_gain + mono_in
             
-            # 音量バランスの調整（2つのスピーカーが合流して少し大きくなるため、x0.65で補正）
-            out_l *= 0.65
-            out_r *= 0.65
+            for ch in range(4):
+                self.fdn_idxs[ch] = (self.fdn_idxs[ch] + 1) % self.fdn_delays[ch]
             
-            # 音割れ（クリッピング）防止のセーフティガード
-            out_l = max(-1.0, min(1.0, out_l))
-            out_r = max(-1.0, min(1.0, out_r))
+            # 4つの独立した反響をL/Rステレオに分散してブレンド
+            rev_l = (fdn_out[0] + fdn_out[2]) * 0.3
+            rev_r = (fdn_out[1] + fdn_out[3]) * 0.3
             
-            # 16bit整数PCMに戻してバッファへ詰める
+            # 原音とリバーブ（残響）をミックス
+            mixed_l = in_l + rev_l
+            mixed_r = in_r + rev_r
+            
+            # --- 【2. 動的HRTF空間パンニングの適用】 ---
+            # 時間差(ITD)用のリングバッファに格納
+            self.delay_buf_l[self.buf_idx] = mixed_l
+            self.delay_buf_r[self.buf_idx] = mixed_r
+            
+            # 設定されたサンプル遅延分だけ過去の音声信号を取り出す
+            sig_l = self.delay_buf_l[(self.buf_idx - delay_l) % len(self.delay_buf_l)]
+            sig_r = self.delay_buf_r[(self.buf_idx - delay_r) % len(self.delay_buf_r)]
+            
+            self.buf_idx = (self.buf_idx + 1) % len(self.delay_buf_l)
+            
+            # 頭部陰影効果（純正1次IIRローパスフィルター）を適用して高域を遮断
+            self.last_lp_l = self.last_lp_l + lp_alpha_l * (sig_l - self.last_lp_l)
+            self.last_lp_r = self.last_lp_r + lp_alpha_r * (sig_r - self.last_lp_r)
+            
+            # クリップ（音割れ）防止の安全弁をかけて最終ゲイン調整
+            out_l = max(-1.0, min(1.0, self.last_lp_l * 0.65))
+            out_r = max(-1.0, min(1.0, self.last_lp_r * 0.65))
+            
+            # 16bit符号付き整数に戻して展開用配列に格納
             out_samples.append(int(out_l * 32767))
             out_samples.append(int(out_r * 32767))
             
+        # 再びDiscordに流せるバイノーラル化された生PCMバイナリにパックして返す
         return struct.pack(fmt, *out_samples)
 
     def cleanup(self):
