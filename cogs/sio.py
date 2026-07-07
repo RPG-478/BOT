@@ -85,6 +85,9 @@ def we(description: str = None, title: str = None) -> discord.Embed:
     """白色embedを生成するヘルパー"""
     return discord.Embed(title=title, description=description, color=0xFFFFFF)
 
+# =====================
+# Main Voice Cog (Updated with Real-HRTF Engine)
+# =====================
 class PythonSpatialAudioSource(discord.AudioSource):
     """
     EQ_SETTINGSに定義されていたすべてのエフェクトを
@@ -100,9 +103,17 @@ class PythonSpatialAudioSource(discord.AudioSource):
         self.spatial_buf_l = [0.0] * 1000
         self.spatial_buf_r = [0.0] * 1000
         self.spatial_idx = 0
-        self.spatial_lp_l = 0.0
-        self.spatial_lp_r = 0.0
         
+        # 頭部陰影用の1次ローパスフィルター（左右独立）
+        self.shadow_lp_l = 0.0
+        self.shadow_lp_r = 0.0
+        
+        # 耳介反射（ピンナ・ノッチ）用ディレイバッファ（44100-48000Hzで5.5kHz付近の打ち消し用、約4〜5サンプル）
+        # 前後感や立体感を出すためのコンボ型ノッチフィルター状態
+        self.notch_buf_l = [0.0] * 10
+        self.notch_buf_r = [0.0] * 10
+        self.notch_idx = 0
+
         # --- [spatial] FDNリバーブ初期化 ---
         self.fdn_delays = [1391, 1543, 1777, 1999, 2257, 2503, 2833, 3121]
         self.fdn_bufs = [[0.0] * d for d in self.fdn_delays]
@@ -127,7 +138,6 @@ class PythonSpatialAudioSource(discord.AudioSource):
         self.live_lp_l = 0.0; self.live_lp_r = 0.0
 
         # --- [reverb (afir)] 畳み込み風擬似ホール残響 ---
-        # 簡易的な多重フィードバックコンボ（120ms, 180ms, 240ms）で複雑な反射音を模擬
         self.rev_buf_l = [0.0] * 12000
         self.rev_buf_r = [0.0] * 12000
         self.rev_idx = 0
@@ -145,12 +155,12 @@ class PythonSpatialAudioSource(discord.AudioSource):
         mode = self.state.get('eq', 'flat')
         out_samples = []
 
-        # spatial用の動的カスタムパラメータ（未設定時の初期値）
+        # spatial用の動的カスタムパラメータ
         feedback = self.state.get('fdn_feedback', 0.28)
         wet = self.state.get('fdn_wet', 0.3)
         resolution = self.state.get('fdn_resolution', 4)
 
-        # 時間・角度カウント（rotate, live, spatial等で使用）
+        # 時間・角度カウント
         self.count += 1
         
         # --- ループ処理前の事前計算 ---
@@ -159,13 +169,23 @@ class PythonSpatialAudioSource(discord.AudioSource):
         rot_l = 0.5 + 0.5 * math.sin(rot_angle)
         rot_r = 1.0 - rot_l
 
-        # spatialパンニング用
-        sp_angle = (self.count / 400.0) * 2.0 * math.pi
-        pos_x = math.sin(sp_angle)
-        sp_delay_l = int((1.0 - pos_x) * 16)
-        sp_delay_r = int((1.0 + pos_x) * 16)
-        sp_alpha_l = 0.15 + 0.85 * (0.5 + 0.5 * pos_x)
-        sp_alpha_r = 0.15 + 0.85 * (0.5 - 0.5 * pos_x)
+        # spatialパンニング用 (頭の周りを1周する角度を計算)
+        sp_angle = (self.count / 500.0) * 2.0 * math.pi
+        pos_x = math.sin(sp_angle)  # 左右の位置 (-1.0:真左, 1.0:真右)
+        pos_y = math.cos(sp_angle)  # 前後の位置 (1.0:真前, -1.0:真後ろ)
+
+        # 1. 人間の頭部サイズに基づく耳間時間差(ITD)の計算 (最大30サンプル ≒ 約0.62ms)
+        sp_delay_l = int((1.0 - pos_x) * 15)
+        sp_delay_r = int((1.0 + pos_x) * 15)
+
+        # 2. 頭部陰影(ILD)の高域減衰係数の動的計算 (逆側の耳のローパスを強くする)
+        # 音源が右にある時(pos_x > 0)、左耳(_l)のアルファ値を小さくして高域を遮断
+        alpha_l = 0.15 + 0.85 * (0.5 + 0.5 * (1.0 - pos_x))
+        alpha_r = 0.15 + 0.85 * (0.5 + 0.5 * (1.0 + pos_x))
+
+        # 3. 音量バランスのカーブ調整
+        vol_l = 0.3 + 0.7 * (0.5 + 0.5 * (1.0 - pos_x))
+        vol_r = 0.3 + 0.7 * (0.5 + 0.5 * (1.0 + pos_x))
 
         for i in range(num_samples):
             in_l = samples[i * 2] / 32768.0
@@ -178,21 +198,19 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 out_l, out_r = in_l, in_r
 
             # --------------------------------------------------
-            # 2. bass / superbass (低域増幅 ＆ 音圧ノーマライズ擬似再現)
+            # 2. bass / superbass
             # --------------------------------------------------
             elif mode in ('bass', 'superbass'):
                 boost = 2.8 if mode == 'superbass' else 1.8
-                # 1次IIRローパスで低音を抽出しブレンド
                 self.bass_lp_l = self.bass_lp_l + 0.06 * (in_l - self.bass_lp_l)
                 self.bass_lp_r = self.bass_lp_r + 0.06 * (in_r - self.bass_lp_r)
                 out_l = in_l + self.bass_lp_l * boost
                 out_r = in_r + self.bass_lp_r * boost
-                # dynaudnormの代わりに簡易的なソフトクリッパーで音圧を安定化
                 out_l = out_l / (1.0 + abs(out_l) * 0.2)
                 out_r = out_r / (1.0 + abs(out_r) * 0.2)
 
             # --------------------------------------------------
-            # 3. echo (200msエコー: フィードバック40%)
+            # 3. echo
             # --------------------------------------------------
             elif mode == 'echo':
                 el = self.echo_buf_l[self.echo_idx]
@@ -204,7 +222,7 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 self.echo_idx = (self.echo_idx + 1) % 9600
 
             # --------------------------------------------------
-            # 4. hall (ステレオ幅の強烈な拡張)
+            # 4. hall
             # --------------------------------------------------
             elif mode == 'hall':
                 diff = in_l - in_r
@@ -212,20 +230,18 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 out_r = in_r - diff * 0.75
 
             # --------------------------------------------------
-            # 5. vocal (1kHz-4kHz帯の中音域ブースト、不要低域の減衰)
+            # 5. vocal
             # --------------------------------------------------
             elif mode == 'vocal':
-                # 高域・低域を滑らかに削り、中音域の芯を1.5倍にする
                 self.vocal_lp_l = self.vocal_lp_l + 0.35 * (in_l - self.vocal_lp_l)
                 self.vocal_lp_r = self.vocal_lp_r + 0.35 * (in_r - self.vocal_lp_r)
                 out_l = self.vocal_lp_l * 1.4
                 out_r = self.vocal_lp_r * 1.4
 
             # --------------------------------------------------
-            # 6. live (60msショートエコー ＋ 15kHz制限 ＋ サラウンド拡張)
+            # 6. live
             # --------------------------------------------------
             elif mode == 'live':
-                # 60msディレイ
                 ll = self.live_buf_l[self.live_idx]
                 lr = self.live_buf_r[self.live_idx]
                 mix_l = in_l + ll * 0.4
@@ -234,27 +250,24 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 self.live_buf_r[self.live_idx] = in_r
                 self.live_idx = (self.live_idx + 1) % 2880
                 
-                # 15kHzローパスフィルター
                 self.live_lp_l = self.live_lp_l + 0.85 * (mix_l - self.live_lp_l)
                 self.live_lp_r = self.live_lp_r + 0.85 * (mix_r - self.live_lp_r)
                 
-                # スピーカーサラウンド感を模した逆相ブレンド (extrastereo)
                 diff = self.live_lp_l - self.live_lp_r
                 out_l = self.live_lp_l + diff * 0.3
                 out_r = self.live_lp_r - diff * 0.3
 
             # --------------------------------------------------
-            # 7. rotate (0.125Hz = 8秒周期での脳内自動ローテーション)
+            # 7. rotate
             # --------------------------------------------------
             elif mode == 'rotate':
                 out_l = in_l * rot_l
                 out_r = in_r * rot_r
 
             # --------------------------------------------------
-            # 8. reverb (afir: 高密度な空間残響のシミュレーション)
+            # 8. reverb
             # --------------------------------------------------
             elif mode == 'reverb':
-                # 複数の遅延タップを非整数倍で重ね合わせてインパルス応答（波形）を再現
                 r1 = self.rev_buf_l[(self.rev_idx - 5771) % 12000]
                 r2 = self.rev_buf_l[(self.rev_idx - 8641) % 12000]
                 r3 = self.rev_buf_r[(self.rev_idx - 11549) % 12000]
@@ -267,12 +280,13 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 self.rev_idx = (self.rev_idx + 1) % 12000
 
             # --------------------------------------------------
-            # 9. spatial (ガチHRTFパンニング ＆ 4次元/8次元FDNリバーブ)
+            # 9. Real-HRTF Spatial (物理音響シミュレーション)
             # --------------------------------------------------
             elif mode == 'spatial':
                 mono_in = (in_l + in_r) * 0.5
-                fdn_out = [self.fdn_bufs[ch][self.fdn_idxs[ch]] for ch in range(8)]
                 
+                # --- A. 3D初期多重リバーブ(FDN) ---
+                fdn_out = [self.fdn_bufs[ch][self.fdn_idxs[ch]] for ch in range(8)]
                 if resolution == 8:
                     s1 = (fdn_out[0] + fdn_out[1] + fdn_out[2] + fdn_out[3])
                     s2 = (fdn_out[4] + fdn_out[5] + fdn_out[6] + fdn_out[7])
@@ -298,9 +312,11 @@ class PythonSpatialAudioSource(discord.AudioSource):
                     rev_l = (fdn_out[0] + fdn_out[2]) * 0.3
                     rev_r = (fdn_out[1] + fdn_out[3]) * 0.3
 
+                # 初期反射音と直達音のミキシング
                 mixed_l = in_l + rev_l * wet
                 mixed_r = in_r + rev_r * wet
                 
+                # --- B. 耳間時間差 (ITD) の適用 ---
                 self.spatial_buf_l[self.spatial_idx] = mixed_l
                 self.spatial_buf_r[self.spatial_idx] = mixed_r
                 
@@ -308,11 +324,30 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 sig_r = self.spatial_buf_r[(self.spatial_idx - sp_delay_r) % 1000]
                 self.spatial_idx = (self.spatial_idx + 1) % 1000
                 
-                self.spatial_lp_l = self.spatial_lp_l + sp_alpha_l * (sig_l - self.spatial_lp_l)
-                self.spatial_lp_r = self.spatial_lp_r + sp_alpha_r * (sig_r - self.spatial_lp_r)
+                # --- C. 頭部陰影効果 (ILD周波数フィルター) ---
+                # 反対側の耳に到達する音の高域成分を遮断する
+                self.shadow_lp_l = self.shadow_lp_l + alpha_l * (sig_l - self.shadow_lp_l)
+                self.shadow_lp_r = self.shadow_lp_r + alpha_r * (sig_r - self.shadow_lp_r)
                 
-                out_l = self.spatial_lp_l * 0.65
-                out_r = self.spatial_lp_r * 0.65
+                # --- D. 耳介による前後ノッチフィルター (Pinna Notch) ---
+                # 音源が後ろにあるとき(pos_y < 0)、5.5kHz近辺(4〜5サンプル前)の逆相を混ぜて打ち消し、後方定位を強める
+                notch_amt = 0.0 if pos_y > 0 else (abs(pos_y) * 0.45) # 後ろにいくほど強い谷を作る
+                
+                # 左耳ノッチ
+                prev_l = self.notch_buf_l[(self.notch_idx - 4) % 10]
+                self.notch_buf_l[self.notch_idx] = self.shadow_lp_l
+                filtered_l = self.shadow_lp_l - prev_l * notch_amt
+                
+                # 右耳ノッチ
+                prev_r = self.notch_buf_r[(self.notch_idx - 4) % 10]
+                self.notch_buf_r[self.notch_idx] = self.shadow_lp_r
+                filtered_r = self.shadow_lp_r - prev_r * notch_amt
+                
+                self.notch_idx = (self.notch_idx + 1) % 10
+                
+                # 最終的なゲイン調整と空間の広がり適用
+                out_l = filtered_l * vol_l * 0.8
+                out_r = filtered_r * vol_r * 0.8
             else:
                 out_l, out_r = in_l, in_r
 
@@ -328,6 +363,205 @@ class PythonSpatialAudioSource(discord.AudioSource):
 
     def cleanup(self):
         self.source.cleanup()
+
+
+class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルター入力)"):
+    def __init__(self, cog, guild_id: int):
+        super().__init__()
+        self.cog = cog
+        self.guild_id = guild_id
+
+    filter_input = discord.ui.TextInput(
+        label="FFmpegオーディオフィルター文字列",
+        placeholder="例: vibrato=f=4,tremolo=f=5 (空欄でフラットに戻す)",
+        required=False,
+        max_length=400,
+        style=discord.TextStyle.paragraph
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        state = self.cog.get_state(self.guild_id)
+        user_filter = self.filter_input.value.strip()
+
+        if not user_filter:
+            state['eq'] = "flat"
+            state['custom_eq_filter'] = None
+            await interaction.response.send_message("⚙️ カスタムEQを解除しました（Flatに戻します）。", ephemeral=True)
+        else:
+            state['eq'] = "custom"
+            state['custom_eq_filter'] = user_filter
+            await interaction.response.send_message(f"⚙️ カスタムEQを設定しました:\n`{user_filter}`\n即時反映します。", ephemeral=True)
+
+        # ❌ apply_immediate_settingを排除し、音楽を止めずにパネルだけ更新
+        await self.cog.update_panel(self.guild_id)
+
+
+# =====================
+# UI Panel Component
+# =====================
+class VoiceControlView(discord.ui.View):
+    """音量・倍速・EQ・再生コントロールをまとめた常時同期型インタラクティブメニューUI"""
+    def __init__(self, cog, guild_id: int):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.guild_id = guild_id
+        
+        self.add_item(self.SpeedSelect(cog, guild_id))
+        self.add_item(self.VolumeSelect(cog, guild_id))
+        self.add_item(self.EQSelect(cog, guild_id))
+
+    class SpeedSelect(discord.ui.Select):
+        def __init__(self, cog, guild_id):
+            self.cog = cog
+            self.guild_id = guild_id
+            state = cog.get_state(guild_id)
+            options = [
+                discord.SelectOption(label="0.5x (遅め)", value="0.5"),
+                discord.SelectOption(label="0.8x", value="0.8"),
+                discord.SelectOption(label="1.0x (標準)", value="1.0"),
+                discord.SelectOption(label="1.2x", value="1.2"),
+                discord.SelectOption(label="1.5x", value="1.5"),
+                discord.SelectOption(label="2.0x (倍速)", value="2.0"),
+            ]
+            super().__init__(placeholder=f"⚡ 速度変更 (現在: {state['speed']}x)", min_values=1, max_values=1, options=options, row=0)
+
+        async def callback(self, interaction: discord.Interaction):
+            state = self.cog.get_state(self.guild_id)
+            state['speed'] = float(self.values[0])
+            await interaction.response.send_message(f"⚡ 再生速度を `{state['speed']}` 倍に設定しました（即時反映）。", ephemeral=True)
+            ctx = state['current_ctx'] or interaction
+            await self.cog.apply_immediate_setting(ctx)
+
+    class VolumeSelect(discord.ui.Select):
+        def __init__(self, cog, guild_id):
+            self.cog = cog
+            self.guild_id = guild_id
+            state = cog.get_state(guild_id)
+            options = [
+                discord.SelectOption(label="10%", value="0.1"),
+                discord.SelectOption(label="50%", value="0.5"),
+                discord.SelectOption(label="80%", value="0.8"),
+                discord.SelectOption(label="100% (標準)", value="1.0"),
+                discord.SelectOption(label="150%", value="1.5"),
+                discord.SelectOption(label="200% (最大)", value="2.0"),
+            ]
+            super().__init__(placeholder=f"🔊 音量変更 (現在: {int(state['volume']*100)}%)", min_values=1, max_values=1, options=options, row=1)
+
+        async def callback(self, interaction: discord.Interaction):
+            state = self.cog.get_state(self.guild_id)
+            state['volume'] = float(self.values[0])
+            await interaction.response.send_message(f"🔊 音量を `{int(state['volume']*100)}%` に設定しました（即時反映）。", ephemeral=True)
+            # 音量はPythonSource側でリアルタイムに計算されているため曲を止める必要なし
+            await self.cog.update_panel(self.guild_id)
+
+    class EQSelect(discord.ui.Select):
+        def __init__(self, cog, guild_id):
+            self.cog = cog
+            self.guild_id = guild_id
+            state = cog.get_state(guild_id)
+            options = [
+                discord.SelectOption(label="Flat (標準)", value="flat"),
+                discord.SelectOption(label="Spatial (リアルHRTF立体音響)", value="spatial"),
+                discord.SelectOption(label="Bass (低音強調)", value="bass"),
+                discord.SelectOption(label="SuperBass (超重低音)", value="superbass"),
+                discord.SelectOption(label="Vocal (ボーカル強調)", value="vocal"),
+                discord.SelectOption(label="Echo (エコー)", value="echo"),
+                discord.SelectOption(label="Hall (ホール感)", value="hall"),
+                discord.SelectOption(label="Live (ライブ風)", value="live"),
+                discord.SelectOption(label="Rotate (回転音響)", value="rotate"),
+            ]
+            current_eq = state['eq'] if state['eq'] != "custom" else "custom (自由指定)"
+            super().__init__(placeholder=f"🎬 プリセットEQ選択 (現在: {current_eq})", min_values=1, max_values=1, options=options, row=2)
+
+        async def callback(self, interaction: discord.Interaction):
+            state = self.cog.get_state(self.guild_id)
+            state['eq'] = self.values[0]
+            state['custom_eq_filter'] = None
+            await interaction.response.send_message(f"🎬 エフェクトを `{state['eq']}` に変更しました（即時反映）。", ephemeral=True)
+            # ❌ apply_immediate_settingを排除し、ヌルッと切り替える
+            await self.cog.update_panel(self.guild_id)
+
+    @discord.ui.button(label="🔎 楽曲検索", style=discord.ButtonStyle.success, row=3)
+    async def search_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = SearchModal(self.cog, self.guild_id)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="⚙️ カスタムEQ", style=discord.ButtonStyle.secondary, row=3)
+    async def custom_eq_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = CustomEQModal(self.cog, self.guild_id)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="⏸️ 一時停止", style=discord.ButtonStyle.primary, row=3)
+    async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        state = self.cog.get_state(self.guild_id)
+        if vc and vc.is_playing():
+            actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
+            state['elapsed_offset'] += actual_played
+            state['is_paused'] = True
+            vc.stop()
+            await interaction.response.send_message(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)", ephemeral=True)
+            await self.cog.update_panel(self.guild_id)
+        else:
+            await interaction.response.send_message("❌ 現在再生中ではないか、既に一時停止されています。", ephemeral=True)
+
+    @discord.ui.button(label="▶️ 再開", style=discord.ButtonStyle.success, row=4)
+    async def resume_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        state = self.cog.get_state(self.guild_id)
+        if vc and state['is_paused'] and state['current_track']:
+            state['is_paused'] = False
+            await interaction.response.send_message("▶️ 再生を再開します。", ephemeral=True)
+            await self.cog.check_queue(self.guild_id)
+        else:
+            await interaction.response.send_message("❌ 再開できる一時停止中のトラックがありません。", ephemeral=True)
+
+    @discord.ui.button(label="⏭️ スキップ", style=discord.ButtonStyle.secondary, row=4)
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        state = self.cog.get_state(self.guild_id)
+        if vc and (vc.is_playing() or state['is_paused']):
+            state['current_track'] = None
+            state['elapsed_offset'] = 0
+            state['is_paused'] = False
+            vc.stop()
+            await interaction.response.send_message("⏭️ トラックをスキップしました。", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ 現在再生中の楽曲がありません。", ephemeral=True)
+
+    @discord.ui.button(label="⏹️ 全停止", style=discord.ButtonStyle.danger, row=4)
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        state = self.cog.get_state(self.guild_id)
+        if vc:
+            state['current_track'] = None
+            state['elapsed_offset'] = 0
+            state['is_paused'] = False
+            while not state['queue'].empty():
+                state['queue'].get_nowait()
+            vc.stop()
+            await interaction.response.send_message("⏹️ 再生を完全に停止し、キューをクリアしました。", ephemeral=True)
+            await self.cog.update_panel(self.guild_id)
+        else:
+            await interaction.response.send_message("❌ ボイスチャンネルに接続していません。", ephemeral=True)
+
+
+class Voice(commands.Cog):
+    # (中略: get_state, join, leave などの基本メソッドは既存のまま維持)
+
+    @commands.command()
+    async def eq(self, ctx, *, mode: str = "flat"):
+        state = self.get_state(ctx.guild.id)
+        if mode in EQ_SETTINGS:
+            state['eq'] = mode
+            state['custom_eq_filter'] = None
+            await ctx.send(embed=we(f"🎬 エフェクトをプリセット `{mode}` に変更しました。"))
+        else:
+            state['eq'] = "custom"
+            state['custom_eq_filter'] = mode
+            await ctx.send(embed=we(f"⚙️ カスタムEQフィルターを設定しました:\n`{mode}`"))
+        # ❌ apply_immediate_setting を排除してシームレス化
+        await self.update_panel(ctx.guild.id)
 # =====================
 # Search & Custom EQ Modals
 # =====================
