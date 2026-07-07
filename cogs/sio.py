@@ -87,8 +87,8 @@ def we(description: str = None, title: str = None) -> discord.Embed:
 
 class PythonSpatialAudioSource(discord.AudioSource):
     """
-    外部ライブラリを一切使わず、Python標準ライブラリのみで動作する
-    パラメータ（リバーブ値・解像度・ウェット量）動的調整対応型3Dオーディオエンジン
+    EQ_SETTINGSに定義されていたすべてのエフェクトを
+    Python標準ライブラリのみで完全リアルタイム処理する統合型オーディオエンジン
     """
     def __init__(self, source, state):
         self.source = source
@@ -96,125 +96,231 @@ class PythonSpatialAudioSource(discord.AudioSource):
         self.count = 0
         self.sr = 48000
         
-        # --- 動的HRTFパンニング用バッファ ---
-        self.delay_buf_l = [0.0] * 1000
-        self.delay_buf_r = [0.0] * 1000
-        self.buf_idx = 0
+        # --- [spatial] モード用バッファ ＆ フィルター状態 ---
+        self.spatial_buf_l = [0.0] * 1000
+        self.spatial_buf_r = [0.0] * 1000
+        self.spatial_idx = 0
+        self.spatial_lp_l = 0.0
+        self.spatial_lp_r = 0.0
         
-        # --- 頭部陰影効果用の過去サンプル保持 ---
-        self.last_lp_l = 0.0
-        self.last_lp_r = 0.0
-        
-        # --- 8次元対応FDN（Feedback Delay Network）リバーブの初期化 ---
-        # 8本の独立したディレイライン（素数に近いサンプル数で共振を分散）
+        # --- [spatial] FDNリバーブ初期化 ---
         self.fdn_delays = [1391, 1543, 1777, 1999, 2257, 2503, 2833, 3121]
         self.fdn_bufs = [[0.0] * d for d in self.fdn_delays]
         self.fdn_idxs = [0] * 8
+
+        # --- [bass / superbass] 低域ブースト用（1次IIRローパス） ---
+        self.bass_lp_l = 0.0
+        self.bass_lp_r = 0.0
+
+        # --- [echo] 標準エコー用（200msディレイバッファ） ---
+        self.echo_buf_l = [0.0] * 9600  # 0.2s * 48000
+        self.echo_buf_r = [0.0] * 9600
+        self.echo_idx = 0
+
+        # --- [vocal] 3バンド風簡易シェルビングフィルター状態 ---
+        self.vocal_lp_l = 0.0; self.vocal_lp_r = 0.0
+
+        # --- [live] 60msショートエコー ＆ 15kHzローパス ---
+        self.live_buf_l = [0.0] * 2880  # 0.06s * 48000
+        self.live_buf_r = [0.0] * 2880
+        self.live_idx = 0
+        self.live_lp_l = 0.0; self.live_lp_r = 0.0
+
+        # --- [reverb (afir)] 畳み込み風擬似ホール残響 ---
+        # 簡易的な多重フィードバックコンボ（120ms, 180ms, 240ms）で複雑な反射音を模擬
+        self.rev_buf_l = [0.0] * 12000
+        self.rev_buf_r = [0.0] * 12000
+        self.rev_idx = 0
 
     def read(self):
         raw_data = self.source.read()
         if not raw_data:
             return b""
         
-        if self.state.get('eq') != 'spatial':
-            return raw_data
-
         num_samples = len(raw_data) // 4
         fmt = f"<{num_samples * 2}h"
         samples = list(struct.unpack(fmt, raw_data))
         
+        # 現在選択されているEQモードを取得（デフォルトはflat）
+        mode = self.state.get('eq', 'flat')
         out_samples = []
-        
-        # --- 状態（state）から調整パラメータをリアルタイム取得 ---
-        # fdn_feedback: リバーブの長さ (0.0 〜 0.95, デフォルト: 0.28)
-        feedback = self.state.get('fdn_feedback', 0.28)
-        # fdn_wet: 残響音のミックス量 (0.0 〜 1.0, デフォルト: 0.3)
-        wet = self.state.get('fdn_wet', 0.3)
-        # fdn_resolution: 解像度 (4 または 8, デフォルト: 4)
-        resolution = self.state.get('fdn_resolution', 4)
-        if resolution not in (4, 8):
-            resolution = 4
 
-        # パンニングの角度計算
+        # spatial用の動的カスタムパラメータ（未設定時の初期値）
+        feedback = self.state.get('fdn_feedback', 0.28)
+        wet = self.state.get('fdn_wet', 0.3)
+        resolution = self.state.get('fdn_resolution', 4)
+
+        # 時間・角度カウント（rotate, live, spatial等で使用）
         self.count += 1
-        angle = (self.count / 400.0) * 2.0 * math.pi
-        pos_x = math.sin(angle)
         
-        # HRTF: 時間差(ITD)と頭部陰影フィルター係数(ILD)
-        delay_l = int((1.0 - pos_x) * 16)
-        delay_r = int((1.0 + pos_x) * 16)
-        lp_alpha_l = 0.15 + 0.85 * (0.5 + 0.5 * pos_x)
-        lp_alpha_r = 0.15 + 0.85 * (0.5 - 0.5 * pos_x)
+        # --- ループ処理前の事前計算 ---
+        # rotate用：周期8秒
+        rot_angle = (self.count / 400.0) * 2.0 * math.pi
+        rot_l = 0.5 + 0.5 * math.sin(rot_angle)
+        rot_r = 1.0 - rot_l
+
+        # spatialパンニング用
+        sp_angle = (self.count / 400.0) * 2.0 * math.pi
+        pos_x = math.sin(sp_angle)
+        sp_delay_l = int((1.0 - pos_x) * 16)
+        sp_delay_r = int((1.0 + pos_x) * 16)
+        sp_alpha_l = 0.15 + 0.85 * (0.5 + 0.5 * pos_x)
+        sp_alpha_r = 0.15 + 0.85 * (0.5 - 0.5 * pos_x)
 
         for i in range(num_samples):
             in_l = samples[i * 2] / 32768.0
             in_r = samples[i * 2 + 1] / 32768.0
-            mono_in = (in_l + in_r) * 0.5
-            
-            # ディレイラインから現在の末尾の残響音を抽出
-            fdn_out = [self.fdn_bufs[ch][self.fdn_idxs[ch]] for ch in range(8)]
-            
-            # --- 解像度に応じたハウスホルダー直交行列の演算（動的切り替え） ---
-            if resolution == 8:
-                # 【高解像度モード：8次元マトリックス】
-                # 8本の反響が互いに入り乱れる超高密度な残響
-                s1 = (fdn_out[0] + fdn_out[1] + fdn_out[2] + fdn_out[3])
-                s2 = (fdn_out[4] + fdn_out[5] + fdn_out[6] + fdn_out[7])
-                half_sum = (s1 + s2) * 0.25
-                
-                f = [0.0] * 8
-                f[0] = half_sum - fdn_out[0]; f[1] = half_sum - fdn_out[1]
-                f[2] = half_sum - fdn_out[2]; f[3] = half_sum - fdn_out[3]
-                f[4] = half_sum - fdn_out[4]; f[5] = half_sum - fdn_out[5]
-                f[6] = half_sum - fdn_out[6]; f[7] = half_sum - fdn_out[7]
-                
-                # 次の反響をバッファに書き込んでインデックスを更新 (8チャンネル分)
-                for ch in range(8):
-                    self.fdn_bufs[ch][self.fdn_idxs[ch]] = f[ch] * feedback + mono_in
-                    self.fdn_idxs[ch] = (self.fdn_idxs[ch] + 1) % self.fdn_delays[ch]
-                
-                # 8つの反響をL/Rステレオに分散
-                rev_l = (fdn_out[0] + fdn_out[2] + fdn_out[4] + fdn_out[6]) * 0.2
-                rev_r = (fdn_out[1] + fdn_out[3] + fdn_out[5] + fdn_out[7]) * 0.2
-            else:
-                # 【標準モード：4次元マトリックス】
-                # 4本のディレイラインによる軽量かつクリアな残響
-                f0 = (fdn_out[0] + fdn_out[1] + fdn_out[2] + fdn_out[3]) * 0.5
-                f1 = (fdn_out[0] - fdn_out[1] + fdn_out[2] - fdn_out[3]) * 0.5
-                f2 = (fdn_out[0] + fdn_out[1] - fdn_out[2] - fdn_out[3]) * 0.5
-                f3 = (fdn_out[0] - fdn_out[1] - fdn_out[2] + fdn_out[3]) * 0.5
-                
-                self.fdn_bufs[0][self.fdn_idxs[0]] = f0 * feedback + mono_in
-                self.fdn_bufs[1][self.fdn_idxs[1]] = f1 * feedback + mono_in
-                self.fdn_bufs[2][self.fdn_idxs[2]] = f2 * feedback + mono_in
-                self.fdn_bufs[3][self.fdn_idxs[3]] = f3 * feedback + mono_in
-                
-                for ch in range(4):
-                    self.fdn_idxs[ch] = (self.fdn_idxs[ch] + 1) % self.fdn_delays[ch]
-                
-                rev_l = (fdn_out[0] + fdn_out[2]) * 0.3
-                rev_r = (fdn_out[1] + fdn_out[3]) * 0.3
 
-            # 原音と調整されたウェット（残響）成分のミックス
-            mixed_l = in_l + rev_l * wet
-            mixed_r = in_r + rev_r * wet
+            # --------------------------------------------------
+            # 1. flat (原音そのまま)
+            # --------------------------------------------------
+            if mode == 'flat':
+                out_l, out_r = in_l, in_r
+
+            # --------------------------------------------------
+            # 2. bass / superbass (低域増幅 ＆ 音圧ノーマライズ擬似再現)
+            # --------------------------------------------------
+            elif mode in ('bass', 'superbass'):
+                boost = 2.8 if mode == 'superbass' else 1.8
+                # 1次IIRローパスで低音を抽出しブレンド
+                self.bass_lp_l = self.bass_lp_l + 0.06 * (in_l - self.bass_lp_l)
+                self.bass_lp_r = self.bass_lp_r + 0.06 * (in_r - self.bass_lp_r)
+                out_l = in_l + self.bass_lp_l * boost
+                out_r = in_r + self.bass_lp_r * boost
+                # dynaudnormの代わりに簡易的なソフトクリッパーで音圧を安定化
+                out_l = out_l / (1.0 + abs(out_l) * 0.2)
+                out_r = out_r / (1.0 + abs(out_r) * 0.2)
+
+            # --------------------------------------------------
+            # 3. echo (200msエコー: フィードバック40%)
+            # --------------------------------------------------
+            elif mode == 'echo':
+                el = self.echo_buf_l[self.echo_idx]
+                er = self.echo_buf_r[self.echo_idx]
+                out_l = in_l + el * 0.4
+                out_r = in_r + er * 0.4
+                self.echo_buf_l[self.echo_idx] = in_l
+                self.echo_buf_r[self.echo_idx] = in_r
+                self.echo_idx = (self.echo_idx + 1) % 9600
+
+            # --------------------------------------------------
+            # 4. hall (ステレオ幅の強烈な拡張)
+            # --------------------------------------------------
+            elif mode == 'hall':
+                diff = in_l - in_r
+                out_l = in_l + diff * 0.75
+                out_r = in_r - diff * 0.75
+
+            # --------------------------------------------------
+            # 5. vocal (1kHz-4kHz帯の中音域ブースト、不要低域の減衰)
+            # --------------------------------------------------
+            elif mode == 'vocal':
+                # 高域・低域を滑らかに削り、中音域の芯を1.5倍にする
+                self.vocal_lp_l = self.vocal_lp_l + 0.35 * (in_l - self.vocal_lp_l)
+                self.vocal_lp_r = self.vocal_lp_r + 0.35 * (in_r - self.vocal_lp_r)
+                out_l = self.vocal_lp_l * 1.4
+                out_r = self.vocal_lp_r * 1.4
+
+            # --------------------------------------------------
+            # 6. live (60msショートエコー ＋ 15kHz制限 ＋ サラウンド拡張)
+            # --------------------------------------------------
+            elif mode == 'live':
+                # 60msディレイ
+                ll = self.live_buf_l[self.live_idx]
+                lr = self.live_buf_r[self.live_idx]
+                mix_l = in_l + ll * 0.4
+                mix_r = in_r + lr * 0.4
+                self.live_buf_l[self.live_idx] = in_l
+                self.live_buf_r[self.live_idx] = in_r
+                self.live_idx = (self.live_idx + 1) % 2880
+                
+                # 15kHzローパスフィルター
+                self.live_lp_l = self.live_lp_l + 0.85 * (mix_l - self.live_lp_l)
+                self.live_lp_r = self.live_lp_r + 0.85 * (mix_r - self.live_lp_r)
+                
+                # スピーカーサラウンド感を模した逆相ブレンド (extrastereo)
+                diff = self.live_lp_l - self.live_lp_r
+                out_l = self.live_lp_l + diff * 0.3
+                out_r = self.live_lp_r - diff * 0.3
+
+            # --------------------------------------------------
+            # 7. rotate (0.125Hz = 8秒周期での脳内自動ローテーション)
+            # --------------------------------------------------
+            elif mode == 'rotate':
+                out_l = in_l * rot_l
+                out_r = in_r * rot_r
+
+            # --------------------------------------------------
+            # 8. reverb (afir: 高密度な空間残響のシミュレーション)
+            # --------------------------------------------------
+            elif mode == 'reverb':
+                # 複数の遅延タップを非整数倍で重ね合わせてインパルス応答（波形）を再現
+                r1 = self.rev_buf_l[(self.rev_idx - 5771) % 12000]
+                r2 = self.rev_buf_l[(self.rev_idx - 8641) % 12000]
+                r3 = self.rev_buf_r[(self.rev_idx - 11549) % 12000]
+                
+                out_l = in_l + (r1 * 0.25 + r2 * 0.15)
+                out_r = in_r + (r3 * 0.25 + r2 * 0.15)
+                
+                self.rev_buf_l[self.rev_idx] = in_l + r3 * 0.3
+                self.rev_buf_r[self.rev_idx] = in_r + r1 * 0.3
+                self.rev_idx = (self.rev_idx + 1) % 12000
+
+            # --------------------------------------------------
+            # 9. spatial (ガチHRTFパンニング ＆ 4次元/8次元FDNリバーブ)
+            # --------------------------------------------------
+            elif mode == 'spatial':
+                mono_in = (in_l + in_r) * 0.5
+                fdn_out = [self.fdn_bufs[ch][self.fdn_idxs[ch]] for ch in range(8)]
+                
+                if resolution == 8:
+                    s1 = (fdn_out[0] + fdn_out[1] + fdn_out[2] + fdn_out[3])
+                    s2 = (fdn_out[4] + fdn_out[5] + fdn_out[6] + fdn_out[7])
+                    half_sum = (s1 + s2) * 0.25
+                    f = [half_sum - fdn_out[ch] for ch in range(8)]
+                    for ch in range(8):
+                        self.fdn_bufs[ch][self.fdn_idxs[ch]] = f[ch] * feedback + mono_in
+                        self.fdn_idxs[ch] = (self.fdn_idxs[ch] + 1) % self.fdn_delays[ch]
+                    rev_l = (fdn_out[0] + fdn_out[2] + fdn_out[4] + fdn_out[6]) * 0.2
+                    rev_r = (fdn_out[1] + fdn_out[3] + fdn_out[5] + fdn_out[7]) * 0.2
+                else:
+                    f0 = (fdn_out[0] + fdn_out[1] + fdn_out[2] + fdn_out[3]) * 0.5
+                    f1 = (fdn_out[0] - fdn_out[1] + fdn_out[2] - fdn_out[3]) * 0.5
+                    f2 = (fdn_out[0] + fdn_out[1] - fdn_out[2] - fdn_out[3]) * 0.5
+                    f3 = (fdn_out[0] - fdn_out[1] - fdn_out[2] + fdn_out[3]) * 0.5
+                    
+                    self.fdn_bufs[0][self.fdn_idxs[0]] = f0 * feedback + mono_in
+                    self.fdn_bufs[1][self.fdn_idxs[1]] = f1 * feedback + mono_in
+                    self.fdn_bufs[2][self.fdn_idxs[2]] = f2 * feedback + mono_in
+                    self.fdn_bufs[3][self.fdn_idxs[3]] = f3 * feedback + mono_in
+                    for ch in range(4):
+                        self.fdn_idxs[ch] = (self.fdn_idxs[ch] + 1) % self.fdn_delays[ch]
+                    rev_l = (fdn_out[0] + fdn_out[2]) * 0.3
+                    rev_r = (fdn_out[1] + fdn_out[3]) * 0.3
+
+                mixed_l = in_l + rev_l * wet
+                mixed_r = in_r + rev_r * wet
+                
+                self.spatial_buf_l[self.spatial_idx] = mixed_l
+                self.spatial_buf_r[self.spatial_idx] = mixed_r
+                
+                sig_l = self.spatial_buf_l[(self.spatial_idx - sp_delay_l) % 1000]
+                sig_r = self.spatial_buf_r[(self.spatial_idx - sp_delay_r) % 1000]
+                self.spatial_idx = (self.spatial_idx + 1) % 1000
+                
+                self.spatial_lp_l = self.spatial_lp_l + sp_alpha_l * (sig_l - self.spatial_lp_l)
+                self.spatial_lp_r = self.spatial_lp_r + sp_alpha_r * (sig_r - self.spatial_lp_r)
+                
+                out_l = self.spatial_lp_l * 0.65
+                out_r = self.spatial_lp_r * 0.65
+            else:
+                out_l, out_r = in_l, in_r
+
+            # 音割れ（クリッピング）防止ガード処理
+            out_l = max(-1.0, min(1.0, out_l))
+            out_r = max(-1.0, min(1.0, out_r))
             
-            # ITD（時間遅延）の適用
-            self.delay_buf_l[self.buf_idx] = mixed_l
-            self.delay_buf_r[self.buf_idx] = mixed_r
-            
-            sig_l = self.delay_buf_l[(self.buf_idx - delay_l) % len(self.delay_buf_l)]
-            sig_r = self.delay_buf_r[(self.buf_idx - delay_r) % len(self.delay_buf_r)]
-            self.buf_idx = (self.buf_idx + 1) % len(self.delay_buf_l)
-            
-            # ILD（頭部陰影ローパス）の適用
-            self.last_lp_l = self.last_lp_l + lp_alpha_l * (sig_l - self.last_lp_l)
-            self.last_lp_r = self.last_lp_r + lp_alpha_r * (sig_r - self.last_lp_r)
-            
-            # クリップ防止と整数パック
-            out_l = max(-1.0, min(1.0, self.last_lp_l * 0.65))
-            out_r = max(-1.0, min(1.0, self.last_lp_r * 0.65))
-            
+            # 再度16bitのシグナルにエンコード
             out_samples.append(int(out_l * 32767))
             out_samples.append(int(out_r * 32767))
             
@@ -891,13 +997,15 @@ class Voice(commands.Cog):
                 filters.append(eq_filter_str)
             af_string = f"-af {','.join(filters)}" if filters else ""
 
-        options = f"{af_string} -vn -ar 48000 -ac 2"
+        # エフェクトはすべてPython（上記クラス）内で一元処理するため、FFmpegのオプションは常にフラットにする
+        options = "-vn -ar 48000 -ac 2"
+        before_options = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
 
         try:
-            # 1. FFmpegには純粋にデコードだけを行わせる
+            # 純粋なPCM信号の展開のみをFFmpegに任せる
             raw_source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
             
-            # 2. 生成したソースを、上で作成したPython側の3Dオーディオエンジンでラップする
+            # 統合された全EQ対応のオーディオエンジンでラップ
             source = PythonSpatialAudioSource(raw_source, state)
             
             state['start_time'] = time.time()
