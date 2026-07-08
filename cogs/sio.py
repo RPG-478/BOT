@@ -338,6 +338,32 @@ class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルタ�
         # ❌ apply_immediate_settingを排除し、音楽を止めずにパネルだけ更新
         await self.cog.update_panel(self.guild_id)
 
+# ==========================================
+# 🆕 動的UIコンポーネント（Spatial詳細設定）
+# ==========================================
+class SpatialDistanceSelect(discord.ui.Select):
+    """音像の距離を動的に制御するスライダー代替UI"""
+    def __init__(self, cog, guild_id: int):
+        self.cog = cog
+        self.guild_id = guild_id
+        state = cog.get_state(guild_id)
+        current = state.get('spatial_distance', 1.0)
+        options = [
+            discord.SelectOption(label="超至近距離 (0.2x)", value="0.2", description="耳元ギリギリで鳴らします"),
+            discord.SelectOption(label="近め (0.6x)", value="0.6"),
+            discord.SelectOption(label="標準距離 (1.0x)", value="1.0"),
+            discord.SelectOption(label="遠め (1.8x)", value="1.8", description="空気吸収による高域減衰が始まります"),
+            discord.SelectOption(label="超遠距離 (3.0x)", value="3.0", description="かなり遠くの広場から響きます"),
+        ]
+        super().__init__(placeholder=f"📏 音源の距離 (現在: {current}x)", min_values=1, max_values=1, options=options, row=3)
+
+    async def callback(self, interaction: discord.Interaction):
+        state = self.cog.get_state(self.guild_id)
+        state['spatial_distance'] = float(self.values[0])
+        await interaction.response.send_message(f"📏 立体音響の音像距離を `{state['spatial_distance']}x` に変更しました（リアルタイム反映）。", ephemeral=True)
+        await self.cog.update_panel(self.guild_id)
+
+
 class SpatialRoomSizeSelect(discord.ui.Select):
     """部屋の大きさ（残響時間）を動的に制御するUI"""
     def __init__(self, cog, guild_id: int):
@@ -362,6 +388,9 @@ class SpatialRoomSizeSelect(discord.ui.Select):
 # =====================
 # UI Panel Component
 # =====================
+# ==========================================
+# ⚡ 動的にコンポーネントが組み替わる統合パネルView
+# ==========================================
 class VoiceControlView(discord.ui.View):
     """EQ設定によって下部のUIスライダー（セレクトメニュー）が動的にトグルするView"""
     def __init__(self, cog, guild_id: int):
