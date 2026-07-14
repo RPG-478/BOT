@@ -16,6 +16,7 @@ import threading
 import random
 import numpy as np
 from scipy import signal
+import numpy as np
 
 # yt-dlpの設定（ストリーミング再生用および検索用）
 YTDL_OPTIONS = {
@@ -91,7 +92,7 @@ def we(description: str = None, title: str = None) -> discord.Embed:
 class PythonSpatialAudioSource(discord.AudioSource):
     """
     EQ_SETTINGSに定義されていたすべてのエフェクトを
-    Python標準ライブラリのみで完全リアルタイム処理する統合型オーディオエンジン
+    Python標準ライブラリおよびnumpy/scipyで完全リアルタイム処理する統合型オーディオエンジン
     """
     def __init__(self, source, state):
         self.source = source
@@ -99,33 +100,84 @@ class PythonSpatialAudioSource(discord.AudioSource):
         self.count = 0
         self.sr = 48000
         
-        # --- [spatial] モード用バッファ ＆ フィルター状態 ---
-        self.spatial_buf_l = [0.0] * 1000
-        self.spatial_buf_r = [0.0] * 1000
-        self.spatial_idx = 0
-        self.shadow_lp_l = 0.0
-        self.shadow_lp_r = 0.0
+        # --- [spatial] HRTF/HRIR（頭部伝達インパルス応答）シミュレータ初期化 ---
+        # 15度刻み（24方向）のHRIRテーブルを作成
+        self.num_directions = 24
+        self.hrir_len = 64  # インパルス応答の長さ（サンプル数）
+        self.hrir_table_l = []
+        self.hrir_table_r = []
         
-        self.notch_buf_l = [0.0] * 10
-        self.notch_buf_r = [0.0] * 10
-        self.notch_idx = 0
+        # 頭部半径 (約8.75cm)、音速 340m/s から、最大遅延時間差（ITD）は約 0.25ms (48kHzで約12サンプル)
+        head_radius = 0.0875
+        vsound = 340.0
+        max_delay_samples = int((head_radius / vsound) * self.sr)
+        
+        for idx in range(self.num_directions):
+            angle = (idx * (360.0 / self.num_directions)) * np.pi / 180.0
+            
+            # 左右の耳への到達時間差 (ITD)
+            # 左(90度/ 0.5pi)に近いほど左耳への遅延が少なくなり、右耳への遅延が増える
+            itd_l = int(max_delay_samples * (1.0 - np.sin(angle)))
+            itd_r = int(max_delay_samples * (1.0 + np.sin(angle)))
+            
+            # 頭部遮蔽（ILD）による左右の減衰量（左耳は90度で最大、右耳は270度で最大）
+            atten_l = 0.5 + 0.5 * np.cos(angle - np.pi / 2.0)
+            atten_r = 0.5 + 0.5 * np.cos(angle - 3.0 * np.pi / 2.0)
+            
+            ir_l = np.zeros(self.hrir_len, dtype=np.float32)
+            ir_r = np.zeros(self.hrir_len, dtype=np.float32)
+            
+            # 頭部遮蔽による高域のボケ（ローパス効果）をガウシアンカーネルでシミュレート
+            t = np.arange(-8, 8)
+            sigma_l = 0.8 + (1.0 - atten_l) * 3.5  # 遮蔽が大きいほどフィルターが鈍る
+            kernel_l = np.exp(-t**2 / (2.0 * sigma_l**2))
+            kernel_l /= np.sum(kernel_l)
+            
+            sigma_r = 0.8 + (1.0 - atten_r) * 3.5
+            kernel_r = np.exp(-t**2 / (2.0 * sigma_r**2))
+            kernel_r /= np.sum(kernel_r)
+            
+            # 遅延位置にカーネル（インパルス応答）を配置
+            start_l = np.clip(itd_l - len(t)//2, 0, self.hrir_len - len(t))
+            start_r = np.clip(itd_r - len(t)//2, 0, self.hrir_len - len(t))
+            
+            ir_l[start_l:start_l + len(t)] = kernel_l * (0.3 + 0.7 * atten_l)
+            ir_r[start_r:start_r + len(t)] = kernel_r * (0.3 + 0.7 * atten_r)
+            
+            self.hrir_table_l.append(ir_l)
+            self.hrir_table_r.append(ir_r)
+
+        # 畳み込み処理の境界用バッファ（重なり保存領域）
+        self.conv_overlap_l = np.zeros(self.hrir_len - 1, dtype=np.float32)
+        self.conv_overlap_r = np.zeros(self.hrir_len - 1, dtype=np.float32)
 
         # --- [spatial] FDNリバーブ初期化 ---
         self.fdn_delays = [1391, 1543, 1777, 1999, 2257, 2503, 2833, 3121]
         self.fdn_bufs = [[0.0] * d for d in self.fdn_delays]
         self.fdn_idxs = [0] * 8
 
-        # --- [bass / superbass] ---
-        self.bass_lp_l = 0.0; self.bass_lp_r = 0.0
-        # --- [echo] ---
-        self.echo_buf_l = [0.0] * 9600; self.echo_buf_r = [0.0] * 9600; self.echo_idx = 0
-        # --- [vocal] ---
+        # --- [bass / superbass] 低域ブースト用 ---
+        self.bass_lp_l = 0.0
+        self.bass_lp_r = 0.0
+
+        # --- [echo] 標準エコー用 ---
+        self.echo_buf_l = [0.0] * 9600
+        self.echo_buf_r = [0.0] * 9600
+        self.echo_idx = 0
+
+        # --- [vocal] 簡易シェルビング用 ---
         self.vocal_lp_l = 0.0; self.vocal_lp_r = 0.0
-        # --- [live] ---
-        self.live_buf_l = [0.0] * 2880; self.live_buf_r = [0.0] * 2880; self.live_idx = 0
+
+        # --- [live] ショートエコー用 ---
+        self.live_buf_l = [0.0] * 2880
+        self.live_buf_r = [0.0] * 2880
+        self.live_idx = 0
         self.live_lp_l = 0.0; self.live_lp_r = 0.0
-        # --- [reverb] ---
-        self.rev_buf_l = [0.0] * 12000; self.rev_buf_r = [0.0] * 12000; self.rev_idx = 0
+
+        # --- [reverb (afir)] 畳み込み風擬似残響用 ---
+        self.rev_buf_l = [0.0] * 12000
+        self.rev_buf_r = [0.0] * 12000
+        self.rev_idx = 0
 
     def read(self):
         raw_data = self.source.read()
@@ -137,48 +189,90 @@ class PythonSpatialAudioSource(discord.AudioSource):
         samples = list(struct.unpack(fmt, raw_data))
         
         mode = self.state.get('eq', 'flat')
-        out_samples = []
+        self.count += 1
 
-        # --- Spatial用動的パラメータの取得 ---
-        # 距離 (0.1〜3.0, 標準 1.0) -> 遠いほど直達音が減衰し、高域がロスする
-        distance = self.state.get('spatial_distance', 1.0)
-        # 部屋の大きさ (0.1〜0.95, 標準 0.5) -> FDNのフィードバック倍率に直結
-        room_size = self.state.get('spatial_room_size', 0.5)
-        
-        # 内部計算用のフィードバックゲイン (部屋の大きさに比例、最大0.48)
-        feedback = 0.1 + (room_size * 0.38)
-        # 距離が遠いほど残響の比率（WET）を相対的に上げる
-        wet = min(0.6, 0.2 + (distance * 0.1))
+        # dynamic parameters
+        feedback = self.state.get('fdn_feedback', 0.28)
+        wet = self.state.get('fdn_wet', 0.3)
         resolution = self.state.get('fdn_resolution', 4)
 
-        self.count += 1
-        
-        # rotate用
+        # ==================================================
+        # 9. spatial モード（numpy / scipy 高速バイノーラル畳み込み処理）
+        # ==================================================
+        if mode == 'spatial':
+            # 入力波形をnumpy配列に変換
+            in_data = np.array(samples, dtype=np.float32) / 32768.0
+            in_l = in_data[0::2]
+            in_r = in_data[1::2]
+            mono_in = (in_l + in_r) * 0.5
+            
+            # 音源の回転角度を決定 (8秒周期)
+            angle = (self.count / 400.0) * 2.0 * np.pi
+            angle_deg = np.degrees(angle) % 360
+            hrir_idx = int((angle_deg / 360.0) * self.num_directions) % self.num_directions
+            
+            # 対応する角度のHRIR（頭部伝達インパルス応答）を選択
+            hrir_l = self.hrir_table_l[hrir_idx]
+            hrir_r = self.hrir_table_r[hrir_idx]
+            
+            # ハウスホルダーリバーブ (FDN) のシミュレーション
+            fdn_out = [np.array(self.fdn_bufs[ch]) for ch in range(8)]
+            rev_signal = np.zeros_like(mono_in)
+            
+            # モノラル信号に残響をブレンド
+            for ch in range(resolution):
+                d_len = self.fdn_delays[ch]
+                # リングバッファからディレイを抽出し、簡易フィードバックを加算して更新
+                buf = self.fdn_bufs[ch]
+                idx = self.fdn_idxs[ch]
+                
+                # フレーム全体の遅延信号をシミュレートしてブレンド
+                delayed = np.zeros_like(mono_in)
+                for s_i in range(len(mono_in)):
+                    delayed[s_i] = buf[idx]
+                    buf[idx] = mono_in[s_i] + buf[idx] * feedback
+                    idx = (idx + 1) % d_len
+                
+                self.fdn_idxs[ch] = idx
+                rev_signal += delayed / float(resolution)
+
+            mixed_mono = mono_in + rev_signal * wet
+            
+            # scipyのoaconvolve（Overlap-Add法）による高速HRTF畳み込み
+            out_l_full = signal.oaconvolve(mixed_mono, hrir_l, mode='full')
+            out_r_full = signal.oaconvolve(mixed_mono, hrir_r, mode='full')
+            
+            # 前フレームからの重なり（Overlap）データを加算
+            out_l_full[:self.hrir_len - 1] += self.conv_overlap_l
+            out_r_full[:self.hrir_len - 1] += self.conv_overlap_r
+            
+            # 次フレーム用の重なりデータを保存
+            self.conv_overlap_l = out_l_full[len(mono_in):]
+            self.conv_overlap_r = out_r_full[len(mono_in):]
+            
+            # 正規の出力サイズにカット
+            out_l = out_l_full[:len(mono_in)]
+            out_r = out_r_full[:len(mono_in)]
+            
+            # 音割れガード処理と16bitパッキング
+            out_l = np.clip(out_l * 0.75, -1.0, 1.0)
+            out_r = np.clip(out_r * 0.75, -1.0, 1.0)
+            
+            out_samples = np.empty(len(samples), dtype=np.int16)
+            out_samples[0::2] = (out_l * 32767).astype(np.int16)
+            out_samples[1::2] = (out_r * 32767).astype(np.int16)
+            
+            return struct.pack(fmt, *out_samples.tolist())
+
+        # ==================================================
+        # それ以外のモード（従来のサンプル単位処理）
+        # ==================================================
+        out_samples = []
+
+        # rotate用の事前計算
         rot_angle = (self.count / 400.0) * 2.0 * math.pi
         rot_l = 0.5 + 0.5 * math.sin(rot_angle)
         rot_r = 1.0 - rot_l
-
-        # spatialパンニング用
-        sp_angle = (self.count / 500.0) * 2.0 * math.pi
-        pos_x = math.sin(sp_angle)
-        pos_y = math.cos(sp_angle)
-
-        # 距離による時間遅延の増幅効果 (遠いほど初期遅延が大きく開く)
-        base_delay = 15 * distance
-        sp_delay_l = int((1.0 - pos_x) * base_delay)
-        sp_delay_r = int((1.0 + pos_x) * base_delay)
-
-        # 頭部陰影(ILD)フィルター係数 (距離が遠いほど空気吸収でさらに高域が削れる)
-        dist_air_loss = max(0.02, 0.2 / distance)
-        alpha_l = (0.15 + 0.85 * (0.5 + 0.5 * (1.0 - pos_x))) * dist_air_loss
-        alpha_r = (0.15 + 0.85 * (0.5 + 0.5 * (1.0 + pos_x))) * dist_air_loss
-        alpha_l = max(0.01, min(0.99, alpha_l))
-        alpha_r = max(0.01, min(0.99, alpha_r))
-
-        # 距離による音量減衰 (逆二乗の法則の簡易シミュレート)
-        dist_gain = 1.0 / (distance ** 0.5)
-        vol_l = (0.3 + 0.7 * (0.5 + 0.5 * (1.0 - pos_x))) * dist_gain
-        vol_r = (0.3 + 0.7 * (0.5 + 0.5 * (1.0 + pos_x))) * dist_gain
 
         for i in range(num_samples):
             in_l = samples[i * 2] / 32768.0
@@ -197,108 +291,62 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 out_r = out_r / (1.0 + abs(out_r) * 0.2)
 
             elif mode == 'echo':
-                el = self.echo_buf_l[self.echo_idx]; er = self.echo_buf_r[self.echo_idx]
-                out_l = in_l + el * 0.4; out_r = in_r + er * 0.4
-                self.echo_buf_l[self.echo_idx] = in_l; self.echo_buf_r[self.echo_idx] = in_r
+                el = self.echo_buf_l[self.echo_idx]
+                er = self.echo_buf_r[self.echo_idx]
+                out_l = in_l + el * 0.4
+                out_r = in_r + er * 0.4
+                self.echo_buf_l[self.echo_idx] = in_l
+                self.echo_buf_r[self.echo_idx] = in_r
                 self.echo_idx = (self.echo_idx + 1) % 9600
 
             elif mode == 'hall':
                 diff = in_l - in_r
-                out_l = in_l + diff * 0.75; out_r = in_r - diff * 0.75
+                out_l = in_l + diff * 0.75
+                out_r = in_r - diff * 0.75
 
             elif mode == 'vocal':
                 self.vocal_lp_l = self.vocal_lp_l + 0.35 * (in_l - self.vocal_lp_l)
                 self.vocal_lp_r = self.vocal_lp_r + 0.35 * (in_r - self.vocal_lp_r)
-                out_l = self.vocal_lp_l * 1.4; out_r = self.vocal_lp_r * 1.4
+                out_l = self.vocal_lp_l * 1.4
+                out_r = self.vocal_lp_r * 1.4
 
             elif mode == 'live':
-                ll = self.live_buf_l[self.live_idx]; lr = self.live_buf_r[self.live_idx]
-                mix_l = in_l + ll * 0.4; mix_r = in_r + lr * 0.4
-                self.live_buf_l[self.live_idx] = in_l; self.live_buf_r[self.live_idx] = in_r
+                ll = self.live_buf_l[self.live_idx]
+                lr = self.live_buf_r[self.live_idx]
+                mix_l = in_l + ll * 0.4
+                mix_r = in_r + lr * 0.4
+                self.live_buf_l[self.live_idx] = in_l
+                self.live_buf_r[self.live_idx] = in_r
                 self.live_idx = (self.live_idx + 1) % 2880
+                
                 self.live_lp_l = self.live_lp_l + 0.85 * (mix_l - self.live_lp_l)
                 self.live_lp_r = self.live_lp_r + 0.85 * (mix_r - self.live_lp_r)
+                
                 diff = self.live_lp_l - self.live_lp_r
-                out_l = self.live_lp_l + diff * 0.3; out_r = self.live_lp_r - diff * 0.3
+                out_l = self.live_lp_l + diff * 0.3
+                out_r = self.live_lp_r - diff * 0.3
 
             elif mode == 'rotate':
-                out_l = in_l * rot_l; out_r = in_r * rot_r
+                out_l = in_l * rot_l
+                out_r = in_r * rot_r
 
             elif mode == 'reverb':
                 r1 = self.rev_buf_l[(self.rev_idx - 5771) % 12000]
                 r2 = self.rev_buf_l[(self.rev_idx - 8641) % 12000]
                 r3 = self.rev_buf_r[(self.rev_idx - 11549) % 12000]
-                out_l = in_l + (r1 * 0.25 + r2 * 0.15); out_r = in_r + (r3 * 0.25 + r2 * 0.15)
+                
+                out_l = in_l + (r1 * 0.25 + r2 * 0.15)
+                out_r = in_r + (r3 * 0.25 + r2 * 0.15)
+                
                 self.rev_buf_l[self.rev_idx] = in_l + r3 * 0.3
                 self.rev_buf_r[self.rev_idx] = in_r + r1 * 0.3
                 self.rev_idx = (self.rev_idx + 1) % 12000
-
-            # --------------------------------------------------
-            # 9. Spatial (距離 ＆ 部屋の大きさを完全掌握したHRTF)
-            # --------------------------------------------------
-            elif mode == 'spatial':
-                mono_in = (in_l + in_r) * 0.5
-                
-                # FDNリバーブ
-                fdn_out = [self.fdn_bufs[ch][self.fdn_idxs[ch]] for ch in range(8)]
-                if resolution == 8:
-                    s1 = (fdn_out[0] + fdn_out[1] + fdn_out[2] + fdn_out[3])
-                    s2 = (fdn_out[4] + fdn_out[5] + fdn_out[6] + fdn_out[7])
-                    half_sum = (s1 + s2) * 0.25
-                    f = [half_sum - fdn_out[ch] for ch in range(8)]
-                    for ch in range(8):
-                        self.fdn_bufs[ch][self.fdn_idxs[ch]] = f[ch] * feedback + mono_in
-                        self.fdn_idxs[ch] = (self.fdn_idxs[ch] + 1) % self.fdn_delays[ch]
-                    rev_l = (fdn_out[0] + fdn_out[2] + fdn_out[4] + fdn_out[6]) * 0.2
-                    rev_r = (fdn_out[1] + fdn_out[3] + fdn_out[5] + fdn_out[7]) * 0.2
-                else:
-                    f0 = (fdn_out[0] + fdn_out[1] + fdn_out[2] + fdn_out[3]) * 0.5
-                    f1 = (fdn_out[0] - fdn_out[1] + fdn_out[2] - fdn_out[3]) * 0.5
-                    f2 = (fdn_out[0] + fdn_out[1] - fdn_out[2] - fdn_out[3]) * 0.5
-                    f3 = (fdn_out[0] - fdn_out[1] - fdn_out[2] + fdn_out[3]) * 0.5
-                    self.fdn_bufs[0][self.fdn_idxs[0]] = f0 * feedback + mono_in
-                    self.fdn_bufs[1][self.fdn_idxs[1]] = f1 * feedback + mono_in
-                    self.fdn_bufs[2][self.fdn_idxs[2]] = f2 * feedback + mono_in
-                    self.fdn_bufs[3][self.fdn_idxs[3]] = f3 * feedback + mono_in
-                    for ch in range(4):
-                        self.fdn_idxs[ch] = (self.fdn_idxs[ch] + 1) % self.fdn_delays[ch]
-                    rev_l = (fdn_out[0] + fdn_out[2]) * 0.3
-                    rev_r = (fdn_out[1] + fdn_out[3]) * 0.3
-
-                # 直達音とカスタム残響のブレンド
-                mixed_l = in_l + rev_l * wet
-                mixed_r = in_r + rev_r * wet
-                
-                # ITD (耳間時間差)
-                self.spatial_buf_l[self.spatial_idx] = mixed_l
-                self.spatial_buf_r[self.spatial_idx] = mixed_r
-                
-                sig_l = self.spatial_buf_l[(self.spatial_idx - sp_delay_l) % 1000]
-                sig_r = self.spatial_buf_r[(self.spatial_idx - sp_delay_r) % 1000]
-                self.spatial_idx = (self.spatial_idx + 1) % 1000
-                
-                # ILD (頭部陰影 ＋ 距離減衰ローパス)
-                self.shadow_lp_l = self.shadow_lp_l + alpha_l * (sig_l - self.shadow_lp_l)
-                self.shadow_lp_r = self.shadow_lp_r + alpha_r * (sig_r - self.shadow_lp_r)
-                
-                # ピンナ・ノッチ (前後感)
-                notch_amt = 0.0 if pos_y > 0 else (abs(pos_y) * 0.45)
-                prev_l = self.notch_buf_l[(self.notch_idx - 4) % 10]
-                self.notch_buf_l[self.notch_idx] = self.shadow_lp_l
-                filtered_l = self.shadow_lp_l - prev_l * notch_amt
-                
-                prev_r = self.notch_buf_r[(self.notch_idx - 4) % 10]
-                self.notch_buf_r[self.notch_idx] = self.shadow_lp_r
-                filtered_r = self.shadow_lp_r - prev_r * notch_amt
-                self.notch_idx = (self.notch_idx + 1) % 10
-                
-                out_l = filtered_l * vol_l * 0.8
-                out_r = filtered_r * vol_r * 0.8
             else:
                 out_l, out_r = in_l, in_r
 
             out_l = max(-1.0, min(1.0, out_l))
             out_r = max(-1.0, min(1.0, out_r))
+            
             out_samples.append(int(out_l * 32767))
             out_samples.append(int(out_r * 32767))
             
