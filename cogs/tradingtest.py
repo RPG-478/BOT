@@ -1,40 +1,47 @@
 import discord
 from discord.ext import commands
-import onnxruntime as ort
-import numpy as np
+import yfinance as yf
+import asyncio
 
-class StockPredictorCog(commands.Cog):
+class StockCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # Colab側で出力した新しいファイル名に合わせる
-        self.model_path = 'Assets/stock_transformer_multitask_v2.onnx'
-        self.window_size = 100
-        self.session = ort.InferenceSession(self.model_path)
 
-    @commands.command(name="predict")
-    async def predict(self, ctx, ticker_code: str):
+    @commands.command(name="stock")
+    async def stock(self, ctx, ticker: str):
+        def fetch_data():
+            t = yf.Ticker(ticker)
+            hist = t.history(period="1d")
+            try:
+                info = t.info
+            except Exception:
+                info = {}
+            return hist, info
+
         try:
-            # 以前のデータ取得および特徴量抽出ロジックをここに配置
+            hist, info = await asyncio.to_thread(fetch_data)
             
-            input_data = np.expand_dims(features, axis=0).astype(np.float32)
-            
-            input_name = self.session.get_inputs()[0].name
-            outputs = self.session.run(None, {input_name: input_data})
-            
-            prob = outputs[0][0]
-            max_up = outputs[1][0]
-            max_down = outputs[2][0]
-            
-            response = (
-                f"=== {ticker_code} 予測結果 ===\n"
-                f"上昇確率: {prob * 100:.2f}%\n"
-                f"最大上昇率予測: {max_up * 100:.2f}%\n"
-                f"最大下落率予測: {max_down * 100:.2f}%"
+            if hist.empty:
+                await ctx.send("指定されたティッカーコードのデータが見つかりませんでした。")
+                return
+
+            current_price = hist["Close"].iloc[-1]
+            currency = info.get("currency", "USD")
+            name = info.get("longName", ticker.upper())
+
+            embed = discord.Embed(
+                title=f"{name} ({ticker.upper()})", 
+                color=discord.Color.green()
             )
-            await ctx.send(response)
+            embed.add_field(name="現在値", value=f"{current_price:.2f} {currency}", inline=False)
+            embed.add_field(name="始値", value=f"{hist['Open'].iloc[-1]:.2f} {currency}", inline=True)
+            embed.add_field(name="高値", value=f"{hist['High'].iloc[-1]:.2f} {currency}", inline=True)
+            embed.add_field(name="安値", value=f"{hist['Low'].iloc[-1]:.2f} {currency}", inline=True)
+            
+            await ctx.send(embed=embed)
             
         except Exception as e:
-            await ctx.send(f"Error: {str(e)}")
+            await ctx.send(f"エラーが発生しました: {str(e)}")
 
 async def setup(bot):
-    await bot.add_cog(StockPredictorCog(bot))
+    await bot.add_cog(StockCog(bot))
