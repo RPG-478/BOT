@@ -282,6 +282,71 @@ class PythonSpatialAudioSource(discord.AudioSource):
             return struct.pack(fmt, *out_samples.tolist())
 
         # ==================================================
+        # 10. wfs モード（バイノーラル波面合成: Wave Field Synthesis）
+        # ==================================================
+        elif mode == 'wfs':
+            # 入力波形をnumpy配列に変換してモノラル化
+            in_data = np.array(samples, dtype=np.float32) / 32768.0
+            mono_in = (in_data[0::2] + in_data[1::2]) * 0.5
+            n_samples = len(mono_in)
+            
+            # 入力信号をリングバッファに格納
+            write_idxs = (self.wfs_write_idx + np.arange(n_samples)) % self.wfs_buf_len
+            self.wfs_buffer[write_idxs] = mono_in
+            
+            # 仮想音源の3次元位置決定 (前方約1.8mの空間を左右に滑らかに往復する点音源)
+            wfs_angle = (self.count / 300.0) * 2.0 * np.pi
+            source_pos = np.array([1.8 * np.sin(wfs_angle), 1.8 + 0.3 * np.cos(wfs_angle)], dtype=np.float32)
+            
+            out_l = np.zeros(n_samples, dtype=np.float32)
+            out_r = np.zeros(n_samples, dtype=np.float32)
+            
+            # 8基のスピーカーから放出された波面の重ね合わせをシミュレート
+            for j in range(self.wfs_speakers):
+                sp_pos = self.speaker_coords[j]
+                
+                # 1. 音源 から 仮想スピーカー への距離と遅延・減衰
+                d_src_sp = np.linalg.norm(source_pos - sp_pos)
+                delay_src_sp = int((d_src_sp / 340.0) * self.sr)
+                atten_src_sp = 1.0 / max(0.5, d_src_sp)
+                
+                # 2. 仮想スピーカー から 左右の耳 への距離と遅延・減衰
+                d_sp_l = np.linalg.norm(sp_pos - self.ear_l)
+                d_sp_r = np.linalg.norm(sp_pos - self.ear_r)
+                
+                delay_sp_l = int((d_sp_l / 340.0) * self.sr)
+                delay_sp_r = int((d_sp_r / 340.0) * self.sr)
+                
+                atten_sp_l = 1.0 / max(0.5, d_sp_l)
+                atten_sp_r = 1.0 / max(0.5, d_sp_r)
+                
+                # 音源 -> スピーカー -> 耳 のトータル遅延を計算
+                total_delay_l = delay_src_sp + delay_sp_l
+                total_delay_r = delay_src_sp + delay_sp_r
+                
+                # リングバッファからそれぞれの遅延時間位置の信号を高速に抽出
+                read_idxs_l = (self.wfs_write_idx - total_delay_l + np.arange(n_samples)) % self.wfs_buf_len
+                read_idxs_r = (self.wfs_write_idx - total_delay_r + np.arange(n_samples)) % self.wfs_buf_len
+                
+                # 重ね合わせ（干渉）して波面を合成
+                out_l += self.wfs_buffer[read_idxs_l] * (atten_src_sp * atten_sp_l)
+                out_r += self.wfs_buffer[read_idxs_r] * (atten_src_sp * atten_sp_r)
+                
+            # バッファ書き込み位置の更新
+            self.wfs_write_idx = (self.wfs_write_idx + n_samples) % self.wfs_buf_len
+            
+            # 出力ゲイン調整と安全なクリッピング
+            out_l = np.clip(out_l * 0.35, -1.0, 1.0)
+            out_r = np.clip(out_r * 0.35, -1.0, 1.0)
+            
+            # ステレオ16bit PCMバイナリにパッキング
+            out_samples = np.empty(len(samples), dtype=np.int16)
+            out_samples[0::2] = (out_l * 32767).astype(np.int16)
+            out_samples[1::2] = (out_r * 32767).astype(np.int16)
+            
+            return struct.pack(fmt, *out_samples.tolist())
+            
+        # ==================================================
         # それ以外のモード（従来のサンプル単位処理）
         # ==================================================
         out_samples = []
