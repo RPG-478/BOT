@@ -35,6 +35,7 @@ BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
 # 音響エフェクト（EQ）の設定マップ
 EQ_SETTINGS = {
     "flat": None,
+    "wfs": "wfs",  # WFS（波面合成）モード用キーを追加
     "bass": "bass=g=10,dynaudnorm",
     "echo": "aecho=0.8:0.8:200:0.4",
     "hall": "extrastereo=m=2.5",
