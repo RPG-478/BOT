@@ -614,6 +614,7 @@ class VoiceControlView(discord.ui.View):
             options = [
                 discord.SelectOption(label="Flat (標準)", value="flat"),
                 discord.SelectOption(label="Spatial (リアルHRTF立体音響)", value="spatial"),
+                discord.SelectOption(label="WFS (波面合成立体音響)", value="wfs"),
                 discord.SelectOption(label="Bass (低音強調)", value="bass"),
                 discord.SelectOption(label="SuperBass (超重低音)", value="superbass"),
                 discord.SelectOption(label="Vocal (ボーカル強調)", value="vocal"),
