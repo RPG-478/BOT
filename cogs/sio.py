@@ -157,6 +157,22 @@ class PythonSpatialAudioSource(discord.AudioSource):
         self.fdn_bufs = [[0.0] * d for d in self.fdn_delays]
         self.fdn_idxs = [0] * 8
 
+        self.wfs_speakers = 8  # 仮想スピーカー数
+        # 仮想スピーカー座標 (X, Y) 前方1.0mに左右1.5m幅で等間隔に配置
+        self.speaker_coords = np.zeros((self.wfs_speakers, 2), dtype=np.float32)
+        xs = np.linspace(-1.5, 1.5, self.wfs_speakers)
+        for j in range(self.wfs_speakers):
+            self.speaker_coords[j] = [xs[j], 1.0]
+        
+        # 左右の耳の仮想座標 (頭の幅 約17cm)
+        self.ear_l = np.array([-0.085, 0.0], dtype=np.float32)
+        self.ear_r = np.array([0.085, 0.0], dtype=np.float32)
+        
+        # WFS時間遅延シミュレーション用リングバッファ (最大遅延をカバーする十分なサイズ)
+        self.wfs_buf_len = 8192
+        self.wfs_buffer = np.zeros(self.wfs_buf_len, dtype=np.float32)
+        self.wfs_write_idx = 0
+
         # --- [bass / superbass] 低域ブースト用 ---
         self.bass_lp_l = 0.0
         self.bass_lp_r = 0.0
