@@ -6,13 +6,15 @@ import json
 from curl_cffi.requests import AsyncSession
 from bs4 import BeautifulSoup
 import urllib.parse
-import httpx
+from google import genai
+from google.genai import types
 
 class AdaptiveAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.groq_client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
         self.gemini_api_key = "AQ.Ab8RN6KIs2IdmrhZYohOjZqg0A8rWal6eQync4sgYqnyLtTaqA"
+        self.gemini_client = genai.Client(api_key=self.gemini_api_key)
         self.chat_model = "llama-3.1-8b-instant"
 
     @commands.Cog.listener()
@@ -99,25 +101,14 @@ class AdaptiveAI(commands.Cog):
                 await self.bot.invoke(ctx)
 
     async def _call_gemini_flash(self, system_prompt, user_text):
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={self.gemini_api_key}"
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": user_text}]
-                }
-            ],
-            "systemInstruction": {
-                "parts": [{"text": system_prompt}]
-            }
-        }
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, headers=headers, json=payload, timeout=30.0)
-            response.raise_for_status()
-            res_json = response.json()
-            return res_json['candidates'][0]['content']['parts'][0]['text']
+        response = await self.gemini_client.aio.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=user_text,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+            ),
+        )
+        return response.text
 
     async def _handle_chat_mode(self, message, text):
         prompt = "あなたはDiscordボットのAIアシスタントです。ユーザーからの話しかけに対して、親しみやすく自然な日本語で返答してください。"
