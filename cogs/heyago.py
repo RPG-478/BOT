@@ -3,6 +3,9 @@ from discord.ext import commands
 from groq import AsyncGroq
 import os
 import json
+from curl_cffi.requests import AsyncSession
+from bs4 import BeautifulSoup
+import urllib.parse
 
 class AdaptiveAI(commands.Cog):
     def __init__(self, bot):
@@ -34,9 +37,10 @@ class AdaptiveAI(commands.Cog):
             "ユーザーの入力文の文脈から、どのモードで処理すべきかを厳格に判定してください。\n\n"
             "【モード一覧】\n"
             "- command: ボットの既存機能（BGM操作、音量、速度、EQ、Google検索など）への明確な指示・要求である場合\n"
-            "- chat: 単なる雑談、挨拶、一般的な質問、あるいは明確なコマンド指示ではない場合\n\n"
+            "- search_web: 最新のニュース、時事ネタ、天気、ボットが知らないような情報について「調べて」「検索して」「教えて」と要求されている場合\n"
+            "- chat: 単なる雑談、挨拶、一般的な知識に関する質問、あるいは明確なコマンド指示や最新情報の検索要求ではない場合\n\n"
             "出力は必ず以下のJSONフォーマットのみにしてください。\n"
-            '{"mode": "command_または_chat"}'
+            '{"mode": "command_または_search_web_または_chat"}'
         )
 
         chat_completion = await self.client.chat.completions.create(
@@ -54,6 +58,8 @@ class AdaptiveAI(commands.Cog):
 
         if mode == "command":
             await self._handle_command_mode(message, text)
+        elif mode == "search_web":
+            await self._handle_search_web_mode(message, text)
         elif mode == "chat":
             await self._handle_chat_mode(message, text)
         else:
@@ -100,12 +106,90 @@ class AdaptiveAI(commands.Cog):
             model=self.chat_model
         )
         reply_text = chat_response.choices[0].message.content
+        await self._send_long_message(message.channel, reply_text)
+
+    async def _handle_search_web_mode(self, message, text):
+        keyword_prompt = (
+            "ユーザーの質問から、Web検索に最適な検索キーワードを1つだけ抽出してください。\n"
+            "余計な解説は含めず、必ず以下のJSONフォーマットのみで出力してください。\n"
+            '{"keyword": "検索キーワード"}'
+        )
+        keyword_completion = await self.client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": keyword_prompt},
+                {"role": "user", "content": text}
+            ],
+            model=self.chat_model,
+            response_format={"type": "json_object"}
+        )
+        keyword_res = json.loads(keyword_completion.choices[0].message.content)
+        query = keyword_res.get("keyword", text)
+
+        search_results = await self._search_duckduckgo(query)
         
-        if len(reply_text) > 2000:
-            for i in range(0, len(reply_text), 2000):
-                await message.channel.send(reply_text[i:i+2000])
+        web_context = ""
+        async with AsyncSession(impersonate="chrome") as session:
+            for url in search_results[:2]:
+                try:
+                    res = await session.get(url, timeout=5)
+                    if res.status_code == 200:
+                        soup = BeautifulSoup(res.text, "html.parser")
+                        for s in soup(["script", "style", "nav", "footer", "header"]):
+                            s.decompose()
+                        text_content = " ".join(soup.stripped_strings)[:1000]
+                        web_context += f"\n--- Source: {url} ---\n{text_content}\n"
+                except:
+                    continue
+
+        if not web_context:
+            web_context = "検索結果から情報を取得できませんでした。"
+
+        answer_prompt = (
+            "あなたは与えられたWeb検索結果を参考にしてユーザーの質問に答えるAIアシスタントです。\n"
+            "提供された情報を元に、正確で自然な日本語の回答を作成してください。\n"
+            f"【検索結果の参考情報】\n{web_context}"
+        )
+        
+        chat_response = await self.client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": answer_prompt},
+                {"role": "user", "content": text}
+            ],
+            model=self.chat_model
+        )
+        reply_text = chat_response.choices[0].message.content
+        await self._send_long_message(message.channel, reply_text)
+
+    async def _search_duckduckgo(self, query):
+        urls = []
+        encoded_query = urllib.parse.quote(query)
+        search_url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
+        
+        try:
+            async with AsyncSession(impersonate="chrome") as session:
+                res = await session.get(search_url, timeout=5)
+                if res.status_code == 200:
+                    soup = BeautifulSoup(res.text, "html.parser")
+                    for a in soup.find_all("a", class_="result__url"):
+                        href = a.get("href")
+                        if href:
+                            if "declined" not in href and "duckduckgo.com" not in href:
+                                parsed_url = urllib.parse.urlparse(href)
+                                qs = urllib.parse.parse_qs(parsed_url.query)
+                                if "uddg" in qs:
+                                    urls.append(qs["uddg"][0])
+                                else:
+                                    urls.append(href)
+        except:
+            pass
+        return urls
+
+    async def _send_long_message(self, channel, text):
+        if len(text) > 2000:
+            for i in range(0, len(text), 2000):
+                await channel.send(text[i:i+2000])
         else:
-            await message.channel.send(reply_text)
+            await channel.send(text)
 
 async def setup(bot):
     await bot.add_cog(AdaptiveAI(bot))
