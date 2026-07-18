@@ -13,7 +13,7 @@ class AdaptiveAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.groq_client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
-        self.gemini_api_key = "AQ.Ab8RN6JQzveps1HzFOwTIS9TYRfqgrz6h4_xj8xCg5l0cOjafA"
+        self.gemini_api_key = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
         self.gemini_client = genai.Client(api_key=self.gemini_api_key)
         self.chat_model = "llama-3.1-8b-instant"
 
