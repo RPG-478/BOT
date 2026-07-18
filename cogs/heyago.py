@@ -99,7 +99,7 @@ class AdaptiveAI(commands.Cog):
                 await self.bot.invoke(ctx)
 
     async def _call_gemini_flash(self, system_prompt, user_text):
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={self.gemini_api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={self.gemini_api_key}"
         headers = {"Content-Type": "application/json"}
         payload = {
             "contents": [
