@@ -6,11 +6,13 @@ import json
 from curl_cffi.requests import AsyncSession
 from bs4 import BeautifulSoup
 import urllib.parse
+import httpx
 
 class AdaptiveAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
+        self.groq_client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
+        self.gemini_api_key = "AQ.Ab8RN6KIs2IdmrhZYohOjZqg0A8rWal6eQync4sgYqnyLtTaqA"
         self.chat_model = "llama-3.1-8b-instant"
 
     @commands.Cog.listener()
@@ -43,7 +45,7 @@ class AdaptiveAI(commands.Cog):
             '{"mode": "command_または_search_web_または_chat"}'
         )
 
-        chat_completion = await self.client.chat.completions.create(
+        chat_completion = await self.groq_client.chat.completions.create(
             messages=[
                 {"role": "system", "content": judge_prompt},
                 {"role": "user", "content": text}
@@ -72,7 +74,7 @@ class AdaptiveAI(commands.Cog):
             "出力JSONフォーマット:\n"
             '{"commands": [{"name": "コマンド名", "arg": "引数（不要なら空文字）"}]}'
         )
-        chat_completion = await self.client.chat.completions.create(
+        chat_completion = await self.groq_client.chat.completions.create(
             messages=[
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": text}
@@ -96,16 +98,30 @@ class AdaptiveAI(commands.Cog):
                 ctx = await self.bot.get_context(message)
                 await self.bot.invoke(ctx)
 
+    async def _call_gemini_25_flash(self, system_prompt, user_text):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={self.gemini_api_key}"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": user_text}]
+                }
+            ],
+            "systemInstruction": {
+                "parts": [{"text": system_prompt}]
+            }
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=payload, timeout=30.0)
+            response.raise_for_status()
+            res_json = response.json()
+            return res_json['candidates'][0]['content']['parts'][0]['text']
+
     async def _handle_chat_mode(self, message, text):
         prompt = "あなたはDiscordボットのAIアシスタントです。ユーザーからの話しかけに対して、親しみやすく自然な日本語で返答してください。"
-        chat_response = await self.client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": text}
-            ],
-            model=self.chat_model
-        )
-        reply_text = chat_response.choices[0].message.content
+        reply_text = await self._call_gemini_25_flash(prompt, text)
         await self._send_long_message(message.channel, reply_text)
 
     async def _handle_search_web_mode(self, message, text):
@@ -114,7 +130,7 @@ class AdaptiveAI(commands.Cog):
             "余計な解説は含めず、必ず以下のJSONフォーマットのみで出力してください。\n"
             '{"keyword": "検索キーワード"}'
         )
-        keyword_completion = await self.client.chat.completions.create(
+        keyword_completion = await self.groq_client.chat.completions.create(
             messages=[
                 {"role": "system", "content": keyword_prompt},
                 {"role": "user", "content": text}
@@ -150,14 +166,7 @@ class AdaptiveAI(commands.Cog):
             f"【検索結果の参考情報】\n{web_context}"
         )
         
-        chat_response = await self.client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": answer_prompt},
-                {"role": "user", "content": text}
-            ],
-            model=self.chat_model
-        )
-        reply_text = chat_response.choices[0].message.content
+        reply_text = await self._call_gemini_25_flash(answer_prompt, text)
         await self._send_long_message(message.channel, reply_text)
 
     async def _search_duckduckgo(self, query):
