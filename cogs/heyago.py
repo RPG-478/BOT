@@ -24,29 +24,33 @@ class MultiFunctionalAI(commands.Cog):
 
             async with message.channel.typing():
                 try:
-                    system_prompt = (
-                        "You are an AI assistant for a Discord bot. Analyze the user's input and determine if it matches any bot commands or if it is a general chat.\n"
-                        "Available commands:\n"
-                        "- ggrks [word]: Google search link\n"
-                        "- join: Join voice channel\n"
-                        "- leave: Leave voice channel\n"
-                        "- play [url/file]: Play audio\n"
-                        "- search [word]: Search and play from YouTube\n"
-                        "- volume [0.1-2.0]: Set volume. If user says 'lower' or 'higher' without specific number, guess an appropriate value (e.g., 0.5 or 1.5)\n"
-                        "- speed [0.5-2.0]: Set playback speed\n"
-                        "- eq [flat/spatial/bass/superbass/vocal/echo/hall/live/rotate]: Set equalizer preset\n"
-                        "- panel: Show music control panel\n\n"
-                        "Respond ONLY with a JSON object.\n"
-                        "Format for commands:\n"
-                        '{"action": "command", "commands": [{"name": "command_name", "arg": "argument_string"}]}'
-                        "If multiple commands are needed, include them in the commands list.\n"
-                        "Format for general chat:\n"
-                        '{"action": "chat", "reply": "your response in Japanese"}'
+                    judge_prompt = (
+                        "あなたはDiscordボットの入力を解析する判定システムです。ユーザーの入力が「ボットへの明確なコマンド指示」であるか、単なる「雑談・質問・会話」であるかを厳格に判定してください。\n\n"
+                        "利用可能なコマンド一覧:\n"
+                        "- ggrks [単語]: Google検索リンクを生成する指示（例：「〜について調べて」「〜を検索して」など、明確な検索要求がある場合のみ）\n"
+                        "- join: ボイスチャンネル（VC）に参加・接続する指示\n"
+                        "- leave: ボイスチャンネル（VC）から切断・退出する指示\n"
+                        "- play [URL/ファイル]: 指定されたYouTubeリンクやファイルを再生する指示\n"
+                        "- search [単語]: YouTubeから動画を検索して再生する指示（例：「〜の曲を流して」「〜をかけて」など、明確な再生要求がある場合のみ）\n"
+                        "- volume [0.1-2.0]: 音量を設定する指示（例：「音量を1にして」「音量を少し下げて」など、具体的な数値や上下の指示がある場合。具体的な数値がない場合は、0.5や1.5などを推測して指定してください）\n"
+                        "- speed [0.5-2.0]: 再生速度を設定する指示（例：「速度を1.5倍にして」など）\n"
+                        "- eq [flat/spatial/bass/superbass/vocal/echo/hall/live/rotate]: イコライザーや音響プリセットを設定する指示（例：「ライブ風にして」「低音を強調して」など、明確な設定要求がある場合。単に「昨日ライブに行った」などの会話はコマンドにしないでください）\n"
+                        "- panel: 音楽設定パネルを表示する指示\n\n"
+                        "判定の注意点:\n"
+                        "・単に単語（「ライブ」「検索」など）が含まれているだけでは、コマンド指示とは判定せず「chat」にしてください。\n"
+                        "・ユーザーがボットに対して「〜してほしい」「〜を実行して」と明確に要求している場合のみ「command」にしてください。\n"
+                        "・コマンドか雑談か少しでも迷った場合は、安全のために必ず「chat」と判定してください。\n\n"
+                        "出力は必ず以下のJSONフォーマットのみにしてください。他のテキストは一切含めないでください。\n\n"
+                        "コマンド指示と判定した場合:\n"
+                        '{"action": "command", "commands": [{"name": "コマンド名", "arg": "引数（必要な場合のみ、不要なら空文字）"}]}'
+                        "複数のコマンドが同時に指示された場合は、commandsのリストに複数含めてください。\n\n"
+                        "雑談・会話・質問と判定した場合:\n"
+                        '{"action": "chat"}'
                     )
 
                     chat_completion = await self.client.chat.completions.create(
                         messages=[
-                            {"role": "system", "content": system_prompt},
+                            {"role": "system", "content": judge_prompt},
                             {"role": "user", "content": command_text}
                         ],
                         model=self.chat_model,
@@ -56,7 +60,15 @@ class MultiFunctionalAI(commands.Cog):
                     result = json.loads(chat_completion.choices[0].message.content)
                     
                     if result.get("action") == "chat":
-                        reply_text = result.get("reply", "")
+                        chat_prompt = "あなたはDiscordボットのAIアシスタントです。ユーザーからの話しかけに対して、親しみやすく自然な日本語で返答してください。回答にJSONやコードを含める必要はありません。"
+                        chat_response = await self.client.chat.completions.create(
+                            messages=[
+                                {"role": "system", "content": chat_prompt},
+                                {"role": "user", "content": command_text}
+                            ],
+                            model=self.chat_model
+                        )
+                        reply_text = chat_response.choices[0].message.content
                         if len(reply_text) > 2000:
                             for i in range(0, len(reply_text), 2000):
                                 await message.channel.send(reply_text[i:i+2000])
