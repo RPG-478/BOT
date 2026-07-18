@@ -98,7 +98,7 @@ class AdaptiveAI(commands.Cog):
                 ctx = await self.bot.get_context(message)
                 await self.bot.invoke(ctx)
 
-    async def _call_gemini_25_flash(self, system_prompt, user_text):
+    async def _call_gemini_flash(self, system_prompt, user_text):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={self.gemini_api_key}"
         headers = {"Content-Type": "application/json"}
         payload = {
@@ -121,7 +121,7 @@ class AdaptiveAI(commands.Cog):
 
     async def _handle_chat_mode(self, message, text):
         prompt = "あなたはDiscordボットのAIアシスタントです。ユーザーからの話しかけに対して、親しみやすく自然な日本語で返答してください。"
-        reply_text = await self._call_gemini_25_flash(prompt, text)
+        reply_text = await self._call_gemini_flash(prompt, text)
         await self._send_long_message(message.channel, reply_text)
 
     async def _handle_search_web_mode(self, message, text):
@@ -166,7 +166,7 @@ class AdaptiveAI(commands.Cog):
             f"【検索結果の参考情報】\n{web_context}"
         )
         
-        reply_text = await self._call_gemini_25_flash(answer_prompt, text)
+        reply_text = await self._call_gemini_flash(answer_prompt, text)
         await self._send_long_message(message.channel, reply_text)
 
     async def _search_duckduckgo(self, query):
