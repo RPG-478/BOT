@@ -19,7 +19,7 @@ class GameView(discord.ui.View):
             
             gif_url = "https://example.com/explosion.gif"
             await interaction.channel.send(
-                content=f"{interaction.user.mention} ゲームオーバー！爆発しました。\n全体の記録: {final_score}回連続成功\n{gif_url}"
+                content=f"{interaction.user.mention} ゲームオーバー！爆発しました。\n全体の記録: {final_score}回連続成功\n{https://images-ext-1.discordapp.net/external/kELQIr5tksGFpxAG8ZSHfwICC62WtJ9faF-jGolqXAI/https/static.klipy.com/ii/4493325008d34b7bf8cd6813cd5c1619/fe/75/MxbliZ98VarH0Rc84u.mp4}"
             )
             return
 
