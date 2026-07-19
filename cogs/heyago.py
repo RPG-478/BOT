@@ -102,7 +102,7 @@ class AdaptiveAI(commands.Cog):
 
     async def _call_gemini_flash(self, system_prompt, user_text):
         response = await self.gemini_client.aio.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-2.5-flash',
             contents=user_text,
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
