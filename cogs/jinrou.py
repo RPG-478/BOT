@@ -5,6 +5,23 @@ import os
 import discord
 from discord import app_commands
 from discord.ext import commands
+import math
+
+import config
+from supabase import create_client, Client
+
+# ======================================================
+#  Supabase クライアント（config.py に SUPABASE_URL / SUPABASE_KEY を定義）
+# ======================================================
+supabase: Client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
+RATINGS_TABLE = "jinrou_ratings"
+
+# ======================================================
+#  レート（Elo）システム定数
+# ======================================================
+ELO_STARTING_RATING = 1500
+ELO_BASE_K = 32
+ELO_WOLF_WIN_K = 48  # 人狼陣営勝利時は獲得レートを多めにする
 
 # ======================================================
 #  白黒判定ユーティリティ
@@ -17,6 +34,23 @@ def uranai_color(role: str) -> str:
 
 def reibai_color(role: str) -> str:
     return "黒" if role in BLACK_ROLES_REIBAI else "白"
+
+# ======================================================
+#  裏役職（隠し役職）システム
+# ======================================================
+# 裏役職は表向きには別の役職として処理され、判明トリガーが満たされるまで
+# 役職構成表示・自身の役職確認（説明文・割当PNGを含む）のすべてで偽装される。
+# 実際のゲーム効果（game.roles に格納される値）は一切変わらない。
+#   "end"           … 勝敗決着時のみ判明
+#   "death_or_end"  … 死亡時または勝敗決着時に判明
+URA_YAKUSHOKU = {
+    "入狼":             ("end",          "一般通過あごむに"),
+    "もくもく":         ("death_or_end", "一般通過あごむに"),
+    "ビー玉ブレイカー": ("end",          "一般通過あごむに"),
+    "タフむに":         ("death_or_end", "一般通過あごむに"),
+    "アホ":             ("end",          None),  # None＝メンヘラ/ハゲ/狂人からランダム表示
+}
+AHO_FAKE_CANDIDATES = ["メンヘラ", "ハゲ", "狂人"]
 
 # ======================================================
 #  ヘルプ用役職リスト（役職名, 陣営, 説明, 画像ファイル名）
@@ -51,6 +85,7 @@ HELP_ROLES = [
     ("もくもく", "第三者陣営", "ビー玉ブレイカーの発展職。3フェーズ全員の役職構成が非公開になる。死ぬと即時に役職構成が公開される。夜の行動ログももくもくになる", "MOKUMOKU.PNG"),
     ("ヤンデレ", "人狼陣営", "メンヘラの発展職、人狼1人をランダムに選びその人狼に夜干渉した人間を殺す。", "YANDERE.PNG"),
     ("ネット民", "村人陣営", "一般の役職と違い夜に発言でき昼に発言できない。", "NETMIN.PNG"),
+    ("アホ", "村人陣営", "役職効果はなく村人陣営。占うと白判定となる。表示上はメンヘラ、ハゲ、狂人のいずれかに偽装されている。", "NOMAL.PNG"),
 ]
 
 # ======================================================
@@ -61,6 +96,9 @@ class JinrouGame:
         self.is_running = False
         self.players = []
         self.roles = {}
+        self.display_roles = {}  # 表示用役職（裏役職を考慮した偽装役職）
+        self.ura_reveal_triggers = {}  # 裏役職の判明トリガー状態 {player_id: True/False}
+        self.aho_fake_role = {}  # アホの偽装役職 {player_id: "偽装役職名"}
         self.alive_players = []
         self.last_speak_time = {}
         self.night_actions = {}
@@ -90,6 +128,105 @@ class JinrouGame:
         self.is_global = False
         self.channels = []
         self._original_channel = None
+
+# ======================================================
+#  Eloレート計算関数
+# ======================================================
+def calculate_elo_change(winner_rating, loser_rating, winner_is_wolf: bool):
+    """Elo式レート計算。人狼陣営の勝利時はK値を大きくする"""
+    K = ELO_WOLF_WIN_K if winner_is_wolf else ELO_BASE_K
+    
+    expected_score = 1 / (1 + 10 ** ((loser_rating - winner_rating) / 400))
+    rating_change = K * (1 - expected_score)
+    
+    return rating_change, -rating_change
+
+async def get_player_rating(player_id: int) -> float:
+    """Supabaseからプレイヤーのレートを取得"""
+    try:
+        response = supabase.table(RATINGS_TABLE).select("rating").eq("player_id", player_id).execute()
+        if response.data and len(response.data) > 0:
+            return float(response.data[0]["rating"])
+        else:
+            return ELO_STARTING_RATING
+    except Exception as e:
+        print(f"Error getting rating: {e}")
+        return ELO_STARTING_RATING
+
+async def update_player_rating(player_id: int, new_rating: float):
+    """Supabaseにプレイヤーのレートを保存"""
+    try:
+        response = supabase.table(RATINGS_TABLE).select("id").eq("player_id", player_id).execute()
+        if response.data and len(response.data) > 0:
+            supabase.table(RATINGS_TABLE).update({"rating": new_rating, "updated_at": "now()"}).eq("player_id", player_id).execute()
+        else:
+            supabase.table(RATINGS_TABLE).insert({"player_id": player_id, "rating": new_rating}).execute()
+    except Exception as e:
+        print(f"Error updating rating: {e}")
+
+async def get_top_ratings(limit: int = 10):
+    """上位レーティングを取得"""
+    try:
+        response = supabase.table(RATINGS_TABLE).select("player_id, rating").order("rating", desc=True).limit(limit).execute()
+        return response.data if response.data else []
+    except Exception as e:
+        print(f"Error getting rankings: {e}")
+        return []
+
+# ======================================================
+#  表示用役職を取得（裏役職対応）
+# ======================================================
+def _get_display_role(game, player_id: int, reveal_hidden: bool = False) -> str:
+    """
+    プレイヤーの表示用役職を取得。
+    裏役職の場合、判明トリガーが満たされていなければ偽装役職を返す。
+    reveal_hidden=True の場合は、判明トリガーに関わらず本当の役職を返す（最終開示用）。
+    """
+    real_role = game.roles.get(player_id)
+    if not real_role:
+        return "不明"
+    
+    # 強制開示モード
+    if reveal_hidden:
+        return real_role
+    
+    # 裏役職の判明判定
+    if real_role in URA_YAKUSHOKU:
+        trigger, fake = URA_YAKUSHOKU[real_role]
+        revealed = game.ura_reveal_triggers.get(player_id, False)
+        
+        if not revealed:
+            # 未判明の場合、偽装役職を返す
+            if real_role == "アホ":
+                return game.aho_fake_role.get(player_id, "一般通過あごむに")
+            else:
+                return fake if fake else "一般通過あごむに"
+    
+    return real_role
+
+# ======================================================
+#  裏役職の判明トリガーをチェック
+# ======================================================
+async def _check_and_reveal_ura_yakushoku(game, player_id: int, trigger_type: str):
+    """
+    trigger_type: "death" or "end"
+    該当するトリガーが満たされたプレイヤーの裏役職を判明させる。
+    """
+    real_role = game.roles.get(player_id)
+    if not real_role or real_role not in URA_YAKUSHOKU:
+        return
+    
+    ura_trigger, _ = URA_YAKUSHOKU[real_role]
+    should_reveal = False
+    
+    if trigger_type == "death" and ura_trigger == "death_or_end":
+        should_reveal = True
+    elif trigger_type == "end":
+        should_reveal = True
+    
+    if should_reveal:
+        game.ura_reveal_triggers[player_id] = True
+
 # ======================================================
 #  Cog 本体
 # ======================================================
@@ -234,11 +371,11 @@ class JinrouCog(commands.Cog):
         for _ in range(min(additional_wolves, num - len(pool))):
             pool.append(maybe_promote("人狼"))
 
-        # 候補プールに「ネット民」を追加
+        # 候補プールに「ネット民」と「アホ」を追加
         candidates = [
             r for r in [
                 "占い師", "騎士", "霊媒師", "パン屋", "マサイ族", "入狼",
-                "議長", "ビー玉ブレイカー", "陽キャ", "狂人", "ハゲ", "メンヘラ", "あごむに破道砲", "ネット民"
+                "議長", "ビー玉ブレイカー", "陽キャ", "狂人", "ハゲ", "メンヘラ", "あごむに破道砲", "ネット民", "アホ"
             ]
             if r not in excluded and r not in required
         ]
@@ -282,6 +419,12 @@ class JinrouCog(commands.Cog):
 
         for i, p in enumerate(game.players):
             game.roles[p.id] = pool[i]
+            game.display_roles[p.id] = pool[i]  # 最初は表示用も本当の役職
+            game.ura_reveal_triggers[p.id] = False  # 裏役職は未判明
+            
+            # アホの場合、偽装役職をランダムに選択
+            if pool[i] == "アホ":
+                game.aho_fake_role[p.id] = random.choice(AHO_FAKE_CANDIDATES)
 
         # ヤンデレが選択された場合、生存している人狼陣営からランダムで1人対象を選ぶ
         wolves_ids = [p_id for p_id, r in game.roles.items() if r in ["人狼", "デカ狼"]]
@@ -313,10 +456,13 @@ class JinrouCog(commands.Cog):
         roles_for_display = []
         for r in game.roles.values():
             if r == "タフむに":         roles_for_display.append("一般通過あごむに")
-            elif r == "入狼":           roles_for_display.append("人狼")
+            elif r == "入狼":           roles_for_display.append("一般通過あごむに")
             elif r == "大霊媒師":       roles_for_display.append("霊媒師")
             elif r == "ミュージシャン":  roles_for_display.append("陽キャ")
-            elif r == "もくもく":       roles_for_display.append("ビー玉ブレイカー")
+            elif r == "もくもく":       roles_for_display.append("一般通過あごむに")
+            elif r == "ヤンデレ":       roles_for_display.append("メンヘラ")
+            elif r == "ビー玉ブレイカー": roles_for_display.append("一般通過あごむに")
+            elif r == "アホ":           roles_for_display.append(game.aho_fake_role.get(game.players[[p.id for p in game.players if game.roles.get(p.id) == "アホ"][0]].id if any(p.id for p in game.players if game.roles.get(p.id) == "アホ") else None, "一般通過あごむに"))
             else:                       roles_for_display.append(r)
         roles_list = " / ".join(set(roles_for_display))
         await game.game_channel.send(f"もくもくが姿を消した。役職構成が明らかになります！\n{roles_list}")
@@ -388,6 +534,9 @@ class JinrouCog(commands.Cog):
         game.host_id = interaction.user.id
         game.players = []
         game.roles = {}
+        game.display_roles = {}
+        game.ura_reveal_triggers = {}
+        game.aho_fake_role = {}
         game.day_count = 0
         game.wan_owner = {}
         game.used_hadouhou = False
@@ -415,6 +564,43 @@ class JinrouCog(commands.Cog):
             view=SetupView(game, self, game.game_channel),
             ephemeral=True
         )
+
+    @app_commands.command(name="jinrou_rating", description="あなたの人狼レーティングを確認します")
+    async def jinrou_rating(self, interaction: discord.Interaction):
+        rating = await get_player_rating(interaction.user.id)
+        embed = discord.Embed(
+            title="人狼レーティング",
+            description=f"**{interaction.user.display_name}** さんのレート\n\n🏆 {rating:.0f} pts",
+            color=0xFFFFFF
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="jinrou_ranking", description="人狼ゲームのレーティングランキングを表示します")
+    async def jinrou_ranking(self, interaction: discord.Interaction):
+        rankings = await get_top_ratings(10)
+        if not rankings:
+            embed = discord.Embed(description="ランキングデータがまだありません。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        lines = []
+        for i, entry in enumerate(rankings, 1):
+            player_id = entry["player_id"]
+            rating = entry["rating"]
+            try:
+                user = await self.bot.fetch_user(player_id)
+                name = user.display_name if user else f"ID: {player_id}"
+            except:
+                name = f"ID: {player_id}"
+            
+            medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"{i}."
+            lines.append(f"{medal} **{name}**: {rating:.0f} pts")
+        
+        embed = discord.Embed(
+            title="人狼ゲーム レーティングランキング TOP 10",
+            description="\n".join(lines),
+            color=0xFFFFFF
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def run_from_hub(self, game: JinrouGame, channel, host_id: int = None):
         """play.py から create_task で呼ぶ。60秒待機してゲームループを開始する。"""
@@ -444,14 +630,9 @@ class JinrouCog(commands.Cog):
             roles_list = "（もくもくにより非公開）"
         else:
             roles_for_display = []
-            for r in game.roles.values():
-                if r == "タフむに":         roles_for_display.append("一般通過あごむに")
-                elif r == "入狼":           roles_for_display.append("人狼")
-                elif r == "大霊媒師":       roles_for_display.append("霊媒師")
-                elif r == "ミュージシャン":  roles_for_display.append("陽キャ")
-                elif r == "もくもく":       roles_for_display.append("ビー玉ブレイカー")
-                elif r == "ヤンデレ":       roles_for_display.append("メンヘラ")
-                else:                       roles_for_display.append(r)
+            for p_id, r in game.roles.items():
+                display_r = _get_display_role(game, p_id, reveal_hidden=False)
+                roles_for_display.append(display_r)
             roles_list = " / ".join(set(roles_for_display))
 
         await channel.send(
@@ -733,6 +914,10 @@ class JinrouCog(commands.Cog):
                 m = game.game_channel.guild.get_member(d_id)
                 if m:
                     await send_log(f"夜の結果: {m.display_name} さんが犠牲になりました。")
+                    
+                    # 裏役職の判明トリガーチェック（死亡時）
+                    await _check_and_reveal_ura_yakushoku(game, d_id, "death")
+                    
                     if game.roles.get(d_id) == "タフむに":
                         killers = [pid for pid, tid in game.night_actions.items() if tid == d_id and pid not in final_dead and pid in {p.id for p in game.alive_players}]
                         if killers:
@@ -765,6 +950,7 @@ class JinrouCog(commands.Cog):
         if not wolves_alive:
             await game.game_channel.send("人狼全滅。村人陣営の勝利です。")
             await self._check_koumorimuni_win(game)
+            await self._process_elo_ratings(game, winner_is_wolf=False)
             game.is_running = False
             return True
 
@@ -783,6 +969,7 @@ class JinrouCog(commands.Cog):
         if len(wolves) >= len(non_wolves):
             await game.game_channel.send("人狼が支配した。人狼陣営の勝利です。")
             await self._check_koumorimuni_win(game)
+            await self._process_elo_ratings(game, winner_is_wolf=True)
             game.is_running = False
             return True
 
@@ -799,12 +986,50 @@ class JinrouCog(commands.Cog):
         if names_list:
             await game.game_channel.send(f"さらに、{'、'.join(names_list)} は最後まで生き残り個人勝利しました！")
 
+    async def _process_elo_ratings(self, game, winner_is_wolf: bool):
+        """ゲーム結果をもとにEloレーティングを更新"""
+        def is_wolf_side(p_id):
+            r = game.roles.get(p_id)
+            if r in ["人狼", "デカ狼", "狂人", "狂信者"]: return True
+            if r == "ワンころ":
+                owner_id = game.wan_owner.get(p_id)
+                if owner_id is None: return True
+                if owner_id not in {p.id for p in game.alive_players}: return True
+            return False
+
+        for p in game.players:
+            p_id = p.id
+            player_is_wolf_side = is_wolf_side(p_id)
+            
+            # プレイヤーが勝利陣営に属しているか判定
+            if (player_is_wolf_side and winner_is_wolf) or (not player_is_wolf_side and not winner_is_wolf):
+                # 勝利
+                rating = await get_player_rating(p_id)
+                avg_rating = sum(await get_player_rating(p2.id) for p2 in game.players) / len(game.players)
+                
+                rating_change, _ = calculate_elo_change(rating, avg_rating, player_is_wolf_side)
+                new_rating = max(0, rating + rating_change)
+            else:
+                # 敗北
+                rating = await get_player_rating(p_id)
+                avg_rating = sum(await get_player_rating(p2.id) for p2 in game.players) / len(game.players)
+                
+                _, rating_change = calculate_elo_change(avg_rating, rating, not player_is_wolf_side)
+                new_rating = max(0, rating + rating_change)
+            
+            await update_player_rating(p_id, new_rating)
+
     # ======================================================
     #  最終役職開示
     # ======================================================
     async def _announce_final_roles(self, game):
         if not game.game_channel or not game.roles:
             return
+        
+        # ゲーム終了時はすべての裏役職を判明させる
+        for p_id in game.roles.keys():
+            await _check_and_reveal_ura_yakushoku(game, p_id, "end")
+        
         lines = []
         alive_ids = {p.id for p in game.alive_players}
         for p in game.players:
@@ -876,6 +1101,9 @@ class JinrouCog(commands.Cog):
         game.last_executed = actual_target_id
         game.silenced_players.add(actual_target_id)
         game.alive_players = [p for p in game.alive_players if p.id != actual_target_id]
+        
+        # 裏役職の判明トリガーチェック（死亡時）
+        await _check_and_reveal_ura_yakushoku(game, actual_target_id, "death")
 
         await game.game_channel.send(f"{target_m.display_name} さんが追放されました。")
 
@@ -954,6 +1182,9 @@ class JinrouCog(commands.Cog):
         game.last_executed = actual_target_id
         game.silenced_players.add(actual_target_id)
         game.alive_players = [p for p in game.alive_players if p.id != actual_target_id]
+        
+        # 裏役職の判明トリガーチェック（死亡時）
+        await _check_and_reveal_ura_yakushoku(game, actual_target_id, "death")
 
         await self._notify_reibai(game, actual_target_id)
         await self._check_mokumoku_reveal(game, actual_target_id)
@@ -1029,10 +1260,10 @@ class JinrouCog(commands.Cog):
 
 class SetupView(discord.ui.View):
     """起動時エフェメラル設定パネル：モード選択と必須役職選定の第一段階"""
-    # 基本職のみを配置
+    # 基本職のみを配置（アホを追加）
     BASE_ROLES = [
         "一般通過あごむに", "占い師", "騎士", "霊媒師", "パン屋", "マサイ族",
-        "入狼", "議長", "ビー玉ブレイカー", "陽キャ", "狂人", "ハゲ", "メンヘラ", "あごむに破道砲"
+        "入狼", "議長", "ビー玉ブレイカー", "陽キャ", "狂人", "ハゲ", "メンヘラ", "あごむに破道砲", "アホ"
     ]
     # 除外候補は全役職
     ALL_ROLES = BASE_ROLES + ["タフむに", "大霊媒師", "罠師", "ミュージシャン", "デカ狼", "狂信者", "コウモリむに", "ワンころ", "もくもく", "ネット民", "ヤンデレ"]
@@ -1067,7 +1298,7 @@ class SetupView(discord.ui.View):
         # 除外役職セレクト
         exc_sel = discord.ui.Select(
             placeholder="除外役職を選択（最大4つ）",
-            options=[discord.SelectOption(label=r, value=r) for r in self.ALL_ROLES[:25]], # 25件上限対策
+            options=[discord.SelectOption(label=r, value=r) for r in self.ALL_ROLES[:25]],
             min_values=0, max_values=4, row=2
         )
         exc_sel.callback = self._exc_callback
@@ -1347,13 +1578,8 @@ class RoleCheckView(discord.ui.View):
             embed = discord.Embed(description="あなたはゲームに参加していません。", color=0xFFFFFF)
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        display_role = real_role
-        if real_role == "タフむに":       display_role = "一般通過あごむに"
-        elif real_role == "入狼":         display_role = "人狼"
-        elif real_role == "大霊媒師":     display_role = "霊媒師"
-        elif real_role == "ミュージシャン": display_role = "陽キャ"
-        elif real_role == "もくもく":     display_role = "ビー玉ブレイカー"
-        elif real_role == "ヤンデレ":     display_role = "メンヘラ"
+        # 表示用役職を取得（裏役職を考慮）
+        display_role = _get_display_role(self.game, interaction.user.id, reveal_hidden=False)
 
         wolves = self.cog.get_wolves_names(self.game)
         partner_name = "なし"
@@ -1412,7 +1638,8 @@ class RoleCheckView(discord.ui.View):
             "ミュージシャン":   "【村人陣営】陽キャの発展職。ゲーム中1度だけ夜にランダム4人をパーティに招待できる。招待者は狼から守られ夜のアクションもキャンセル。人狼が混じっていたら30%で村人側の1人が死亡。",
             "もくもく":         "【第三者陣営】ビー玉ブレイカーの発展職。あなたが生きている間（最大3ターン）は全員の役職構成が非公開になる。死ぬか3ターン経過すると役職構成が公開される。占い師の判定30%逆転効果も継承。",
             "ネット民":         "【村人陣営】ネット弁慶。一般の役職と異なり、発言できるタイミングが昼と夜で完全に逆転する変人。",
-            "ヤンデレ":         f"【人狼陣営】メンヘラの発展職。ランダムに選ばれた人狼に夜関わった人間をすべて物理的に消去する。仲間: {wolves}"
+            "ヤンデレ":         f"【人狼陣営】メンヘラの発展職。ランダムに選ばれた人狼に夜関わった人間をすべて物理的に消去する。仲間: {wolves}",
+            "アホ":             "【村人陣営】役職効果なく村人陣営。占うと白判定となる。",
         }
 
         role_image_map = {
@@ -1428,7 +1655,8 @@ class RoleCheckView(discord.ui.View):
             "貴族": "KIZOKU.PNG",               "奴隷": "DOREI.PNG",           "コウモリむに": "KOUMORI.PNG",
             "大霊媒師": "DAIREIBAI.PNG",
             "陽キャ": "YOUKYA.PNG",             "ミュージシャン": "MUSICIAN.PNG",
-            "もくもく": "MOKUMOKU.PNG",         "ネット民": "NETMIN.PNG",       "ヤンデレ": "YANDERE.PNG"
+            "もくもく": "MOKUMOKU.PNG",         "ネット民": "NETMIN.PNG",       "ヤンデレ": "YANDERE.PNG",
+            "アホ": "NOMAL.PNG"
         }
 
         embed = discord.Embed(
@@ -1437,16 +1665,15 @@ class RoleCheckView(discord.ui.View):
             color=0xFFFFFF
         )
 
-        filename = role_image_map.get(real_role)
+        # 表示用役職に対応した画像ファイルを取得
+        filename = role_image_map.get(display_role)
         if filename:
             file_path = f"Assets/{filename}"
             if os.path.exists(file_path):
                 file = discord.File(file_path, filename="role_img.png")
                 embed.set_image(url="attachment://role_img.png")
-                # バグ修正：DM送信を回避し、確実に通常のエフェメラル式メッセージで返却[span_1](start_span)[span_1](end_span)
                 return await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
 
-        # 画像がない場合もエフェメラルで返却[span_2](start_span)[span_2](end_span)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 class NightActionView(discord.ui.View):
@@ -1490,7 +1717,7 @@ class NightActionView(discord.ui.View):
         passive_roles = [
             "一般通過あごむに", "霊媒師", "狂人", "ハゲ", "コウモリむに",
             "メンヘラ", "パン屋", "入狼", "タフむに", "狂信者",
-            "ビー玉ブレイカー", "もくもく", "リア充", "貴族", "奴隷", "議長"
+            "ビー玉ブレイカー", "もくもく", "リア充", "貴族", "奴隷", "議長", "アホ"
         ]
         if role in passive_roles:
             embed = discord.Embed(description="お前は寝てろ。明日の朝までじっとしてなさい。", color=0xFFFFFF)
