@@ -5,7 +5,7 @@ from discord.ext import commands
 import yfinance as yf
 
 
-class StockAnalysisCog(commands.Cog):
+class StockAnalysis7AxisCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
@@ -16,24 +16,44 @@ class StockAnalysisCog(commands.Cog):
         if not info or "shortName" not in info:
             return None
 
-        roe = info.get("returnOnEquity")
         rev_growth = info.get("revenueGrowth")
+        earn_growth = info.get("earningsGrowth")
+        roe = info.get("returnOnEquity")
+        op_margin = info.get("operatingMargins")
         pe = info.get("trailingPE")
         pbr = info.get("priceToBook")
         de = info.get("debtToEquity")
+        cur_ratio = info.get("currentRatio")
+        fcf = info.get("freeCashflow")
+        ocf = info.get("operatingCashflow")
+        div_yield = info.get("dividendYield")
+        beta = info.get("beta")
 
         growth_score = 3
-        if roe is not None and rev_growth is not None:
-            if roe > 0.15 and rev_growth > 0.10:
+        if rev_growth is not None and earn_growth is not None:
+            if rev_growth > 0.15 and earn_growth > 0.15:
                 growth_score = 5
-            elif roe > 0.10 and rev_growth > 0.05:
+            elif rev_growth > 0.08 and earn_growth > 0.08:
                 growth_score = 4
-            elif roe > 0.05:
+            elif rev_growth > 0 and earn_growth > 0:
                 growth_score = 3
-            elif roe > 0:
+            elif rev_growth > -0.1:
                 growth_score = 2
             else:
                 growth_score = 1
+
+        prof_score = 3
+        if roe is not None and op_margin is not None:
+            if roe > 0.15 and op_margin > 0.15:
+                prof_score = 5
+            elif roe > 0.10 and op_margin > 0.10:
+                prof_score = 4
+            elif roe > 0.05 and op_margin > 0.05:
+                prof_score = 3
+            elif roe > 0:
+                prof_score = 2
+            else:
+                prof_score = 1
 
         val_score = 3
         if pe is not None:
@@ -48,20 +68,64 @@ class StockAnalysisCog(commands.Cog):
             else:
                 val_score = 1
 
-        safety_score = 3
-        if de is not None:
-            if de < 50:
-                safety_score = 5
-            elif de < 100:
-                safety_score = 4
-            elif de < 150:
-                safety_score = 3
+        health_score = 3
+        if de is not None and cur_ratio is not None:
+            if de < 50 and cur_ratio > 1.5:
+                health_score = 5
+            elif de < 100 and cur_ratio > 1.2:
+                health_score = 4
+            elif de < 150 and cur_ratio > 1.0:
+                health_score = 3
             elif de < 200:
-                safety_score = 2
+                health_score = 2
             else:
-                safety_score = 1
+                health_score = 1
 
-        total_score = round((growth_score + val_score + safety_score) / 3.0, 1)
+        cf_score = 3
+        if fcf is not None and ocf is not None:
+            if fcf > 0 and ocf > 0:
+                cf_score = 5 if fcf > ocf * 0.5 else 4
+            elif ocf > 0:
+                cf_score = 3
+            elif ocf < 0 and fcf < 0:
+                cf_score = 1
+            else:
+                cf_score = 2
+
+        return_score = 3
+        if div_yield is not None:
+            if div_yield > 0.04:
+                return_score = 5
+            elif div_yield > 0.025:
+                return_score = 4
+            elif div_yield > 0.01:
+                return_score = 3
+            elif div_yield > 0:
+                return_score = 2
+            else:
+                return_score = 1
+
+        mom_score = 3
+        if beta is not None:
+            if 0.8 <= beta <= 1.2:
+                mom_score = 5
+            elif 0.5 <= beta < 0.8 or 1.2 < beta <= 1.5:
+                mom_score = 4
+            elif 0.3 <= beta < 0.5 or 1.5 < beta <= 2.0:
+                mom_score = 3
+            else:
+                mom_score = 2
+
+        scores = [
+            growth_score,
+            prof_score,
+            val_score,
+            health_score,
+            cf_score,
+            return_score,
+            mom_score,
+        ]
+        total_score = round(sum(scores) / len(scores), 1)
 
         if total_score >= 4.5:
             rank = "S"
@@ -80,14 +144,20 @@ class StockAnalysisCog(commands.Cog):
             "currency": info.get("currency", "USD"),
             "price": info.get("currentPrice") or info.get("regularMarketPrice"),
             "growth_score": growth_score,
+            "prof_score": prof_score,
             "val_score": val_score,
-            "safety_score": safety_score,
+            "health_score": health_score,
+            "cf_score": cf_score,
+            "return_score": return_score,
+            "mom_score": mom_score,
             "total_score": total_score,
             "rank": rank,
             "pe": pe,
             "pbr": pbr,
             "roe": roe,
             "de": de,
+            "div_yield": div_yield,
+            "beta": beta,
         }
 
     def _build_bar(
@@ -97,13 +167,13 @@ class StockAnalysisCog(commands.Cog):
         return "█" * filled + "░" * (length - filled)
 
     @app_commands.command(
-        name="stock",
-        description="指定したティッカーの総合評価レポートを表示します",
+        name="stock7",
+        description="指定したティッカーの7軸総合評価レポートを表示します",
     )
     @app_commands.describe(
         ticker="分析対象のティッカーシンボル (例: 7203.T, AAPL)"
     )
-    async def stock_eval(self, interaction: discord.Interaction, ticker: str):
+    async def stock_eval7(self, interaction: discord.Interaction, ticker: str):
         await interaction.response.defer()
 
         data = await asyncio.to_thread(self._fetch_and_analyze, ticker)
@@ -118,7 +188,7 @@ class StockAnalysisCog(commands.Cog):
             return
 
         embed = discord.Embed(
-            title=f"SYSTEM EVALUATION REPORT // {data['symbol']}",
+            title=f"7-AXIS EVALUATION REPORT // {data['symbol']}",
             description=f"```\nNAME  : {data['name']}\nPRICE : {data['price']} {data['currency']}\n```",
             color=0x00E5FF,
         )
@@ -130,17 +200,25 @@ class StockAnalysisCog(commands.Cog):
             inline=False,
         )
 
-        growth_bar = self._build_bar(data["growth_score"])
-        val_bar = self._build_bar(data["val_score"])
-        safety_bar = self._build_bar(data["safety_score"])
+        gb = self._build_bar(data["growth_score"])
+        pb = self._build_bar(data["prof_score"])
+        vb = self._build_bar(data["val_score"])
+        hb = self._build_bar(data["health_score"])
+        cb = self._build_bar(data["cf_score"])
+        rb = self._build_bar(data["return_score"])
+        mb = self._build_bar(data["mom_score"])
 
         score_details = (
-            f"GROWTH  : {data['growth_score']}/5 [{growth_bar}]\n"
-            f"VALUE   : {data['val_score']}/5 [{val_bar}]\n"
-            f"SAFETY  : {data['safety_score']}/5 [{safety_bar}]"
+            f"GROWTH     : {data['growth_score']}/5 [{gb}]\n"
+            f"PROFIT     : {data['prof_score']}/5 [{pb}]\n"
+            f"VALUE      : {data['val_score']}/5 [{vb}]\n"
+            f"HEALTH     : {data['health_score']}/5 [{hb}]\n"
+            f"CASH FLOW  : {data['cf_score']}/5 [{cb}]\n"
+            f"RETURN     : {data['return_score']}/5 [{rb}]\n"
+            f"MOMENTUM   : {data['mom_score']}/5 [{mb}]"
         )
         embed.add_field(
-            name="━━━ 3-AXIS EVALUATION ━━━",
+            name="━━━ 7-AXIS EVALUATION ━━━",
             value=f"```\n{score_details}\n```",
             inline=False,
         )
@@ -151,15 +229,23 @@ class StockAnalysisCog(commands.Cog):
             f"{data['roe']*100:.2f}%" if data["roe"] is not None else "N/A"
         )
         de_str = f"{data['de']:.2f}" if data["de"] is not None else "N/A"
+        dy_str = (
+            f"{data['div_yield']*100:.2f}%"
+            if data["div_yield"] is not None
+            else "N/A"
+        )
+        beta_str = f"{data['beta']:.2f}" if data["beta"] is not None else "N/A"
 
         notes = (
             f"・PER : {pe_str}\n"
             f"・PBR : {pbr_str}\n"
             f"・ROE : {roe_str}\n"
-            f"・D/E : {de_str}"
+            f"・D/E : {de_str}\n"
+            f"・YIELD: {dy_str}\n"
+            f"・BETA : {beta_str}"
         )
         embed.add_field(
-            name="━━━ NOTES & METRICS ━━━",
+            name="━━━ METRICS ━━━",
             value=f"```\n{notes}\n```",
             inline=False,
         )
@@ -170,4 +256,4 @@ class StockAnalysisCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(StockAnalysisCog(bot))
+    await bot.add_cog(StockAnalysis7AxisCog(bot))
