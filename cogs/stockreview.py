@@ -158,11 +158,11 @@ class StockDashboardCog(commands.Cog):
         price = info.get("currentPrice") or info.get("regularMarketPrice")
         currency = info.get("currency", "USD")
 
-        fig = plt.figure(figsize=(12, 6), facecolor="#090d16")
+        fig = plt.figure(figsize=(10, 5), facecolor="#090d16")
         fig.suptitle(
             f"SYSTEM DASHBOARD // {ticker_symbol.upper()} - {name}",
             color="#00e5ff",
-            fontsize=15,
+            fontsize=16,
             fontweight="bold",
             x=0.5,
             y=0.95,
@@ -197,7 +197,7 @@ class StockDashboardCog(commands.Cog):
             0.95,
             status_text,
             color="#ffffff",
-            fontsize=11,
+            fontsize=12,
             family="monospace",
             verticalalignment="top",
             linespacing=1.35,
@@ -219,10 +219,10 @@ class StockDashboardCog(commands.Cog):
         )
         ax2.fill(angles_closed, scores_closed, color="#00e5ff", alpha=0.25)
         ax2.set_xticks(angles)
-        ax2.set_xticklabels(labels, color="#ffffff", fontsize=11)
+        ax2.set_xticklabels(labels, color="#ffffff", fontsize=12)
         ax2.set_yticks([1, 2, 3, 4, 5])
         ax2.set_yticklabels(
-            ["1", "2", "3", "4", "5"], color="#556677", fontsize=9
+            ["1", "2", "3", "4", "5"], color="#556677", fontsize=10
         )
         ax2.set_ylim(0, 5.5)
         ax2.grid(color="#1a2638", linestyle="--", linewidth=0.8)
@@ -233,7 +233,7 @@ class StockDashboardCog(commands.Cog):
                 score + 0.35,
                 str(score),
                 color="#00e5ff",
-                fontsize=11,
+                fontsize=12,
                 fontweight="bold",
                 ha="center",
                 va="center",
@@ -247,7 +247,7 @@ class StockDashboardCog(commands.Cog):
         plt.savefig(
             buffer,
             format="png",
-            dpi=150,
+            dpi=100,
             facecolor=fig.get_facecolor(),
             edgecolor="none",
         )
