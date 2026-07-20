@@ -167,7 +167,7 @@ class StockAnalysis7AxisCog(commands.Cog):
         return "█" * filled + "░" * (length - filled)
 
     @app_commands.command(
-        name="stock7",
+        name="stock",
         description="指定したティッカーの7軸総合評価レポートを表示します",
     )
     @app_commands.describe(
