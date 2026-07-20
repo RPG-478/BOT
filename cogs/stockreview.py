@@ -141,15 +141,17 @@ class StockDashboardCog(commands.Cog):
             else:
                 cf_score = 2
 
+        yield_pct = None
         return_score = 3
         if div_yield is not None:
-            if div_yield > 0.04:
+            yield_pct = div_yield * 100 if div_yield < 0.1 else div_yield
+            if yield_pct > 4.0:
                 return_score = 5
-            elif div_yield > 0.025:
+            elif yield_pct > 2.5:
                 return_score = 4
-            elif div_yield > 0.01:
+            elif yield_pct > 1.0:
                 return_score = 3
-            elif div_yield > 0:
+            elif yield_pct > 0:
                 return_score = 2
             else:
                 return_score = 1
@@ -206,7 +208,7 @@ class StockDashboardCog(commands.Cog):
         pbr_str = f"{pbr:.2f}" if pbr is not None else "N/A"
         roe_str = f"{roe*100:.2f}%" if roe is not None else "N/A"
         de_str = f"{de:.2f}" if de is not None else "N/A"
-        yield_str = f"{div_yield*100:.2f}%" if div_yield is not None else "N/A"
+        yield_str = f"{yield_pct:.2f}%" if yield_pct is not None else "N/A"
         beta_str = f"{beta:.2f}" if beta is not None else "N/A"
 
         return {
