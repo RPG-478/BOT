@@ -36,7 +36,7 @@ class StockDashboardCog(commands.Cog):
 
         formatted_labels = [f"{lbl}\n({sc}/5)" for lbl, sc in zip(labels, scores)]
         ax.set_xticks(angles)
-        ax.set_xticklabels(formatted_labels, color="#ffffff", fontsize=12, fontweight="bold")
+        ax.set_xticklabels(formatted_labels, color="#ffffff", fontsize=11, fontweight="bold")
         ax.tick_params(axis="x", pad=15)
 
         ax.set_yticks([1, 2, 3, 4, 5])
@@ -245,31 +245,31 @@ class StockDashboardCog(commands.Cog):
 
         desc = (
             f"```\n"
-            f"NAME   : {data['name']}\n"
-            f"PRICE  : {data['price']} {data['currency']}\n\n"
-            f"━━━ OVERALL RATING ━━━\n\n"
-            f"RANK   : [ {data['rank']} ]\n"
-            f"SCORE  : {data['total_score']} / 5.0\n\n"
-            f"━━━ 7-AXIS EVALUATION ━━━\n\n"
-            f"GROWTH    : {data['scores'][0]}/5\n"
-            f"PROFIT    : {data['scores'][1]}/5\n"
-            f"VALUE     : {data['scores'][2]}/5\n"
-            f"HEALTH    : {data['scores'][3]}/5\n"
-            f"CASH FLOW : {data['scores'][4]}/5\n"
-            f"RETURN    : {data['scores'][5]}/5\n"
-            f"MOMENTUM  : {data['scores'][6]}/5\n\n"
-            f"━━━ METRICS ━━━\n\n"
-            f"・ PER   : {data['pe']}\n"
-            f"・ PBR   : {data['pbr']}\n"
-            f"・ ROE   : {data['roe']}\n"
-            f"・ D/E   : {data['de']}\n"
-            f"・ YIELD : {data['yield']}\n"
-            f"・ BETA  : {data['beta']}\n"
+            f"企業名   : {data['name']}\n"
+            f"株価     : {data['price']} {data['currency']}\n\n"
+            f"━━━ 総合評価 ━━━\n\n"
+            f"ランク   : [ {data['rank']} ]\n"
+            f"スコア   : {data['total_score']} / 5.0\n\n"
+            f"━━━ 7軸評価 ━━━\n\n"
+            f"成長性           : {data['scores'][0]}/5\n"
+            f"収益性           : {data['scores'][1]}/5\n"
+            f"割安性           : {data['scores'][2]}/5\n"
+            f"財務健全性       : {data['scores'][3]}/5\n"
+            f"キャッシュフロー : {data['scores'][4]}/5\n"
+            f"株主還元         : {data['scores'][5]}/5\n"
+            f"モメンタム       : {data['scores'][6]}/5\n\n"
+            f"━━━ 主要指標 ━━━\n\n"
+            f"・ PER       : {data['pe']}\n"
+            f"・ PBR       : {data['pbr']}\n"
+            f"・ ROE       : {data['roe']}\n"
+            f"・ D/E比率   : {data['de']}\n"
+            f"・ 配当利回り : {data['yield']}\n"
+            f"・ ベータ    : {data['beta']}\n"
             f"```"
         )
 
         embed = discord.Embed(
-            title=f"7-AXIS EVALUATION REPORT // {ticker.upper()}",
+            title=f"7軸評価レポート // {ticker.upper()}",
             description=desc,
             color=0x2f3136,
         )
