@@ -4,6 +4,8 @@ from groq import AsyncGroq
 import os
 import json
 import urllib.parse
+import re
+import mimetypes
 from curl_cffi.requests import AsyncSession
 from bs4 import BeautifulSoup
 from google import genai
@@ -142,36 +144,58 @@ class AdaptiveAI(commands.Cog):
                 await self.bot.invoke(ctx)
 
     async def _handle_analyze_mode(self, message, ref_msg, command_text):
-        attachments = list(ref_msg.attachments) + list(message.attachments)
         file_parts = []
         text_attachments_content = ""
-
-        async with AsyncSession(impersonate="chrome") as session:
-            for att in attachments:
-                try:
-                    res = await session.get(att.url, timeout=15)
-                    if res.status_code == 200:
-                        content_type = att.content_type or "application/octet-stream"
-                        if content_type.startswith("text/") or att.name.endswith(('.txt', '.py', '.json', '.html', '.css', '.js', '.md', '.csv')):
-                            try:
-                                decoded_text = res.content.decode('utf-8', errors='ignore')
-                                text_attachments_content += f"\n--- 添付ファイル ({att.name}) ---\n{decoded_text[:5000]}\n"
-                            except Exception:
-                                file_parts.append(types.Part.from_bytes(data=res.content, mime_type=content_type))
-                        else:
-                            file_parts.append(types.Part.from_bytes(data=res.content, mime_type=content_type))
-                except Exception:
-                    continue
 
         ref_author_name = ref_msg.author.display_name
         ref_text = ref_msg.content.replace(f'<@{self.bot.user.id}>', '').strip()
 
+        combined_text_for_urls = f"{ref_text} {command_text}"
+        extracted_urls = re.findall(r'https?://[^\s>]+', combined_text_for_urls)
+
+        targets = []
+        for att in list(ref_msg.attachments) + list(message.attachments):
+            targets.append({"url": att.url, "filename": att.name, "content_type": att.content_type})
+
+        for url in extracted_urls:
+            filename = url.split('/')[-1].split('?')[0]
+            targets.append({"url": url, "filename": filename, "content_type": None})
+
+        async with AsyncSession(impersonate="chrome") as session:
+            for item in targets:
+                try:
+                    res = await session.get(item["url"], timeout=15)
+                    if res.status_code != 200:
+                        continue
+
+                    header_type = res.headers.get("content-type", "").split(";")[0].strip()
+                    guessed_type, _ = mimetypes.guess_type(item["filename"])
+                    content_type = item["content_type"] or header_type or guessed_type or "application/octet-stream"
+
+                    if content_type.startswith("text/html"):
+                        soup = BeautifulSoup(res.text, "html.parser")
+                        for s in soup(["script", "style", "nav", "footer", "header"]):
+                            s.decompose()
+                        web_text = " ".join(soup.stripped_strings)[:3000]
+                        text_attachments_content += f"\n--- 取得URL ({item['url']}) ---\n{web_text}\n"
+
+                    elif content_type.startswith("text/") or item["filename"].endswith(('.txt', '.py', '.json', '.html', '.css', '.js', '.md', '.csv')):
+                        try:
+                            decoded_text = res.content.decode('utf-8', errors='ignore')
+                            text_attachments_content += f"\n--- テキストファイル/情報 ({item['filename']}) ---\n{decoded_text[:5000]}\n"
+                        except Exception:
+                            file_parts.append(types.Part.from_bytes(data=res.content, mime_type=content_type))
+                    else:
+                        file_parts.append(types.Part.from_bytes(data=res.content, mime_type=content_type))
+                except Exception:
+                    continue
+
         analysis_prompt = (
             "あなたは高度なコンテンツ・ファイル解析を行うAIアシスタントです。\n"
-            "ユーザーからの指示に従い、対象となるメッセージ内容や添付ファイル（画像、動画、音声、文書など）を精読・解析して適切な回答を作成してください。\n"
+            "ユーザーからの指示に従い、対象となるメッセージ内容、URL先の内容、添付ファイル（画像、動画、音声、文書など）を精読・解析して適切な回答を作成してください。\n"
             f"【対象ユーザー ({ref_author_name}) のメッセージ】\n{ref_text}\n"
             f"{text_attachments_content}\n"
-            f"【分析・回答に対する指示】\n{command_text if command_text else '対象のメッセージおよびファイルを解析して、要約や内容の説明を行ってください。'}"
+            f"【分析・回答に対する指示】\n{command_text if command_text else '対象のメッセージおよびファイル・URLを解析して、要約や内容の説明を行ってください。'}"
         )
 
         contents = [analysis_prompt] + file_parts
@@ -184,10 +208,13 @@ class AdaptiveAI(commands.Cog):
             reply_text = response.text
         except Exception as e:
             if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                reply_text = await self._call_groq_fallback(
-                    "対象のメッセージテキストと指示に基づいて解析・回答してください。",
-                    f"【対象メッセージ】\n{ref_text}\n{text_attachments_content}\n\n【指示】\n{command_text}"
-                )
+                if file_parts:
+                    reply_text = "Gemini APIのレート制限(429)が発生しました。画像・メディアファイルの解析は現在利用できません。"
+                else:
+                    reply_text = await self._call_groq_fallback(
+                        "対象のメッセージテキストと指示に基づいて解析・回答してください。",
+                        f"【対象メッセージ】\n{ref_text}\n{text_attachments_content}\n\n【指示】\n{command_text}"
+                    )
             else:
                 raise e
 
