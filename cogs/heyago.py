@@ -22,19 +22,57 @@ class AdaptiveAI(commands.Cog):
         if message.author.bot:
             return
 
-        if self.bot.user in message.mentions:
-            command_text = message.content.replace(f'<@{self.bot.user.id}>', '').strip()
-            
-            if not command_text:
-                await message.channel.send("用事があれば話しかけてください。")
-                return
+        is_mentioned = self.bot.user in message.mentions
+        is_reply_to_bot = False
 
-            async with message.channel.typing():
+        if message.reference and message.reference.message_id:
+            try:
+                ref_msg = message.reference.cached_message
+                if not ref_msg:
+                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                if ref_msg and ref_msg.author == self.bot.user:
+                    is_reply_to_bot = True
+            except Exception:
+                pass
+
+        if not (is_mentioned or is_reply_to_bot):
+            return
+
+        command_text = message.content.replace(f'<@{self.bot.user.id}>', '').strip()
+        
+        if not command_text:
+            await message.reply("用事があれば話しかけてください。")
+            return
+
+        async with message.channel.typing():
+            try:
+                history = await self._fetch_conversation_history(message)
+                mode_info = await self._determine_mode(command_text)
+                await self._dispatch_mode(message, command_text, history, mode_info)
+            except Exception as e:
+                await message.reply(f"エラーが発生しました: {e}")
+
+    async def _fetch_conversation_history(self, message):
+        history = []
+        curr = message
+        while curr:
+            content = curr.content.replace(f'<@{self.bot.user.id}>', '').strip()
+            role = "assistant" if curr.author == self.bot.user else "user"
+            history.append({"role": role, "content": content})
+
+            if curr.reference and curr.reference.message_id:
                 try:
-                    mode_info = await self._determine_mode(command_text)
-                    await self._dispatch_mode(message, command_text, mode_info)
-                except Exception as e:
-                    await message.channel.send(f"エラーが発生しました: {e}")
+                    ref_msg = curr.reference.cached_message
+                    if not ref_msg:
+                        ref_msg = await message.channel.fetch_message(curr.reference.message_id)
+                    curr = ref_msg
+                except Exception:
+                    curr = None
+            else:
+                curr = None
+
+        history.reverse()
+        return history
 
     async def _determine_mode(self, text):
         judge_prompt = (
@@ -57,15 +95,15 @@ class AdaptiveAI(commands.Cog):
         )
         return json.loads(chat_completion.choices[0].message.content)
 
-    async def _dispatch_mode(self, message, text, mode_info):
+    async def _dispatch_mode(self, message, text, history, mode_info):
         mode = mode_info.get("mode")
 
         if mode == "command":
             await self._handle_command_mode(message, text)
         elif mode == "search_web":
-            await self._handle_search_web_mode(message, text)
+            await self._handle_search_web_mode(message, text, history)
         else:
-            await self._handle_chat_mode(message, text)
+            await self._handle_chat_mode(message, history)
 
     async def _handle_command_mode(self, message, text):
         prompt = (
@@ -108,22 +146,20 @@ class AdaptiveAI(commands.Cog):
         )
         return response.text
 
-    async def _call_groq_chat(self, system_prompt, user_text):
+    async def _call_groq_chat(self, system_prompt, history):
+        messages = [{"role": "system", "content": system_prompt}] + history
         chat_completion = await self.groq_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_text}
-            ],
+            messages=messages,
             model=self.chat_model
         )
         return chat_completion.choices[0].message.content
 
-    async def _handle_chat_mode(self, message, text):
-        prompt = "あなたはDiscordボットのAIアシスタントです。ユーザーからの話しかけに対して、親しみやすく自然な日本語で返答してください。"
-        reply_text = await self._call_groq_chat(prompt, text)
-        await self._send_long_message(message.channel, reply_text)
+    async def _handle_chat_mode(self, message, history):
+        prompt = "あなたはDiscordボットのAIアシスタントです。過去の会話の文脈を踏まえ、ユーザーからの話しかけに対して、親しみやすく自然な日本語で返答してください。"
+        reply_text = await self._call_groq_chat(prompt, history)
+        await self._send_reply_message(message, reply_text)
 
-    async def _handle_search_web_mode(self, message, text):
+    async def _handle_search_web_mode(self, message, text, history):
         keyword_prompt = (
             "ユーザーの質問から、Web検索に最適な検索キーワードを1つだけ抽出してください。\n"
             "余計な解説は含めず、必ず以下のJSONフォーマットのみで出力してください。\n"
@@ -159,14 +195,17 @@ class AdaptiveAI(commands.Cog):
         if not web_context:
             web_context = "検索結果から情報を取得できませんでした。"
 
+        history_text = "\n".join([f"{'ボット' if h['role']=='assistant' else 'ユーザー'}: {h['content']}" for h in history])
+
         answer_prompt = (
             "あなたは与えられたWeb検索結果を参考にしてユーザーの質問に答えるAIアシスタントです。\n"
-            "提供された情報を元に、正確で自然な日本語の回答を作成してください。\n"
+            "これまでの会話の流れと提供された情報を元に、正確で自然な日本語の回答を作成してください。\n\n"
+            f"【これまでの会話履歴】\n{history_text}\n\n"
             f"【検索結果の参考情報】\n{web_context}"
         )
         
         reply_text = await self._call_gemini_flash(answer_prompt, text)
-        await self._send_long_message(message.channel, reply_text)
+        await self._send_reply_message(message, reply_text)
 
     async def _search_duckduckgo(self, query):
         urls = []
@@ -192,12 +231,14 @@ class AdaptiveAI(commands.Cog):
             pass
         return urls
 
-    async def _send_long_message(self, channel, text):
+    async def _send_reply_message(self, message, text):
         if len(text) > 2000:
-            for i in range(0, len(text), 2000):
-                await channel.send(text[i:i+2000])
+            chunks = [text[i:i+2000] for i in range(0, len(text), 2000)]
+            await message.reply(chunks[0])
+            for chunk in chunks[1:]:
+                await message.channel.send(chunk)
         else:
-            await channel.send(text)
+            await message.reply(text)
 
 async def setup(bot):
     await bot.add_cog(AdaptiveAI(bot))
