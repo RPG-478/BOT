@@ -16,7 +16,49 @@ class StockDashboardCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    def _fetch_and_draw(self, ticker_symbol: str) -> io.BytesIO | None:
+    def _draw_radar_chart(self, labels: list[str], scores: list[int]) -> io.BytesIO:
+        fig = plt.figure(figsize=(6, 6), facecolor="#090d16")
+        angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
+        scores_closed = scores + [scores[0]]
+        angles_closed = angles + [angles[0]]
+
+        ax = fig.add_subplot(111, polar=True, facecolor="#090d16")
+        ax.plot(
+            angles_closed,
+            scores_closed,
+            color="#00e5ff",
+            linewidth=3,
+            marker="o",
+            markersize=8,
+            markerfacecolor="#00e5ff",
+        )
+        ax.fill(angles_closed, scores_closed, color="#00e5ff", alpha=0.25)
+
+        formatted_labels = [f"{lbl}\n({sc}/5)" for lbl, sc in zip(labels, scores)]
+        ax.set_xticks(angles)
+        ax.set_xticklabels(formatted_labels, color="#ffffff", fontsize=12, fontweight="bold")
+        ax.tick_params(axis="x", pad=15)
+
+        ax.set_yticks([1, 2, 3, 4, 5])
+        ax.set_yticklabels([])
+        ax.set_ylim(0, 5.5)
+        ax.grid(color="#2a384c", linestyle="--", linewidth=1.0)
+
+        plt.subplots_adjust(left=0.15, right=0.85, top=0.85, bottom=0.15)
+
+        buffer = io.BytesIO()
+        plt.savefig(
+            buffer,
+            format="png",
+            dpi=120,
+            facecolor=fig.get_facecolor(),
+            edgecolor="none",
+        )
+        buffer.seek(0)
+        plt.close(fig)
+        return buffer
+
+    def _fetch_data(self, ticker_symbol: str):
         ticker = yf.Ticker(ticker_symbol)
         info = ticker.info
 
@@ -133,13 +175,13 @@ class StockDashboardCog(commands.Cog):
             mom_score,
         ]
         labels = [
-            "Growth",
-            "Profit",
-            "Value",
-            "Health",
-            "CashFlow",
-            "Return",
-            "Momentum",
+            "GROWTH",
+            "PROFIT",
+            "VALUE",
+            "HEALTH",
+            "CASH FLOW",
+            "RETURN",
+            "MOMENTUM",
         ]
 
         total_score = round(sum(scores) / len(scores), 1)
@@ -158,96 +200,31 @@ class StockDashboardCog(commands.Cog):
         price = info.get("currentPrice") or info.get("regularMarketPrice")
         currency = info.get("currency", "USD")
 
-        fig = plt.figure(figsize=(11, 5.5), facecolor="#090d16")
-        fig.suptitle(
-            f"SYSTEM DASHBOARD // {ticker_symbol.upper()} - {name}",
-            color="#00e5ff",
-            fontsize=15,
-            fontweight="bold",
-            x=0.5,
-            y=0.94,
-        )
-
-        ax1 = fig.add_subplot(121, facecolor="#090d16")
-        ax1.axis("off")
+        buffer = self._draw_radar_chart(labels, scores)
 
         pe_str = f"{pe:.2f}" if pe is not None else "N/A"
         pbr_str = f"{pbr:.2f}" if pbr is not None else "N/A"
         roe_str = f"{roe*100:.2f}%" if roe is not None else "N/A"
         de_str = f"{de:.2f}" if de is not None else "N/A"
+        yield_str = f"{div_yield*100:.2f}%" if div_yield is not None else "N/A"
+        beta_str = f"{beta:.2f}" if beta is not None else "N/A"
 
-        status_text = (
-            f"━ COMPANY DATA ━\n"
-            f"NAME   : {name}\n"
-            f"PRICE  : {price} {currency}\n\n"
-            f"━ RATING ━\n"
-            f"RANK   : [ {rank} ]\n"
-            f"SCORE  : {total_score} / 5.0\n\n"
-            f"━ 7-AXIS SCORES ━\n"
-            f"Growth   : {growth_score}/5   Profit   : {prof_score}/5\n"
-            f"Value    : {val_score}/5   Health   : {health_score}/5\n"
-            f"CashFlow : {cf_score}/5   Return   : {return_score}/5\n"
-            f"Momentum : {mom_score}/5\n\n"
-            f"━ METRICS ━\n"
-            f"PER: {pe_str} | PBR: {pbr_str}\nROE: {roe_str} | D/E: {de_str}"
-        )
-
-        ax1.text(
-            0.02,
-            0.95,
-            status_text,
-            color="#ffffff",
-            fontsize=12,
-            family="monospace",
-            verticalalignment="top",
-            linespacing=1.4,
-        )
-
-        angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
-        scores_closed = scores + [scores[0]]
-        angles_closed = angles + [angles[0]]
-
-        ax2 = fig.add_subplot(122, polar=True, facecolor="#090d16")
-        ax2.plot(
-            angles_closed,
-            scores_closed,
-            color="#00e5ff",
-            linewidth=2.5,
-            marker="o",
-            markersize=6,
-            markerfacecolor="#00e5ff",
-        )
-        ax2.fill(angles_closed, scores_closed, color="#00e5ff", alpha=0.2)
-
-        formatted_labels = [
-            f"{lbl}\n[{sc}/5]" for lbl, sc in zip(labels, scores)
-        ]
-
-        ax2.set_xticks(angles)
-        ax2.set_xticklabels(formatted_labels, color="#ffffff", fontsize=11)
-        ax2.tick_params(axis="x", pad=12)
-
-        ax2.set_yticks([1, 2, 3, 4, 5])
-        ax2.set_yticklabels([])
-        ax2.set_ylim(0, 5.5)
-        ax2.grid(color="#2a384c", linestyle="--", linewidth=0.8)
-
-        plt.subplots_adjust(
-            left=0.02, right=0.98, bottom=0.08, top=0.85, wspace=0.15
-        )
-
-        buffer = io.BytesIO()
-        plt.savefig(
-            buffer,
-            format="png",
-            dpi=110,
-            facecolor=fig.get_facecolor(),
-            edgecolor="none",
-        )
-        buffer.seek(0)
-        plt.close(fig)
-
-        return buffer
+        return {
+            "name": name,
+            "price": price,
+            "currency": currency,
+            "rank": rank,
+            "total_score": total_score,
+            "scores": scores,
+            "labels": labels,
+            "pe": pe_str,
+            "pbr": pbr_str,
+            "roe": roe_str,
+            "de": de_str,
+            "yield": yield_str,
+            "beta": beta_str,
+            "buffer": buffer,
+        }
 
     @app_commands.command(
         name="stock", description="指定したティッカーの分析ダッシュボードを表示します"
@@ -258,17 +235,49 @@ class StockDashboardCog(commands.Cog):
     async def stock(self, interaction: discord.Interaction, ticker: str):
         await interaction.response.defer()
 
-        buffer = await asyncio.to_thread(self._fetch_and_draw, ticker)
+        data = await asyncio.to_thread(self._fetch_data, ticker)
 
-        if not buffer:
+        if not data:
             await interaction.followup.send(
                 f"ティッカー `{ticker}` のデータを取得できませんでした。"
             )
             return
 
-        file = discord.File(buffer, filename="dashboard.png")
-        embed = discord.Embed(color=0x000000)
-        embed.set_image(url="attachment://dashboard.png")
+        desc = (
+            f"```\n"
+            f"NAME   : {data['name']}\n"
+            f"PRICE  : {data['price']} {data['currency']}\n\n"
+            f"━━━ OVERALL RATING ━━━\n\n"
+            f"RANK   : [ {data['rank']} ]\n"
+            f"SCORE  : {data['total_score']} / 5.0\n\n"
+            f"━━━ 7-AXIS EVALUATION ━━━\n\n"
+            f"GROWTH    : {data['scores'][0]}/5\n"
+            f"PROFIT    : {data['scores'][1]}/5\n"
+            f"VALUE     : {data['scores'][2]}/5\n"
+            f"HEALTH    : {data['scores'][3]}/5\n"
+            f"CASH FLOW : {data['scores'][4]}/5\n"
+            f"RETURN    : {data['scores'][5]}/5\n"
+            f"MOMENTUM  : {data['scores'][6]}/5\n\n"
+            f"━━━ METRICS ━━━\n\n"
+            f"・ PER   : {data['pe']}\n"
+            f"・ PBR   : {data['pbr']}\n"
+            f"・ ROE   : {data['roe']}\n"
+            f"・ D/E   : {data['de']}\n"
+            f"・ YIELD : {data['yield']}\n"
+            f"・ BETA  : {data['beta']}\n"
+            f"```"
+        )
+
+        embed = discord.Embed(
+            title=f"7-AXIS EVALUATION REPORT // {ticker.upper()}",
+            description=desc,
+            color=0x2f3136,
+        )
+
+        file = discord.File(data["buffer"], filename="chart.png")
+        embed.set_image(url="attachment://chart.png")
+        embed.set_footer(text="POWERED BY YFINANCE ARCHITECTURE")
+
         await interaction.followup.send(file=file, embed=embed)
 
 
