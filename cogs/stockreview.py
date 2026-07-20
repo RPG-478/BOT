@@ -190,7 +190,7 @@ class StockAnalysis7AxisCog(commands.Cog):
         embed = discord.Embed(
             title=f"7-AXIS EVALUATION REPORT // {data['symbol']}",
             description=f"```\nNAME  : {data['name']}\nPRICE : {data['price']} {data['currency']}\n```",
-            color=0x00E5FF,
+            color=00000000,
         )
 
         overall_bar = self._build_bar(data["total_score"])
