@@ -28,6 +28,7 @@ class StockDashboardCog(commands.Cog):
         roe = info.get("returnOnEquity")
         op_margin = info.get("operatingMargins")
         pe = info.get("trailingPE")
+        pbr = info.get("priceToBook")
         de = info.get("debtToEquity")
         cur_ratio = info.get("currentRatio")
         fcf = info.get("freeCashflow")
@@ -141,58 +142,85 @@ class StockDashboardCog(commands.Cog):
             "Momentum",
         ]
 
-        hist = ticker.history(period="6m")
+        total_score = round(sum(scores) / len(scores), 1)
+        if total_score >= 4.5:
+            rank = "S"
+        elif total_score >= 3.8:
+            rank = "A"
+        elif total_score >= 2.8:
+            rank = "B"
+        elif total_score >= 1.8:
+            rank = "C"
+        else:
+            rank = "D"
 
-        fig = plt.figure(figsize=(12, 5.5), facecolor="#090d16")
+        name = info.get("shortName", ticker_symbol)
+        price = info.get("currentPrice") or info.get("regularMarketPrice")
+        currency = info.get("currency", "USD")
+
+        fig = plt.figure(figsize=(11, 5.5), facecolor="#090d16")
         fig.suptitle(
-            f"SYSTEM DASHBOARD // {ticker_symbol.upper()} - {info.get('shortName', '')}",
+            f"SYSTEM DASHBOARD // {ticker_symbol.upper()} - {name}",
             color="#00e5ff",
-            fontsize=14,
+            fontsize=13,
             fontweight="bold",
             x=0.5,
             y=0.95,
+        )
+
+        ax1 = fig.add_subplot(121, facecolor="#090d16")
+        ax1.axis("off")
+
+        pe_str = f"{pe:.2f}" if pe is not None else "N/A"
+        pbr_str = f"{pbr:.2f}" if pbr is not None else "N/A"
+        roe_str = f"{roe*100:.2f}%" if roe is not None else "N/A"
+        de_str = f"{de:.2f}" if de is not None else "N/A"
+
+        status_text = (
+            f"━ COMPANY DATA ━\n"
+            f"NAME   : {name}\n"
+            f"PRICE  : {price} {currency}\n\n"
+            f"━ RATING ━\n"
+            f"RANK   : [ {rank} ]\n"
+            f"SCORE  : {total_score} / 5.0\n\n"
+            f"━ 7-AXIS SCORES ━\n"
+            f"Growth   : {growth_score}/5   Profit   : {prof_score}/5\n"
+            f"Value    : {val_score}/5   Health   : {health_score}/5\n"
+            f"CashFlow : {cf_score}/5   Return   : {return_score}/5\n"
+            f"Momentum : {mom_score}/5\n\n"
+            f"━ METRICS ━\n"
+            f"PER: {pe_str} | PBR: {pbr_str} | ROE: {roe_str} | D/E: {de_str}"
+        )
+
+        ax1.text(
+            0.05,
+            0.92,
+            status_text,
+            color="#ffffff",
+            fontsize=9,
+            family="monospace",
+            verticalalignment="top",
+            linespacing=1.4,
         )
 
         angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
         scores_closed = scores + [scores[0]]
         angles_closed = angles + [angles[0]]
 
-        ax1 = fig.add_subplot(121, polar=True, facecolor="#101726")
-        ax1.plot(angles_closed, scores_closed, color="#00e5ff", linewidth=2)
-        ax1.fill(angles_closed, scores_closed, color="#00e5ff", alpha=0.25)
-        ax1.set_xticks(angles)
-        ax1.set_xticklabels(labels, color="#ffffff", fontsize=9)
-        ax1.set_yticks([1, 2, 3, 4, 5])
-        ax1.set_yticklabels(
+        ax2 = fig.add_subplot(122, polar=True, facecolor="#101726")
+        ax2.plot(angles_closed, scores_closed, color="#00e5ff", linewidth=2)
+        ax2.fill(angles_closed, scores_closed, color="#00e5ff", alpha=0.25)
+        ax2.set_xticks(angles)
+        ax2.set_xticklabels(labels, color="#ffffff", fontsize=9)
+        ax2.set_yticks([1, 2, 3, 4, 5])
+        ax2.set_yticklabels(
             ["1", "2", "3", "4", "5"], color="#556677", fontsize=8
         )
-        ax1.set_ylim(0, 5)
-        ax1.grid(color="#1a2638", linestyle="--", linewidth=0.8)
-
-        ax2 = fig.add_subplot(122, facecolor="#101726")
-        if not hist.empty:
-            ax2.plot(
-                hist.index,
-                hist["Close"],
-                color="#ff007f",
-                linewidth=2,
-                label="Close Price",
-            )
-            ax2.fill_between(
-                hist.index, hist["Close"], color="#ff007f", alpha=0.15
-            )
-
-        ax2.set_title(
-            "PRICE TREND (6-MONTHS)", color="#ffffff", fontsize=11, pad=10
-        )
-        ax2.tick_params(colors="#8899a1", labelsize=8)
+        ax2.set_ylim(0, 5)
         ax2.grid(color="#1a2638", linestyle="--", linewidth=0.8)
 
-        for spine in ax2.spines.values():
-            spine.set_color("#1a2638")
-
         plt.subplots_adjust(
-            left=0.05, right=0.95, bottom=0.1, top=0.85, wspace=0.25
+            left=0.03, right=0.97, bottom=0.08, top=0.85, wspace=0.15
         )
 
         buffer = io.BytesIO()
@@ -209,12 +237,12 @@ class StockDashboardCog(commands.Cog):
         return buffer
 
     @app_commands.command(
-        name="dash", description="分析ダッシュボード画像を生成します"
+        name="stock", description="指定したティッカーの分析ダッシュボードを表示します"
     )
     @app_commands.describe(
         ticker="分析対象のティッカー (例: 7203.T, AAPL)"
     )
-    async def stock_dash(self, interaction: discord.Interaction, ticker: str):
+    async def stock(self, interaction: discord.Interaction, ticker: str):
         await interaction.response.defer()
 
         buffer = await asyncio.to_thread(self._fetch_and_draw, ticker)
@@ -226,7 +254,7 @@ class StockDashboardCog(commands.Cog):
             return
 
         file = discord.File(buffer, filename="dashboard.png")
-        embed = discord.Embed(color=0x00E5FF)
+        embed = discord.Embed(color=0x000000)
         embed.set_image(url="attachment://dashboard.png")
         await interaction.followup.send(file=file, embed=embed)
 
