@@ -41,8 +41,8 @@ class AdaptiveAI(commands.Cog):
             "ユーザーの入力文の文脈から、どのモードで処理すべきかを厳格に判定してください。\n\n"
             "【モード一覧】\n"
             "- command: ボットの既存機能（BGM操作、音量、速度、EQ、Google検索など）への明確な指示・要求である場合\n"
-            "- search_web: 最新のニュース、時事ネタ、天気、ボットが知らないような情報について「調べて」「検索して」「教えて」と要求されている場合\n"
-            "- chat: 単なる雑談、挨拶、一般的な知識に関する質問、あるいは明確なコマンド指示や最新情報の検索要求ではない場合\n\n"
+            "- search_web: 最新のニュース、時事ネタ、天気、リアルタイム情報など、Web検索・スクレイピングが必要な問い合わせである場合\n"
+            "- chat: 単なる雑談、挨拶、一般的な知識に関する質問など、Web検索が不要な会話である場合\n\n"
             "出力は必ず以下のJSONフォーマットのみにしてください。\n"
             '{"mode": "command_または_search_web_または_chat"}'
         )
@@ -64,8 +64,6 @@ class AdaptiveAI(commands.Cog):
             await self._handle_command_mode(message, text)
         elif mode == "search_web":
             await self._handle_search_web_mode(message, text)
-        elif mode == "chat":
-            await self._handle_chat_mode(message, text)
         else:
             await self._handle_chat_mode(message, text)
 
@@ -110,9 +108,19 @@ class AdaptiveAI(commands.Cog):
         )
         return response.text
 
+    async def _call_groq_chat(self, system_prompt, user_text):
+        chat_completion = await self.groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text}
+            ],
+            model=self.chat_model
+        )
+        return chat_completion.choices[0].message.content
+
     async def _handle_chat_mode(self, message, text):
         prompt = "あなたはDiscordボットのAIアシスタントです。ユーザーからの話しかけに対して、親しみやすく自然な日本語で返答してください。"
-        reply_text = await self._call_gemini_flash(prompt, text)
+        reply_text = await self._call_groq_chat(prompt, text)
         await self._send_long_message(message.channel, reply_text)
 
     async def _handle_search_web_mode(self, message, text):
