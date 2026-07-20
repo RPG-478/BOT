@@ -3,6 +3,7 @@ from discord.ext import commands
 from groq import AsyncGroq
 import os
 import json
+import asyncio
 from curl_cffi.requests import AsyncSession
 from bs4 import BeautifulSoup
 import urllib.parse
@@ -52,10 +53,10 @@ class AdaptiveAI(commands.Cog):
             except Exception as e:
                 await message.reply(f"エラーが発生しました: {e}")
 
-    async def _fetch_conversation_history(self, message):
+    async def _fetch_conversation_history(self, message, limit=6):
         history = []
         curr = message
-        while curr:
+        while curr and len(history) < limit:
             content = curr.content.replace(f'<@{self.bot.user.id}>', '').strip()
             role = "assistant" if curr.author == self.bot.user else "user"
             history.append({"role": role, "content": content})
@@ -103,7 +104,7 @@ class AdaptiveAI(commands.Cog):
         elif mode == "search_web":
             await self._handle_search_web_mode(message, text, history)
         else:
-            await self._handle_chat_mode(message, history)
+            await self._handle_chat_mode(message, text, history)
 
     async def _handle_command_mode(self, message, text):
         prompt = (
@@ -136,27 +137,43 @@ class AdaptiveAI(commands.Cog):
                 ctx = await self.bot.get_context(message)
                 await self.bot.invoke(ctx)
 
-    async def _call_gemini_flash(self, system_prompt, user_text):
-        response = await self.gemini_client.aio.models.generate_content(
-            model='gemini-3.5-flash',
-            contents=user_text,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-            ),
-        )
-        return response.text
+    async def _call_gemini_with_fallback(self, system_prompt, user_text, history=None):
+        try:
+            response = await self.gemini_client.aio.models.generate_content(
+                model='gemini-3.5-flash',
+                contents=user_text,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                ),
+            )
+            return response.text
+        except Exception as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                return await self._call_groq_fallback(system_prompt, user_text, history)
+            raise e
 
-    async def _call_groq_chat(self, system_prompt, history):
-        messages = [{"role": "system", "content": system_prompt}] + history
+    async def _call_groq_fallback(self, system_prompt, user_text, history=None):
+        messages = [{"role": "system", "content": system_prompt}]
+        if history:
+            messages.extend(history)
+        else:
+            messages.append({"role": "user", "content": user_text})
+
         chat_completion = await self.groq_client.chat.completions.create(
             messages=messages,
             model=self.chat_model
         )
         return chat_completion.choices[0].message.content
 
-    async def _handle_chat_mode(self, message, history):
-        prompt = "あなたはDiscordボットのAIアシスタントです。過去の会話の文脈を踏まえ、ユーザーからの話しかけに対して、親しみやすく自然な日本語で返答してください。"
-        reply_text = await self._call_groq_chat(prompt, history)
+    async def _handle_chat_mode(self, message, text, history):
+        history_text = "\n".join([f"{'ボット' if h['role']=='assistant' else 'ユーザー'}: {h['content']}" for h in history])
+        
+        prompt = (
+            "あなたはDiscordボットのAIアシスタントです。\n"
+            "これまでの会話の流れを踏まえ、親しみやすく自然な日本語で返答してください。\n\n"
+            f"【これまでの会話履歴】\n{history_text}"
+        )
+        reply_text = await self._call_gemini_with_fallback(prompt, text, history)
         await self._send_reply_message(message, reply_text)
 
     async def _handle_search_web_mode(self, message, text, history):
@@ -199,12 +216,12 @@ class AdaptiveAI(commands.Cog):
 
         answer_prompt = (
             "あなたは与えられたWeb検索結果を参考にしてユーザーの質問に答えるAIアシスタントです。\n"
-            "これまでの会話の流れと提供された情報を元に、正確で自然な日本語の回答を作成してください。短く回答してください。\n\n"
+            "これまでの会話の流れと提供された情報を元に、正確で自然な日本語の回答を作成してください。\n\n"
             f"【これまでの会話履歴】\n{history_text}\n\n"
             f"【検索結果の参考情報】\n{web_context}"
         )
         
-        reply_text = await self._call_gemini_flash(answer_prompt, text)
+        reply_text = await self._call_gemini_with_fallback(answer_prompt, text, history)
         await self._send_reply_message(message, reply_text)
 
     async def _search_duckduckgo(self, query):
