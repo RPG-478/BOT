@@ -1,15 +1,22 @@
 import asyncio
+import io
 import discord
 from discord import app_commands
 from discord.ext import commands
+import matplotlib.style as mplstyle
+import matplotlib.pyplot as plt
+import numpy as np
 import yfinance as yf
 
+mplstyle.use("dark_background")
 
-class StockAnalysis7AxisCog(commands.Cog):
+
+class StockDashboardCog(commands.Cog):
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    def _fetch_and_analyze(self, ticker_symbol: str):
+    def _fetch_and_draw(self, ticker_symbol: str) -> io.BytesIO | None:
         ticker = yf.Ticker(ticker_symbol)
         info = ticker.info
 
@@ -21,7 +28,6 @@ class StockAnalysis7AxisCog(commands.Cog):
         roe = info.get("returnOnEquity")
         op_margin = info.get("operatingMargins")
         pe = info.get("trailingPE")
-        pbr = info.get("priceToBook")
         de = info.get("debtToEquity")
         cur_ratio = info.get("currentRatio")
         fcf = info.get("freeCashflow")
@@ -125,135 +131,105 @@ class StockAnalysis7AxisCog(commands.Cog):
             return_score,
             mom_score,
         ]
-        total_score = round(sum(scores) / len(scores), 1)
+        labels = [
+            "Growth",
+            "Profit",
+            "Value",
+            "Health",
+            "CashFlow",
+            "Return",
+            "Momentum",
+        ]
 
-        if total_score >= 4.5:
-            rank = "S"
-        elif total_score >= 3.8:
-            rank = "A"
-        elif total_score >= 2.8:
-            rank = "B"
-        elif total_score >= 1.8:
-            rank = "C"
-        else:
-            rank = "D"
+        hist = ticker.history(period="6m")
 
-        return {
-            "name": info.get("shortName", ticker_symbol),
-            "symbol": ticker_symbol.upper(),
-            "currency": info.get("currency", "USD"),
-            "price": info.get("currentPrice") or info.get("regularMarketPrice"),
-            "growth_score": growth_score,
-            "prof_score": prof_score,
-            "val_score": val_score,
-            "health_score": health_score,
-            "cf_score": cf_score,
-            "return_score": return_score,
-            "mom_score": mom_score,
-            "total_score": total_score,
-            "rank": rank,
-            "pe": pe,
-            "pbr": pbr,
-            "roe": roe,
-            "de": de,
-            "div_yield": div_yield,
-            "beta": beta,
-        }
+        fig = plt.figure(figsize=(12, 5.5), facecolor="#090d16")
+        fig.suptitle(
+            f"SYSTEM DASHBOARD // {ticker_symbol.upper()} - {info.get('shortName', '')}",
+            color="#00e5ff",
+            fontsize=14,
+            fontweight="bold",
+            x=0.5,
+            y=0.95,
+        )
 
-    def _build_bar(
-        self, score: float, max_score: float = 5.0, length: int = 10
-    ) -> str:
-        filled = int(round((score / max_score) * length))
-        return "█" * filled + "░" * (length - filled)
+        angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
+        scores_closed = scores + [scores[0]]
+        angles_closed = angles + [angles[0]]
+
+        ax1 = fig.add_subplot(121, polar=True, facecolor="#101726")
+        ax1.plot(angles_closed, scores_closed, color="#00e5ff", linewidth=2)
+        ax1.fill(angles_closed, scores_closed, color="#00e5ff", alpha=0.25)
+        ax1.set_xticks(angles)
+        ax1.set_xticklabels(labels, color="#ffffff", fontsize=9)
+        ax1.set_yticks([1, 2, 3, 4, 5])
+        ax1.set_yticklabels(
+            ["1", "2", "3", "4", "5"], color="#556677", fontsize=8
+        )
+        ax1.set_ylim(0, 5)
+        ax1.grid(color="#1a2638", linestyle="--", linewidth=0.8)
+
+        ax2 = fig.add_subplot(122, facecolor="#101726")
+        if not hist.empty:
+            ax2.plot(
+                hist.index,
+                hist["Close"],
+                color="#ff007f",
+                linewidth=2,
+                label="Close Price",
+            )
+            ax2.fill_between(
+                hist.index, hist["Close"], color="#ff007f", alpha=0.15
+            )
+
+        ax2.set_title(
+            "PRICE TREND (6-MONTHS)", color="#ffffff", fontsize=11, pad=10
+        )
+        ax2.tick_params(colors="#8899a1", labelsize=8)
+        ax2.grid(color="#1a2638", linestyle="--", linewidth=0.8)
+
+        for spine in ax2.spines.values():
+            spine.set_color("#1a2638")
+
+        plt.subplots_adjust(
+            left=0.05, right=0.95, bottom=0.1, top=0.85, wspace=0.25
+        )
+
+        buffer = io.BytesIO()
+        plt.savefig(
+            buffer,
+            format="png",
+            dpi=150,
+            facecolor=fig.get_facecolor(),
+            edgecolor="none",
+        )
+        buffer.seek(0)
+        plt.close(fig)
+
+        return buffer
 
     @app_commands.command(
-        name="stock",
-        description="指定したティッカーの7軸総合評価レポートを表示します",
+        name="dash", description="分析ダッシュボード画像を生成します"
     )
     @app_commands.describe(
-        ticker="分析対象のティッカーシンボル (例: 7203.T, AAPL)"
+        ticker="分析対象のティッカー (例: 7203.T, AAPL)"
     )
-    async def stock_eval7(self, interaction: discord.Interaction, ticker: str):
+    async def stock_dash(self, interaction: discord.Interaction, ticker: str):
         await interaction.response.defer()
 
-        data = await asyncio.to_thread(self._fetch_and_analyze, ticker)
+        buffer = await asyncio.to_thread(self._fetch_and_draw, ticker)
 
-        if not data:
-            embed = discord.Embed(
-                title="ERROR: INVALID TICKER",
-                description=f"ティッカー `{ticker}` のデータを取得できませんでした。",
-                color=0xFF2A2A,
+        if not buffer:
+            await interaction.followup.send(
+                f"ティッカー `{ticker}` のデータを取得できませんでした。"
             )
-            await interaction.followup.send(embed=embed)
             return
 
-        embed = discord.Embed(
-            title=f"7-AXIS EVALUATION REPORT // {data['symbol']}",
-            description=f"```\nNAME  : {data['name']}\nPRICE : {data['price']} {data['currency']}\n```",
-            color=00000000,
-        )
-
-        overall_bar = self._build_bar(data["total_score"])
-        embed.add_field(
-            name="━━━ OVERALL RATING ━━━",
-            value=f"```\nRANK  : [ {data['rank']} ]\nSCORE : {data['total_score']} / 5.0\n[{overall_bar}]\n```",
-            inline=False,
-        )
-
-        gb = self._build_bar(data["growth_score"])
-        pb = self._build_bar(data["prof_score"])
-        vb = self._build_bar(data["val_score"])
-        hb = self._build_bar(data["health_score"])
-        cb = self._build_bar(data["cf_score"])
-        rb = self._build_bar(data["return_score"])
-        mb = self._build_bar(data["mom_score"])
-
-        score_details = (
-            f"GROWTH     : {data['growth_score']}/5 [{gb}]\n"
-            f"PROFIT     : {data['prof_score']}/5 [{pb}]\n"
-            f"VALUE      : {data['val_score']}/5 [{vb}]\n"
-            f"HEALTH     : {data['health_score']}/5 [{hb}]\n"
-            f"CASH FLOW  : {data['cf_score']}/5 [{cb}]\n"
-            f"RETURN     : {data['return_score']}/5 [{rb}]\n"
-            f"MOMENTUM   : {data['mom_score']}/5 [{mb}]"
-        )
-        embed.add_field(
-            name="━━━ 7-AXIS EVALUATION ━━━",
-            value=f"```\n{score_details}\n```",
-            inline=False,
-        )
-
-        pe_str = f"{data['pe']:.2f}" if data["pe"] is not None else "N/A"
-        pbr_str = f"{data['pbr']:.2f}" if data["pbr"] is not None else "N/A"
-        roe_str = (
-            f"{data['roe']*100:.2f}%" if data["roe"] is not None else "N/A"
-        )
-        de_str = f"{data['de']:.2f}" if data["de"] is not None else "N/A"
-        dy_str = (
-            f"{data['div_yield']*100:.2f}%"
-            if data["div_yield"] is not None
-            else "N/A"
-        )
-        beta_str = f"{data['beta']:.2f}" if data["beta"] is not None else "N/A"
-
-        notes = (
-            f"・PER : {pe_str}\n"
-            f"・PBR : {pbr_str}\n"
-            f"・ROE : {roe_str}\n"
-            f"・D/E : {de_str}\n"
-            f"・YIELD: {dy_str}\n"
-            f"・BETA : {beta_str}"
-        )
-        embed.add_field(
-            name="━━━ METRICS ━━━",
-            value=f"```\n{notes}\n```",
-            inline=False,
-        )
-
-        embed.set_footer(text="POWERED BY YFINANCE ARCHITECTURE")
-
-        await interaction.followup.send(embed=embed)
+        file = discord.File(buffer, filename="dashboard.png")
+        embed = discord.Embed(color=0x00E5FF)
+        embed.set_image(url="attachment://dashboard.png")
+        await interaction.followup.send(file=file, embed=embed)
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(StockAnalysis7AxisCog(bot))
+    await bot.add_cog(StockDashboardCog(bot))
