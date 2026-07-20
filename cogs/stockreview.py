@@ -158,14 +158,14 @@ class StockDashboardCog(commands.Cog):
         price = info.get("currentPrice") or info.get("regularMarketPrice")
         currency = info.get("currency", "USD")
 
-        fig = plt.figure(figsize=(10, 5), facecolor="#090d16")
+        fig = plt.figure(figsize=(11, 5.5), facecolor="#090d16")
         fig.suptitle(
             f"SYSTEM DASHBOARD // {ticker_symbol.upper()} - {name}",
             color="#00e5ff",
-            fontsize=16,
+            fontsize=15,
             fontweight="bold",
             x=0.5,
-            y=0.95,
+            y=0.94,
         )
 
         ax1 = fig.add_subplot(121, facecolor="#090d16")
@@ -200,54 +200,47 @@ class StockDashboardCog(commands.Cog):
             fontsize=12,
             family="monospace",
             verticalalignment="top",
-            linespacing=1.35,
+            linespacing=1.4,
         )
 
         angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
         scores_closed = scores + [scores[0]]
         angles_closed = angles + [angles[0]]
 
-        ax2 = fig.add_subplot(122, polar=True, facecolor="#101726")
+        ax2 = fig.add_subplot(122, polar=True, facecolor="#090d16")
         ax2.plot(
             angles_closed,
             scores_closed,
             color="#00e5ff",
-            linewidth=2,
+            linewidth=2.5,
             marker="o",
-            markersize=5,
+            markersize=6,
             markerfacecolor="#00e5ff",
         )
-        ax2.fill(angles_closed, scores_closed, color="#00e5ff", alpha=0.25)
-        ax2.set_xticks(angles)
-        ax2.set_xticklabels(labels, color="#ffffff", fontsize=12)
-        ax2.set_yticks([1, 2, 3, 4, 5])
-        ax2.set_yticklabels(
-            ["1", "2", "3", "4", "5"], color="#556677", fontsize=10
-        )
-        ax2.set_ylim(0, 5.5)
-        ax2.grid(color="#1a2638", linestyle="--", linewidth=0.8)
+        ax2.fill(angles_closed, scores_closed, color="#00e5ff", alpha=0.2)
 
-        for angle, score in zip(angles, scores):
-            ax2.text(
-                angle,
-                score + 0.35,
-                str(score),
-                color="#00e5ff",
-                fontsize=12,
-                fontweight="bold",
-                ha="center",
-                va="center",
-            )
+        formatted_labels = [
+            f"{lbl}\n[{sc}/5]" for lbl, sc in zip(labels, scores)
+        ]
+
+        ax2.set_xticks(angles)
+        ax2.set_xticklabels(formatted_labels, color="#ffffff", fontsize=11)
+        ax2.tick_params(axis="x", pad=12)
+
+        ax2.set_yticks([1, 2, 3, 4, 5])
+        ax2.set_yticklabels([])
+        ax2.set_ylim(0, 5.5)
+        ax2.grid(color="#2a384c", linestyle="--", linewidth=0.8)
 
         plt.subplots_adjust(
-            left=0.03, right=0.97, bottom=0.05, top=0.85, wspace=0.1
+            left=0.02, right=0.98, bottom=0.08, top=0.85, wspace=0.15
         )
 
         buffer = io.BytesIO()
         plt.savefig(
             buffer,
             format="png",
-            dpi=100,
+            dpi=110,
             facecolor=fig.get_facecolor(),
             edgecolor="none",
         )
