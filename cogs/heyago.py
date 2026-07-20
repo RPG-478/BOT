@@ -3,10 +3,9 @@ from discord.ext import commands
 from groq import AsyncGroq
 import os
 import json
-import asyncio
+import urllib.parse
 from curl_cffi.requests import AsyncSession
 from bs4 import BeautifulSoup
-import urllib.parse
 from google import genai
 from google.genai import types
 
@@ -24,29 +23,34 @@ class AdaptiveAI(commands.Cog):
             return
 
         is_mentioned = self.bot.user in message.mentions
-        is_reply_to_bot = False
+        ref_msg = None
 
         if message.reference and message.reference.message_id:
             try:
                 ref_msg = message.reference.cached_message
                 if not ref_msg:
                     ref_msg = await message.channel.fetch_message(message.reference.message_id)
-                if ref_msg and ref_msg.author == self.bot.user:
-                    is_reply_to_bot = True
             except Exception:
                 pass
+
+        is_reply_to_bot = ref_msg is not None and ref_msg.author == self.bot.user
+        is_reply_to_other_user = ref_msg is not None and not ref_msg.author.bot
 
         if not (is_mentioned or is_reply_to_bot):
             return
 
         command_text = message.content.replace(f'<@{self.bot.user.id}>', '').strip()
-        
-        if not command_text:
-            await message.reply("用事があれば話しかけてください。")
-            return
 
         async with message.channel.typing():
             try:
+                if is_mentioned and is_reply_to_other_user:
+                    await self._handle_analyze_mode(message, ref_msg, command_text)
+                    return
+
+                if not command_text:
+                    await message.reply("用事があれば話しかけてください。")
+                    return
+
                 history = await self._fetch_conversation_history(message)
                 mode_info = await self._determine_mode(command_text)
                 await self._dispatch_mode(message, command_text, history, mode_info)
@@ -136,6 +140,58 @@ class AdaptiveAI(commands.Cog):
                 
                 ctx = await self.bot.get_context(message)
                 await self.bot.invoke(ctx)
+
+    async def _handle_analyze_mode(self, message, ref_msg, command_text):
+        attachments = list(ref_msg.attachments) + list(message.attachments)
+        file_parts = []
+        text_attachments_content = ""
+
+        async with AsyncSession(impersonate="chrome") as session:
+            for att in attachments:
+                try:
+                    res = await session.get(att.url, timeout=15)
+                    if res.status_code == 200:
+                        content_type = att.content_type or "application/octet-stream"
+                        if content_type.startswith("text/") or att.name.endswith(('.txt', '.py', '.json', '.html', '.css', '.js', '.md', '.csv')):
+                            try:
+                                decoded_text = res.content.decode('utf-8', errors='ignore')
+                                text_attachments_content += f"\n--- 添付ファイル ({att.name}) ---\n{decoded_text[:5000]}\n"
+                            except Exception:
+                                file_parts.append(types.Part.from_bytes(data=res.content, mime_type=content_type))
+                        else:
+                            file_parts.append(types.Part.from_bytes(data=res.content, mime_type=content_type))
+                except Exception:
+                    continue
+
+        ref_author_name = ref_msg.author.display_name
+        ref_text = ref_msg.content.replace(f'<@{self.bot.user.id}>', '').strip()
+
+        analysis_prompt = (
+            "あなたは高度なコンテンツ・ファイル解析を行うAIアシスタントです。\n"
+            "ユーザーからの指示に従い、対象となるメッセージ内容や添付ファイル（画像、動画、音声、文書など）を精読・解析して適切な回答を作成してください。\n"
+            f"【対象ユーザー ({ref_author_name}) のメッセージ】\n{ref_text}\n"
+            f"{text_attachments_content}\n"
+            f"【分析・回答に対する指示】\n{command_text if command_text else '対象のメッセージおよびファイルを解析して、要約や内容の説明を行ってください。'}"
+        )
+
+        contents = [analysis_prompt] + file_parts
+
+        try:
+            response = await self.gemini_client.aio.models.generate_content(
+                model='gemini-3.5-flash',
+                contents=contents
+            )
+            reply_text = response.text
+        except Exception as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                reply_text = await self._call_groq_fallback(
+                    "対象のメッセージテキストと指示に基づいて解析・回答してください。",
+                    f"【対象メッセージ】\n{ref_text}\n{text_attachments_content}\n\n【指示】\n{command_text}"
+                )
+            else:
+                raise e
+
+        await self._send_reply_message(message, reply_text)
 
     async def _call_gemini_with_fallback(self, system_prompt, user_text, history=None):
         try:
