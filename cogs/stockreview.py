@@ -207,7 +207,7 @@ class StockDashboardCog(commands.Cog):
         pe_str = f"{pe:.2f}" if pe is not None else "N/A"
         pbr_str = f"{pbr:.2f}" if pbr is not None else "N/A"
         roe_str = f"{roe*100:.2f}%" if roe is not None else "N/A"
-        de_str = f"{de:.2f}" if de is not None else "N/A"
+        de_str = f"{de:.2f}%" if de is not None else "N/A"
         yield_str = f"{yield_pct:.2f}%" if yield_pct is not None else "N/A"
         beta_str = f"{beta:.2f}" if beta is not None else "N/A"
 
