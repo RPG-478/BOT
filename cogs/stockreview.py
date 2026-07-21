@@ -86,7 +86,7 @@ class StockDashboardCog(commands.Cog):
                 growth_score = 4
             elif rev_growth > 0 and earn_growth > 0:
                 growth_score = 3
-            elif rev_growth > -0.1:
+            elif rev_growth > 0 or earn_growth > 0:
                 growth_score = 2
             else:
                 growth_score = 1
@@ -99,27 +99,31 @@ class StockDashboardCog(commands.Cog):
                 prof_score = 4
             elif roe > 0.05 and op_margin > 0.05:
                 prof_score = 3
-            elif roe > 0:
+            elif roe > 0 and op_margin > 0:
                 prof_score = 2
             else:
                 prof_score = 1
 
         val_score = 3
         if pe is not None:
-            if 0 < pe < 10:
+            if pe <= 0:
+                val_score = 1
+            elif pe < 10:
                 val_score = 5
-            elif 10 <= pe < 15:
+            elif pe < 15:
                 val_score = 4
-            elif 15 <= pe < 25:
+            elif pe < 25:
                 val_score = 3
-            elif 25 <= pe < 40:
+            elif pe < 40:
                 val_score = 2
             else:
                 val_score = 1
 
         health_score = 3
         if de is not None and cur_ratio is not None:
-            if de < 50 and cur_ratio > 1.5:
+            if de < 0 or cur_ratio <= 0:
+                health_score = 1
+            elif de < 50 and cur_ratio > 1.5:
                 health_score = 5
             elif de < 100 and cur_ratio > 1.2:
                 health_score = 4
@@ -136,7 +140,7 @@ class StockDashboardCog(commands.Cog):
                 cf_score = 5 if fcf > ocf * 0.5 else 4
             elif ocf > 0:
                 cf_score = 3
-            elif ocf < 0 and fcf < 0:
+            elif ocf <= 0 and fcf <= 0:
                 cf_score = 1
             else:
                 cf_score = 2
@@ -145,20 +149,22 @@ class StockDashboardCog(commands.Cog):
         return_score = 3
         if div_yield is not None:
             yield_pct = div_yield * 100 if div_yield < 0.1 else div_yield
-            if yield_pct > 4.0:
+            if yield_pct <= 0:
+                return_score = 1
+            elif yield_pct > 4.0:
                 return_score = 5
             elif yield_pct > 2.5:
                 return_score = 4
             elif yield_pct > 1.0:
                 return_score = 3
-            elif yield_pct > 0:
-                return_score = 2
             else:
-                return_score = 1
+                return_score = 2
 
         mom_score = 3
         if beta is not None:
-            if 0.8 <= beta <= 1.2:
+            if beta < 0:
+                mom_score = 1
+            elif 0.8 <= beta <= 1.2:
                 mom_score = 5
             elif 0.5 <= beta < 0.8 or 1.2 < beta <= 1.5:
                 mom_score = 4
