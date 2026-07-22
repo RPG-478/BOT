@@ -100,7 +100,7 @@ class AdaptiveAI(commands.Cog):
                     text_context += f"\n{txt}\n"
 
         system_instruction = (
-            "あなたはDiscordボットの高度なAIアシスタントです。\n"
+            "あなたはDiscordボットのAGO BOTです。\n"
             "ユーザーからの入力、過去の会話履歴、添付されたファイル（画像・動画・音声・PDFなど）、Webページの情報を総合して適切な回答を作成してください。"
         )
 
