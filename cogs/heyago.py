@@ -1,9 +1,6 @@
 import discord
 from discord.ext import commands
-from groq import AsyncGroq
 import os
-import json
-import urllib.parse
 import re
 import mimetypes
 from curl_cffi.requests import AsyncSession
@@ -14,10 +11,8 @@ from google.genai import types
 class AdaptiveAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.groq_client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
-        self.gemini_api_key = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
+        self.gemini_api_key = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg")
         self.gemini_client = genai.Client(api_key=self.gemini_api_key)
-        self.chat_model = "llama-3.1-8b-instant"
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -36,26 +31,15 @@ class AdaptiveAI(commands.Cog):
                 pass
 
         is_reply_to_bot = ref_msg is not None and ref_msg.author == self.bot.user
-        is_reply_to_other_user = ref_msg is not None and not ref_msg.author.bot
 
         if not (is_mentioned or is_reply_to_bot):
             return
 
-        command_text = message.content.replace(f'<@{self.bot.user.id}>', '').strip()
-
         async with message.channel.typing():
             try:
-                if is_mentioned and is_reply_to_other_user:
-                    await self._handle_analyze_mode(message, ref_msg, command_text)
-                    return
-
-                if not command_text:
-                    await message.reply("用事があれば話しかけてください。")
-                    return
-
-                history = await self._fetch_conversation_history(message)
-                mode_info = await self._determine_mode(command_text)
-                await self._dispatch_mode(message, command_text, history, mode_info)
+                history_text = await self._fetch_conversation_history(message)
+                reply_text = await self._process_ai_request(message, ref_msg, history_text)
+                await self._send_reply_message(message, reply_text)
             except Exception as e:
                 await message.reply(f"エラーが発生しました: {e}")
 
@@ -65,7 +49,7 @@ class AdaptiveAI(commands.Cog):
         while curr and len(history) < limit:
             content = curr.content.replace(f'<@{self.bot.user.id}>', '').strip()
             role = "assistant" if curr.author == self.bot.user else "user"
-            history.append({"role": role, "content": content})
+            history.append(f"{'ボット' if role == 'assistant' else 'ユーザー'}: {content}")
 
             if curr.reference and curr.reference.message_id:
                 try:
@@ -79,257 +63,93 @@ class AdaptiveAI(commands.Cog):
                 curr = None
 
         history.reverse()
-        return history
+        return "\n".join(history)
 
-    async def _determine_mode(self, text):
-        judge_prompt = (
-            "ユーザーの入力文の文脈から、どのモードで処理すべきかを厳格に判定してください。\n\n"
-            "【モード一覧】\n"
-            "- command: ボットの既存機能（BGM操作、音量、速度、EQ、Google検索など）への明確な指示・要求である場合\n"
-            "- search_web: 最新のニュース、時事ネタ、天気、リアルタイム情報など、Web検索・スクレイピングが必要な問い合わせである場合\n"
-            "- chat: 単なる雑談、挨拶、一般的な知識に関する質問など、Web検索が不要な会話である場合\n\n"
-            "出力は必ず以下のJSONフォーマットのみにしてください。\n"
-            '{"mode": "command_または_search_web_または_chat"}'
-        )
+    async def _process_ai_request(self, message, ref_msg, history_text):
+        command_text = message.content.replace(f'<@{self.bot.user.id}>', '').strip()
+        ref_text = ""
+        if ref_msg:
+            ref_author_name = ref_msg.author.display_name
+            ref_content = ref_msg.content.replace(f'<@{self.bot.user.id}>', '').strip()
+            ref_text = f"【参照メッセージ ({ref_author_name})】\n{ref_content}\n"
 
-        chat_completion = await self.groq_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": judge_prompt},
-                {"role": "user", "content": text}
-            ],
-            model=self.chat_model,
-            response_format={"type": "json_object"}
-        )
-        return json.loads(chat_completion.choices[0].message.content)
+        target_attachments = list(message.attachments)
+        if ref_msg:
+            target_attachments.extend(ref_msg.attachments)
 
-    async def _dispatch_mode(self, message, text, history, mode_info):
-        mode = mode_info.get("mode")
+        combined_text = f"{ref_text} {command_text}"
+        extracted_urls = re.findall(r'https?://[^\s>]+', combined_text)
 
-        if mode == "command":
-            await self._handle_command_mode(message, text)
-        elif mode == "search_web":
-            await self._handle_search_web_mode(message, text, history)
-        else:
-            await self._handle_chat_mode(message, text, history)
-
-    async def _handle_command_mode(self, message, text):
-        prompt = (
-            "入力文から実行すべきコマンドと引数を抽出してください。\n"
-            "利用可能なコマンド: ggrks, join, leave, play, search, volume, speed, eq, panel\n\n"
-            "出力JSONフォーマット:\n"
-            '{"commands": [{"name": "コマンド名", "arg": "引数（不要なら空文字）"}]}'
-        )
-        chat_completion = await self.groq_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": text}
-            ],
-            model=self.chat_model,
-            response_format={"type": "json_object"}
-        )
-        result = json.loads(chat_completion.choices[0].message.content)
-
-        for cmd_info in result.get("commands", []):
-            cmd_name = cmd_info.get("name")
-            cmd_arg = cmd_info.get("arg", "")
-            
-            command = self.bot.get_command(cmd_name)
-            if command:
-                if cmd_arg:
-                    message.content = f"{self.bot.command_prefix}{cmd_name} {cmd_arg}"
-                else:
-                    message.content = f"{self.bot.command_prefix}{cmd_name}"
-                
-                ctx = await self.bot.get_context(message)
-                await self.bot.invoke(ctx)
-
-    async def _handle_analyze_mode(self, message, ref_msg, command_text):
         file_parts = []
-        text_attachments_content = ""
-
-        ref_author_name = ref_msg.author.display_name
-        ref_text = ref_msg.content.replace(f'<@{self.bot.user.id}>', '').strip()
-
-        combined_text_for_urls = f"{ref_text} {command_text}"
-        extracted_urls = re.findall(r'https?://[^\s>]+', combined_text_for_urls)
-
-        targets = []
-        for att in list(ref_msg.attachments) + list(message.attachments):
-            targets.append({"url": att.url, "filename": att.name, "content_type": att.content_type})
-
-        for url in extracted_urls:
-            filename = url.split('/')[-1].split('?')[0]
-            targets.append({"url": url, "filename": filename, "content_type": None})
+        text_context = ""
 
         async with AsyncSession(impersonate="chrome") as session:
-            for item in targets:
-                try:
-                    res = await session.get(item["url"], timeout=15)
-                    if res.status_code != 200:
-                        continue
+            for att in target_attachments:
+                part, txt = await self._fetch_resource(session, att.url, att.name, att.content_type)
+                if part:
+                    file_parts.append(part)
+                if txt:
+                    text_context += f"\n{txt}\n"
 
-                    header_type = res.headers.get("content-type", "").split(";")[0].strip()
-                    guessed_type, _ = mimetypes.guess_type(item["filename"])
-                    content_type = item["content_type"] or header_type or guessed_type or "application/octet-stream"
+            for url in extracted_urls:
+                filename = url.split('/')[-1].split('?')[0]
+                part, txt = await self._fetch_resource(session, url, filename, None)
+                if part:
+                    file_parts.append(part)
+                if txt:
+                    text_context += f"\n{txt}\n"
 
-                    if content_type.startswith("text/html"):
-                        soup = BeautifulSoup(res.text, "html.parser")
-                        for s in soup(["script", "style", "nav", "footer", "header"]):
-                            s.decompose()
-                        web_text = " ".join(soup.stripped_strings)[:3000]
-                        text_attachments_content += f"\n--- 取得URL ({item['url']}) ---\n{web_text}\n"
-
-                    elif content_type.startswith("text/") or item["filename"].endswith(('.txt', '.py', '.json', '.html', '.css', '.js', '.md', '.csv')):
-                        try:
-                            decoded_text = res.content.decode('utf-8', errors='ignore')
-                            text_attachments_content += f"\n--- テキストファイル/情報 ({item['filename']}) ---\n{decoded_text[:5000]}\n"
-                        except Exception:
-                            file_parts.append(types.Part.from_bytes(data=res.content, mime_type=content_type))
-                    else:
-                        file_parts.append(types.Part.from_bytes(data=res.content, mime_type=content_type))
-                except Exception:
-                    continue
-
-        analysis_prompt = (
-            "あなたは高度なコンテンツ・ファイル解析を行うAIアシスタントです。\n"
-            "ユーザーからの指示に従い、対象となるメッセージ内容、URL先の内容、添付ファイル（画像、動画、音声、文書など）を精読・解析して適切な回答を作成してください。\n"
-            f"【対象ユーザー ({ref_author_name}) のメッセージ】\n{ref_text}\n"
-            f"{text_attachments_content}\n"
-            f"【分析・回答に対する指示】\n{command_text if command_text else '対象のメッセージおよびファイル・URLを解析して、要約や内容の説明を行ってください。'}"
+        system_instruction = (
+            "あなたはDiscordボットの高度なAIアシスタントです。\n"
+            "ユーザーからの入力、過去の会話履歴、添付されたファイル（画像・動画・音声・PDFなど）、Webページの情報を総合して適切な回答を作成してください。"
         )
 
-        contents = [analysis_prompt] + file_parts
-
-        try:
-            response = await self.gemini_client.aio.models.generate_content(
-                model='gemini-3.5-flash',
-                contents=contents
-            )
-            reply_text = response.text
-        except Exception as e:
-            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                if file_parts:
-                    reply_text = "Gemini APIのレート制限(429)が発生しました。画像・メディアファイルの解析は現在利用できません。"
-                else:
-                    reply_text = await self._call_groq_fallback(
-                        "対象のメッセージテキストと指示に基づいて解析・回答してください。",
-                        f"【対象メッセージ】\n{ref_text}\n{text_attachments_content}\n\n【指示】\n{command_text}"
-                    )
-            else:
-                raise e
-
-        await self._send_reply_message(message, reply_text)
-
-    async def _call_gemini_with_fallback(self, system_prompt, user_text, history=None):
-        try:
-            response = await self.gemini_client.aio.models.generate_content(
-                model='gemini-3.5-flash',
-                contents=user_text,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                ),
-            )
-            return response.text
-        except Exception as e:
-            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                return await self._call_groq_fallback(system_prompt, user_text, history)
-            raise e
-
-    async def _call_groq_fallback(self, system_prompt, user_text, history=None):
-        messages = [{"role": "system", "content": system_prompt}]
-        if history:
-            messages.extend(history)
-        else:
-            messages.append({"role": "user", "content": user_text})
-
-        chat_completion = await self.groq_client.chat.completions.create(
-            messages=messages,
-            model=self.chat_model
-        )
-        return chat_completion.choices[0].message.content
-
-    async def _handle_chat_mode(self, message, text, history):
-        history_text = "\n".join([f"{'ボット' if h['role']=='assistant' else 'ユーザー'}: {h['content']}" for h in history])
-        
         prompt = (
-            "あなたはDiscordボットのAIアシスタントです。\n"
-            "これまでの会話の流れを踏まえ、親しみやすく自然な日本語で返答してください。\n\n"
-            f"【これまでの会話履歴】\n{history_text}"
+            f"【会話履歴】\n{history_text}\n\n"
+            f"{ref_text}"
+            f"【取得テキスト・Webデータ】\n{text_context}\n\n"
+            f"【ユーザーの指示・入力】\n{command_text if command_text else '添付されたファイルやURL、参照メッセージの内容を解説・回答してください。'}"
         )
-        reply_text = await self._call_gemini_with_fallback(prompt, text, history)
-        await self._send_reply_message(message, reply_text)
 
-    async def _handle_search_web_mode(self, message, text, history):
-        keyword_prompt = (
-            "ユーザーの質問から、Web検索に最適な検索キーワードを1つだけ抽出してください。\n"
-            "余計な解説は含めず、必ず以下のJSONフォーマットのみで出力してください。\n"
-            '{"keyword": "検索キーワード"}'
+        contents = [prompt] + file_parts
+
+        response = await self.gemini_client.aio.models.generate_content(
+            model='gemini-3.5-flash',
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+            )
         )
-        keyword_completion = await self.groq_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": keyword_prompt},
-                {"role": "user", "content": text}
-            ],
-            model=self.chat_model,
-            response_format={"type": "json_object"}
-        )
-        keyword_res = json.loads(keyword_completion.choices[0].message.content)
-        query = keyword_res.get("keyword", text)
+        return response.text
 
-        search_results = await self._search_duckduckgo(query)
-        
-        web_context = ""
-        async with AsyncSession(impersonate="chrome") as session:
-            for url in search_results[:2]:
-                try:
-                    res = await session.get(url, timeout=5)
-                    if res.status_code == 200:
-                        soup = BeautifulSoup(res.text, "html.parser")
-                        for s in soup(["script", "style", "nav", "footer", "header"]):
-                            s.decompose()
-                        text_content = " ".join(soup.stripped_strings)[:1000]
-                        web_context += f"\n--- Source: {url} ---\n{text_content}\n"
-                except:
-                    continue
-
-        if not web_context:
-            web_context = "検索結果から情報を取得できませんでした。"
-
-        history_text = "\n".join([f"{'ボット' if h['role']=='assistant' else 'ユーザー'}: {h['content']}" for h in history])
-
-        answer_prompt = (
-            "あなたは与えられたWeb検索結果を参考にしてユーザーの質問に答えるAIアシスタントです。\n"
-            "これまでの会話の流れと提供された情報を元に、正確で自然な日本語の回答を作成してください。\n\n"
-            f"【これまでの会話履歴】\n{history_text}\n\n"
-            f"【検索結果の参考情報】\n{web_context}"
-        )
-        
-        reply_text = await self._call_gemini_with_fallback(answer_prompt, text, history)
-        await self._send_reply_message(message, reply_text)
-
-    async def _search_duckduckgo(self, query):
-        urls = []
-        encoded_query = urllib.parse.quote(query)
-        search_url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
-        
+    async def _fetch_resource(self, session, url, filename, content_type_hint):
         try:
-            async with AsyncSession(impersonate="chrome") as session:
-                res = await session.get(search_url, timeout=5)
-                if res.status_code == 200:
-                    soup = BeautifulSoup(res.text, "html.parser")
-                    for a in soup.find_all("a", class_="result__url"):
-                        href = a.get("href")
-                        if href:
-                            if "declined" not in href and "duckduckgo.com" not in href:
-                                parsed_url = urllib.parse.urlparse(href)
-                                qs = urllib.parse.parse_qs(parsed_url.query)
-                                if "uddg" in qs:
-                                    urls.append(qs["uddg"][0])
-                                else:
-                                    urls.append(href)
-        except:
-            pass
-        return urls
+            res = await session.get(url, timeout=20)
+            if res.status_code != 200:
+                return None, None
+
+            header_type = res.headers.get("content-type", "").split(";")[0].strip()
+            guessed_type, _ = mimetypes.guess_type(filename)
+            mime_type = content_type_hint or header_type or guessed_type or "application/octet-stream"
+
+            if mime_type.startswith(("image/", "video/", "audio/", "application/pdf")):
+                return types.Part.from_bytes(data=res.content, mime_type=mime_type), None
+
+            if mime_type.startswith("text/html"):
+                soup = BeautifulSoup(res.text, "html.parser")
+                for s in soup(["script", "style", "nav", "footer", "header"]):
+                    s.decompose()
+                web_text = " ".join(soup.stripped_strings)[:4000]
+                return None, f"--- Web URL ({url}) ---\n{web_text}"
+
+            try:
+                decoded_text = res.content.decode('utf-8', errors='ignore')
+                return None, f"--- テキストデータ ({filename}) ---\n{decoded_text[:5000]}"
+            except Exception:
+                return types.Part.from_bytes(data=res.content, mime_type=mime_type), None
+
+        except Exception:
+            return None, None
 
     async def _send_reply_message(self, message, text):
         if len(text) > 2000:
