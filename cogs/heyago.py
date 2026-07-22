@@ -85,7 +85,7 @@ class AdaptiveAI(commands.Cog):
 
         async with AsyncSession(impersonate="chrome") as session:
             for att in target_attachments:
-                part, txt = await self._fetch_resource(session, att.url, att.name, att.content_type)
+                part, txt = await self._fetch_resource(session, att.url, att.filename, att.content_type)
                 if part:
                     file_parts.append(part)
                 if txt:
@@ -100,7 +100,7 @@ class AdaptiveAI(commands.Cog):
                     text_context += f"\n{txt}\n"
 
         system_instruction = (
-            "あなたはDiscordボットのAGO BOTです。\n"
+            "あなたはDiscordボットのAGO BOTです。冷静で落ち着いた回答をしてください\n"
             "ユーザーからの入力、過去の会話履歴、添付されたファイル（画像・動画・音声・PDFなど）、Webページの情報を総合して適切な回答を作成してください。"
         )
 
