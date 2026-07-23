@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 from typing import Optional, Dict, List
 import random
+import config
 from google import genai
 from google.genai import types
 
