@@ -194,7 +194,9 @@ class ActionButton(discord.ui.View):
 class TRPGGame(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.gemini_client = genai.Client(api_key=config.GEMINI_API_KEY)
+        self.api_key = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
+        self.gemini_client = genai.Client(api_key=self.api_key)
+        self.model_name = "gemini-3.5-flash-lite"
         self.characters: Dict[int, Character] = {}
         self.game_state = GameState()
         self.main_message = None
@@ -223,23 +225,20 @@ class TRPGGame(commands.Cog):
         char = self.characters[target_id]
         embed = discord.Embed(
             title=char.name,
-            description=f"**性格・特徴:**
-{char.traits}",
+            description=f"性格・特徴:\n{char.traits}",
             color=discord.Color.blue(),
         )
 
         if char.image_url:
             embed.set_image(url=char.image_url)
 
-        stats_text = "
-".join(
-            [f"• {stat}: {value}" for stat, value in char.stats.items()]
+        stats_text = "\n".join(
+            [f"- {stat}: {value}" for stat, value in char.stats.items()]
         )
         embed.add_field(name="能力値", value=stats_text, inline=False)
         embed.add_field(
             name="ステータス",
-            value=f"HP: {char.hp}/{char.max_hp}
-所持品: {', '.join(char.items) if char.items else 'なし'}",
+            value=f"HP: {char.hp}/{char.max_hp}\n所持品: {', '.join(char.items) if char.items else 'なし'}",
             inline=False,
         )
 
@@ -364,7 +363,7 @@ class TRPGGame(commands.Cog):
 
         try:
             response = await self.gemini_client.aio.models.generate_content(
-                model=config.GEMINI_MODEL,
+                model=self.model_name,
                 contents=prompt_parts,
                 config=types.GenerateContentConfig(
                     system_instruction=self._get_system_instruction(),
@@ -400,16 +399,14 @@ class TRPGGame(commands.Cog):
             success_text = "成功" if result["success"] else "失敗"
 
             prompt_parts.append(
-                f"- {char.name}: 「{action}」
-"
+                f"- {char.name}: 「{action}」\n"
                 f"  使用スキル: {skill} ({stat}) | "
                 f"ダイス: {dice} | {success_text}"
             )
 
         if self.game_state.messages_log:
             prompt_parts.append("【これまでのストーリー】")
-            prompt_parts.append("
-".join(self.game_state.messages_log[-3:]))
+            prompt_parts.append("\n".join(self.game_state.messages_log[-3:]))
 
         prompt_parts.append(
             "上記のプレイヤー行動に基づいて、洋館内での情景と物語展開を日本語で描写してください。"
@@ -420,12 +417,9 @@ class TRPGGame(commands.Cog):
 
     def _get_system_instruction(self) -> str:
         return (
-            "あなたは閉鎖された洋館からの脱出TRPGのゲームマスター（GM）です。
-"
-            "プレイヤーの行動に基づいて、リアルな情景描写と物語展開を提供してください。
-"
-            "ダイス判定の成功/失敗を反映し、サスペンス・ミステリーの雰囲気を保ってください。
-"
+            "あなたは閉鎖された洋館からの脱出TRPGのゲームマスター（GM）です。\n"
+            "プレイヤーの行動に基づいて、リアルな情景描写と物語展開を提供してください。\n"
+            "ダイス判定の成功/失敗を反映し、サスペンス・ミステリーの雰囲気を保ってください。\n"
             "洋館内の謎や脱出への手がかりを段階的に提示してください。"
         )
 
@@ -451,8 +445,7 @@ class TRPGGame(commands.Cog):
             if user_id in self.characters:
                 char = self.characters[user_id]
                 hp_bar = "█" * char.hp + "░" * (char.max_hp - char.hp)
-                party_text += f"• {char.name} [{hp_bar}] HP {char.hp}/{char.max_hp}
-"
+                party_text += f"- {char.name} [{hp_bar}] HP {char.hp}/{char.max_hp}\n"
 
         embed.add_field(name="パーティ状態", value=party_text or "なし", inline=False)
 
@@ -461,8 +454,7 @@ class TRPGGame(commands.Cog):
             if user_id in self.characters:
                 char = self.characters[user_id]
                 status = "入力済み" if user_id in self.game_state.actions else "未入力"
-                action_status += f"• {char.name}: {status}
-"
+                action_status += f"- {char.name}: {status}\n"
 
         embed.add_field(name="行動入力状況", value=action_status or "なし", inline=False)
 
