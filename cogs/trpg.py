@@ -3,15 +3,9 @@ from discord.ext import commands
 from discord import app_commands
 from typing import Optional, Dict, List
 import config
-import json
 import random
 from google import genai
 from google.genai import types
-import asyncio
-
-# =============================================
-# データモデル
-# =============================================
 
 class Character:
     def __init__(self, user_id: int, name: str, traits: str, stats: List[int], image_url: str = ""):
@@ -86,10 +80,6 @@ class GameState:
         return self.round > self.max_round
 
 
-# =============================================
-# Modal & View コンポーネント
-# =============================================
-
 class CharacterSheetModal(discord.ui.Modal):
     def __init__(self, cog):
         super().__init__(title="キャラクターシート作成")
@@ -125,7 +115,7 @@ class CharacterSheetModal(discord.ui.Modal):
 
             if len(stats) != 5 or any(s < 1 or s > 10 for s in stats):
                 await interaction.response.send_message(
-                    "❌ 能力値は5つ、各値は1-10の整数でお願いします",
+                    "能力値は5つ、各値は1-10の整数で入力してください",
                     ephemeral=True,
                 )
                 return
@@ -140,12 +130,12 @@ class CharacterSheetModal(discord.ui.Modal):
 
             self.cog.characters[interaction.user.id] = character
             await interaction.response.send_message(
-                f"✅ キャラクター「{character.name}」を作成しました！",
+                f"キャラクター「{character.name}」を作成しました",
                 ephemeral=True,
             )
         except Exception as e:
             await interaction.response.send_message(
-                f"❌ エラーが発生しました: {e}",
+                f"エラーが発生しました: {e}",
                 ephemeral=True,
             )
 
@@ -169,7 +159,7 @@ class ActionModal(discord.ui.Modal):
 
             if user_id not in self.cog.characters:
                 await interaction.response.send_message(
-                    "❌ キャラクターシートを先に作成してください",
+                    "キャラクターシートを先に作成してください",
                     ephemeral=True,
                 )
                 return
@@ -177,17 +167,16 @@ class ActionModal(discord.ui.Modal):
             self.cog.game_state.add_action(user_id, action_text)
 
             await interaction.response.send_message(
-                f"✅ 行動を入力しました: {action_text}",
+                f"行動を入力しました: {action_text}",
                 ephemeral=True,
             )
 
-            # 全員が行動を入力したか確認
             if self.cog.game_state.is_all_acted():
                 await self.cog._process_round(interaction.channel)
 
         except Exception as e:
             await interaction.response.send_message(
-                f"❌ エラーが発生しました: {e}",
+                f"エラーが発生しました: {e}",
                 ephemeral=True,
             )
 
@@ -202,10 +191,6 @@ class ActionButton(discord.ui.View):
         await interaction.response.send_modal(ActionModal(self.cog))
 
 
-# =============================================
-# メインCog
-# =============================================
-
 class TRPGGame(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -215,13 +200,8 @@ class TRPGGame(commands.Cog):
         self.main_message = None
         self.main_channel = None
 
-    # =============================================
-    # コマンド
-    # =============================================
-
     @app_commands.command(name="cs", description="キャラクターシートを作成・更新します")
     async def create_character_sheet(self, interaction: discord.Interaction):
-        """キャラクターシート作成Modal"""
         modal = CharacterSheetModal(self)
         await interaction.response.send_modal(modal)
 
@@ -230,34 +210,36 @@ class TRPGGame(commands.Cog):
     async def show_character_sheet(
         self, interaction: discord.Interaction, target_user: Optional[discord.User] = None
     ):
-        """キャラクターシートを表示"""
         target = target_user or interaction.user
         target_id = target.id
 
         if target_id not in self.characters:
             await interaction.response.send_message(
-                f"❌ {target.mention} のキャラクターシートが見つかりません",
+                f"{target.mention} のキャラクターシートが見つかりません",
                 ephemeral=True,
             )
             return
 
         char = self.characters[target_id]
         embed = discord.Embed(
-            title=f"🎭 {char.name}",
-            description=f"**性格・特徴:**\n{char.traits}",
+            title=char.name,
+            description=f"**性格・特徴:**
+{char.traits}",
             color=discord.Color.blue(),
         )
 
         if char.image_url:
             embed.set_image(url=char.image_url)
 
-        stats_text = "\n".join(
+        stats_text = "
+".join(
             [f"• {stat}: {value}" for stat, value in char.stats.items()]
         )
         embed.add_field(name="能力値", value=stats_text, inline=False)
         embed.add_field(
             name="ステータス",
-            value=f"HP: {char.hp}/{char.max_hp}\n所持品: {', '.join(char.items) if char.items else 'なし'}",
+            value=f"HP: {char.hp}/{char.max_hp}
+所持品: {', '.join(char.items) if char.items else 'なし'}",
             inline=False,
         )
 
@@ -265,10 +247,9 @@ class TRPGGame(commands.Cog):
 
     @app_commands.command(name="start_game", description="ゲームセッションを開始します")
     async def start_game(self, interaction: discord.Interaction):
-        """ゲーム開始"""
         if self.game_state.is_active:
             await interaction.response.send_message(
-                "❌ 既にゲームが進行中です",
+                "既にゲームが進行中です",
                 ephemeral=True,
             )
             return
@@ -279,22 +260,20 @@ class TRPGGame(commands.Cog):
 
         await interaction.response.defer()
 
-        # メインメッセージ送信
         embed = await self._create_main_embed()
         self.main_message = await interaction.channel.send(
             embed=embed, view=ActionButton(self)
         )
 
         await interaction.followup.send(
-            "🎮 ゲームが開始されました！\n`/join_game` コマンドで参加登録してください。"
+            "ゲームが開始されました。/join_game コマンドで参加登録してください。"
         )
 
     @app_commands.command(name="join_game", description="ゲームセッションに参加します")
     async def join_game(self, interaction: discord.Interaction):
-        """ゲーム参加"""
         if not self.game_state.is_active:
             await interaction.response.send_message(
-                "❌ 進行中のゲームセッションがありません",
+                "進行中のゲームセッションがありません",
                 ephemeral=True,
             )
             return
@@ -303,80 +282,60 @@ class TRPGGame(commands.Cog):
 
         if user_id in self.game_state.players:
             await interaction.response.send_message(
-                "❌ 既に参加済みです",
+                "既に参加済みです",
                 ephemeral=True,
             )
             return
 
         if user_id not in self.characters:
             await interaction.response.send_message(
-                "❌ キャラクターシートを先に作成してください（`/cs`）",
+                "キャラクターシートを先に作成してください（/cs）",
                 ephemeral=True,
             )
             return
 
         self.game_state.players.append(user_id)
         await interaction.response.send_message(
-            f"✅ {interaction.user.mention} が参加しました！"
+            f"{interaction.user.mention} が参加しました"
         )
 
-        # メイン画面を更新
         if self.main_message:
             embed = await self._create_main_embed()
             await self.main_message.edit(embed=embed)
 
-    # =============================================
-    # ラウンド処理
-    # =============================================
-
     async def _process_round(self, channel):
-        """ラウンド処理メイン"""
         if not self.game_state.is_all_acted():
             return
 
         try:
-            # ダイス判定と能力値抽出
             dice_results = await self._resolve_actions()
-
-            # Gemini API にプロンプトを構築して送信
             narrative = await self._generate_narrative(dice_results)
-
-            # ナレーティブをログに記録
             self.game_state.messages_log.append(narrative)
-
-            # ラウンド終了処理
             self.game_state.clear_actions()
             self.game_state.round += 1
 
-            # メイン画面を更新
             if self.main_message:
                 embed = await self._create_main_embed(narrative)
                 await self.main_message.edit(embed=embed, view=ActionButton(self))
 
-            # ゲームオーバーチェック
             if self.game_state.is_game_over():
                 await channel.send(
-                    "⏰ **15ラウンド終了。ゲームオーバー...** 🔐\n"
-                    "脱出することはできませんでした。"
+                    "15ラウンド終了。ゲームオーバー... 脱出することはできませんでした。"
                 )
                 self.game_state.is_active = False
                 self.main_message = None
 
         except Exception as e:
-            await channel.send(f"❌ ラウンド処理エラー: {e}")
+            await channel.send(f"ラウンド処理エラー: {e}")
 
     async def _resolve_actions(self) -> Dict[int, dict]:
-        """各プレイヤーのアクション解決"""
         results = {}
 
         for user_id, action_text in self.game_state.actions.items():
             char = self.characters[user_id]
-
-            # アクション文から能力値を推測
             skill_used = self._infer_skill(action_text)
             stat_value = char.stats.get(skill_used, 5)
 
-            # ダイス判定
             dice_roll = random.randint(1, 100)
             success = dice_roll <= stat_value * 10
 
@@ -392,7 +351,6 @@ class TRPGGame(commands.Cog):
         return results
 
     def _infer_skill(self, action_text: str) -> str:
-        """アクション文から使用スキルを推測"""
         action_lower = action_text.lower()
 
         for skill, keywords in config.STAT_ACTIONS.items():
@@ -402,7 +360,6 @@ class TRPGGame(commands.Cog):
         return random.choice(config.STAT_NAMES)
 
     async def _generate_narrative(self, dice_results: Dict[int, dict]) -> str:
-        """Gemini APIを使用してナレーティブを生成"""
         prompt_parts = self._build_gemini_prompt(dice_results)
 
         try:
@@ -418,16 +375,13 @@ class TRPGGame(commands.Cog):
             return f"【システムエラー】ナレーティブ生成に失敗しました: {e}"
 
     def _build_gemini_prompt(self, dice_results: Dict[int, dict]) -> List[str]:
-        """Gemini用プロンプトを構築"""
         prompt_parts = []
 
-        # ラウンド情報
         prompt_parts.append(
             f"【現在のラウンド】{self.game_state.round} / {self.game_state.max_round}"
         )
         prompt_parts.append(f"【現在地】{self.game_state.current_room}")
 
-        # キャラクター情報
         prompt_parts.append("【参加キャラクター】")
         for user_id in self.game_state.players:
             if user_id in self.characters:
@@ -436,7 +390,6 @@ class TRPGGame(commands.Cog):
                     f"- {char.name}（{char.traits}） HP:{char.hp}/{char.max_hp}"
                 )
 
-        # アクション結果
         prompt_parts.append("【プレイヤーの行動と判定結果】")
         for user_id, result in dice_results.items():
             char = result["character"]
@@ -444,18 +397,19 @@ class TRPGGame(commands.Cog):
             skill = result["skill"]
             dice = result["dice_roll"]
             stat = result["stat_value"]
-            success_text = "成功✓" if result["success"] else "失敗✗"
+            success_text = "成功" if result["success"] else "失敗"
 
             prompt_parts.append(
-                f"- {char.name}: 「{action}」\n"
+                f"- {char.name}: 「{action}」
+"
                 f"  使用スキル: {skill} ({stat}) | "
                 f"ダイス: {dice} | {success_text}"
             )
 
-        # ストーリー履歴
         if self.game_state.messages_log:
             prompt_parts.append("【これまでのストーリー】")
-            prompt_parts.append("\n".join(self.game_state.messages_log[-3:]))  # 直近3ラウンド
+            prompt_parts.append("
+".join(self.game_state.messages_log[-3:]))
 
         prompt_parts.append(
             "上記のプレイヤー行動に基づいて、洋館内での情景と物語展開を日本語で描写してください。"
@@ -465,16 +419,17 @@ class TRPGGame(commands.Cog):
         return prompt_parts
 
     def _get_system_instruction(self) -> str:
-        """システムインストラクション"""
         return (
-            "あなたは閉鎖された洋館からの脱出TRPGのゲームマスター（GM）です。\n"
-            "プレイヤーの行動に基づいて、リアルな情景描写と物語展開を提供してください。\n"
-            "ダイス判定の成功/失敗を反映し、サスペンス・ミステリーの雰囲気を保ってください。\n"
+            "あなたは閉鎖された洋館からの脱出TRPGのゲームマスター（GM）です。
+"
+            "プレイヤーの行動に基づいて、リアルな情景描写と物語展開を提供してください。
+"
+            "ダイス判定の成功/失敗を反映し、サスペンス・ミステリーの雰囲気を保ってください。
+"
             "洋館内の謎や脱出への手がかりを段階的に提示してください。"
         )
 
     async def _create_main_embed(self, narrative: str = "") -> discord.Embed:
-        """メイン画面Embedを生成"""
         room = self.game_state.current_room
         round_num = self.game_state.round
         max_round = self.game_state.max_round
@@ -485,70 +440,36 @@ class TRPGGame(commands.Cog):
             color=discord.Color.dark_gray(),
         )
 
-        # 残りラウンド
         embed.add_field(
-            name="⏰ 制限",
+            name="制限",
             value=f"残り {max_round - round_num + 1} / {max_round} ラウンド",
             inline=False,
         )
 
-        # パーティ状態
         party_text = ""
         for user_id in self.game_state.players:
             if user_id in self.characters:
                 char = self.characters[user_id]
                 hp_bar = "█" * char.hp + "░" * (char.max_hp - char.hp)
-                party_text += f"• {char.name} [{hp_bar}] HP {char.hp}/{char.max_hp}\n"
+                party_text += f"• {char.name} [{hp_bar}] HP {char.hp}/{char.max_hp}
+"
 
-        embed.add_field(name="👥 パーティ状態", value=party_text or "なし", inline=False)
+        embed.add_field(name="パーティ状態", value=party_text or "なし", inline=False)
 
-        # 行動入力状況
         action_status = ""
         for user_id in self.game_state.players:
             if user_id in self.characters:
                 char = self.characters[user_id]
-                status = "✅ 入力済み" if user_id in self.game_state.actions else "⏳ 未入力"
-                action_status += f"• {char.name}: {status}\n"
+                status = "入力済み" if user_id in self.game_state.actions else "未入力"
+                action_status += f"• {char.name}: {status}
+"
 
-        embed.add_field(name="📋 行動入力状況", value=action_status or "なし", inline=False)
+        embed.add_field(name="行動入力状況", value=action_status or "なし", inline=False)
 
         embed.set_footer(text="すべてのプレイヤーが行動を入力するとラウンドが進行します")
 
         return embed
 
-    # =============================================
-    # ボットイベント
-    # =============================================
 
-    @commands.Cog.listener()
-    async def on_ready(self):
-        print(f"✅ {self.bot.user} としてログインしました")
-        try:
-            synced = await self.bot.tree.sync()
-            print(f"✅ {len(synced)} コマンドをシンク化しました")
-        except Exception as e:
-            print(f"❌ コマンドシンク化エラー: {e}")
-
-
-# =============================================
-# ボット初期化
-# =============================================
-
-async def setup(bot):
+async def setup(bot: commands.Bot):
     await bot.add_cog(TRPGGame(bot))
-
-
-async def main():
-    intents = discord.Intents.default()
-    intents.message_content = True
-    intents.members = True
-
-    bot = commands.Bot(command_prefix="!", intents=intents)
-
-    async with bot:
-        await setup(bot)
-        await bot.start(config.DISCORD_TOKEN)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
