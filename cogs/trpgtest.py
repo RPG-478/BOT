@@ -3,12 +3,14 @@ from discord.ext import commands
 from discord import app_commands
 from typing import Optional, Dict, List
 import random
-import config
+import re
+import os
 from google import genai
 from google.genai import types
+import config
 
 MAX_ROUND = 15
-INITIAL_ROOM = "洋館のエントランスホール"
+INITIAL_ROOM = "エントランス"
 STAT_NAMES = ["筋力", "観察", "知性", "器用", "精神"]
 STAT_ACTIONS = {
     "筋力": ["壊す", "押す", "持ち上げる", "殴る", "こじ開ける"],
@@ -16,6 +18,17 @@ STAT_ACTIONS = {
     "知性": ["読む", "解読する", "考える", "計算する", "思い出す"],
     "器用": ["開ける", "解錠する", "操作する", "盗む", "解体する"],
     "精神": ["耐える", "集中する", "祈る", "説得する", "耐え忍ぶ"]
+}
+
+ROOM_CONNECTIONS = {
+    "エントランス": ["1階廊下"],
+    "1階廊下": ["エントランス", "応接室", "ダイニング", "2階廊下"],
+    "応接室": ["1階廊下"],
+    "ダイニング": ["1階廊下", "キッチン"],
+    "キッチン": ["ダイニング", "地下隠し部屋"],
+    "2階廊下": ["1階廊下", "書斎"],
+    "書斎": ["2階廊下"],
+    "地下隠し部屋": ["キッチン"]
 }
 
 class Character:
@@ -34,31 +47,6 @@ class Character:
         self.max_hp = 10
         self.items = []
         self.image_url = image_url
-
-    def to_dict(self):
-        return {
-            "name": self.name,
-            "traits": self.traits,
-            "stats": self.stats,
-            "hp": self.hp,
-            "max_hp": self.max_hp,
-            "items": self.items,
-            "image_url": self.image_url,
-        }
-
-    @classmethod
-    def from_dict(cls, user_id: int, data: dict):
-        char = cls(
-            user_id=user_id,
-            name=data["name"],
-            traits=data["traits"],
-            stats=[data["stats"][stat] for stat in STAT_NAMES],
-            image_url=data.get("image_url", ""),
-        )
-        char.hp = data.get("hp", 10)
-        char.items = data.get("items", [])
-        return char
-
 
 class GameState:
     def __init__(self):
@@ -174,6 +162,13 @@ class ActionModal(discord.ui.Modal):
                     ephemeral=True,
                 )
                 return
+            
+            if user_id not in self.cog.game_state.players:
+                await interaction.response.send_message(
+                    "/join_game でゲームに参加してください",
+                    ephemeral=True,
+                )
+                return
 
             self.cog.game_state.add_action(user_id, action_text)
 
@@ -205,9 +200,9 @@ class ActionButton(discord.ui.View):
 class TRPGGame(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.api_key = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
+        self.api_key = getattr(config, "GEMINI_API_KEY", "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg")
         self.gemini_client = genai.Client(api_key=self.api_key)
-        self.model_name = "gemini-2.5-flash"
+        self.model_name = "gemini-2.5-flash-preview-09-2025"
         self.characters: Dict[int, Character] = {}
         self.game_state = GameState()
         self.main_message = None
@@ -266,7 +261,6 @@ class TRPGGame(commands.Cog):
 
         self.game_state.reset()
         self.main_channel = interaction.channel
-        self.game_state.players = [interaction.user.id]
 
         await interaction.response.defer()
 
@@ -276,7 +270,7 @@ class TRPGGame(commands.Cog):
         )
 
         await interaction.followup.send(
-            "ゲームが開始されました。/join_game コマンドで参加登録してください。"
+            "ゲームセッションが作成されました。/join_game コマンドで参加登録してください。"
         )
 
     @app_commands.command(name="join_game", description="ゲームセッションに参加します")
@@ -320,6 +314,13 @@ class TRPGGame(commands.Cog):
         try:
             dice_results = await self._resolve_actions()
             narrative = await self._generate_narrative(dice_results)
+            
+            room_match = re.search(r"【現在地:\s*(.+?)】", narrative)
+            if room_match:
+                new_room = room_match.group(1).strip()
+                if new_room in ROOM_CONNECTIONS:
+                    self.game_state.current_room = new_room
+            
             self.game_state.messages_log.append(narrative)
             self.game_state.clear_actions()
             self.game_state.round += 1
@@ -382,7 +383,7 @@ class TRPGGame(commands.Cog):
             )
             return response.text
         except Exception as e:
-            return f"【システムエラー】ナレーティブ生成に失敗しました: {e}"
+            return f"システムエラー: ナレーティブ生成に失敗しました: {e}"
 
     def _build_gemini_prompt(self, dice_results: Dict[int, dict]) -> List[str]:
         prompt_parts = []
@@ -390,7 +391,11 @@ class TRPGGame(commands.Cog):
         prompt_parts.append(
             f"【現在のラウンド】{self.game_state.round} / {self.game_state.max_round}"
         )
-        prompt_parts.append(f"【現在地】{self.game_state.current_room}")
+        
+        current = self.game_state.current_room
+        connections = ", ".join(ROOM_CONNECTIONS.get(current, []))
+        prompt_parts.append(f"【現在地】{current}")
+        prompt_parts.append(f"【移動可能な隣接部屋】{connections}")
 
         prompt_parts.append("【参加キャラクター】")
         for user_id in self.game_state.players:
@@ -421,7 +426,8 @@ class TRPGGame(commands.Cog):
 
         prompt_parts.append(
             "上記のプレイヤー行動に基づいて、洋館内での情景と物語展開を日本語で描写してください。"
-            "100-150文字で、雰囲気を保ちながら次への手がかりも含めてください。"
+            "100-200文字程度で、雰囲気を保ちながら次への手がかりも含めてください。"
+            "プレイヤーが別の部屋への移動に成功した場合は、文章の最後に必ず「【現在地: 新しい部屋名】」と記載してください。"
         )
 
         return prompt_parts
@@ -431,7 +437,8 @@ class TRPGGame(commands.Cog):
             "あなたは閉鎖された洋館からの脱出TRPGのゲームマスター（GM）です。\n"
             "プレイヤーの行動に基づいて、リアルな情景描写と物語展開を提供してください。\n"
             "ダイス判定の成功/失敗を反映し、サスペンス・ミステリーの雰囲気を保ってください。\n"
-            "洋館内の謎や脱出への手がかりを段階的に提示してください。"
+            "洋館内の謎や脱出への手がかりを段階的に提示してください。\n"
+            "移動判定に成功した際は指定のフォーマットで現在地を更新してください。"
         )
 
     async def _create_main_embed(self, narrative: str = "") -> discord.Embed:
@@ -441,7 +448,7 @@ class TRPGGame(commands.Cog):
 
         embed = discord.Embed(
             title=f"[第{round_num}ラウンド] 閉ざされた洋館 - 現在地: {room}",
-            description=narrative or "ゲームが開始されました。皆で脱出を目指しましょう...",
+            description=narrative or "ゲームの募集が開始されました。参加者が揃い次第、行動を入力してください。",
             color=discord.Color.dark_gray(),
         )
 
@@ -458,7 +465,7 @@ class TRPGGame(commands.Cog):
                 hp_bar = "█" * char.hp + "░" * (char.max_hp - char.hp)
                 party_text += f"- {char.name} [{hp_bar}] HP {char.hp}/{char.max_hp}\n"
 
-        embed.add_field(name="パーティ状態", value=party_text or "なし", inline=False)
+        embed.add_field(name="パーティ状態", value=party_text or "参加者なし", inline=False)
 
         action_status = ""
         for user_id in self.game_state.players:
@@ -467,7 +474,7 @@ class TRPGGame(commands.Cog):
                 status = "入力済み" if user_id in self.game_state.actions else "未入力"
                 action_status += f"- {char.name}: {status}\n"
 
-        embed.add_field(name="行動入力状況", value=action_status or "なし", inline=False)
+        embed.add_field(name="行動入力状況", value=action_status or "参加者なし", inline=False)
 
         embed.set_footer(text="すべてのプレイヤーが行動を入力するとラウンドが進行します")
 
@@ -476,3 +483,4 @@ class TRPGGame(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TRPGGame(bot))
+
