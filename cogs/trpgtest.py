@@ -7,6 +7,17 @@ import config
 from google import genai
 from google.genai import types
 
+MAX_ROUND = 15
+INITIAL_ROOM = "洋館のエントランスホール"
+STAT_NAMES = ["筋力", "観察", "知性", "器用", "精神"]
+STAT_ACTIONS = {
+    "筋力": ["壊す", "押す", "持ち上げる", "殴る", "こじ開ける"],
+    "観察": ["探す", "調べる", "見る", "観察する", "見回す"],
+    "知性": ["読む", "解読する", "考える", "計算する", "思い出す"],
+    "器用": ["開ける", "解錠する", "操作する", "盗む", "解体する"],
+    "精神": ["耐える", "集中する", "祈る", "説得する", "耐え忍ぶ"]
+}
+
 class Character:
     def __init__(self, user_id: int, name: str, traits: str, stats: List[int], image_url: str = ""):
         self.user_id = user_id
@@ -41,7 +52,7 @@ class Character:
             user_id=user_id,
             name=data["name"],
             traits=data["traits"],
-            stats=[data["stats"][stat] for stat in config.STAT_NAMES],
+            stats=[data["stats"][stat] for stat in STAT_NAMES],
             image_url=data.get("image_url", ""),
         )
         char.hp = data.get("hp", 10)
@@ -53,8 +64,8 @@ class GameState:
     def __init__(self):
         self.is_active = False
         self.round = 0
-        self.max_round = config.MAX_ROUND
-        self.current_room = config.INITIAL_ROOM
+        self.max_round = MAX_ROUND
+        self.current_room = INITIAL_ROOM
         self.players: List[int] = []
         self.actions: Dict[int, str] = {}
         self.messages_log: List[str] = []
@@ -62,7 +73,7 @@ class GameState:
     def reset(self):
         self.is_active = True
         self.round = 1
-        self.current_room = config.INITIAL_ROOM
+        self.current_room = INITIAL_ROOM
         self.players = []
         self.actions = {}
         self.messages_log = []
@@ -196,7 +207,7 @@ class TRPGGame(commands.Cog):
         self.bot = bot
         self.api_key = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
         self.gemini_client = genai.Client(api_key=self.api_key)
-        self.model_name = "gemini-3.5-flash-lite"
+        self.model_name = "gemini-2.5-flash"
         self.characters: Dict[int, Character] = {}
         self.game_state = GameState()
         self.main_message = None
@@ -352,11 +363,11 @@ class TRPGGame(commands.Cog):
     def _infer_skill(self, action_text: str) -> str:
         action_lower = action_text.lower()
 
-        for skill, keywords in config.STAT_ACTIONS.items():
+        for skill, keywords in STAT_ACTIONS.items():
             if any(keyword in action_lower for keyword in keywords):
                 return skill
 
-        return random.choice(config.STAT_NAMES)
+        return random.choice(STAT_NAMES)
 
     async def _generate_narrative(self, dice_results: Dict[int, dict]) -> str:
         prompt_parts = self._build_gemini_prompt(dice_results)
