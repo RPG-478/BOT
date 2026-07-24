@@ -202,7 +202,7 @@ class TRPGGame(commands.Cog):
         self.bot = bot
         self.api_key = getattr(config, "GEMINI_API_KEY", "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg")
         self.gemini_client = genai.Client(api_key=self.api_key)
-        self.model_name = "gemini-2.5-flash-preview-09-2025"
+        self.model_name = "gemini-3.5-flash"
         self.characters: Dict[int, Character] = {}
         self.game_state = GameState()
         self.main_message = None
