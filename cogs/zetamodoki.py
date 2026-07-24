@@ -148,22 +148,36 @@ class CharacterSelect(discord.ui.Select):
         self.cog.active_personas[guild_id] = persona
         self.cog.chat_histories[guild_id] = []
 
+        # 1. Ephemeral（自分だけに表示）の元のメッセージは「設定完了」として閉じる
+        await interaction.response.edit_message(content=f"【{persona.name}】を選択しました。会話を開始します！", view=None)
+
+        # 2. チャンネル全体に見える Embed を作成して送信
         embed = discord.Embed(
             title=f"【{persona.name}】との会話を開始しました！",
             description=f"**シチュエーション:**\n{persona.situation}",
             color=discord.Color.purple()
         )
         embed.set_footer(text="下の「返信する」ボタンから入力して対話を進めてください")
+        
+        # チャンネルに直接送信
+        await interaction.channel.send(embed=embed)
 
-        await interaction.response.edit_message(content="シチュエーションを設定しました。", embed=embed, view=None)
-
-        # 初期メッセージをWebhookで送信
+        # 3. キャラクターの初期メッセージを Webhook で送信
         first_msg_formatted = self.cog._format_narration(persona.first_message)
-        await self.cog._send_webhook_message(
-            channel=interaction.channel,
-            guild_id=guild_id,
-            content=first_msg_formatted
-        )
+        try:
+            await self.cog._send_webhook_message(
+                channel=interaction.channel,
+                guild_id=guild_id,
+                content=first_msg_formatted
+            )
+        except Exception as e:
+            # 万が一 Webhook（画像権限など）で失敗した場合のフォールバック
+            await interaction.channel.send(
+                f"**{persona.name}**: {first_msg_formatted}", 
+                view=ChatButtonView(self.cog)
+            )
+            print(f"Webhook送信エラー: {e}")
+
 
 
 class CharacterSelectView(discord.ui.View):
