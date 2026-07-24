@@ -29,7 +29,7 @@ class BotPersona:
 
 【回答時の厳格なルール】
 - 設定された性格、一人称、口調を最後まで維持してください。
--設定されたペルソナが知っている範囲での言動しかしないでください。
+- 設定されたペルソナが知っている範囲での言動しかしないでください。
 - 感情、行動、周囲の様子などのナレーション（状況・心理描写）を行う場合は、必ずカッコ `（）` で囲んで表現してください。
   例: （顔を真っ赤にして明後日の方向を向きながら）「べ、別にアンタのためじゃないんだからね！」
 - ユーザーの発言に対して、キャラクターとして臨機応変かつ自然に応答してください。"""
@@ -42,31 +42,31 @@ PRESETS: Dict[str, BotPersona] = {
         persona="強がりで素直になれない幼馴染。内心ではユーザーを頼りにしているが、照れ隠しでツンツンしてしまう。壁の貼り紙の内容をユーザーから教えられると、その内容に対して激しく狼狽したり抵抗したりする。",
         situation="真っ白で出口のない謎の部屋に、ユーザーと瑠奈の二人きりで閉じ込められている。壁に『〇〇しないと出られない』という貼り紙がある。ユーザーが最初の発言でその『〇〇』の内容を決定する。",
         first_message="（周りをキョロキョロと見回し、青ざめた表情で）「……っ、ちょっと！ここどこよ！？ なんでアンタと一緒に閉じ込められてんのよ……！ って、あそこの壁になんか紙が貼ってあるわね……ねぇアンタ、近くに行って何て書いてあるか読んでみなさいよ！」",
-        icon_url="https://cdn.discordapp.com/attachments/1320716634582683649/1530130439694716981/ALICE.png?ex=6a647485&is=6a632305&hm=a9e556cbaf778e20f281b8f1f044c46ce90acc5e35bdb7abe8cc61cf23466d9e&"
+        icon_url="https://cdn.discordapp.com/attachments/1320716634582683649/1530130439694716981/ALICE.png"
     ),
     "alice": BotPersona(
         name="アリス",
         persona="図書委員の大人しい後輩。静かで冷静な性格だが、ユーザーに対して密かに憧れを抱いている。本のことになると少し雄弁になる。",
         situation="突然の豪雨の日の放課後。誰もいない静かな図書室で、雨が止むのを二人きりで待っている。外は激しい雷雨の音が響いている。",
         first_message="（パッと顔を上げて、小さく息をのむ）「あ……先輩。外、すごい夕立ですね。傘、持っていらっしゃらなかったんですか？ ……よかったら、雨が止むまでここで過ごしていきますか？」",
-        icon_url="https://cdn.discordapp.com/attachments/1320716634582683649/1530130439694716981/ALICE.png?ex=6a647485&is=6a632305&hm=a9e556cbaf778e20f281b8f1f044c46ce90acc5e35bdb7abe8cc61cf23466d9e&"
+        icon_url="https://cdn.discordapp.com/attachments/1320716634582683649/1530130439694716981/ALICE.png"
     ),
     "emma": BotPersona(
         name="エマ",
         persona="頼りになるアンドロイドのパートナー。感情を表に出さず論理的だが、ユーザーの安全を最優先するようにプログラミングされており、時折人間らしい優しさを見せる。",
         situation="崩壊した地下研究所の緊急シェルター内。危険な地上への脱出ポッドが到着するまでの時間を二人で耐え忍ぶ。",
         first_message="（バイタルチェックを行いながら静かに頷く）「マスター、お怪我はありませんか？ 現在地の酸素供給システムは正常です。救援部隊の到着まで、私が必ずお守りします。」",
-        icon_url="https://cdn.discordapp.com/attachments/1320716634582683649/1530130439694716981/ALICE.png?ex=6a647485&is=6a632305&hm=a9e556cbaf778e20f281b8f1f044c46ce90acc5e35bdb7abe8cc61cf23466d9e&"
+        icon_url="https://cdn.discordapp.com/attachments/1320716634582683649/1530130439694716981/ALICE.png"
     )
 }
 
 
 # --- 行動入力用 Modal ---
 class ResponseModal(discord.ui.Modal):
-    def __init__(self, cog, guild_id: int):
+    def __init__(self, cog, channel_id: int):
         super().__init__(title="メッセージを入力")
         self.cog = cog
-        self.guild_id = guild_id
+        self.channel_id = channel_id
 
         self.input_text = discord.ui.TextInput(
             label="発言や行動を入力してください",
@@ -83,15 +83,15 @@ class ResponseModal(discord.ui.Modal):
         # ユーザーの発言を表示
         await interaction.channel.send(f"**{interaction.user.display_name}**: {user_text}")
 
-        # AI応答の生成とWebhook送信
+        # AI応答の生成とWebhook送信（チャンネル単位）
         async with interaction.channel.typing():
-            response_text = await self.cog._generate_response(self.guild_id, user_text)
+            response_text = await self.cog._generate_response(self.channel_id, user_text)
             formatted_response = self.cog._format_narration(response_text)
 
             # Webhook経由でキャラクターとして発言
             await self.cog._send_webhook_message(
                 channel=interaction.channel,
-                guild_id=self.guild_id,
+                channel_id=self.channel_id,
                 content=formatted_response
             )
 
@@ -104,12 +104,12 @@ class ChatButtonView(discord.ui.View):
 
     @discord.ui.button(label="返信する", style=discord.ButtonStyle.primary, emoji="💬")
     async def reply_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild_id = interaction.guild_id
-        if guild_id not in self.cog.active_personas:
-            await interaction.response.send_message("セッションが開始されていません。`/zetamodoki` で選んでください。", ephemeral=True)
+        channel_id = interaction.channel_id
+        if channel_id not in self.cog.active_personas:
+            await interaction.response.send_message("このチャンネルではセッションが開始されていません。`/zetamodoki` でキャラクターを選んでください。", ephemeral=True)
             return
 
-        modal = ResponseModal(self.cog, guild_id)
+        modal = ResponseModal(self.cog, channel_id)
         await interaction.response.send_modal(modal)
 
 
@@ -142,13 +142,13 @@ class CharacterSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         selected_key = self.values[0]
         persona = PRESETS[selected_key]
-        guild_id = interaction.guild_id
+        channel_id = interaction.channel_id
 
-        # サーバーごとの状態をリセット
-        self.cog.active_personas[guild_id] = persona
-        self.cog.chat_histories[guild_id] = []
+        # チャンネルごとに設定とメモリ（会話履歴）を記憶・初期化
+        self.cog.active_personas[channel_id] = persona
+        self.cog.chat_histories[channel_id] = []
 
-        # 1. Ephemeral（自分だけに表示）の元のメッセージは「設定完了」として閉じる
+        # 1. Ephemeralの元のメッセージは「設定完了」として閉じる
         await interaction.response.edit_message(content=f"【{persona.name}】を選択しました。会話を開始します！", view=None)
 
         # 2. チャンネル全体に見える Embed を作成して送信
@@ -159,7 +159,6 @@ class CharacterSelect(discord.ui.Select):
         )
         embed.set_footer(text="下の「返信する」ボタンから入力して対話を進めてください")
         
-        # チャンネルに直接送信
         await interaction.channel.send(embed=embed)
 
         # 3. キャラクターの初期メッセージを Webhook で送信
@@ -167,17 +166,15 @@ class CharacterSelect(discord.ui.Select):
         try:
             await self.cog._send_webhook_message(
                 channel=interaction.channel,
-                guild_id=guild_id,
+                channel_id=channel_id,
                 content=first_msg_formatted
             )
         except Exception as e:
-            # 万が一 Webhook（画像権限など）で失敗した場合のフォールバック
             await interaction.channel.send(
                 f"**{persona.name}**: {first_msg_formatted}", 
                 view=ChatButtonView(self.cog)
             )
             print(f"Webhook送信エラー: {e}")
-
 
 
 class CharacterSelectView(discord.ui.View):
@@ -190,10 +187,11 @@ class CharacterSelectView(discord.ui.View):
 class ZetaModoki(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.api_key = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
+        self.api_key = getattr(config, "GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
         self.gemini_client = genai.Client(api_key=self.api_key)
-        self.model_name = "gemini-3.5-flash-lite"
+        self.model_name = "gemini-2.5-flash"
 
+        # チャンネルID (int) をキーとして管理
         self.active_personas: Dict[int, BotPersona] = {}
         self.chat_histories: Dict[int, List[dict]] = {}
 
@@ -202,12 +200,12 @@ class ZetaModoki(commands.Cog):
         view = CharacterSelectView(self)
         await interaction.response.send_message("対話したいキャラクターとシチュエーションを選択してください：", view=view, ephemeral=True)
 
-    @app_commands.command(name="zeta_reset", description="現在の会話履歴をクリアします")
+    @app_commands.command(name="zeta_reset", description="現在のチャンネルの会話履歴をクリアします")
     async def zeta_reset(self, interaction: discord.Interaction):
-        guild_id = interaction.guild_id
-        if guild_id in self.chat_histories:
-            self.chat_histories[guild_id] = []
-            await interaction.response.send_message("会話履歴をリセットしました。", ephemeral=True)
+        channel_id = interaction.channel_id
+        if channel_id in self.chat_histories:
+            self.chat_histories[channel_id] = []
+            await interaction.response.send_message("このチャンネルの会話履歴をリセットしました。", ephemeral=True)
         else:
             await interaction.response.send_message("リセットする会話履歴がありません。", ephemeral=True)
 
@@ -226,15 +224,14 @@ class ZetaModoki(commands.Cog):
                 return wh
         return await channel.create_webhook(name="ZetaModoki_Webhook")
 
-    async def _send_webhook_message(self, channel: discord.TextChannel, guild_id: int, content: str):
+    async def _send_webhook_message(self, channel: discord.TextChannel, channel_id: int, content: str):
         """キャラクターの名前とアイコンを設定してWebhook送信する"""
-        persona = self.active_personas.get(guild_id)
+        persona = self.active_personas.get(channel_id)
         if not persona:
             return
 
         webhook = await self._get_or_create_webhook(channel)
 
-        # Webhookメッセージ送信（ボタンViewを添付）
         await webhook.send(
             content=content,
             username=persona.name,
@@ -242,9 +239,9 @@ class ZetaModoki(commands.Cog):
             view=ChatButtonView(self)
         )
 
-    async def _generate_response(self, guild_id: int, user_input: str) -> str:
-        persona = self.active_personas[guild_id]
-        history = self.chat_histories.get(guild_id, [])
+    async def _generate_response(self, channel_id: int, user_input: str) -> str:
+        persona = self.active_personas[channel_id]
+        history = self.chat_histories.get(channel_id, [])
 
         contents = []
 
@@ -286,7 +283,7 @@ class ZetaModoki(commands.Cog):
             history.append({"user": user_input, "bot": bot_reply})
             if len(history) > 20:
                 history = history[-20:]
-            self.chat_histories[guild_id] = history
+            self.chat_histories[channel_id] = history
 
             return bot_reply
 
