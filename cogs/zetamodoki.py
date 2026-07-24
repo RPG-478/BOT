@@ -79,27 +79,20 @@ class ResponseModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer()
         user_text = self.input_text.value.strip()
-        persona = self.cog.active_personas.get(self.channel_id)
 
-        # 1. ユーザーの発言を Webhook で送信（ユーザー名とアバターを使用）
-        await self.cog._send_webhook_message(
-            channel=interaction.channel,
-            content=user_text,
-            username=interaction.user.display_name,
-            avatar_url=interaction.user.display_avatar.url
-        )
+        # ユーザーの発言を表示
+        await interaction.channel.send(f"**{interaction.user.display_name}**: {user_text}")
 
-        # 2. AI応答の生成と Webhook 送信（キャラクター名とアバター、ボタンを使用）
+        # AI応答の生成とWebhook送信（チャンネル単位）
         async with interaction.channel.typing():
             response_text = await self.cog._generate_response(self.channel_id, user_text)
             formatted_response = self.cog._format_narration(response_text)
 
+            # Webhook経由でキャラクターとして発言
             await self.cog._send_webhook_message(
                 channel=interaction.channel,
-                content=formatted_response,
-                username=persona.name if persona else "Bot",
-                avatar_url=persona.icon_url if persona else None,
-                view=ChatButtonView(self.cog)
+                channel_id=self.channel_id,
+                content=formatted_response
             )
 
 
@@ -173,10 +166,8 @@ class CharacterSelect(discord.ui.Select):
         try:
             await self.cog._send_webhook_message(
                 channel=interaction.channel,
-                content=first_msg_formatted,
-                username=persona.name,
-                avatar_url=persona.icon_url,
-                view=ChatButtonView(self.cog)
+                channel_id=channel_id,
+                content=first_msg_formatted
             )
         except Exception as e:
             await interaction.channel.send(
@@ -233,22 +224,19 @@ class ZetaModoki(commands.Cog):
                 return wh
         return await channel.create_webhook(name="ZetaModoki_Webhook")
 
-    async def _send_webhook_message(
-        self, 
-        channel: discord.TextChannel, 
-        content: str, 
-        username: str, 
-        avatar_url: Optional[str] = None, 
-        view: Optional[discord.ui.View] = None
-    ):
-        """任意の名前・アイコンを設定してWebhook送信する"""
+    async def _send_webhook_message(self, channel: discord.TextChannel, channel_id: int, content: str):
+        """キャラクターの名前とアイコンを設定してWebhook送信する"""
+        persona = self.active_personas.get(channel_id)
+        if not persona:
+            return
+
         webhook = await self._get_or_create_webhook(channel)
 
         await webhook.send(
             content=content,
-            username=username,
-            avatar_url=avatar_url,
-            view=view
+            username=persona.name,
+            avatar_url=persona.icon_url,
+            view=ChatButtonView(self)
         )
 
     async def _generate_response(self, channel_id: int, user_input: str) -> str:
