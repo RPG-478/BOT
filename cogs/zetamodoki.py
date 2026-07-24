@@ -11,12 +11,12 @@ import config
 
 # --- キャラクター＆シチュエーション構造定義 ---
 class BotPersona:
-    def __init__(self, name: str, persona: str, situation: str, first_message: str, icon_filename: str):
+    def __init__(self, name: str, persona: str, situation: str, first_message: str, icon_url: str):
         self.name = name
         self.persona = persona
         self.situation = situation
         self.first_message = first_message
-        self.icon_filename = icon_filename  # assets内の画像ファイル名
+        self.icon_url = icon_url  # assets内の画像ファイル名
 
     def build_system_instruction(self) -> str:
         return f"""あなたは「{self.name}」としてユーザーとリアルタイムでロールプレイを行ってください。
@@ -42,21 +42,21 @@ PRESETS: Dict[str, BotPersona] = {
         persona="強がりで素直になれない幼馴染。内心ではユーザーを頼りにしているが、照れ隠しでツンツンしてしまう。壁の貼り紙の内容をユーザーから教えられると、その内容に対して激しく狼狽したり抵抗したりする。",
         situation="真っ白で出口のない謎の部屋に、ユーザーと瑠奈の二人きりで閉じ込められている。壁に『〇〇しないと出られない』という貼り紙がある。ユーザーが最初の発言でその『〇〇』の内容を決定する。",
         first_message="（周りをキョロキョロと見回し、青ざめた表情で）「……っ、ちょっと！ここどこよ！？ なんでアンタと一緒に閉じ込められてんのよ……！ って、あそこの壁になんか紙が貼ってあるわね……ねぇアンタ、近くに行って何て書いてあるか読んでみなさいよ！」",
-        icon_filename="luna.png"
+        icon_url="https://cdn.discordapp.com/avatars/1168518869992869970/b9113402a633d693dfcea702f838c122.png"
     ),
     "alice": BotPersona(
         name="アリス",
         persona="図書委員の大人しい後輩。静かで冷静な性格だが、ユーザーに対して密かに憧れを抱いている。本のことになると少し雄弁になる。",
         situation="突然の豪雨の日の放課後。誰もいない静かな図書室で、雨が止むのを二人きりで待っている。外は激しい雷雨の音が響いている。",
         first_message="（パッと顔を上げて、小さく息をのむ）「あ……先輩。外、すごい夕立ですね。傘、持っていらっしゃらなかったんですか？ ……よかったら、雨が止むまでここで過ごしていきますか？」",
-        icon_filename="ALICE.png"
+        icon_url="https://cdn.discordapp.com/avatars/1168518869992869970/b9113402a633d693dfcea702f838c122.png"
     ),
     "emma": BotPersona(
         name="エマ",
         persona="頼りになるアンドロイドのパートナー。感情を表に出さず論理的だが、ユーザーの安全を最優先するようにプログラミングされており、時折人間らしい優しさを見せる。",
         situation="崩壊した地下研究所の緊急シェルター内。危険な地上への脱出ポッドが到着するまでの時間を二人で耐え忍ぶ。",
         first_message="（バイタルチェックを行いながら静かに頷く）「マスター、お怪我はありませんか？ 現在地の酸素供給システムは正常です。救援部隊の到着まで、私が必ずお守りします。」",
-        icon_filename="emma.png"
+        icon_url="https://cdn.discordapp.com/avatars/1168518869992869970/b9113402a633d693dfcea702f838c122.png"
     )
 }
 
@@ -234,19 +234,11 @@ class ZetaModoki(commands.Cog):
 
         webhook = await self._get_or_create_webhook(channel)
 
-        # assets/ から画像バイナリを読み込む
-        icon_path = os.path.join("assets", persona.icon_filename)
-        avatar_bytes = None
-        if os.path.exists(icon_path):
-            with open(icon_path, "rb") as f:
-                avatar_bytes = f.read()
-
         # Webhookメッセージ送信（ボタンViewを添付）
         await webhook.send(
             content=content,
             username=persona.name,
-            avatar_url=None,
-            avatar=avatar_bytes,
+            avatar_url=persona.icon_url,
             view=ChatButtonView(self)
         )
 
