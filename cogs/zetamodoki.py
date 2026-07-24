@@ -16,7 +16,7 @@ class BotPersona:
         self.persona = persona
         self.situation = situation
         self.first_message = first_message
-        self.icon_url = icon_url  # assets内の画像ファイル名
+        self.icon_url = icon_url
 
     def build_system_instruction(self) -> str:
         return f"""あなたは「{self.name}」としてユーザーとリアルタイムでロールプレイを行ってください。
