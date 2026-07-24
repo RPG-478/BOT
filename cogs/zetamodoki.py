@@ -190,7 +190,7 @@ class CharacterSelectView(discord.ui.View):
 class ZetaModoki(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.api_key = getattr(config, "GEMINI_API_KEY", "YOUR_API_KEY")
+        self.api_key = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
         self.gemini_client = genai.Client(api_key=self.api_key)
         self.model_name = "gemini-3.5-flash-lite"
 
