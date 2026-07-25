@@ -227,10 +227,9 @@ class ModelEtaLgbCog(commands.Cog):
         bar = "■" * filled + "□" * (length - filled)
         return bar
 
-    async def train_and_evaluate_model(
-        self, symbol_code: str, df: pd.DataFrame, status_msg: Optional[discord.Message] = None, current_progress_str: str = ""
+    def train_and_evaluate_model_sync(
+        self, symbol_code: str, df: pd.DataFrame
     ) -> Optional[Dict[str, Any]]:
-        """高精度モデルの構築と安全なモデルファイルローカル保存"""
         df = self.calculate_indicators(df)
         feature_cols = [c for c in df.columns if c.startswith("feat_")]
         clean_df = df.dropna(subset=feature_cols + ["target"])
@@ -257,7 +256,7 @@ class ModelEtaLgbCog(commands.Cog):
         }
 
         train_window = 200
-        rolling_steps = 240
+        rolling_steps = 60
 
         last_model = None
         for i in range(rolling_steps):
@@ -287,33 +286,20 @@ class ModelEtaLgbCog(commands.Cog):
             single_loss = -(actual * np.log(p_clipped) + (1 - actual) * np.log(1 - p_clipped))
             losses.append(single_loss)
 
-            # ループ中の細かい status_msg.edit を削除または条件を緩和
-            if status_msg and i == rolling_steps - 1:
-                current_loss_avg = float(np.mean(losses)) if losses else 0.693
-                try:
-                    prefix = f"{current_progress_str}\n" if current_progress_str else ""
-                    await status_msg.edit(
-                        content=f"{prefix}[TRAINING LOG] STEP [{rolling_steps}/{rolling_steps}] | LOSS: {current_loss_avg:.4f}"
-                    )
-                except Exception:
-                    pass
-
         if not probs or last_model is None:
             return None
 
-        # 最新250日での最終モデル構築
         final_X = clean_df[feature_cols].iloc[-250:]
         final_y = clean_df["target"].iloc[-250:]
         final_train_data = lgb.Dataset(final_X, label=final_y)
         final_model = lgb.train(lgb_params, final_train_data, num_boost_round=150)
 
-        # モデルのローカル保存
         model_path = os.path.join(self.models_dir, f"{symbol_code}_lgb.txt")
         if os.path.exists(model_path):
             try:
                 os.remove(model_path)
-            except Exception as e:
-                print(f"[ModelEta Warning] 既存モデル削除スキップ: {e}")
+            except Exception:
+                pass
 
         final_model.save_model(model_path)
 
@@ -344,6 +330,12 @@ class ModelEtaLgbCog(commands.Cog):
         self.save_eval_summary()
 
         return summary_entry
+
+    async def train_and_evaluate_model(
+        self, symbol_code: str, df: pd.DataFrame, status_msg: Optional[discord.Message] = None, current_progress_str: str = ""
+    ) -> Optional[Dict[str, Any]]:
+        res = await asyncio.to_thread(self.train_and_evaluate_model_sync, symbol_code, df)
+        return res
 
     def sync_to_github(self, commit_msg: str):
         """Git 同期処理"""
