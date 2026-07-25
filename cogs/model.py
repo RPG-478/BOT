@@ -23,35 +23,11 @@ class ModelEtaLgbCog(commands.Cog):
         self.csv_source_file = "Assets/Issues_20260725170724.csv"
         self.log_file = "logs/eta_lgb_predictions.csv"
         self.symbols_data: List[Dict[str, str]] = []
-        self.load_or_convert_symbols()
+        self.load_symbols()
         os.makedirs("logs", exist_ok=True)
         os.makedirs("Assets", exist_ok=True)
 
-    def load_or_convert_symbols(self):
-        if not os.path.exists(self.symbols_file) and os.path.exists(self.csv_source_file):
-            try:
-                df = pd.read_csv(self.csv_source_file, encoding="utf-8")
-                target_markets = ["プライム", "スタンダード", "グロース"]
-                filtered = df[df["市場・商品区分"].isin(target_markets)]
-
-                symbols_list = []
-                for _, row in filtered.iterrows():
-                    code_raw = str(row["銘柄コード"]).strip()
-                    code = code_raw[:4]
-                    if len(code) == 4 and code.isdigit():
-                        market_raw = str(row["市場・商品区分"])
-                        market_name = "Prime" if "プライム" in market_raw else ("Standard" if "スタンダード" in market_raw else "Growth")
-                        symbols_list.append({
-                            "code": code,
-                            "name": str(row["銘柄名称"]).strip(),
-                            "market": market_name
-                        })
-
-                with open(self.symbols_file, "w", encoding="utf-8") as f:
-                    json.dump(symbols_list, f, ensure_ascii=False, indent=2)
-            except Exception as e:
-                print(f"Error converting CSV: {e}")
-
+    def load_symbols(self):
         if os.path.exists(self.symbols_file):
             try:
                 with open(self.symbols_file, "r", encoding="utf-8") as f:
@@ -59,8 +35,38 @@ class ModelEtaLgbCog(commands.Cog):
             except Exception as e:
                 print(f"Error loading JSON: {e}")
 
+        if not self.symbols_data and os.path.exists(self.csv_source_file):
+            self.convert_csv_to_json()
+
         if not self.symbols_data:
             self.symbols_data = [{"code": "7203", "name": "トヨタ自動車", "market": "Prime"}]
+
+    def convert_csv_to_json(self) -> int:
+        if not os.path.exists(self.csv_source_file):
+            raise FileNotFoundError(f"{self.csv_source_file} not found.")
+
+        df = pd.read_csv(self.csv_source_file, encoding="utf-8")
+        target_markets = ["プライム", "スタンダード", "グロース"]
+        filtered = df[df["市場・商品区分"].isin(target_markets)]
+
+        symbols_list = []
+        for _, row in filtered.iterrows():
+            code_raw = str(row["銘柄コード"]).strip()
+            code = code_raw[:4]
+            if len(code) == 4 and code.isdigit():
+                market_raw = str(row["市場・商品区分"])
+                market_name = "Prime" if "プライム" in market_raw else ("Standard" if "スタンダード" in market_raw else "Growth")
+                symbols_list.append({
+                    "code": code,
+                    "name": str(row["銘柄名称"]).strip(),
+                    "market": market_name
+                })
+
+        with open(self.symbols_file, "w", encoding="utf-8") as f:
+            json.dump(symbols_list, f, ensure_ascii=False, indent=2)
+
+        self.symbols_data = symbols_list
+        return len(symbols_list)
 
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         close = df["Close"]
@@ -242,6 +248,16 @@ class ModelEtaLgbCog(commands.Cog):
                 return s
         return None
 
+    @commands.command(name="import_symbols")
+    @commands.has_permissions(administrator=True)
+    async def import_symbols(self, ctx: commands.Context):
+        msg = await ctx.send("Assets 内のCSVから銘柄マスターをインポート中...")
+        try:
+            count = await asyncio.to_thread(self.convert_csv_to_json)
+            await msg.edit(content=f"銘柄マスターのインポートが完了しました。対象銘柄数: {count}")
+        except Exception as e:
+            await msg.edit(content=f"エラー: {e}")
+
     @commands.command(name="eta")
     async def predict_eta(self, ctx: commands.Context, target_input: str = "random"):
         status_msg = await ctx.send("銘柄マスター照合中...")
@@ -337,4 +353,3 @@ class ModelEtaLgbCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ModelEtaLgbCog(bot))
-
