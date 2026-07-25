@@ -257,7 +257,7 @@ class ModelEtaLgbCog(commands.Cog):
         }
 
         train_window = 200
-        rolling_steps = 60
+        rolling_steps = 240
 
         last_model = None
         for i in range(rolling_steps):
