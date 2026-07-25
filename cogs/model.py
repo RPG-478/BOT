@@ -485,7 +485,7 @@ class ModelEtaLgbCog(commands.Cog):
             self.sync_to_github(f"feat: train precision model [{symbol_info['code']}]")
 
     @commands.command(name="train_eta_batch")
-    @commands.has_permissions(administrator=True)
+    @is_allowed_user()
     async def train_eta_batch(self, ctx: commands.Context, count: int = 5):
         """【一括学習バッチ】指定件数を連続学習し、終了時にまとめて Git 同期更新"""
         count = max(1, count)
