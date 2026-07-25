@@ -253,7 +253,7 @@ class ModelEtaLgbCog(commands.Cog):
             "bagging_freq": 1,
             "verbose": -1,
             "seed": 42,
-            "num_threads": 4
+            "num_threads": 1
         }
 
         train_window = 200
