@@ -25,6 +25,7 @@ except ImportError as e:
 class ModelEtaLgbCog(commands.Cog):
     """
     投資機械学習モデル η (Eta) - 学習/推論分離設計完全版 (LightGBM)
+    モデルファイル（models/*.txt）の GitHub 同期機能付き
     """
 
     def __init__(self, bot: commands.Bot):
@@ -277,7 +278,7 @@ class ModelEtaLgbCog(commands.Cog):
         final_train_data = lgb.Dataset(final_X, label=final_y)
         final_model = lgb.train(lgb_params, final_train_data, num_boost_round=50)
 
-        # モデル保存
+        # モデル保存 (.txt 形式)
         model_path = os.path.join(self.models_dir, f"{symbol_code}_lgb.txt")
         final_model.save_model(model_path)
 
@@ -309,23 +310,25 @@ class ModelEtaLgbCog(commands.Cog):
 
         return summary_entry
 
-    def log_and_push(self, record: Dict[str, Any]):
-        """結果をローカルCSVに保存し、非同期でGitHubへPush"""
-        file_exists = os.path.exists(self.log_file)
-        df_log = pd.DataFrame([record])
-        df_log.to_csv(self.log_file, mode="a", header=not file_exists, index=False)
-
+    def sync_to_github(self, commit_msg: str):
+        """models/ ディレクトリ配下およびログファイルを非同期で Git Commit & Push"""
         def git_sync():
             try:
-                subprocess.run(["git", "add", self.log_file, self.summary_file], check=True, capture_output=True)
+                # models/ フォルダ全体、logs/、JSONマスターをステージング
                 subprocess.run(
-                    ["git", "commit", "-m", f"chore: update model eta summary [{record['symbol']}] [skip ci]"],
+                    ["git", "add", self.log_file, self.models_dir, self.symbols_file],
+                    check=True,
+                    capture_output=True
+                )
+                subprocess.run(
+                    ["git", "commit", "-m", f"{commit_msg} [skip ci]"],
                     check=True,
                     capture_output=True,
                 )
                 subprocess.run(["git", "push"], check=True, capture_output=True)
+                print(f"[ModelEta Git] Push successful: {commit_msg}")
             except Exception as e:
-                print(f"[ModelEta] Git push skipped: {e}")
+                print(f"[ModelEta Git] Push skipped or failed: {e}")
 
         asyncio.create_task(asyncio.to_thread(git_sync))
 
@@ -350,6 +353,7 @@ class ModelEtaLgbCog(commands.Cog):
         try:
             count = await asyncio.to_thread(self.convert_csv_to_json)
             await msg.edit(content=f"銘柄マスターのインポートが完了しました。対象銘柄数: {count}")
+            self.sync_to_github("chore: import symbols from CSV")
         except FileNotFoundError:
             await msg.edit(content=f"エラー: 指定されたCSVファイル (`{self.csv_source_file}`) が見つかりません。")
         except Exception as e:
@@ -404,7 +408,8 @@ class ModelEtaLgbCog(commands.Cog):
         embed.add_field(name="ローリング勝率", value=f"**{res['accuracy']:.1f}%**", inline=True)
         embed.add_field(name="算出適正閾値", value=f"BUY: `{res['buy_threshold']*100:.1f}%` | SELL: `{res['sell_threshold']*100:.1f}%`", inline=False)
 
-        await status_msg.edit(content="学習および評価モデルの保存が完了しました。", embed=embed)
+        await status_msg.edit(content="学習および評価モデルの保存（GitHub同期開始）が完了しました。", embed=embed)
+        self.sync_to_github(f"feat: train and save model [{symbol_info['code']}]")
 
     @commands.command(name="train_eta_batch")
     @commands.has_permissions(administrator=True)
@@ -482,7 +487,6 @@ class ModelEtaLgbCog(commands.Cog):
             buy_t = cached_eval["buy_threshold"]
             sell_t = cached_eval["sell_threshold"]
         else:
-            # 未学習の場合は単一足即時学習
             mode_text = "オンデマンド即時学習 (100日単一足)"
             X_train = clean_df[feature_cols].iloc[-100:-1]
             y_train = clean_df["target"].iloc[-100:-1]
@@ -548,7 +552,12 @@ class ModelEtaLgbCog(commands.Cog):
             "sell_threshold": round(sell_t, 2),
             "signal": signal,
         }
-        self.log_and_push(log_entry)
+        
+        # ログ保存と Git Push
+        file_exists = os.path.exists(self.log_file)
+        df_log = pd.DataFrame([log_entry])
+        df_log.to_csv(self.log_file, mode="a", header=not file_exists, index=False)
+        self.sync_to_github(f"chore: log inference prediction [{target_symbol}]")
 
 
 async def setup(bot: commands.Bot):
@@ -556,5 +565,5 @@ async def setup(bot: commands.Bot):
         print("[ModelEta Error] 依存ライブラリ不足のため ModelEtaCog のロードを中止します。", file=sys.stderr)
         return
     await bot.add_cog(ModelEtaLgbCog(bot))
-    print("[ModelEta] ModelEtaLgbCog (学習/推論分離版) が正常にロードされました。")
+    print("[ModelEta] ModelEtaLgbCog (学習/推論分離・Gitモデル同期版) が正常にロードされました。")
 
