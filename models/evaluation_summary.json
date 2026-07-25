@@ -3328,5 +3328,14 @@
     "buy_threshold": 0.6000000000000001,
     "sell_threshold": 0.4,
     "model_path": "models/8053_lgb.txt"
+  },
+  "4335": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T20:37:32.903496",
+    "avg_loss": 0.7776658667134126,
+    "accuracy": 43.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/4335_lgb.txt"
   }
 }
