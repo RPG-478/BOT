@@ -24,8 +24,9 @@ except ImportError as e:
 
 class ModelEtaLgbCog(commands.Cog):
     """
-    投資機械学習モデル η (Eta) - 高精度互換性確保版 (LightGBM)
-    旧モデルのコンフリクト回避・安全上書き・バージョン管理機能付き
+    投資機械学習モデル η (Eta) - 高精度・バッチ一括同期完全版 (LightGBM)
+    ・学習終了時に一括まとめて Git 同期（モデル・サマリー更新）
+    ・バッチ進捗表示 [11/50 完了] 対応
     """
 
     MODEL_VERSION = "v2_precision"
@@ -78,10 +79,8 @@ class ModelEtaLgbCog(commands.Cog):
                 with open(self.summary_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     
-                # バージョン確認
                 valid_entries = {}
                 for code, entry in data.items():
-                    # 旧形式（version不一致）があってもエラーにせず、ロードは維持しつつフラグ判定
                     if isinstance(entry, dict):
                         valid_entries[code] = entry
                 
@@ -216,9 +215,9 @@ class ModelEtaLgbCog(commands.Cog):
         return df
 
     async def train_and_evaluate_model(
-        self, symbol_code: str, df: pd.DataFrame, status_msg: Optional[discord.Message] = None
+        self, symbol_code: str, df: pd.DataFrame, status_msg: Optional[discord.Message] = None, current_progress_str: str = ""
     ) -> Optional[Dict[str, Any]]:
-        """高精度モデルの構築と安全なモデルファイル上書き"""
+        """高精度モデルの構築と安全なモデルファイルローカル保存"""
         df = self.calculate_indicators(df)
         feature_cols = [c for c in df.columns if c.startswith("feat_")]
         clean_df = df.dropna(subset=feature_cols + ["target"])
@@ -278,8 +277,9 @@ class ModelEtaLgbCog(commands.Cog):
             if status_msg and ((i + 1) % 15 == 0 or i == rolling_steps - 1):
                 current_loss_avg = float(np.mean(losses)) if losses else 0.693
                 try:
+                    prefix = f"{current_progress_str}\n" if current_progress_str else ""
                     await status_msg.edit(
-                        content=f"【高精度モデル学習中】ローリング検証 [{i+1}/{rolling_steps} 完了 | 直近Loss: {current_loss_avg:.3f}]"
+                        content=f"{prefix}【モデル学習中】検証 [{i+1}/{rolling_steps} 完了 | 直近Loss: {current_loss_avg:.3f}]"
                     )
                 except Exception:
                     pass
@@ -294,13 +294,13 @@ class ModelEtaLgbCog(commands.Cog):
         final_train_data = lgb.Dataset(final_X, label=final_y)
         final_model = lgb.train(lgb_params, final_train_data, num_boost_round=150)
 
-        # モデル保存 (安全な上書き)
+        # モデルのローカル保存 (完全置き換え)
         model_path = os.path.join(self.models_dir, f"{symbol_code}_lgb.txt")
         if os.path.exists(model_path):
             try:
-                os.remove(model_path) # 古い既存ファイルを安全に削除して完全差替え
+                os.remove(model_path)
             except Exception as e:
-                print(f"[ModelEta Warning] 古いモデルの削除をスキップして直接上書きします: {e}")
+                print(f"[ModelEta Warning] 既存モデル削除スキップ: {e}")
 
         final_model.save_model(model_path)
 
@@ -318,7 +318,6 @@ class ModelEtaLgbCog(commands.Cog):
             buy_threshold -= 0.02
             sell_threshold += 0.02
 
-        # 評価サマリーの更新 (バージョン情報付与)
         summary_entry = {
             "version": self.MODEL_VERSION,
             "last_trained": datetime.now().isoformat(),
@@ -334,7 +333,7 @@ class ModelEtaLgbCog(commands.Cog):
         return summary_entry
 
     def sync_to_github(self, commit_msg: str):
-        """models/ ディレクトリ配下およびログファイルを非同期で Git Commit & Push"""
+        """全学習終了後にまとめて一括で models/ および ログを Git Commit & Push"""
         def git_sync():
             try:
                 subprocess.run(
@@ -348,8 +347,9 @@ class ModelEtaLgbCog(commands.Cog):
                     capture_output=True,
                 )
                 subprocess.run(["git", "push"], check=True, capture_output=True)
+                print(f"[ModelEta Git Sync] まとめて一括Git Push成功: {commit_msg}")
             except Exception as e:
-                print(f"[ModelEta Git] Push skipped or failed: {e}")
+                print(f"[ModelEta Git Sync] Push スキップまたは失敗: {e}")
 
         asyncio.create_task(asyncio.to_thread(git_sync))
 
@@ -381,8 +381,10 @@ class ModelEtaLgbCog(commands.Cog):
             await msg.edit(content=f"エラーが発生しました: {e}")
 
     @commands.command(name="train_eta")
-    async def train_eta(self, ctx: commands.Context, target_input: str = "random"):
-        """【高精度学習コマンド】2年分株価データ・高精度パラメータでモデルを構築・更新"""
+    async def train_eta(self, ctx: commands.Context, target_input: str = "random", auto_sync: bool = True):
+        """
+        【高精度単一学習コマンド】単一銘柄のモデルを学習・構築
+        """
         status_msg = await ctx.send("学習対象の銘柄マスター照合中...")
 
         symbol_info = None
@@ -417,7 +419,7 @@ class ModelEtaLgbCog(commands.Cog):
             return
 
         embed = discord.Embed(
-            title=f"モデル η (LightGBM {self.MODEL_VERSION}) 学習・更新完了: {symbol_info['name']} ({target_symbol})",
+            title=f"モデル η (LightGBM {self.MODEL_VERSION}) 学習完了: {symbol_info['name']} ({target_symbol})",
             description=f"モデルファイル: `{res['model_path']}`",
             color=0x9b59b6,
         )
@@ -426,27 +428,50 @@ class ModelEtaLgbCog(commands.Cog):
         embed.add_field(name="60日検証勝率", value=f"**{res['accuracy']:.1f}%**", inline=True)
         embed.add_field(name="算出適正閾値", value=f"BUY: `{res['buy_threshold']*100:.1f}%` | SELL: `{res['sell_threshold']*100:.1f}%`", inline=False)
 
-        await status_msg.edit(content="高精度モデルの学習・安全上書き・GitHub同期が完了しました。", embed=embed)
-        self.sync_to_github(f"feat: train precision model [{symbol_info['code']}]")
+        await status_msg.edit(content="高精度モデルのローカル学習・保存が完了しました。", embed=embed)
+        
+        # 単一実行時のみ即座に同期、バッチ処理時はバッチ完了時に一括同期
+        if auto_sync:
+            self.sync_to_github(f"feat: train precision model [{symbol_info['code']}]")
 
     @commands.command(name="train_eta_batch")
     @commands.has_permissions(administrator=True)
     async def train_eta_batch(self, ctx: commands.Context, count: int = 5):
-        """【高精度学習バッチ】複数銘柄を一括学習（互換性自動維持）"""
+        """【一括学習バッチ】指定件数を連続学習し、終了時にまとめて Git 同期更新"""
         count = max(1, count)
-        batch_msg = await ctx.send(f"高精度一括学習バッチ開始 (全 {count} 銘柄)")
+        batch_msg = await ctx.send(f"一括学習バッチ準備中 (全 {count} 銘柄)...")
 
+        success_count = 0
         for i in range(count):
             matched = random.choice(self.symbols_data)
-            await batch_msg.edit(content=f"[{i+1}/{count}] 銘柄学習中: {matched['name']} ({matched['code']}.T)")
-            await self.train_eta(ctx, target_input=matched["code"])
-            await asyncio.sleep(1)
+            progress_header = f"**[ 一括学習バッチ進行中: {i+1}/{count} 完了 ({((i+1)/count)*100:.1f}%) ]**\n現在ターゲット: **{matched['name']} ({matched['code']}.T)**"
+            await batch_msg.edit(content=f"{progress_header}\nデータ取得中...")
 
-        await ctx.send(f"全 {count} 銘柄のモデル学習バッチが完了しました。")
+            target_symbol = f"{matched['code']}.T"
+            try:
+                df = await asyncio.to_thread(yf.download, target_symbol, period="2y", progress=False)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                
+                if not df.empty and len(df) >= 250:
+                    res = await self.train_and_evaluate_model(
+                        matched["code"], df, batch_msg, current_progress_str=progress_header
+                    )
+                    if res:
+                        success_count += 1
+            except Exception as e:
+                print(f"[ModelEta Batch Error] {matched['code']} スキップ: {e}")
+
+            await asyncio.sleep(0.5)
+
+        # 全銘柄の学習終了後に「まとめて一括で」GitHubへPush
+        await batch_msg.edit(content=f"全 {count} 銘柄中 {success_count} 銘柄の学習が完了しました。一括モデル同期(GitHub Push)を開始します...")
+        self.sync_to_github(f"feat: batch train complete [{success_count}/{count} models updated]")
+        await ctx.send(f"全 {count} 銘柄のモデル学習および一括更新（GitHub同期）が完了しました！")
 
     @commands.command(name="eta")
     async def predict_eta(self, ctx: commands.Context, target_input: str = "random"):
-        """【高速推論コマンド】保存済みモデルから即座に推論回答（バージョン不一致時は自動検出）"""
+        """【高速推論コマンド】保存済みモデルから即座に推論回答"""
         status_msg = await ctx.send("銘柄照合中...")
 
         symbol_info = None
@@ -465,7 +490,6 @@ class ModelEtaLgbCog(commands.Cog):
         cached_eval = self.eval_summary.get(code)
         model_path = os.path.join(self.models_dir, f"{code}_lgb.txt")
         
-        # バージョン整合性チェック
         is_v2_model = (
             cached_eval is not None 
             and isinstance(cached_eval, dict) 
@@ -506,8 +530,7 @@ class ModelEtaLgbCog(commands.Cog):
             buy_t = cached_eval["buy_threshold"]
             sell_t = cached_eval["sell_threshold"]
         else:
-            # 古いモデルまたは未学習モデルの場合：安全なオンデマンドフォールバック
-            mode_text = "旧モデル/未学習 (オンデマンド即時推論)"
+            mode_text = "オンデマンド即時推論 (未保存)"
             X_train = clean_df[feature_cols].iloc[-150:-1]
             y_train = clean_df["target"].iloc[-150:-1]
             
@@ -582,5 +605,5 @@ async def setup(bot: commands.Bot):
         print("[ModelEta Error] 依存ライブラリ不足のため ModelEtaCog のロードを中止します。", file=sys.stderr)
         return
     await bot.add_cog(ModelEtaLgbCog(bot))
-    print("[ModelEta] ModelEtaLgbCog (高精度互換性確保版) が正常にロードされました。")
+    print("[ModelEta] ModelEtaLgbCog (一括Git同期・バッチ進捗対応版) が正常にロードされました。")
 
