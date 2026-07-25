@@ -30,6 +30,12 @@ class ModelEtaLgbCog(commands.Cog):
     """
 
     MODEL_VERSION = "v2_precision"
+    ALLOWED_USER_IDS = [1320705325686587408]
+
+    def is_allowed_user():
+        async def predicate(ctx: commands.Context):
+            return ctx.author.id in ModelEtaLgbCog.ALLOWED_USER_IDS
+        return commands.check(predicate)
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -377,7 +383,7 @@ class ModelEtaLgbCog(commands.Cog):
     # --- Commands ---
 
     @commands.command(name="model_clear")
-    @commands.has_permissions(administrator=True)
+    @is_allowed_user()
     async def model_clear(self, ctx: commands.Context):
         """【管理者コマンド】すべての保存済みモデル、評価サマリー、予測ログを一括消去・リセット"""
         msg = await ctx.send("[SYSTEM] 全モデルファイルおよびキャッシュ状態の消去処理を開始します...")
@@ -426,6 +432,7 @@ class ModelEtaLgbCog(commands.Cog):
             await msg.edit(content=f"[ERROR] 例外発生: {e}")
 
     @commands.command(name="train_eta")
+    @is_allowed_user()
     async def train_eta(self, ctx: commands.Context, target_input: str = "random", auto_sync: bool = True):
         """【高精度単一学習コマンド】単一銘柄のモデルを学習・構築"""
         status_msg = await ctx.send("[SYSTEM] 対象銘柄照合中...")
