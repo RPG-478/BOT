@@ -11,60 +11,74 @@ from discord.ext import commands
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from sklearn.linear_model import LogisticRegression
+import lightgbm as lgb
+from sklearn.metrics import log_loss
 from sklearn.preprocessing import StandardScaler
 
 
-class ModelEtaCog(commands.Cog):
-    """
-    投資機械学習モデル η (Eta) - Discord Cog
-    東証GPS約3,500銘柄に対する8テクニカル指標計算、100日学習×30日ローリング推論。
-    進捗表示および動的閾値制御に Log Loss を活用。
-    """
-
+class ModelEtaLgbCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.symbols_file = "tse_gps_symbols.json"
-        self.csv_source_file = "data_j.csv"  # JPXから手動取得したCSVがある場合の読み込み先
-        self.log_file = "logs/eta_predictions.csv"
+        self.csv_source_file = "Assets/Issues_20260725170724.csv"
+        self.log_file = "logs/eta_lgb_predictions.csv"
         self.symbols_data: List[Dict[str, str]] = []
-        self.reload_symbols()
+        self.load_or_convert_symbols()
         os.makedirs("logs", exist_ok=True)
+        os.makedirs("Assets", exist_ok=True)
 
-    def reload_symbols(self):
-        """銘柄マスターJSONの再読み込み"""
+    def load_or_convert_symbols(self):
+        if not os.path.exists(self.symbols_file) and os.path.exists(self.csv_source_file):
+            try:
+                df = pd.read_csv(self.csv_source_file, encoding="utf-8")
+                target_markets = ["プライム", "スタンダード", "グロース"]
+                filtered = df[df["市場・商品区分"].isin(target_markets)]
+
+                symbols_list = []
+                for _, row in filtered.iterrows():
+                    code_raw = str(row["銘柄コード"]).strip()
+                    code = code_raw[:4]
+                    if len(code) == 4 and code.isdigit():
+                        market_raw = str(row["市場・商品区分"])
+                        market_name = "Prime" if "プライム" in market_raw else ("Standard" if "スタンダード" in market_raw else "Growth")
+                        symbols_list.append({
+                            "code": code,
+                            "name": str(row["銘柄名称"]).strip(),
+                            "market": market_name
+                        })
+
+                with open(self.symbols_file, "w", encoding="utf-8") as f:
+                    json.dump(symbols_list, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                print(f"Error converting CSV: {e}")
+
         if os.path.exists(self.symbols_file):
             try:
                 with open(self.symbols_file, "r", encoding="utf-8") as f:
                     self.symbols_data = json.load(f)
-                    print(f"[ModelEta] 銘柄マスター読み込み完了: {len(self.symbols_data)} 銘柄")
             except Exception as e:
-                print(f"[ModelEta] 銘柄ファイルのロードに失敗しました: {e}")
-        
+                print(f"Error loading JSON: {e}")
+
         if not self.symbols_data:
             self.symbols_data = [{"code": "7203", "name": "トヨタ自動車", "market": "Prime"}]
 
-    # --- 8つのテクニカル指標算出 (標準偏差を除く) ---
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         close = df["Close"]
         high = df["High"]
         low = df["Low"]
 
-        # 1. MACD
         ema12 = close.ewm(span=12, adjust=False).mean()
         ema26 = close.ewm(span=26, adjust=False).mean()
         df["feat_macd"] = ema12 - ema26
         df["feat_macd_signal"] = df["feat_macd"].ewm(span=9, adjust=False).mean()
         df["feat_macd_hist"] = df["feat_macd"] - df["feat_macd_signal"]
 
-        # 2. RSI (14日)
         delta = close.diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rs = gain / (loss + 1e-8)
         df["feat_rsi"] = 100 - (100 / (1 + rs))
 
-        # 3. RCI (9日)
         def calc_rci(series):
             n = len(series)
             ranks = np.arange(n, 0, -1)
@@ -74,19 +88,11 @@ class ModelEtaCog(commands.Cog):
 
         df["feat_rci"] = close.rolling(9).apply(calc_rci, raw=False)
 
-        # 4. DMI (14日)
         up_move = high.diff()
         down_move = -low.diff()
         plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0)
         minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0)
-        tr = pd.concat(
-            [
-                high - low,
-                (high - close.shift()).abs(),
-                (low - close.shift()).abs(),
-            ],
-            axis=1,
-        ).max(axis=1)
+        tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
         atr = tr.rolling(14).mean()
         plus_di = 100 * pd.Series(plus_dm, index=df.index).rolling(14).mean() / (atr + 1e-8)
         minus_di = 100 * pd.Series(minus_dm, index=df.index).rolling(14).mean() / (atr + 1e-8)
@@ -95,29 +101,22 @@ class ModelEtaCog(commands.Cog):
         df["feat_minus_di"] = minus_di
         df["feat_adx"] = dx.rolling(14).mean()
 
-        # 5. ストキャスティクス (9日)
         low9 = low.rolling(9).min()
         high9 = high.rolling(9).max()
         df["feat_stoch_k"] = 100 * (close - low9) / (high9 - low9 + 1e-8)
         df["feat_stoch_d"] = df["feat_stoch_k"].rolling(3).mean()
 
-        # 6. 移動平均乖離率 (25日)
         ma25 = close.rolling(25).mean()
         df["feat_ma_bias"] = (close - ma25) / ma25 * 100
 
-        # 7. サイコロジカルライン (12日)
         is_up = (delta > 0).astype(int)
         df["feat_psychological"] = is_up.rolling(12).sum() / 12 * 100
 
-        # 8. モメンタム (10日)
         df["feat_momentum"] = close - close.shift(10)
-
-        # ターゲット (翌日上昇なら 1、それ以外は 0)
         df["target"] = (close.shift(-1) > close).astype(int)
 
         return df
 
-    # --- モデル η ローリング学習＆予測コア ---
     async def run_eta_rolling_pipeline(
         self, df: pd.DataFrame, status_msg: discord.Message, symbol_name: str
     ) -> Optional[Dict[str, Any]]:
@@ -146,14 +145,20 @@ class ModelEtaCog(commands.Cog):
             if len(np.unique(y_train)) < 2:
                 continue
 
-            scaler = StandardScaler()
-            X_train_scaled = scaler.fit_transform(X_train)
-            X_latest_scaled = scaler.transform(X_latest)
+            train_data = lgb.Dataset(X_train, label=y_train)
+            params = {
+                "objective": "binary",
+                "metric": "binary_logloss",
+                "boosting_type": "gbdt",
+                "num_leaves": 15,
+                "learning_rate": 0.05,
+                "verbose": -1,
+                "seed": 42
+            }
 
-            model = LogisticRegression(C=1.0, max_iter=200, solver="lbfgs")
-            model.fit(X_train_scaled, y_train)
+            model = lgb.train(params, train_data, num_boost_round=50)
 
-            prob = model.predict_proba(X_latest_scaled)[0][1]
+            prob = model.predict(X_latest)[0]
             actual = sub_df["target"].iloc[-1]
 
             probs.append(prob)
@@ -167,7 +172,7 @@ class ModelEtaCog(commands.Cog):
                 current_loss_avg = float(np.mean(losses)) if losses else 0.693
                 try:
                     await status_msg.edit(
-                        content=f"特徴量計算およびローリング学習中... [{i+1}/30 完了 | 直近Loss: {current_loss_avg:.3f}]"
+                        content=f"特徴量計算およびローリング学習中 (LightGBM)... [{i+1}/30 完了 | 直近Loss: {current_loss_avg:.3f}]"
                     )
                 except Exception:
                     pass
@@ -208,7 +213,6 @@ class ModelEtaCog(commands.Cog):
             "bias": latest_row["feat_ma_bias"],
         }
 
-    # --- ログ書き込み & Git Push ---
     def log_and_push(self, record: Dict[str, Any]):
         file_exists = os.path.exists(self.log_file)
         df_log = pd.DataFrame([record])
@@ -218,17 +222,16 @@ class ModelEtaCog(commands.Cog):
             try:
                 subprocess.run(["git", "add", self.log_file], check=True, capture_output=True)
                 subprocess.run(
-                    ["git", "commit", "-m", f"chore: log model eta [{record['symbol']}] [skip ci]"],
+                    ["git", "commit", "-m", f"chore: log model eta lgb [{record['symbol']}] [skip ci]"],
                     check=True,
                     capture_output=True,
                 )
                 subprocess.run(["git", "push"], check=True, capture_output=True)
             except Exception as e:
-                print(f"[ModelEta] Git Push スキップ (ローカル保存完了): {e}")
+                print(f"Git push skipped: {e}")
 
         asyncio.create_task(asyncio.to_thread(git_sync))
 
-    # --- 銘柄検索ユーティリティ ---
     def find_symbol_info(self, query: str) -> Optional[Dict[str, str]]:
         query = query.replace(".T", "").replace(".t", "").strip()
         for s in self.symbols_data:
@@ -239,7 +242,6 @@ class ModelEtaCog(commands.Cog):
                 return s
         return None
 
-    # --- Discord コマンド: 単一銘柄予測 ---
     @commands.command(name="eta")
     async def predict_eta(self, ctx: commands.Context, target_input: str = "random"):
         status_msg = await ctx.send("銘柄マスター照合中...")
@@ -251,16 +253,14 @@ class ModelEtaCog(commands.Cog):
             symbol_info = self.find_symbol_info(target_input)
 
         if not symbol_info:
-            await status_msg.edit(content=f"エラー: 銘柄 `{target_input}` が東証GPSマスター内に見つかりませんでした。")
+            await status_msg.edit(content=f"エラー: 銘柄 `{target_input}` がマスター内に見つかりませんでした。")
             return
 
         target_symbol = f"{symbol_info['code']}.T"
         await status_msg.edit(content=f"株価データダウンロード中... (160日分: {symbol_info['name']} / {target_symbol})")
 
         try:
-            df = await asyncio.to_thread(
-                yf.download, target_symbol, period="1y", progress=False
-            )
+            df = await asyncio.to_thread(yf.download, target_symbol, period="1y", progress=False)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
         except Exception as e:
@@ -268,7 +268,7 @@ class ModelEtaCog(commands.Cog):
             return
 
         if df.empty or len(df) < 130:
-            await status_msg.edit(content=f"エラー: {symbol_info['name']} の日足データ件数が不足しています。")
+            await status_msg.edit(content=f"エラー: データ件数が不足しています。")
             return
 
         result = await self.run_eta_rolling_pipeline(df, status_msg, symbol_info["name"])
@@ -292,7 +292,7 @@ class ModelEtaCog(commands.Cog):
             color = 0xf1c40f
 
         embed = discord.Embed(
-            title=f"モデル η 分析レポート: {symbol_info['name']} ({target_symbol})",
+            title=f"モデル η (LightGBM) 分析レポート: {symbol_info['name']} ({target_symbol})",
             description=f"市場区分: 東証{symbol_info['market']} | 対象マスター数: {len(self.symbols_data)}",
             color=color,
         )
@@ -300,18 +300,9 @@ class ModelEtaCog(commands.Cog):
         embed.add_field(name="翌日上昇確率", value=f"**{p_latest * 100:.2f}%**", inline=True)
         embed.add_field(name="30日平均 Loss", value=f"**{result['avg_loss']:.4f}**", inline=True)
         embed.add_field(name="ローリング勝率", value=f"{result['accuracy']:.1f}%", inline=True)
-
-        embed.add_field(
-            name="動的適用閾値",
-            value=f"BUY 閾値: `{buy_t*100:.1f}%` | SELL 閾値: `{sell_t*100:.1f}%`",
-            inline=False,
-        )
-        embed.add_field(
-            name="主要テクニカル指標",
-            value=f"RSI (14): `{result['rsi']:.1f}` | RCI (9): `{result['rci']:.1f}` | 25日乖離率: `{result['bias']:.2f}%`",
-            inline=False,
-        )
-        embed.set_footer(text="Model Eta | Raspberry Pi 2GB Restricted | Auto Logged")
+        embed.add_field(name="動的適用閾値", value=f"BUY 閾値: `{buy_t*100:.1f}%` | SELL 閾値: `{sell_t*100:.1f}%`", inline=False)
+        embed.add_field(name="主要テクニカル指標", value=f"RSI: `{result['rsi']:.1f}` | RCI: `{result['rci']:.1f}` | 25日乖離: `{result['bias']:.2f}%`", inline=False)
+        embed.set_footer(text="Model Eta LightGBM | Raspberry Pi 2GB Restricted")
 
         await status_msg.edit(content="", embed=embed)
 
@@ -330,7 +321,6 @@ class ModelEtaCog(commands.Cog):
         }
         self.log_and_push(log_entry)
 
-    # --- Discord コマンド: 複数ランダム銘柄バッチ学習 ---
     @commands.command(name="eta_rand")
     async def predict_eta_random_batch(self, ctx: commands.Context, count: int = 3):
         count = min(max(1, count), 5)
@@ -344,51 +334,7 @@ class ModelEtaCog(commands.Cog):
 
         await ctx.send(f"全 {count} 銘柄の分析処理が完了しました。")
 
-    # --- 銘柄マスター自動更新コマンド (ローカルCSV読み込み & フォールバック対応) ---
-    @commands.command(name="update_symbols")
-    @commands.has_permissions(administrator=True)
-    async def update_symbols_cmd(self, ctx: commands.Context):
-        """ローカルの data_j.csv から銘柄マスター JSON を一括生成"""
-        msg = await ctx.send("ローカルの `data_j.csv` を解析中...")
-
-        def process_local_csv():
-            if not os.path.exists(self.csv_source_file):
-                raise FileNotFoundError(
-                    f"`{self.csv_source_file}` が見つかりません。JPXから取得したCSVをリポジトリ直下に配置してください。"
-                )
-
-            # Shift_JIS エンコーディングでCSVを読み込み
-            df = pd.read_csv(self.csv_source_file, encoding="shift_jis")
-
-            target_markets = ["プライム（内国株式）", "スタンダード（内国株式）", "グロース（内国株式）"]
-            filtered = df[df["市場・商品区分"].isin(target_markets)]
-
-            symbols_list = []
-            for _, row in filtered.iterrows():
-                code = str(row["コード"]).strip()
-                if len(code) == 4 and code.isdigit():
-                    market_raw = str(row["市場・商品区分"])
-                    market_name = "Prime" if "プライム" in market_raw else ("Standard" if "スタンダード" in market_raw else "Growth")
-                    symbols_list.append({
-                        "code": code,
-                        "name": str(row["銘柄名"]).strip(),
-                        "market": market_name
-                    })
-
-            if symbols_list:
-                with open(self.symbols_file, "w", encoding="utf-8") as f:
-                    json.dump(symbols_list, f, ensure_ascii=False, indent=2)
-
-            return len(symbols_list)
-
-        try:
-            count = await asyncio.to_thread(process_local_csv)
-            self.reload_symbols()
-            await msg.edit(content=f"銘柄マスターの全更新が完了しました。対象: {count} 銘柄")
-        except Exception as e:
-            await msg.edit(content=f"エラー: `{e}`")
-
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(ModelEtaCog(bot))
+    await bot.add_cog(ModelEtaLgbCog(bot))
 
