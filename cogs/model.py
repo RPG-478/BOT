@@ -65,12 +65,25 @@ class ModelEtaLgbCog(commands.Cog):
             print(f"[ModelEta] {len(self.symbols_data)} 銘柄のロードに成功しました。")
 
     def convert_csv_to_json(self) -> int:
-        """Assets配下のCSVを解析し、JSONマスターとして保存"""
+        """Assets配下のCSVを解析し、JSONマスターとして保存（エンコーディング自動フォールバック対応）"""
         if not os.path.exists(self.csv_source_file):
             raise FileNotFoundError(f"ファイルが見つかりません: {self.csv_source_file}")
 
-        # CSVの読み込み
-        df = pd.read_csv(self.csv_source_file, encoding="utf-8")
+        # エンコーディングの順次トライ (Shift_JIS / CP932 / UTF-8 対応)
+        encodings = ["utf-8-sig", "utf-8", "cp932", "shift_jis"]
+        df = None
+
+        for enc in encodings:
+            try:
+                df = pd.read_csv(self.csv_source_file, encoding=enc)
+                print(f"[ModelEta] CSV読み込み成功 (文字コード: {enc})")
+                break
+            except UnicodeDecodeError:
+                continue
+
+        if df is None:
+            # 最後の手段としてエラー文字を置換して読み込み
+            df = pd.read_csv(self.csv_source_file, encoding="cp932", encoding_errors="replace")
         
         target_markets = ["プライム", "スタンダード", "グロース"]
         
