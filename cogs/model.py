@@ -3,6 +3,7 @@ import json
 import os
 import random
 import subprocess
+import sys
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
@@ -10,8 +11,15 @@ import discord
 from discord.ext import commands
 import numpy as np
 import pandas as pd
-import yfinance as yf
-import lightgbm as lgb
+
+# インポートエラーの検知
+try:
+    import yfinance as yf
+    import lightgbm as lgb
+    HAS_REQUIRED_LIBS = True
+except ImportError as e:
+    print(f"[ModelEta Critical Error] ライブラリのインポートに失敗しました: {e}", file=sys.stderr)
+    HAS_REQUIRED_LIBS = False
 
 
 class ModelEtaLgbCog(commands.Cog):
@@ -26,12 +34,16 @@ class ModelEtaLgbCog(commands.Cog):
         self.log_file = "logs/eta_lgb_predictions.csv"
         self.symbols_data: List[Dict[str, str]] = []
         
-        # 必要なディレクトリの初期化
+        # ディレクトリ準備
         os.makedirs("logs", exist_ok=True)
         os.makedirs("Assets", exist_ok=True)
         
-        # 銘柄データのロード
-        self.load_symbols()
+        # 銘柄データロード
+        try:
+            self.load_symbols()
+        except Exception as e:
+            print(f"[ModelEta Warning] 銘柄ロード中に例外が発生しました: {e}", file=sys.stderr)
+            self.symbols_data = [{"code": "7203", "name": "トヨタ自動車", "market": "Prime"}]
 
     def load_symbols(self):
         """JSONマスターファイルの読み込み、存在しない場合はCSVから生成"""
@@ -40,50 +52,53 @@ class ModelEtaLgbCog(commands.Cog):
                 with open(self.symbols_file, "r", encoding="utf-8") as f:
                     self.symbols_data = json.load(f)
             except Exception as e:
-                print(f"[ModelEta] Error loading JSON: {e}")
+                print(f"[ModelEta Error] JSON読み込み失敗: {e}", file=sys.stderr)
 
-        # JSONが空、かつソースCSVが存在する場合は自動インポート
         if not self.symbols_data and os.path.exists(self.csv_source_file):
-            print("[ModelEta] JSON master not found. Generating from CSV...")
+            print("[ModelEta] JSONマスターが見つかりません。CSVから自動生成します...")
             self.convert_csv_to_json()
 
-        # それでも空の場合はフォールバック
         if not self.symbols_data:
-            print("[ModelEta] Warning: No symbols loaded. Using default fallback.")
+            print("[ModelEta] 警告: 有効な銘柄データがロードできませんでした。デフォルトのフォールバックを使用します。")
             self.symbols_data = [{"code": "7203", "name": "トヨタ自動車", "market": "Prime"}]
         else:
-            print(f"[ModelEta] Loaded {len(self.symbols_data)} symbols.")
+            print(f"[ModelEta] {len(self.symbols_data)} 銘柄のロードに成功しました。")
 
     def convert_csv_to_json(self) -> int:
         """Assets配下のCSVを解析し、JSONマスターとして保存"""
         if not os.path.exists(self.csv_source_file):
             raise FileNotFoundError(f"ファイルが見つかりません: {self.csv_source_file}")
 
-        # CSVの読み込み (JPXフォーマットに対応)
+        # CSVの読み込み
         df = pd.read_csv(self.csv_source_file, encoding="utf-8")
         
         target_markets = ["プライム", "スタンダード", "グロース"]
         
-        # 市場区分が存在し、かつターゲット市場のいずれかを含む行をフィルタ
-        filtered = df[df["市場区分"].notna() & df["市場区分"].str.contains("|".join(target_markets))]
+        # カラム名の柔軟な検知 (「市場区分」または「市場・商品区分」)
+        market_col = "市場区分" if "市場区分" in df.columns else ("市場・商品区分" if "市場・商品区分" in df.columns else None)
+        code_col = "銘柄コード" if "銘柄コード" in df.columns else ("コード" if "コード" in df.columns else None)
+        name_col = "銘柄名称" if "銘柄名称" in df.columns else ("銘柄名" if "銘柄名" in df.columns else None)
+
+        if not (market_col and code_col and name_col):
+            raise KeyError(f"CSVに必要なカラムが見つかりません。検出されたカラム: {list(df.columns)}")
+
+        filtered = df[df[market_col].notna() & df[market_col].astype(str).str.contains("|".join(target_markets))]
 
         symbols_list = []
         for _, row in filtered.iterrows():
-            # 銘柄コードは5桁(例: 72030)の場合があるため、先頭4桁を取得
-            code_raw = str(row["銘柄コード"]).strip()
+            code_raw = str(row[code_col]).strip()
             code = code_raw[:4]
             
             if len(code) == 4 and code.isdigit():
-                market_raw = str(row["市場区分"])
+                market_raw = str(row[market_col])
                 market_name = "Prime" if "プライム" in market_raw else ("Standard" if "スタンダード" in market_raw else "Growth")
                 
                 symbols_list.append({
                     "code": code,
-                    "name": str(row["銘柄名称"]).strip(),
+                    "name": str(row[name_col]).strip(),
                     "market": market_name
                 })
 
-        # JSONファイルとして保存
         with open(self.symbols_file, "w", encoding="utf-8") as f:
             json.dump(symbols_list, f, ensure_ascii=False, indent=2)
 
@@ -171,7 +186,6 @@ class ModelEtaLgbCog(commands.Cog):
         actuals = []
         losses = []
 
-        # LightGBMのハイパーパラメータ設定
         lgb_params = {
             "objective": "binary",
             "metric": "binary_logloss",
@@ -180,10 +194,9 @@ class ModelEtaLgbCog(commands.Cog):
             "learning_rate": 0.05,
             "verbose": -1,
             "seed": 42,
-            "num_threads": 2  # ラズパイ負荷軽減
+            "num_threads": 2
         }
 
-        # 30回ローリング処理
         for i in range(30):
             idx_end = len(clean_df) - 30 + i
             sub_df = clean_df.iloc[idx_end - 100 : idx_end]
@@ -195,27 +208,22 @@ class ModelEtaLgbCog(commands.Cog):
             y_train = sub_df["target"].iloc[:-1]
             X_latest = sub_df[feature_cols].iloc[[-1]]
 
-            # クラスが1種類しかない場合は学習不可のためスキップ
             if len(np.unique(y_train)) < 2:
                 continue
 
-            # LightGBM Datasetの作成と学習
             train_data = lgb.Dataset(X_train, label=y_train)
             model = lgb.train(lgb_params, train_data, num_boost_round=50)
 
-            # 推論
             prob = model.predict(X_latest)[0]
             actual = sub_df["target"].iloc[-1]
 
             probs.append(prob)
             actuals.append(actual)
 
-            # Log Loss 計算
             p_clipped = np.clip(prob, 1e-15, 1 - 1e-15)
             single_loss = -(actual * np.log(p_clipped) + (1 - actual) * np.log(1 - p_clipped))
             losses.append(single_loss)
 
-            # Discordメッセージの進捗更新 (負荷軽減のため5回に1回または最後)
             if (i + 1) % 5 == 0 or i == 29:
                 current_loss_avg = float(np.mean(losses)) if losses else 0.693
                 try:
@@ -237,7 +245,6 @@ class ModelEtaLgbCog(commands.Cog):
         matches = sum(1 for p, a in zip(predictions, actuals) if p == a)
         accuracy = (matches / len(probs)) * 100 if probs else 0.0
 
-        # 動的シグナル閾値制御
         buy_threshold = 0.55
         sell_threshold = 0.45
 
@@ -280,17 +287,14 @@ class ModelEtaLgbCog(commands.Cog):
             except Exception as e:
                 print(f"[ModelEta] Git push skipped: {e}")
 
-        # イベントループでバックグラウンド実行
         asyncio.create_task(asyncio.to_thread(git_sync))
 
     def find_symbol_info(self, query: str) -> Optional[Dict[str, str]]:
         """入力クエリから銘柄情報を検索"""
         query = query.replace(".T", "").replace(".t", "").strip()
-        # コード完全一致
         for s in self.symbols_data:
             if s["code"] == query:
                 return s
-        # 名前部分一致
         for s in self.symbols_data:
             if query in s["name"]:
                 return s
@@ -332,7 +336,6 @@ class ModelEtaLgbCog(commands.Cog):
         target_symbol = f"{symbol_info['code']}.T"
         await status_msg.edit(content=f"株価データダウンロード中... (160日分: {symbol_info['name']} / {target_symbol})")
 
-        # 株価データ取得
         try:
             df = await asyncio.to_thread(yf.download, target_symbol, period="1y", progress=False)
             if isinstance(df.columns, pd.MultiIndex):
@@ -345,7 +348,6 @@ class ModelEtaLgbCog(commands.Cog):
             await status_msg.edit(content=f"エラー: {symbol_info['name']} の日足データ件数が不足しています。")
             return
 
-        # パイプライン実行
         result = await self.run_eta_rolling_pipeline(df, status_msg)
 
         if not result:
@@ -356,7 +358,6 @@ class ModelEtaLgbCog(commands.Cog):
         buy_t = result["buy_threshold"]
         sell_t = result["sell_threshold"]
 
-        # シグナル判定
         if p_latest >= buy_t:
             signal = "BUY (買いシグナル)"
             color = 0x2ecc71
@@ -367,7 +368,6 @@ class ModelEtaLgbCog(commands.Cog):
             signal = "HOLD (静観)"
             color = 0xf1c40f
 
-        # Embed作成
         embed = discord.Embed(
             title=f"モデル η (LightGBM) 分析レポート: {symbol_info['name']} ({target_symbol})",
             description=f"市場区分: 東証{symbol_info['market']} | 対象マスター数: {len(self.symbols_data)}",
@@ -383,7 +383,6 @@ class ModelEtaLgbCog(commands.Cog):
 
         await status_msg.edit(content="分析完了", embed=embed)
 
-        # ログ保存とプッシュ
         log_entry = {
             "timestamp": datetime.now().isoformat(),
             "symbol": target_symbol,
@@ -418,4 +417,9 @@ class ModelEtaLgbCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
+    if not HAS_REQUIRED_LIBS:
+        print("[ModelEta Error] 依存ライブラリ不足のため ModelEtaCog のロードを中止します。", file=sys.stderr)
+        return
     await bot.add_cog(ModelEtaLgbCog(bot))
+    print("[ModelEta] ModelEtaLgbCog が正常にロードされました。")
+
