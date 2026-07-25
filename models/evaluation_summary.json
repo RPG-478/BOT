@@ -3292,5 +3292,23 @@
     "buy_threshold": 0.6000000000000001,
     "sell_threshold": 0.4,
     "model_path": "models/4628_lgb.txt"
+  },
+  "6061": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T20:13:50.811624",
+    "avg_loss": 0.7001566502594867,
+    "accuracy": 53.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/6061_lgb.txt"
+  },
+  "4845": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T20:13:56.734726",
+    "avg_loss": 0.7946897478770846,
+    "accuracy": 46.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/4845_lgb.txt"
   }
 }
