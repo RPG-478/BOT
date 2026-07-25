@@ -526,5 +526,13 @@
     "buy_threshold": 0.55,
     "sell_threshold": 0.45,
     "model_path": "models/7212_lgb.txt"
+  },
+  "9979": {
+    "last_trained": "2026-07-25T18:09:57.273471",
+    "avg_loss": 0.791898738533965,
+    "accuracy": 53.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/9979_lgb.txt"
   }
 }
