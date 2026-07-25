@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import random
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -24,9 +25,7 @@ except ImportError as e:
 
 class ModelEtaLgbCog(commands.Cog):
     """
-    投資機械学習モデル η (Eta) - 高精度・バッチ一括同期完全版 (LightGBM)
-    ・学習終了時に一括まとめて Git 同期（モデル・サマリー更新）
-    ・バッチ進捗表示 [11/50 完了] 対応
+    投資機械学習モデル η (Eta) - 全状態消去コマンド(!model_clear)付き完全版 (LightGBM)
     """
 
     MODEL_VERSION = "v2_precision"
@@ -73,7 +72,7 @@ class ModelEtaLgbCog(commands.Cog):
             print(f"[ModelEta] {len(self.symbols_data)} 銘柄のロードに成功しました。")
 
     def load_eval_summary(self):
-        """学習済みサマリー（評価結果）のロードと互換性判定"""
+        """学習済みサマリー（評価結果）のロード"""
         if os.path.exists(self.summary_file):
             try:
                 with open(self.summary_file, "r", encoding="utf-8") as f:
@@ -333,7 +332,7 @@ class ModelEtaLgbCog(commands.Cog):
         return summary_entry
 
     def sync_to_github(self, commit_msg: str):
-        """全学習終了後にまとめて一括で models/ および ログを Git Commit & Push"""
+        """models/ ディレクトリ配下およびログファイルを非同期で Git Commit & Push"""
         def git_sync():
             try:
                 subprocess.run(
@@ -347,7 +346,7 @@ class ModelEtaLgbCog(commands.Cog):
                     capture_output=True,
                 )
                 subprocess.run(["git", "push"], check=True, capture_output=True)
-                print(f"[ModelEta Git Sync] まとめて一括Git Push成功: {commit_msg}")
+                print(f"[ModelEta Git Sync] Git Push 成功: {commit_msg}")
             except Exception as e:
                 print(f"[ModelEta Git Sync] Push スキップまたは失敗: {e}")
 
@@ -366,6 +365,42 @@ class ModelEtaLgbCog(commands.Cog):
 
     # --- Commands ---
 
+    @commands.command(name="model_clear")
+    @commands.has_permissions(administrator=True)
+    async def model_clear(self, ctx: commands.Context):
+        """【管理者コマンド】すべての保存済みモデル、評価サマリー、予測ログを一括消去・リセット"""
+        msg = await ctx.send("全モデルファイルおよびキャッシュ状態の消去処理を開始します...")
+
+        try:
+            # 1. models フォルダ内のモデルファイル(*.txt)と評価JSONの削除
+            cleared_files_count = 0
+            if os.path.exists(self.models_dir):
+                for filename in os.listdir(self.models_dir):
+                    file_path = os.path.join(self.models_dir, filename)
+                    if os.path.isfile(file_path):
+                        os.remove(file_path)
+                        cleared_files_count += 1
+            
+            # 2. メモリ上およびディスク上の評価サマリーの初期化
+            self.eval_summary = {}
+            if os.path.exists(self.summary_file):
+                os.remove(self.summary_file)
+
+            # 3. 予測ログの削除
+            if os.path.exists(self.log_file):
+                os.remove(self.log_file)
+
+            await msg.edit(
+                content=f"消去完了: 計 {cleared_files_count} 件のモデル/ログファイルを削除しました。GitHub への変更を同期中..."
+            )
+
+            # 4. Git への削除同期
+            self.sync_to_github("chore: clear all trained models and evaluation logs")
+            await ctx.send("すべての学習・評価状態が安全に消去（初期化）されました。")
+
+        except Exception as e:
+            await msg.edit(content=f"エラー: 消去処理中に例外が発生しました (`{e}`)")
+
     @commands.command(name="import_symbols")
     @commands.has_permissions(administrator=True)
     async def import_symbols(self, ctx: commands.Context):
@@ -382,9 +417,7 @@ class ModelEtaLgbCog(commands.Cog):
 
     @commands.command(name="train_eta")
     async def train_eta(self, ctx: commands.Context, target_input: str = "random", auto_sync: bool = True):
-        """
-        【高精度単一学習コマンド】単一銘柄のモデルを学習・構築
-        """
+        """【高精度単一学習コマンド】単一銘柄のモデルを学習・構築"""
         status_msg = await ctx.send("学習対象の銘柄マスター照合中...")
 
         symbol_info = None
@@ -430,7 +463,6 @@ class ModelEtaLgbCog(commands.Cog):
 
         await status_msg.edit(content="高精度モデルのローカル学習・保存が完了しました。", embed=embed)
         
-        # 単一実行時のみ即座に同期、バッチ処理時はバッチ完了時に一括同期
         if auto_sync:
             self.sync_to_github(f"feat: train precision model [{symbol_info['code']}]")
 
@@ -464,7 +496,6 @@ class ModelEtaLgbCog(commands.Cog):
 
             await asyncio.sleep(0.5)
 
-        # 全銘柄の学習終了後に「まとめて一括で」GitHubへPush
         await batch_msg.edit(content=f"全 {count} 銘柄中 {success_count} 銘柄の学習が完了しました。一括モデル同期(GitHub Push)を開始します...")
         self.sync_to_github(f"feat: batch train complete [{success_count}/{count} models updated]")
         await ctx.send(f"全 {count} 銘柄のモデル学習および一括更新（GitHub同期）が完了しました！")
@@ -605,5 +636,5 @@ async def setup(bot: commands.Bot):
         print("[ModelEta Error] 依存ライブラリ不足のため ModelEtaCog のロードを中止します。", file=sys.stderr)
         return
     await bot.add_cog(ModelEtaLgbCog(bot))
-    print("[ModelEta] ModelEtaLgbCog (一括Git同期・バッチ進捗対応版) が正常にロードされました。")
+    print("[ModelEta] ModelEtaLgbCog (!model_clear 対応版) が正常にロードされました。")
 
