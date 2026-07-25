@@ -1,0 +1,11 @@
+{
+  "7203": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T18:58:50.377183",
+    "avg_loss": 0.7277047599424171,
+    "accuracy": 58.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/7203_lgb.txt"
+  }
+}
