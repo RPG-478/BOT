@@ -2,9 +2,7 @@ import asyncio
 import json
 import os
 import random
-import re
 import subprocess
-import urllib.request
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
@@ -14,7 +12,6 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import log_loss
 from sklearn.preprocessing import StandardScaler
 
 
@@ -28,6 +25,7 @@ class ModelEtaCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.symbols_file = "tse_gps_symbols.json"
+        self.csv_source_file = "data_j.csv"  # JPXから手動取得したCSVがある場合の読み込み先
         self.log_file = "logs/eta_predictions.csv"
         self.symbols_data: List[Dict[str, str]] = []
         self.reload_symbols()
@@ -346,44 +344,21 @@ class ModelEtaCog(commands.Cog):
 
         await ctx.send(f"全 {count} 銘柄の分析処理が完了しました。")
 
-    # --- 銘柄マスター自動更新コマンド (動的URL抽出 & フォールバック機能追加) ---
+    # --- 銘柄マスター自動更新コマンド (ローカルCSV読み込み & フォールバック対応) ---
     @commands.command(name="update_symbols")
     @commands.has_permissions(administrator=True)
     async def update_symbols_cmd(self, ctx: commands.Context):
-        """JPX一覧ページから最新のCSVリンクを動的抽出して全銘柄マスターを更新"""
-        msg = await ctx.send("JPX統計ページより最新の銘柄一覧CSVリンクを探索中...")
+        """ローカルの data_j.csv から銘柄マスター JSON を一括生成"""
+        msg = await ctx.send("ローカルの `data_j.csv` を解析中...")
 
-        def fetch_jpx_dynamic():
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            
-            # 1. JPXの上場銘柄一覧ページにアクセス
-            page_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
-            req_page = urllib.request.Request(page_url, headers=headers)
-            
-            target_csv_url = None
-            try:
-                with urllib.request.urlopen(req_page) as res:
-                    html_content = res.read().decode("utf-8")
-                    # data_j.csv や .csv へのリンクパターンを探す
-                    matches = re.findall(r'href=["\']([^"\']+\.csv)["\']', html_content, re.IGNORECASE)
-                    for m in matches:
-                        if "data_j" in m or "data" in m:
-                            if m.startswith("http"):
-                                target_csv_url = m
-                            else:
-                                target_csv_url = "https://www.jpx.co.jp" + (m if m.startswith("/") else "/" + m)
-                            break
-            except Exception as page_e:
-                print(f"[ModelEta] ページ解析スキップ: {page_e}")
+        def process_local_csv():
+            if not os.path.exists(self.csv_source_file):
+                raise FileNotFoundError(
+                    f"`{self.csv_source_file}` が見つかりません。JPXから取得したCSVをリポジトリ直下に配置してください。"
+                )
 
-            # 見つからなかった場合のバックアップURL
-            if not target_csv_url:
-                target_csv_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.csv"
-
-            # 2. 抽出したCSVをダウンロード
-            req_csv = urllib.request.Request(target_csv_url, headers=headers)
-            with urllib.request.urlopen(req_csv) as response:
-                df = pd.read_csv(response, encoding="shift_jis")
+            # Shift_JIS エンコーディングでCSVを読み込み
+            df = pd.read_csv(self.csv_source_file, encoding="shift_jis")
 
             target_markets = ["プライム（内国株式）", "スタンダード（内国株式）", "グロース（内国株式）"]
             filtered = df[df["市場・商品区分"].isin(target_markets)]
@@ -407,11 +382,11 @@ class ModelEtaCog(commands.Cog):
             return len(symbols_list)
 
         try:
-            count = await asyncio.to_thread(fetch_jpx_dynamic)
+            count = await asyncio.to_thread(process_local_csv)
             self.reload_symbols()
             await msg.edit(content=f"銘柄マスターの全更新が完了しました。対象: {count} 銘柄")
         except Exception as e:
-            await msg.edit(content=f"エラー: 銘柄マスター更新失敗 (`{e}`)")
+            await msg.edit(content=f"エラー: `{e}`")
 
 
 async def setup(bot: commands.Bot):
