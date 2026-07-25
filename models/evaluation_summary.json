@@ -1,8 +1,8 @@
 {
   "7203": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T18:58:50.377183",
-    "avg_loss": 0.7277047599424171,
+    "last_trained": "2026-07-25T19:07:40.392311",
+    "avg_loss": 0.7298458980806971,
     "accuracy": 58.333333333333336,
     "buy_threshold": 0.6000000000000001,
     "sell_threshold": 0.4,
