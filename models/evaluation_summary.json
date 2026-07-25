@@ -28,7 +28,7 @@
   },
   "6644": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T19:08:54.812383",
+    "last_trained": "2026-07-25T21:07:58.592980",
     "avg_loss": 0.703406338758178,
     "accuracy": 58.333333333333336,
     "buy_threshold": 0.6000000000000001,
@@ -100,7 +100,7 @@
   },
   "4650": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T19:09:46.166306",
+    "last_trained": "2026-07-25T21:07:47.391022",
     "avg_loss": 0.6932013371485863,
     "accuracy": 61.66666666666667,
     "buy_threshold": 0.6000000000000001,
@@ -199,8 +199,8 @@
   },
   "1375": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T19:10:52.457990",
-    "avg_loss": 0.778603316683403,
+    "last_trained": "2026-07-25T21:07:01.295281",
+    "avg_loss": 0.776471496616319,
     "accuracy": 48.333333333333336,
     "buy_threshold": 0.6000000000000001,
     "sell_threshold": 0.4,
@@ -460,9 +460,9 @@
   },
   "7593": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T19:48:50.619339",
-    "avg_loss": 0.7905312731970395,
-    "accuracy": 46.666666666666664,
+    "last_trained": "2026-07-25T21:09:52.220555",
+    "avg_loss": 0.8328458470196629,
+    "accuracy": 35.0,
     "buy_threshold": 0.6000000000000001,
     "sell_threshold": 0.4,
     "model_path": "models/7593_lgb.txt"
@@ -505,9 +505,9 @@
   },
   "9828": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T19:50:00.764062",
-    "avg_loss": 0.7683142264308638,
-    "accuracy": 43.75,
+    "last_trained": "2026-07-25T21:07:58.753457",
+    "avg_loss": 0.7115358586487228,
+    "accuracy": 53.333333333333336,
     "buy_threshold": 0.6000000000000001,
     "sell_threshold": 0.4,
     "model_path": "models/9828_lgb.txt"
@@ -1531,8 +1531,8 @@
   },
   "9533": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:03:22.314233",
-    "avg_loss": 0.8141017219537922,
+    "last_trained": "2026-07-25T21:07:36.291549",
+    "avg_loss": 0.8127135106467739,
     "accuracy": 46.666666666666664,
     "buy_threshold": 0.6000000000000001,
     "sell_threshold": 0.4,
@@ -1549,16 +1549,16 @@
   },
   "9735": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:03:30.827687",
-    "avg_loss": 0.7863065057045726,
-    "accuracy": 46.666666666666664,
+    "last_trained": "2026-07-25T21:08:33.384015",
+    "avg_loss": 0.777854076531609,
+    "accuracy": 48.333333333333336,
     "buy_threshold": 0.6000000000000001,
     "sell_threshold": 0.4,
     "model_path": "models/9735_lgb.txt"
   },
   "4890": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:03:30.844225",
+    "last_trained": "2026-07-25T21:05:52.457885",
     "avg_loss": 0.7618730460986497,
     "accuracy": 50.0,
     "buy_threshold": 0.6000000000000001,
@@ -1855,9 +1855,9 @@
   },
   "7966": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:05:04.774889",
-    "avg_loss": 0.7318431160669391,
-    "accuracy": 53.333333333333336,
+    "last_trained": "2026-07-25T21:09:18.365934",
+    "avg_loss": 0.7384505785335609,
+    "accuracy": 55.00000000000001,
     "buy_threshold": 0.6000000000000001,
     "sell_threshold": 0.4,
     "model_path": "models/7966_lgb.txt"
@@ -1900,7 +1900,7 @@
   },
   "9856": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:05:21.870116",
+    "last_trained": "2026-07-25T21:07:24.406939",
     "avg_loss": 0.8094068147904975,
     "accuracy": 45.0,
     "buy_threshold": 0.6000000000000001,
@@ -2701,7 +2701,7 @@
   },
   "4736": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:39:32.389577",
+    "last_trained": "2026-07-25T21:07:47.253273",
     "avg_loss": 0.7926145076675767,
     "accuracy": 53.333333333333336,
     "buy_threshold": 0.6000000000000001,
@@ -3619,7 +3619,7 @@
   },
   "2138": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:59:10.987306",
+    "last_trained": "2026-07-25T21:06:15.282991",
     "avg_loss": 0.846059849406699,
     "accuracy": 45.0,
     "buy_threshold": 0.6000000000000001,
@@ -3709,7 +3709,7 @@
   },
   "8157": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:41:36.365691",
+    "last_trained": "2026-07-25T21:05:05.869959",
     "avg_loss": 0.747859090713002,
     "accuracy": 50.0,
     "buy_threshold": 0.6000000000000001,
@@ -3835,7 +3835,7 @@
   },
   "9064": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:58:37.224204",
+    "last_trained": "2026-07-25T21:05:05.703252",
     "avg_loss": 0.8207980381542996,
     "accuracy": 51.66666666666667,
     "buy_threshold": 0.6000000000000001,
@@ -4537,8 +4537,8 @@
   },
   "2379": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:45:40.852438",
-    "avg_loss": 0.7161112469460563,
+    "last_trained": "2026-07-25T21:04:02.709711",
+    "avg_loss": 0.7167185384770864,
     "accuracy": 55.00000000000001,
     "buy_threshold": 0.6000000000000001,
     "sell_threshold": 0.4,
@@ -4753,7 +4753,7 @@
   },
   "8107": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:47:00.480299",
+    "last_trained": "2026-07-25T21:06:26.571712",
     "avg_loss": 0.4323926658248481,
     "accuracy": 83.33333333333334,
     "buy_threshold": 0.53,
@@ -5149,7 +5149,7 @@
   },
   "5590": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:49:12.050920",
+    "last_trained": "2026-07-25T21:08:33.030330",
     "avg_loss": 0.7373122371804447,
     "accuracy": 55.00000000000001,
     "buy_threshold": 0.6000000000000001,
@@ -5572,7 +5572,7 @@
   },
   "2127": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:51:39.043869",
+    "last_trained": "2026-07-25T21:04:42.022719",
     "avg_loss": 0.8015609529325143,
     "accuracy": 51.66666666666667,
     "buy_threshold": 0.6000000000000001,
@@ -6337,7 +6337,7 @@
   },
   "2676": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:56:17.195277",
+    "last_trained": "2026-07-25T21:08:55.815747",
     "avg_loss": 0.6872336504189523,
     "accuracy": 61.66666666666667,
     "buy_threshold": 0.55,
@@ -6625,8 +6625,8 @@
   },
   "1724": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:57:53.411518",
-    "avg_loss": 0.6787740519793048,
+    "last_trained": "2026-07-25T21:05:17.525629",
+    "avg_loss": 0.678959265509535,
     "accuracy": 58.333333333333336,
     "buy_threshold": 0.55,
     "sell_threshold": 0.45,
@@ -6778,7 +6778,7 @@
   },
   "3741": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:58:48.999782",
+    "last_trained": "2026-07-25T21:04:03.780544",
     "avg_loss": 0.818129103763148,
     "accuracy": 50.0,
     "buy_threshold": 0.6000000000000001,
@@ -6877,7 +6877,7 @@
   },
   "7792": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:59:33.423516",
+    "last_trained": "2026-07-25T21:08:21.411477",
     "avg_loss": 0.8000102896038265,
     "accuracy": 50.0,
     "buy_threshold": 0.6000000000000001,
@@ -6895,7 +6895,7 @@
   },
   "3267": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:59:44.031189",
+    "last_trained": "2026-07-25T21:09:07.071049",
     "avg_loss": 0.6802430041131635,
     "accuracy": 61.66666666666667,
     "buy_threshold": 0.55,
@@ -6940,9 +6940,9 @@
   },
   "1605": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T20:59:56.311910",
-    "avg_loss": 0.7630515316412138,
-    "accuracy": 53.333333333333336,
+    "last_trained": "2026-07-25T21:07:58.586737",
+    "avg_loss": 0.7580917473782937,
+    "accuracy": 55.00000000000001,
     "buy_threshold": 0.6000000000000001,
     "sell_threshold": 0.4,
     "model_path": "models/1605_lgb.txt"
@@ -7030,7 +7030,7 @@
   },
   "9147": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T21:00:28.981202",
+    "last_trained": "2026-07-25T21:09:18.374428",
     "avg_loss": 0.7271158921009715,
     "accuracy": 55.00000000000001,
     "buy_threshold": 0.6000000000000001,
@@ -7120,7 +7120,7 @@
   },
   "6245": {
     "version": "v2_precision",
-    "last_trained": "2026-07-25T21:01:01.841360",
+    "last_trained": "2026-07-25T21:04:25.991995",
     "avg_loss": 0.6872436090495143,
     "accuracy": 58.333333333333336,
     "buy_threshold": 0.55,
@@ -7585,5 +7585,824 @@
     "buy_threshold": 0.6000000000000001,
     "sell_threshold": 0.4,
     "model_path": "models/2169_lgb.txt"
+  },
+  "5969": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:04:03.083138",
+    "avg_loss": 0.6709316742044374,
+    "accuracy": 68.33333333333333,
+    "buy_threshold": 0.55,
+    "sell_threshold": 0.45,
+    "model_path": "models/5969_lgb.txt"
+  },
+  "5542": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:09:52.230478",
+    "avg_loss": 0.7726845157273832,
+    "accuracy": 50.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/5542_lgb.txt"
+  },
+  "7544": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:04:26.236916",
+    "avg_loss": 0.7302371529984341,
+    "accuracy": 51.66666666666667,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/7544_lgb.txt"
+  },
+  "7314": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:04:26.423655",
+    "avg_loss": 0.6025484606151866,
+    "accuracy": 68.33333333333333,
+    "buy_threshold": 0.53,
+    "sell_threshold": 0.47000000000000003,
+    "model_path": "models/7314_lgb.txt"
+  },
+  "1716": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:04:26.770418",
+    "avg_loss": 0.7353932308237501,
+    "accuracy": 55.00000000000001,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/1716_lgb.txt"
+  },
+  "5186": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:04:41.892350",
+    "avg_loss": 0.7807046069564975,
+    "accuracy": 50.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/5186_lgb.txt"
+  },
+  "2175": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:04:42.141934",
+    "avg_loss": 0.7368872599626053,
+    "accuracy": 50.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/2175_lgb.txt"
+  },
+  "5753": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:04:42.259646",
+    "avg_loss": 0.7324526518348721,
+    "accuracy": 55.00000000000001,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/5753_lgb.txt"
+  },
+  "2798": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:04:53.908821",
+    "avg_loss": 0.7655166861676536,
+    "accuracy": 48.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/2798_lgb.txt"
+  },
+  "6087": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:04:53.926233",
+    "avg_loss": 0.7567730665050089,
+    "accuracy": 45.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/6087_lgb.txt"
+  },
+  "5363": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:04:54.068704",
+    "avg_loss": 0.6794589668766863,
+    "accuracy": 58.333333333333336,
+    "buy_threshold": 0.55,
+    "sell_threshold": 0.45,
+    "model_path": "models/5363_lgb.txt"
+  },
+  "7991": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:04:54.409277",
+    "avg_loss": 0.816261835072201,
+    "accuracy": 45.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/7991_lgb.txt"
+  },
+  "4540": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:05:05.863347",
+    "avg_loss": 0.7583371467757978,
+    "accuracy": 48.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/4540_lgb.txt"
+  },
+  "5938": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:05:05.870276",
+    "avg_loss": 0.8184060186146874,
+    "accuracy": 40.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/5938_lgb.txt"
+  },
+  "7383": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:05:17.516531",
+    "avg_loss": 0.8372302855260487,
+    "accuracy": 51.66666666666667,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/7383_lgb.txt"
+  },
+  "7867": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:05:17.677617",
+    "avg_loss": 0.7537929485158764,
+    "accuracy": 53.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/7867_lgb.txt"
+  },
+  "9074": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:05:18.652473",
+    "avg_loss": 0.8011795867620851,
+    "accuracy": 45.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/9074_lgb.txt"
+  },
+  "7183": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:05:29.067637",
+    "avg_loss": 0.5607733862037593,
+    "accuracy": 75.0,
+    "buy_threshold": 0.53,
+    "sell_threshold": 0.47000000000000003,
+    "model_path": "models/7183_lgb.txt"
+  },
+  "7416": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:05:29.212978",
+    "avg_loss": 0.7594037558044663,
+    "accuracy": 56.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/7416_lgb.txt"
+  },
+  "5255": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:05:29.262920",
+    "avg_loss": 0.6975219448026398,
+    "accuracy": 58.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/5255_lgb.txt"
+  },
+  "2694": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:05:29.375201",
+    "avg_loss": 0.4990828433103891,
+    "accuracy": 80.0,
+    "buy_threshold": 0.53,
+    "sell_threshold": 0.47000000000000003,
+    "model_path": "models/2694_lgb.txt"
+  },
+  "6737": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:05:40.765303",
+    "avg_loss": 0.8007886364138688,
+    "accuracy": 50.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/6737_lgb.txt"
+  },
+  "3762": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:05:40.765769",
+    "avg_loss": 0.7811606102231418,
+    "accuracy": 48.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/3762_lgb.txt"
+  },
+  "4848": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:05:40.783064",
+    "avg_loss": 0.6735693845888047,
+    "accuracy": 55.00000000000001,
+    "buy_threshold": 0.55,
+    "sell_threshold": 0.45,
+    "model_path": "models/4848_lgb.txt"
+  },
+  "6224": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:05:41.285063",
+    "avg_loss": 0.7919610502305363,
+    "accuracy": 55.00000000000001,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/6224_lgb.txt"
+  },
+  "3524": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:05:52.601631",
+    "avg_loss": 0.7758894745539962,
+    "accuracy": 43.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/3524_lgb.txt"
+  },
+  "4245": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:05:52.628610",
+    "avg_loss": 0.8289698373909408,
+    "accuracy": 46.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/4245_lgb.txt"
+  },
+  "9347": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:05:52.629317",
+    "avg_loss": 0.7038789054306596,
+    "accuracy": 55.00000000000001,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/9347_lgb.txt"
+  },
+  "8285": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:03.815812",
+    "avg_loss": 0.7763183008065758,
+    "accuracy": 53.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/8285_lgb.txt"
+  },
+  "2736": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:03.830379",
+    "avg_loss": 0.7613342381577176,
+    "accuracy": 48.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/2736_lgb.txt"
+  },
+  "9795": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:04.093829",
+    "avg_loss": 0.7991421312959451,
+    "accuracy": 45.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/9795_lgb.txt"
+  },
+  "6062": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:04.435543",
+    "avg_loss": 0.8192344702831122,
+    "accuracy": 45.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/6062_lgb.txt"
+  },
+  "4923": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:15.097721",
+    "avg_loss": 0.7585960404155442,
+    "accuracy": 46.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/4923_lgb.txt"
+  },
+  "7035": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:09:29.808758",
+    "avg_loss": 0.7451151385409495,
+    "accuracy": 48.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/7035_lgb.txt"
+  },
+  "9341": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:15.432136",
+    "avg_loss": 0.8194062663790158,
+    "accuracy": 41.66666666666667,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/9341_lgb.txt"
+  },
+  "1803": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:26.588309",
+    "avg_loss": 0.8067543601147108,
+    "accuracy": 43.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/1803_lgb.txt"
+  },
+  "3355": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:26.721025",
+    "avg_loss": 0.8342968587797198,
+    "accuracy": 46.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/3355_lgb.txt"
+  },
+  "6494": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:27.831178",
+    "avg_loss": 0.812644086223468,
+    "accuracy": 48.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/6494_lgb.txt"
+  },
+  "3109": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:38.509816",
+    "avg_loss": 0.7682390560630173,
+    "accuracy": 46.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/3109_lgb.txt"
+  },
+  "3922": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:38.510160",
+    "avg_loss": 0.7938712989337439,
+    "accuracy": 41.66666666666667,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/3922_lgb.txt"
+  },
+  "6496": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:38.668735",
+    "avg_loss": 0.7276882884962935,
+    "accuracy": 53.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/6496_lgb.txt"
+  },
+  "9250": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:38.817734",
+    "avg_loss": 0.7374135513256277,
+    "accuracy": 46.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/9250_lgb.txt"
+  },
+  "4634": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:50.235718",
+    "avg_loss": 0.7765067606742018,
+    "accuracy": 46.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/4634_lgb.txt"
+  },
+  "9984": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:50.235983",
+    "avg_loss": 0.7571838263139202,
+    "accuracy": 48.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/9984_lgb.txt"
+  },
+  "7422": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:50.418530",
+    "avg_loss": 0.7830986827974459,
+    "accuracy": 53.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/7422_lgb.txt"
+  },
+  "3179": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:06:50.772578",
+    "avg_loss": 0.7245709702110747,
+    "accuracy": 56.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/3179_lgb.txt"
+  },
+  "4488": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:07:01.704523",
+    "avg_loss": 0.7184393144806431,
+    "accuracy": 60.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/4488_lgb.txt"
+  },
+  "8368": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:07:01.938202",
+    "avg_loss": 0.7649614505348038,
+    "accuracy": 55.00000000000001,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/8368_lgb.txt"
+  },
+  "2181": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:07:02.437971",
+    "avg_loss": 0.7657571718063564,
+    "accuracy": 40.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/2181_lgb.txt"
+  },
+  "6249": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:07:13.142530",
+    "avg_loss": 0.8722041889738482,
+    "accuracy": 43.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/6249_lgb.txt"
+  },
+  "3997": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:07:13.153737",
+    "avg_loss": 0.7828751869030601,
+    "accuracy": 46.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/3997_lgb.txt"
+  },
+  "2436": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:07:13.154006",
+    "avg_loss": 0.7561167681359745,
+    "accuracy": 50.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/2436_lgb.txt"
+  },
+  "6370": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:07:13.456921",
+    "avg_loss": 0.6834853426248825,
+    "accuracy": 61.66666666666667,
+    "buy_threshold": 0.55,
+    "sell_threshold": 0.45,
+    "model_path": "models/6370_lgb.txt"
+  },
+  "5888": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:07:24.553751",
+    "avg_loss": 0.8057083778822146,
+    "accuracy": 38.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/5888_lgb.txt"
+  },
+  "2586": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:07:25.524764",
+    "avg_loss": 0.710782390624283,
+    "accuracy": 51.66666666666667,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/2586_lgb.txt"
+  },
+  "8230": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:07:36.140205",
+    "avg_loss": 0.7674502872415403,
+    "accuracy": 51.66666666666667,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/8230_lgb.txt"
+  },
+  "5132": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:07:36.151830",
+    "avg_loss": 0.7271400417491776,
+    "accuracy": 45.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/5132_lgb.txt"
+  },
+  "5724": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:07:36.172603",
+    "avg_loss": 0.7046820240676775,
+    "accuracy": 63.33333333333333,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/5724_lgb.txt"
+  },
+  "1663": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:07:47.262412",
+    "avg_loss": 0.783547816278553,
+    "accuracy": 45.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/1663_lgb.txt"
+  },
+  "4761": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:07:47.948926",
+    "avg_loss": 0.7791925143706223,
+    "accuracy": 50.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/4761_lgb.txt"
+  },
+  "1848": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:07:59.015726",
+    "avg_loss": 0.7755410865091629,
+    "accuracy": 51.66666666666667,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/1848_lgb.txt"
+  },
+  "6570": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:08:10.019585",
+    "avg_loss": 0.8070326693732179,
+    "accuracy": 40.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/6570_lgb.txt"
+  },
+  "6769": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:08:10.020330",
+    "avg_loss": 0.7426896436962684,
+    "accuracy": 55.00000000000001,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/6769_lgb.txt"
+  },
+  "3661": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:08:10.020665",
+    "avg_loss": 0.7915642105545945,
+    "accuracy": 50.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/3661_lgb.txt"
+  },
+  "3096": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:08:10.353023",
+    "avg_loss": 0.7746790002249249,
+    "accuracy": 50.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/3096_lgb.txt"
+  },
+  "6298": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:08:21.410851",
+    "avg_loss": 0.7531456312589632,
+    "accuracy": 55.00000000000001,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/6298_lgb.txt"
+  },
+  "4575": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:08:21.425971",
+    "avg_loss": 0.7714463547048975,
+    "accuracy": 56.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/4575_lgb.txt"
+  },
+  "7297": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:08:22.069334",
+    "avg_loss": 0.7106239485963833,
+    "accuracy": 60.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/7297_lgb.txt"
+  },
+  "5344": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:08:33.356689",
+    "avg_loss": 0.8187739581767101,
+    "accuracy": 46.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/5344_lgb.txt"
+  },
+  "8337": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:08:33.357237",
+    "avg_loss": 0.7228649087442915,
+    "accuracy": 55.00000000000001,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/8337_lgb.txt"
+  },
+  "5932": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:08:44.126994",
+    "avg_loss": 0.7852914255077671,
+    "accuracy": 45.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/5932_lgb.txt"
+  },
+  "8912": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:08:44.369684",
+    "avg_loss": 0.7864740968919649,
+    "accuracy": 45.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/8912_lgb.txt"
+  },
+  "6412": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:08:44.375997",
+    "avg_loss": 0.7630018699505511,
+    "accuracy": 53.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/6412_lgb.txt"
+  },
+  "4547": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:08:44.709215",
+    "avg_loss": 0.8041622227822828,
+    "accuracy": 55.00000000000001,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/4547_lgb.txt"
+  },
+  "6177": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:08:55.801064",
+    "avg_loss": 0.8060981288371052,
+    "accuracy": 46.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/6177_lgb.txt"
+  },
+  "7235": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:08:55.816060",
+    "avg_loss": 0.7903122049935682,
+    "accuracy": 53.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/7235_lgb.txt"
+  },
+  "9535": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:08:55.989965",
+    "avg_loss": 0.7104251701067527,
+    "accuracy": 60.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/9535_lgb.txt"
+  },
+  "8041": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:09:07.247085",
+    "avg_loss": 0.6692927372267896,
+    "accuracy": 56.666666666666664,
+    "buy_threshold": 0.55,
+    "sell_threshold": 0.45,
+    "model_path": "models/8041_lgb.txt"
+  },
+  "7352": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:09:07.251419",
+    "avg_loss": 0.7822610271688746,
+    "accuracy": 50.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/7352_lgb.txt"
+  },
+  "6481": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:09:09.745066",
+    "avg_loss": 0.7222153939916343,
+    "accuracy": 56.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/6481_lgb.txt"
+  },
+  "9508": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:09:18.374070",
+    "avg_loss": 0.7354357297141475,
+    "accuracy": 51.66666666666667,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/9508_lgb.txt"
+  },
+  "4377": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:09:19.374309",
+    "avg_loss": 0.7841994692159507,
+    "accuracy": 56.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/4377_lgb.txt"
+  },
+  "6841": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:09:29.796106",
+    "avg_loss": 0.7291735689510545,
+    "accuracy": 56.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/6841_lgb.txt"
+  },
+  "3933": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:09:29.797141",
+    "avg_loss": 0.7694695096721058,
+    "accuracy": 51.66666666666667,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/3933_lgb.txt"
+  },
+  "3024": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:09:30.386728",
+    "avg_loss": 0.7939554188532473,
+    "accuracy": 45.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/3024_lgb.txt"
+  },
+  "4031": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:09:41.274883",
+    "avg_loss": 0.661142397453682,
+    "accuracy": 65.0,
+    "buy_threshold": 0.55,
+    "sell_threshold": 0.45,
+    "model_path": "models/4031_lgb.txt"
+  },
+  "6757": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:09:41.285168",
+    "avg_loss": 0.7549367042791781,
+    "accuracy": 58.333333333333336,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/6757_lgb.txt"
+  },
+  "2760": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:09:41.292047",
+    "avg_loss": 0.7510562930151264,
+    "accuracy": 55.00000000000001,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/2760_lgb.txt"
+  },
+  "3166": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:09:41.496171",
+    "avg_loss": 0.7709139100349378,
+    "accuracy": 51.66666666666667,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/3166_lgb.txt"
+  },
+  "5729": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:09:52.220078",
+    "avg_loss": 0.7053979208695103,
+    "accuracy": 60.0,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/5729_lgb.txt"
+  },
+  "7240": {
+    "version": "v2_precision",
+    "last_trained": "2026-07-25T21:09:53.667314",
+    "avg_loss": 0.7486561650948438,
+    "accuracy": 46.666666666666664,
+    "buy_threshold": 0.6000000000000001,
+    "sell_threshold": 0.4,
+    "model_path": "models/7240_lgb.txt"
   }
 }
