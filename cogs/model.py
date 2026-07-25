@@ -25,7 +25,8 @@ except ImportError as e:
 
 class ModelEtaLgbCog(commands.Cog):
     """
-    投資機械学習モデル η (Eta) - 全状態消去コマンド(!model_clear)付き完全版 (LightGBM)
+    投資機械学習モデル η (Eta) - Git同期デバッグ強化版 (LightGBM)
+    models フォルダを確実に Git で追跡し、Gitコマンドの出力・エラーを詳細表示
     """
 
     MODEL_VERSION = "v2_precision"
@@ -37,6 +38,7 @@ class ModelEtaLgbCog(commands.Cog):
         self.log_file = "logs/eta_lgb_predictions.csv"
         self.models_dir = "models"
         self.summary_file = os.path.join(self.models_dir, "evaluation_summary.json")
+        self.gitkeep_file = os.path.join(self.models_dir, ".gitkeep")
         self.symbols_data: List[Dict[str, str]] = []
         self.eval_summary: Dict[str, Dict[str, Any]] = {}
         
@@ -44,6 +46,11 @@ class ModelEtaLgbCog(commands.Cog):
         os.makedirs("logs", exist_ok=True)
         os.makedirs("Assets", exist_ok=True)
         os.makedirs(self.models_dir, exist_ok=True)
+        
+        # .gitkeep ファイルの確保（フォルダ構造をGitに認識させる）
+        if not os.path.exists(self.gitkeep_file):
+            with open(self.gitkeep_file, "w") as f:
+                f.write("# Keep models directory\n")
         
         # データおよび要約キャッシュのロード
         try:
@@ -293,7 +300,7 @@ class ModelEtaLgbCog(commands.Cog):
         final_train_data = lgb.Dataset(final_X, label=final_y)
         final_model = lgb.train(lgb_params, final_train_data, num_boost_round=150)
 
-        # モデルのローカル保存 (完全置き換え)
+        # モデルのローカル保存
         model_path = os.path.join(self.models_dir, f"{symbol_code}_lgb.txt")
         if os.path.exists(model_path):
             try:
@@ -332,23 +339,51 @@ class ModelEtaLgbCog(commands.Cog):
         return summary_entry
 
     def sync_to_github(self, commit_msg: str):
-        """models/ ディレクトリ配下およびログファイルを非同期で Git Commit & Push"""
+        """
+        Git 同期処理（エラーログ出力強化版）
+        """
         def git_sync():
             try:
-                subprocess.run(
-                    ["git", "add", self.log_file, self.models_dir, self.symbols_file],
-                    check=True,
-                    capture_output=True
-                )
-                subprocess.run(
-                    ["git", "commit", "-m", f"{commit_msg} [skip ci]"],
-                    check=True,
+                # 確実に .gitkeep を作成
+                if not os.path.exists(self.gitkeep_file):
+                    with open(self.gitkeep_file, "w") as f:
+                        f.write("# Keep models directory\n")
+
+                add_targets = [self.models_dir, self.symbols_file]
+                if os.path.exists(self.log_file):
+                    add_targets.append(self.log_file)
+
+                # git add
+                res_add = subprocess.run(
+                    ["git", "add", "-f"] + add_targets,
                     capture_output=True,
+                    text=True
                 )
-                subprocess.run(["git", "push"], check=True, capture_output=True)
-                print(f"[ModelEta Git Sync] Git Push 成功: {commit_msg}")
+                if res_add.returncode != 0:
+                    print(f"[ModelEta Git Error] Add Failed: {res_add.stderr}")
+
+                # git commit
+                res_commit = subprocess.run(
+                    ["git", "commit", "-m", f"{commit_msg} [skip ci]"],
+                    capture_output=True,
+                    text=True
+                )
+                if res_commit.returncode != 0:
+                    print(f"[ModelEta Git Info] Commit Info: {res_commit.stdout.strip()}")
+
+                # git push
+                res_push = subprocess.run(
+                    ["git", "push"],
+                    capture_output=True,
+                    text=True
+                )
+                if res_push.returncode == 0:
+                    print(f"[ModelEta Git Success] GitHub Push 成功: {commit_msg}")
+                else:
+                    print(f"[ModelEta Git Error] Push Failed: {res_push.stderr}")
+
             except Exception as e:
-                print(f"[ModelEta Git Sync] Push スキップまたは失敗: {e}")
+                print(f"[ModelEta Git Critical Exception] {e}")
 
         asyncio.create_task(asyncio.to_thread(git_sync))
 
@@ -372,7 +407,6 @@ class ModelEtaLgbCog(commands.Cog):
         msg = await ctx.send("全モデルファイルおよびキャッシュ状態の消去処理を開始します...")
 
         try:
-            # 1. models フォルダ内のモデルファイル(*.txt)と評価JSONの削除
             cleared_files_count = 0
             if os.path.exists(self.models_dir):
                 for filename in os.listdir(self.models_dir):
@@ -381,20 +415,21 @@ class ModelEtaLgbCog(commands.Cog):
                         os.remove(file_path)
                         cleared_files_count += 1
             
-            # 2. メモリ上およびディスク上の評価サマリーの初期化
             self.eval_summary = {}
             if os.path.exists(self.summary_file):
                 os.remove(self.summary_file)
 
-            # 3. 予測ログの削除
             if os.path.exists(self.log_file):
                 os.remove(self.log_file)
+
+            # .gitkeep の再作成
+            with open(self.gitkeep_file, "w") as f:
+                f.write("# Keep models directory\n")
 
             await msg.edit(
                 content=f"消去完了: 計 {cleared_files_count} 件のモデル/ログファイルを削除しました。GitHub への変更を同期中..."
             )
 
-            # 4. Git への削除同期
             self.sync_to_github("chore: clear all trained models and evaluation logs")
             await ctx.send("すべての学習・評価状態が安全に消去（初期化）されました。")
 
@@ -636,5 +671,5 @@ async def setup(bot: commands.Bot):
         print("[ModelEta Error] 依存ライブラリ不足のため ModelEtaCog のロードを中止します。", file=sys.stderr)
         return
     await bot.add_cog(ModelEtaLgbCog(bot))
-    print("[ModelEta] ModelEtaLgbCog (!model_clear 対応版) が正常にロードされました。")
+    print("[ModelEta] ModelEtaLgbCog (Git同期デバッグ強化版) が正常にロードされました。")
 
