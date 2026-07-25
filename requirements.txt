@@ -8,3 +8,4 @@ discord-ext-voice-recv
 yt-dlp
 google-genai
 scikit-learn>=1.4.0
+lightgbm>=4.0.0
