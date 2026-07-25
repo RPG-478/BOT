@@ -287,16 +287,16 @@ class ModelEtaLgbCog(commands.Cog):
             single_loss = -(actual * np.log(p_clipped) + (1 - actual) * np.log(1 - p_clipped))
             losses.append(single_loss)
 
-            if status_msg and ((i + 1) % 15 == 0 or i == rolling_steps - 1):
+            # ループ中の細かい status_msg.edit を削除または条件を緩和
+            if status_msg and i == rolling_steps - 1:
                 current_loss_avg = float(np.mean(losses)) if losses else 0.693
                 try:
                     prefix = f"{current_progress_str}\n" if current_progress_str else ""
                     await status_msg.edit(
-                        content=f"{prefix}[TRAINING LOG] ROLLING STEP [{i+1}/{rolling_steps}] | CURRENT LOG LOSS: {current_loss_avg:.4f}"
+                        content=f"{prefix}[TRAINING LOG] STEP [{rolling_steps}/{rolling_steps}] | LOSS: {current_loss_avg:.4f}"
                     )
                 except Exception:
                     pass
-                await asyncio.sleep(0.05)
 
         if not probs or last_model is None:
             return None
