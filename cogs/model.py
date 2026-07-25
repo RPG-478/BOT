@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import random
+import re
 import subprocess
 import urllib.request
 from datetime import datetime
@@ -243,13 +244,6 @@ class ModelEtaCog(commands.Cog):
     # --- Discord コマンド: 単一銘柄予測 ---
     @commands.command(name="eta")
     async def predict_eta(self, ctx: commands.Context, target_input: str = "random"):
-        """
-        モデル η 予測実行コマンド
-        使用例:
-          !eta 7203      (トヨタ自動車)
-          !eta ソニー    (銘柄名検索)
-          !eta random    (全3500銘柄からランダム選定)
-        """
         status_msg = await ctx.send("銘柄マスター照合中...")
 
         symbol_info = None
@@ -341,10 +335,6 @@ class ModelEtaCog(commands.Cog):
     # --- Discord コマンド: 複数ランダム銘柄バッチ学習 ---
     @commands.command(name="eta_rand")
     async def predict_eta_random_batch(self, ctx: commands.Context, count: int = 3):
-        """
-        複数銘柄をランダム選定してモデル η で連続分析
-        使用例: !eta_rand 3
-        """
         count = min(max(1, count), 5)
         batch_msg = await ctx.send(f"バッチ処理開始 (全 {count} 銘柄)")
 
@@ -356,22 +346,43 @@ class ModelEtaCog(commands.Cog):
 
         await ctx.send(f"全 {count} 銘柄の分析処理が完了しました。")
 
-    # --- 銘柄マスター自動更新コマンド (HTTP 404 回避修正) ---
+    # --- 銘柄マスター自動更新コマンド (動的URL抽出 & フォールバック機能追加) ---
     @commands.command(name="update_symbols")
     @commands.has_permissions(administrator=True)
     async def update_symbols_cmd(self, ctx: commands.Context):
-        """JPX公式CSVから3,500銘柄マスターデータを最新化する管理者コマンド"""
-        msg = await ctx.send("JPX公式サイトより全東証銘柄データ(CSV)を取得中...")
+        """JPX一覧ページから最新のCSVリンクを動的抽出して全銘柄マスターを更新"""
+        msg = await ctx.send("JPX統計ページより最新の銘柄一覧CSVリンクを探索中...")
 
-        def fetch_jpx():
-            # ヘッダー付与による 403 / 404 回避処理
-            url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.csv"
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-            )
+        def fetch_jpx_dynamic():
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
             
-            with urllib.request.urlopen(req) as response:
+            # 1. JPXの上場銘柄一覧ページにアクセス
+            page_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
+            req_page = urllib.request.Request(page_url, headers=headers)
+            
+            target_csv_url = None
+            try:
+                with urllib.request.urlopen(req_page) as res:
+                    html_content = res.read().decode("utf-8")
+                    # data_j.csv や .csv へのリンクパターンを探す
+                    matches = re.findall(r'href=["\']([^"\']+\.csv)["\']', html_content, re.IGNORECASE)
+                    for m in matches:
+                        if "data_j" in m or "data" in m:
+                            if m.startswith("http"):
+                                target_csv_url = m
+                            else:
+                                target_csv_url = "https://www.jpx.co.jp" + (m if m.startswith("/") else "/" + m)
+                            break
+            except Exception as page_e:
+                print(f"[ModelEta] ページ解析スキップ: {page_e}")
+
+            # 見つからなかった場合のバックアップURL
+            if not target_csv_url:
+                target_csv_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.csv"
+
+            # 2. 抽出したCSVをダウンロード
+            req_csv = urllib.request.Request(target_csv_url, headers=headers)
+            with urllib.request.urlopen(req_csv) as response:
                 df = pd.read_csv(response, encoding="shift_jis")
 
             target_markets = ["プライム（内国株式）", "スタンダード（内国株式）", "グロース（内国株式）"]
@@ -389,13 +400,14 @@ class ModelEtaCog(commands.Cog):
                         "market": market_name
                     })
 
-            with open(self.symbols_file, "w", encoding="utf-8") as f:
-                json.dump(symbols_list, f, ensure_ascii=False, indent=2)
+            if symbols_list:
+                with open(self.symbols_file, "w", encoding="utf-8") as f:
+                    json.dump(symbols_list, f, ensure_ascii=False, indent=2)
 
             return len(symbols_list)
 
         try:
-            count = await asyncio.to_thread(fetch_jpx)
+            count = await asyncio.to_thread(fetch_jpx_dynamic)
             self.reload_symbols()
             await msg.edit(content=f"銘柄マスターの全更新が完了しました。対象: {count} 銘柄")
         except Exception as e:
