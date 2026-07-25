@@ -25,8 +25,8 @@ except ImportError as e:
 
 class ModelEtaLgbCog(commands.Cog):
     """
-    投資機械学習モデル η (Eta) - Git同期デバッグ強化版 (LightGBM)
-    models フォルダを確実に Git で追跡し、Gitコマンドの出力・エラーを詳細表示
+    投資機械学習モデル η (Eta) - 洗練・高精度仕様 (LightGBM)
+    絵文字非使用 / クオンツスタイル・シックデザインレポート対応
     """
 
     MODEL_VERSION = "v2_precision"
@@ -47,7 +47,7 @@ class ModelEtaLgbCog(commands.Cog):
         os.makedirs("Assets", exist_ok=True)
         os.makedirs(self.models_dir, exist_ok=True)
         
-        # .gitkeep ファイルの確保（フォルダ構造をGitに認識させる）
+        # .gitkeep ファイルの確保
         if not os.path.exists(self.gitkeep_file):
             with open(self.gitkeep_file, "w") as f:
                 f.write("# Keep models directory\n")
@@ -220,6 +220,13 @@ class ModelEtaLgbCog(commands.Cog):
 
         return df
 
+    def make_progress_bar(self, val: float, max_val: float = 1.0, length: int = 12) -> str:
+        """アスキーデザインによる確率プログレスバーを生成"""
+        ratio = max(0.0, min(1.0, val / max_val))
+        filled = int(round(ratio * length))
+        bar = "■" * filled + "□" * (length - filled)
+        return bar
+
     async def train_and_evaluate_model(
         self, symbol_code: str, df: pd.DataFrame, status_msg: Optional[discord.Message] = None, current_progress_str: str = ""
     ) -> Optional[Dict[str, Any]]:
@@ -285,7 +292,7 @@ class ModelEtaLgbCog(commands.Cog):
                 try:
                     prefix = f"{current_progress_str}\n" if current_progress_str else ""
                     await status_msg.edit(
-                        content=f"{prefix}【モデル学習中】検証 [{i+1}/{rolling_steps} 完了 | 直近Loss: {current_loss_avg:.3f}]"
+                        content=f"{prefix}[TRAINING LOG] ROLLING STEP [{i+1}/{rolling_steps}] | CURRENT LOG LOSS: {current_loss_avg:.4f}"
                     )
                 except Exception:
                     pass
@@ -339,12 +346,9 @@ class ModelEtaLgbCog(commands.Cog):
         return summary_entry
 
     def sync_to_github(self, commit_msg: str):
-        """
-        Git 同期処理（エラーログ出力強化版）
-        """
+        """Git 同期処理"""
         def git_sync():
             try:
-                # 確実に .gitkeep を作成
                 if not os.path.exists(self.gitkeep_file):
                     with open(self.gitkeep_file, "w") as f:
                         f.write("# Keep models directory\n")
@@ -353,37 +357,17 @@ class ModelEtaLgbCog(commands.Cog):
                 if os.path.exists(self.log_file):
                     add_targets.append(self.log_file)
 
-                # git add
-                res_add = subprocess.run(
-                    ["git", "add", "-f"] + add_targets,
-                    capture_output=True,
-                    text=True
-                )
-                if res_add.returncode != 0:
-                    print(f"[ModelEta Git Error] Add Failed: {res_add.stderr}")
-
-                # git commit
-                res_commit = subprocess.run(
-                    ["git", "commit", "-m", f"{commit_msg} [skip ci]"],
-                    capture_output=True,
-                    text=True
-                )
-                if res_commit.returncode != 0:
-                    print(f"[ModelEta Git Info] Commit Info: {res_commit.stdout.strip()}")
-
-                # git push
-                res_push = subprocess.run(
-                    ["git", "push"],
-                    capture_output=True,
-                    text=True
-                )
+                subprocess.run(["git", "add", "-f"] + add_targets, capture_output=True)
+                subprocess.run(["git", "commit", "-m", f"{commit_msg} [skip ci]"], capture_output=True)
+                res_push = subprocess.run(["git", "push"], capture_output=True, text=True)
+                
                 if res_push.returncode == 0:
                     print(f"[ModelEta Git Success] GitHub Push 成功: {commit_msg}")
                 else:
                     print(f"[ModelEta Git Error] Push Failed: {res_push.stderr}")
 
             except Exception as e:
-                print(f"[ModelEta Git Critical Exception] {e}")
+                print(f"[ModelEta Git Exception] {e}")
 
         asyncio.create_task(asyncio.to_thread(git_sync))
 
@@ -404,7 +388,7 @@ class ModelEtaLgbCog(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def model_clear(self, ctx: commands.Context):
         """【管理者コマンド】すべての保存済みモデル、評価サマリー、予測ログを一括消去・リセット"""
-        msg = await ctx.send("全モデルファイルおよびキャッシュ状態の消去処理を開始します...")
+        msg = await ctx.send("[SYSTEM] 全モデルファイルおよびキャッシュ状態の消去処理を開始します...")
 
         try:
             cleared_files_count = 0
@@ -422,38 +406,37 @@ class ModelEtaLgbCog(commands.Cog):
             if os.path.exists(self.log_file):
                 os.remove(self.log_file)
 
-            # .gitkeep の再作成
             with open(self.gitkeep_file, "w") as f:
                 f.write("# Keep models directory\n")
 
             await msg.edit(
-                content=f"消去完了: 計 {cleared_files_count} 件のモデル/ログファイルを削除しました。GitHub への変更を同期中..."
+                content=f"[SYSTEM] 消去完了: 計 {cleared_files_count} 件のモデル/ログファイルを削除しました。GitHub 同期を実行中..."
             )
 
             self.sync_to_github("chore: clear all trained models and evaluation logs")
-            await ctx.send("すべての学習・評価状態が安全に消去（初期化）されました。")
+            await ctx.send("[SYSTEM] すべての学習・評価状態が初期化されました。")
 
         except Exception as e:
-            await msg.edit(content=f"エラー: 消去処理中に例外が発生しました (`{e}`)")
+            await msg.edit(content=f"[ERROR] 消去処理中に例外が発生しました: `{e}`")
 
     @commands.command(name="import_symbols")
     @commands.has_permissions(administrator=True)
     async def import_symbols(self, ctx: commands.Context):
         """Assets内のCSVファイルから銘柄マスターを再構築する管理者用コマンド"""
-        msg = await ctx.send(f"Assets 内のCSV (`{self.csv_source_file}`) から銘柄マスターをインポート中...")
+        msg = await ctx.send(f"[SYSTEM] CSV (`{self.csv_source_file}`) から銘柄マスターをインポート中...")
         try:
             count = await asyncio.to_thread(self.convert_csv_to_json)
-            await msg.edit(content=f"銘柄マスターのインポートが完了しました。対象銘柄数: {count}")
+            await msg.edit(content=f"[SYSTEM] 銘柄マスターのインポートが完了しました。対象銘柄数: {count}")
             self.sync_to_github("chore: import symbols from CSV")
         except FileNotFoundError:
-            await msg.edit(content=f"エラー: 指定されたCSVファイル (`{self.csv_source_file}`) が見つかりません。")
+            await msg.edit(content=f"[ERROR] 指定されたCSVファイル (`{self.csv_source_file}`) が見つかりません。")
         except Exception as e:
-            await msg.edit(content=f"エラーが発生しました: {e}")
+            await msg.edit(content=f"[ERROR] 例外発生: {e}")
 
     @commands.command(name="train_eta")
     async def train_eta(self, ctx: commands.Context, target_input: str = "random", auto_sync: bool = True):
         """【高精度単一学習コマンド】単一銘柄のモデルを学習・構築"""
-        status_msg = await ctx.send("学習対象の銘柄マスター照合中...")
+        status_msg = await ctx.send("[SYSTEM] 対象銘柄照合中...")
 
         symbol_info = None
         if target_input.lower() == "random":
@@ -462,41 +445,42 @@ class ModelEtaLgbCog(commands.Cog):
             symbol_info = self.find_symbol_info(target_input)
 
         if not symbol_info:
-            await status_msg.edit(content=f"エラー: 銘柄 `{target_input}` が見つかりませんでした。")
+            await status_msg.edit(content=f"[ERROR] 銘柄 `{target_input}` が見つかりませんでした。")
             return
 
         target_symbol = f"{symbol_info['code']}.T"
-        await status_msg.edit(content=f"高精度学習用データ取得中 (2年分)... ({symbol_info['name']} / {target_symbol})")
+        await status_msg.edit(content=f"[SYSTEM] 2年分ヒストリカルデータ取得中... ({symbol_info['name']} / {target_symbol})")
 
         try:
             df = await asyncio.to_thread(yf.download, target_symbol, period="2y", progress=False)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
         except Exception as e:
-            await status_msg.edit(content=f"エラー: データ取得失敗 (`{e}`)")
+            await status_msg.edit(content=f"[ERROR] データ取得失敗 (`{e}`)")
             return
 
         if df.empty or len(df) < 250:
-            await status_msg.edit(content=f"エラー: {symbol_info['name']} のデータ件数が不足しています(250日以上必要)。")
+            await status_msg.edit(content=f"[ERROR] {symbol_info['name']} のデータ件数が不足しています。")
             return
 
         res = await self.train_and_evaluate_model(symbol_info["code"], df, status_msg)
 
         if not res:
-            await status_msg.edit(content="エラー: 高精度モデル学習処理に失敗しました。")
+            await status_msg.edit(content="[ERROR] 高精度モデル学習処理に失敗しました。")
             return
 
         embed = discord.Embed(
-            title=f"モデル η (LightGBM {self.MODEL_VERSION}) 学習完了: {symbol_info['name']} ({target_symbol})",
-            description=f"モデルファイル: `{res['model_path']}`",
-            color=0x9b59b6,
+            title=f"MODEL ETA // TRAINING COMPLETE - {symbol_info['name']} ({target_symbol})",
+            description=f"**MARKET:** TSE {symbol_info['market']} | **VERSION:** `{self.MODEL_VERSION}`\n**PATH:** `{res['model_path']}`",
+            color=0x8A2BE2, # シックなヴァイオレット
         )
-        embed.add_field(name="学習完了日時", value=res["last_trained"][:19], inline=False)
-        embed.add_field(name="60日平均 Log Loss", value=f"**{res['avg_loss']:.4f}**", inline=True)
-        embed.add_field(name="60日検証勝率", value=f"**{res['accuracy']:.1f}%**", inline=True)
-        embed.add_field(name="算出適正閾値", value=f"BUY: `{res['buy_threshold']*100:.1f}%` | SELL: `{res['sell_threshold']*100:.1f}%`", inline=False)
+        embed.add_field(name="[ TIMESTAMP ]", value=f"`{res['last_trained'][:19].replace('T', ' ')}`", inline=False)
+        embed.add_field(name="[ LOG LOSS (60-STEP) ]", value=f"`{res['avg_loss']:.4f}`", inline=True)
+        embed.add_field(name="[ WIN RATE ]", value=f"`{res['accuracy']:.1f}%`", inline=True)
+        embed.add_field(name="[ DYNAMIC THRESHOLDS ]", value=f"BUY ≥ `{res['buy_threshold']*100:.1f}%` | SELL ≤ `{res['sell_threshold']*100:.1f}%`", inline=False)
+        embed.set_footer(text="MODEL ETA ENGINE // SYSTEM LOG")
 
-        await status_msg.edit(content="高精度モデルのローカル学習・保存が完了しました。", embed=embed)
+        await status_msg.edit(content="", embed=embed)
         
         if auto_sync:
             self.sync_to_github(f"feat: train precision model [{symbol_info['code']}]")
@@ -506,13 +490,13 @@ class ModelEtaLgbCog(commands.Cog):
     async def train_eta_batch(self, ctx: commands.Context, count: int = 5):
         """【一括学習バッチ】指定件数を連続学習し、終了時にまとめて Git 同期更新"""
         count = max(1, count)
-        batch_msg = await ctx.send(f"一括学習バッチ準備中 (全 {count} 銘柄)...")
+        batch_msg = await ctx.send(f"[BATCH] 一括学習プロセス初期化中... (全 {count} 銘柄)")
 
         success_count = 0
         for i in range(count):
             matched = random.choice(self.symbols_data)
-            progress_header = f"**[ 一括学習バッチ進行中: {i+1}/{count} 完了 ({((i+1)/count)*100:.1f}%) ]**\n現在ターゲット: **{matched['name']} ({matched['code']}.T)**"
-            await batch_msg.edit(content=f"{progress_header}\nデータ取得中...")
+            progress_header = f"**[ BATCH PROCESS: {i+1}/{count} COMPLETED ({((i+1)/count)*100:.1f}%) ]**\n**TARGET:** {matched['name']} ({matched['code']}.T)"
+            await batch_msg.edit(content=f"{progress_header}\n[SYSTEM] データ処理中...")
 
             target_symbol = f"{matched['code']}.T"
             try:
@@ -531,14 +515,14 @@ class ModelEtaLgbCog(commands.Cog):
 
             await asyncio.sleep(0.5)
 
-        await batch_msg.edit(content=f"全 {count} 銘柄中 {success_count} 銘柄の学習が完了しました。一括モデル同期(GitHub Push)を開始します...")
+        await batch_msg.edit(content=f"[BATCH] 全 {count} 銘柄中 {success_count} 銘柄の学習完了。GitHub 同期(Push)を実行中...")
         self.sync_to_github(f"feat: batch train complete [{success_count}/{count} models updated]")
-        await ctx.send(f"全 {count} 銘柄のモデル学習および一括更新（GitHub同期）が完了しました！")
+        await ctx.send(f"[SYSTEM] 全 {count} 銘柄のモデル学習および一括更新が正常に完了しました。")
 
     @commands.command(name="eta")
     async def predict_eta(self, ctx: commands.Context, target_input: str = "random"):
-        """【高速推論コマンド】保存済みモデルから即座に推論回答"""
-        status_msg = await ctx.send("銘柄照合中...")
+        """【詳細推論分析コマンド】シックでプロ仕様のクオンツ・テクニカル分析レポートを出力"""
+        status_msg = await ctx.send("[SYSTEM] 銘柄照合中...")
 
         symbol_info = None
         if target_input.lower() == "random":
@@ -547,7 +531,7 @@ class ModelEtaLgbCog(commands.Cog):
             symbol_info = self.find_symbol_info(target_input)
 
         if not symbol_info:
-            await status_msg.edit(content=f"エラー: 銘柄 `{target_input}` が見つかりませんでした。")
+            await status_msg.edit(content=f"[ERROR] 銘柄 `{target_input}` が見つかりませんでした。")
             return
 
         code = symbol_info["code"]
@@ -563,45 +547,49 @@ class ModelEtaLgbCog(commands.Cog):
         )
         has_cached_model = os.path.exists(model_path) and is_v2_model
 
-        await status_msg.edit(content=f"データ取得中... ({symbol_info['name']} / {target_symbol})")
+        await status_msg.edit(content=f"[SYSTEM] データフェッチ中... ({symbol_info['name']} / {target_symbol})")
 
         try:
             df = await asyncio.to_thread(yf.download, target_symbol, period="1y", progress=False)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
         except Exception as e:
-            await status_msg.edit(content=f"エラー: データ取得失敗 (`{e}`)")
+            await status_msg.edit(content=f"[ERROR] データ取得失敗 (`{e}`)")
             return
 
         if df.empty or len(df) < 30:
-            await status_msg.edit(content=f"エラー: データ件数が不足しています。")
+            await status_msg.edit(content=f"[ERROR] データ件数が不足しています。")
             return
 
+        # 指標計算
         df = self.calculate_indicators(df)
         feature_cols = [c for c in df.columns if c.startswith("feat_")]
         clean_df = df.dropna(subset=feature_cols)
 
         if clean_df.empty:
-            await status_msg.edit(content=f"エラー: 有効な特徴量が生成できませんでした。")
+            await status_msg.edit(content=f"[ERROR] 有効な特徴量が生成できませんでした。")
             return
 
         latest_features = clean_df[feature_cols].iloc[[-1]]
         latest_row = clean_df.iloc[-1]
+        latest_close = latest_row["Close"]
 
+        # モデルロードまたはオンデマンド学習
         if has_cached_model:
             model = lgb.Booster(model_file=model_path)
-            mode_text = f"高精度モデル ({self.MODEL_VERSION})"
+            mode_text = f"PRE-TRAINED HIGH-PRECISION MODEL ({self.MODEL_VERSION})"
             avg_loss = cached_eval["avg_loss"]
             accuracy = cached_eval["accuracy"]
             buy_t = cached_eval["buy_threshold"]
             sell_t = cached_eval["sell_threshold"]
+            last_trained_str = cached_eval.get("last_trained", "N/A")[:16].replace("T", " ")
         else:
-            mode_text = "オンデマンド即時推論 (未保存)"
+            mode_text = "ON-DEMAND REALTIME MODEL (SINGLE-SHOT)"
             X_train = clean_df[feature_cols].iloc[-150:-1]
             y_train = clean_df["target"].iloc[-150:-1]
             
             if len(np.unique(y_train)) < 2:
-                await status_msg.edit(content="エラー: 学習データのクラスが偏っているため推論できません。")
+                await status_msg.edit(content="[ERROR] 学習データのクラスが偏っているため推論できません。")
                 return
 
             train_data = lgb.Dataset(X_train, label=y_train)
@@ -619,31 +607,88 @@ class ModelEtaLgbCog(commands.Cog):
             accuracy = 50.0
             buy_t = 0.55
             sell_t = 0.45
+            last_trained_str = "REALTIME"
 
+        # 推論
         p_latest = float(model.predict(latest_features)[0])
 
+        # Feature Importance TOP 3
+        importance_scores = model.feature_importance(importance_type="gain")
+        feature_importance_df = pd.DataFrame({
+            "feature": feature_cols,
+            "importance": importance_scores
+        }).sort_values(by="importance", ascending=False)
+        
+        feature_name_map = {
+            "feat_macd": "MACD", "feat_macd_signal": "MACD-Signal", "feat_macd_hist": "MACD-Hist",
+            "feat_rsi": "RSI(14)", "feat_rci": "RCI(9)",
+            "feat_plus_di": "+DI", "feat_minus_di": "-DI", "feat_adx": "ADX",
+            "feat_stoch_k": "Stoch-%K", "feat_stoch_d": "Stoch-%D",
+            "feat_ma_bias": "MA-Bias(25)", "feat_psychological": "Psychological", "feat_momentum": "Momentum(10)"
+        }
+        
+        top_features_str = []
+        for _, row in feature_importance_df.head(3).iterrows():
+            f_label = feature_name_map.get(row['feature'], row['feature'])
+            top_features_str.append(f"`{f_label}`")
+        top3_features_text = " > ".join(top_features_str) if top_features_str else "N/A"
+
+        # シグナル判定およびカラーマッピング
         if p_latest >= buy_t:
-            signal = "BUY (買いシグナル)"
-            color = 0x2ecc71
+            signal_code = "BUY"
+            signal_label = "BUY // BULLISH SIGNAL DETECTED"
+            color = 0x00FFA3 # ネオンエメラルド
         elif p_latest <= sell_t:
-            signal = "SELL (売りシグナル)"
-            color = 0xe74c3c
+            signal_code = "SELL"
+            signal_label = "SELL // BEARISH SIGNAL DETECTED"
+            color = 0xFF0055 # ネオンクリムゾン
         else:
-            signal = "HOLD (静観)"
-            color = 0xf1c40f
+            signal_code = "HOLD"
+            signal_label = "HOLD // NEUTRAL RANGE"
+            color = 0xFFB800 # アンバースチール
+
+        prob_bar = self.make_progress_bar(p_latest)
 
         embed = discord.Embed(
-            title=f"モデル η (LightGBM) 推論レポート: {symbol_info['name']} ({target_symbol})",
-            description=f"推論モード: `{mode_text}` | 市場: 東証{symbol_info['market']}",
+            title=f"MODEL ETA // QUANTITATIVE ANALYSIS - {symbol_info['name']} ({target_symbol})",
+            description=f"**MARKET:** TSE {symbol_info['market']} | **CLOSE:** `¥{latest_close:,.1f}`\n`{signal_label}`",
             color=color,
         )
-        embed.add_field(name="判定シグナル", value=f"**{signal}**", inline=False)
-        embed.add_field(name="翌日上昇確率", value=f"**{p_latest * 100:.2f}%**", inline=True)
-        embed.add_field(name="検証 Loss", value=f"**{avg_loss:.4f}**", inline=True)
-        embed.add_field(name="検証勝率", value=f"{accuracy:.1f}%", inline=True)
-        embed.add_field(name="適用閾値", value=f"BUY 閾値: `{buy_t*100:.1f}%` | SELL 閾値: `{sell_t*100:.1f}%`", inline=False)
-        embed.add_field(name="主要テクニカル指標", value=f"RSI: `{latest_row['feat_rsi']:.1f}` | RCI: `{latest_row['feat_rci']:.1f}` | 25日乖離: `{latest_row['feat_ma_bias']:.2f}%`", inline=False)
-        embed.set_footer(text="Model Eta Precision Inference | Raspberry Pi Fully Engine")
+
+        embed.add_field(
+            name="[ SIGNAL & PROBABILITY ]",
+            value=f"```text\n"
+                  f"SIGNAL STATUS : {signal_code}\n"
+                  f"UP PROBABILITY: {p_latest * 100:.2f}% [{prob_bar}]\n"
+                  f"THRESHOLD     : BUY >= {buy_t*100:.1f}% | SELL <= {sell_t*100:.1f}%\n"
+                  f"```",
+            inline=False
+        )
+
+        embed.add_field(
+            name="[ TECHNICAL METRICS / 8-SYSTEM ANALYSIS ]",
+            value=f"• **TREND:** MACD `{latest_row['feat_macd']:.2f}` (Hist: `{latest_row['feat_macd_hist']:.2f}`) | MA Bias `{latest_row['feat_ma_bias']:.2f}%`\n"
+                  f"• **OSCILLATOR:** RSI `{latest_row['feat_rsi']:.1f}` | RCI `{latest_row['feat_rci']:.1f}` | Stoch %D `{latest_row['feat_stoch_d']:.1f}`\n"
+                  f"• **STRENGTH:** ADX `{latest_row['feat_adx']:.1f}` (+DI:`{latest_row['feat_plus_di']:.1f}` -DI:`{latest_row['feat_minus_di']:.1f}`) | Psy `{latest_row['feat_psychological']:.0f}%`",
+            inline=False
+        )
+
+        embed.add_field(
+            name="[ FEATURE IMPORTANCE / TOP 3 ]",
+            value=f"Dominant Drivers: {top3_features_text}",
+            inline=False
+        )
+
+        embed.add_field(
+            name="[ MODEL HEALTH & VALIDATION ]",
+            value=f"• **MODE:** `{mode_text}`\n"
+                  f"• **LAST TRAINED:** `{last_trained_str}`\n"
+                  f"• **60-STEP LOG LOSS:** `{avg_loss:.4f}` (Baseline: 0.6930)\n"
+                  f"• **VALIDATION ACCURACY:** `{accuracy:.1f}%`",
+            inline=False
+        )
+
+        embed.set_footer(text=f"MODEL ETA PRECISION ENGINE | VER {self.MODEL_VERSION} | QUANT SYSTEM")
 
         await status_msg.edit(content="", embed=embed)
 
@@ -657,7 +702,7 @@ class ModelEtaLgbCog(commands.Cog):
             "accuracy": round(accuracy, 2),
             "buy_threshold": round(buy_t, 2),
             "sell_threshold": round(sell_t, 2),
-            "signal": signal,
+            "signal": signal_code,
         }
         
         file_exists = os.path.exists(self.log_file)
@@ -671,5 +716,4 @@ async def setup(bot: commands.Bot):
         print("[ModelEta Error] 依存ライブラリ不足のため ModelEtaCog のロードを中止します。", file=sys.stderr)
         return
     await bot.add_cog(ModelEtaLgbCog(bot))
-    print("[ModelEta] ModelEtaLgbCog (Git同期デバッグ強化版) が正常にロードされました。")
-
+    print("[ModelEta] ModelEtaLgbCog (シックデザイン版) が正常にロードされました。")
