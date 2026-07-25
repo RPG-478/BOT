@@ -47,17 +47,6 @@ class ModelEtaCog(commands.Cog):
 
     # --- 8つのテクニカル指標算出 (標準偏差を除く) ---
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        8つのテクニカル指標を計算
-        1. MACD
-        2. RSI
-        3. RCI
-        4. DMI
-        5. ストキャスティクス
-        6. 移動平均乖離率
-        7. サイコロジカルライン
-        8. モメンタム
-        """
         close = df["Close"]
         high = df["High"]
         low = df["Low"]
@@ -133,7 +122,6 @@ class ModelEtaCog(commands.Cog):
     async def run_eta_rolling_pipeline(
         self, df: pd.DataFrame, status_msg: discord.Message, symbol_name: str
     ) -> Optional[Dict[str, Any]]:
-        """100日学習×30日ローリング分析および Discord 進捗メッセージの書き換え"""
         df = self.calculate_indicators(df)
         feature_cols = [c for c in df.columns if c.startswith("feat_")]
         clean_df = df.dropna(subset=feature_cols + ["target"])
@@ -145,7 +133,6 @@ class ModelEtaCog(commands.Cog):
         actuals = []
         losses = []
 
-        # 30回ローリング学習
         for i in range(30):
             idx_end = len(clean_df) - 30 + i
             sub_df = clean_df.iloc[idx_end - 100 : idx_end]
@@ -157,7 +144,6 @@ class ModelEtaCog(commands.Cog):
             y_train = sub_df["target"].iloc[:-1]
             X_latest = sub_df[feature_cols].iloc[[-1]]
 
-            # クラス不均衡等への安全策（1クラスしかない場合はスキップ）
             if len(np.unique(y_train)) < 2:
                 continue
 
@@ -174,12 +160,10 @@ class ModelEtaCog(commands.Cog):
             probs.append(prob)
             actuals.append(actual)
 
-            # 単発 Log Loss 計算 (数値クリッピングで対数発散防止)
             p_clipped = np.clip(prob, 1e-15, 1 - 1e-15)
             single_loss = -(actual * np.log(p_clipped) + (1 - actual) * np.log(1 - p_clipped))
             losses.append(single_loss)
 
-            # 進捗メッセージの更新（5ステップ毎または最終ステップ）
             if (i + 1) % 5 == 0 or i == 29:
                 current_loss_avg = float(np.mean(losses)) if losses else 0.693
                 try:
@@ -197,21 +181,17 @@ class ModelEtaCog(commands.Cog):
         avg_prob = float(np.mean(probs))
         avg_loss = float(np.mean(losses)) if losses else 0.693
 
-        # 的中率 (勝率) の算出
         predictions = [1 if p >= 0.5 else 0 for p in probs]
         matches = sum(1 for p, a in zip(predictions, actuals) if p == a)
         accuracy = (matches / len(probs)) * 100 if probs else 0.0
 
-        # 動的シグナル閾値の計算
         buy_threshold = 0.55
         sell_threshold = 0.45
 
         if avg_loss >= 0.693:
-            # モデル不調・高ノイズ時: 判定を慎重に
             buy_threshold += 0.05
             sell_threshold -= 0.05
         elif avg_loss < 0.650:
-            # モデル順調時: 追従性を向上
             buy_threshold -= 0.02
             sell_threshold += 0.02
 
@@ -231,7 +211,6 @@ class ModelEtaCog(commands.Cog):
 
     # --- ログ書き込み & Git Push ---
     def log_and_push(self, record: Dict[str, Any]):
-        """予測結果をCSVに追記し、GitHubへAuto Push"""
         file_exists = os.path.exists(self.log_file)
         df_log = pd.DataFrame([record])
         df_log.to_csv(self.log_file, mode="a", header=not file_exists, index=False)
@@ -253,11 +232,9 @@ class ModelEtaCog(commands.Cog):
     # --- 銘柄検索ユーティリティ ---
     def find_symbol_info(self, query: str) -> Optional[Dict[str, str]]:
         query = query.replace(".T", "").replace(".t", "").strip()
-        # 完全一致検索 (コード)
         for s in self.symbols_data:
             if s["code"] == query:
                 return s
-        # あいまい一致検索 (銘柄名)
         for s in self.symbols_data:
             if query in s["name"]:
                 return s
@@ -288,7 +265,6 @@ class ModelEtaCog(commands.Cog):
         target_symbol = f"{symbol_info['code']}.T"
         await status_msg.edit(content=f"株価データダウンロード中... (160日分: {symbol_info['name']} / {target_symbol})")
 
-        # データ取得
         try:
             df = await asyncio.to_thread(
                 yf.download, target_symbol, period="1y", progress=False
@@ -303,7 +279,6 @@ class ModelEtaCog(commands.Cog):
             await status_msg.edit(content=f"エラー: {symbol_info['name']} の日足データ件数が不足しています。")
             return
 
-        # パイプライン実行
         result = await self.run_eta_rolling_pipeline(df, status_msg, symbol_info["name"])
 
         if not result:
@@ -381,7 +356,7 @@ class ModelEtaCog(commands.Cog):
 
         await ctx.send(f"全 {count} 銘柄の分析処理が完了しました。")
 
-    # --- 銘柄マスター自動更新コマンド ---
+    # --- 銘柄マスター自動更新コマンド (HTTP 404 回避修正) ---
     @commands.command(name="update_symbols")
     @commands.has_permissions(administrator=True)
     async def update_symbols_cmd(self, ctx: commands.Context):
@@ -389,8 +364,16 @@ class ModelEtaCog(commands.Cog):
         msg = await ctx.send("JPX公式サイトより全東証銘柄データ(CSV)を取得中...")
 
         def fetch_jpx():
+            # ヘッダー付与による 403 / 404 回避処理
             url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.csv"
-            df = pd.read_csv(url, encoding="shift_jis")
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            )
+            
+            with urllib.request.urlopen(req) as response:
+                df = pd.read_csv(response, encoding="shift_jis")
+
             target_markets = ["プライム（内国株式）", "スタンダード（内国株式）", "グロース（内国株式）"]
             filtered = df[df["市場・商品区分"].isin(target_markets)]
 
@@ -398,7 +381,7 @@ class ModelEtaCog(commands.Cog):
             for _, row in filtered.iterrows():
                 code = str(row["コード"]).strip()
                 if len(code) == 4 and code.isdigit():
-                    market_raw = row["市場・商品区分"]
+                    market_raw = str(row["市場・商品区分"])
                     market_name = "Prime" if "プライム" in market_raw else ("Standard" if "スタンダード" in market_raw else "Growth")
                     symbols_list.append({
                         "code": code,
