@@ -9,21 +9,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# =========================================================
-# 実行を許可するDiscordユーザーIDのリスト
-# 例: [123456789012345678, 987654321098765432]
-# 環境変数 ALLOWED_USER_IDS="123456789,987654321" からも自動読み込みします
-# =========================================================
 ALLOWED_USER_IDS = [1320705325686587408]
-
-# ここに自分のDiscordユーザーID（数値）を直接書き込んでも構いません
-# ALLOWED_USER_IDS.append(123456789012345678)
-
 
 def is_authorized_user():
     """実行ユーザーの制限チェック"""
     async def predicate(ctx: commands.Context):
-        # Botのオーナー（作成者）または指定ユーザーリストに含まれていれば許可
         if await ctx.bot.is_owner(ctx.author) or ctx.author.id in ALLOWED_USER_IDS:
             return True
         
