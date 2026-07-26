@@ -11,3 +11,4 @@ scikit-learn>=1.4.0
 lightgbm>=4.0.0
 psutil
 PyGithub
+python-dotenv
