@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 import discord
 from discord.ext import commands
 from google import genai
@@ -27,10 +28,10 @@ class AIAgentCog(commands.Cog):
         self.bot = bot
         self.github_token = os.getenv("GITHUB_TOKEN")
         self.repo_name = os.getenv("GITHUB_REPO")
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
 
     def _get_gemini_client(self):
-        api_key = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
-        return genai.Client(api_key=api_key)
+        return genai.Client(api_key=self.gemini_api_key)
 
     def _fetch_entire_repository(self, repo) -> str:
         """リポジトリ内の主要テキストファイルの中身を取得して1つにまとめる"""
@@ -54,84 +55,92 @@ class AIAgentCog(commands.Cog):
 
         return "\n".join(repo_context)
 
+    def _process_ai_task(self, instruction: str):
+        """GitHub取得・Gemini呼び出し・コミット処理を一元して行う同期メソッド"""
+        gemini_client = self._get_gemini_client()
+        github_client = Github(self.github_token)
+        repo = github_client.get_repo(self.repo_name)
+
+        full_repo_code = self._fetch_entire_repository(repo)
+
+        system_instruction = (
+            "あなたはGitHubリポジトリ全体を正確に理解して開発を行うフルスタックAIエンジニアです。"
+            "提供された全リポジトリのコードと構成を分析し、ユーザーの指示を達成するためのコード変更・追加を行ってください。\n"
+            "複数ファイルの編集や新規作成に対応できます。"
+            "出力は解説などを含めず、必ず以下のJSONフォーマットのみを返してください。\n"
+            "フォーマット:\n"
+            "{\n"
+            '  "commit_message": "コミットメッセージ",\n'
+            '  "changes": [\n'
+            '    {\n'
+            '      "file_path": "対象ファイルのパス",\n'
+            '      "content": "変更または新規作成後のファイル全文"\n'
+            '    }\n'
+            '  ]\n'
+            "}"
+        )
+
+        prompt = (
+            f"以下は現在のGitHubリポジトリ全体のソースコードです:\n\n"
+            f"{full_repo_code}\n\n"
+            f"指示: {instruction}"
+        )
+
+        # gemini-3.5-flash を使用
+        response = gemini_client.models.generate_content(
+            model="gemini-3.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                response_mime_type="application/json"
+            )
+        )
+
+        result = json.loads(response.text)
+        commit_msg = result.get("commit_message", "AI auto commit")
+        changes = result.get("changes", [])
+
+        if not changes:
+            return commit_msg, []
+
+        processed_files = []
+
+        for change in changes:
+            target_path = change["file_path"]
+            new_content = change["content"]
+
+            try:
+                current_file = repo.get_contents(target_path)
+                repo.update_file(
+                    path=target_path,
+                    message=f"[AI] {commit_msg}",
+                    content=new_content,
+                    sha=current_file.sha
+                )
+                processed_files.append(f"更新: `{target_path}`")
+            except GithubException:
+                repo.create_file(
+                    path=target_path,
+                    message=f"[AI] {commit_msg}",
+                    content=new_content
+                )
+                processed_files.append(f"作成: `{target_path}`")
+
+        return commit_msg, processed_files
+
     @commands.command(name="ai")
     @is_authorized_user()
     async def ai_dev(self, ctx: commands.Context, *, instruction: str):
         async with ctx.typing():
             try:
-                # Geminiクライアントの初期化
-                gemini_client = self._get_gemini_client()
-                
-                # GitHubクライアントの初期化
-                github_client = Github(self.github_token)
-                repo = github_client.get_repo(self.repo_name)
-
-                # リポジトリ全体のソースコードを取得
-                full_repo_code = self._fetch_entire_repository(repo)
-
-                system_instruction = (
-                    "あなたはGitHubリポジトリ全体を正確に理解して開発を行うフルスタックAIエンジニアです。"
-                    "提供された全リポジトリのコードと構成を分析し、ユーザーの指示を達成するためのコード変更・追加を行ってください。\n"
-                    "複数ファイルの編集や新規作成に対応できます。"
-                    "出力は解説などを含めず、必ず以下のJSONフォーマットのみを返してください。\n"
-                    "フォーマット:\n"
-                    "{\n"
-                    '  "commit_message": "コミットメッセージ",\n'
-                    '  "changes": [\n'
-                    '    {\n'
-                    '      "file_path": "対象ファイルのパス",\n'
-                    '      "content": "変更または新規作成後のファイル全文"\n'
-                    '    }\n'
-                    '  ]\n'
-                    "}"
+                # ブロッキングな一連の処理を asyncio.to_thread で別スレッドに逃がす
+                commit_msg, processed_files = await asyncio.to_thread(
+                    self._process_ai_task, instruction
                 )
 
-                prompt = (
-                    f"以下は現在のGitHubリポジトリ全体のソースコードです:\n\n"
-                    f"{full_repo_code}\n\n"
-                    f"指示: {instruction}"
-                )
-
-                response = gemini_client.models.generate_content(
-                    model="gemini-3.5-flash",
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        response_mime_type="application/json"
-                    )
-                )
-
-                result = json.loads(response.text)
-                commit_msg = result.get("commit_message", "AI auto commit")
-                changes = result.get("changes", [])
-
-                if not changes:
+                if not processed_files:
                     await ctx.send("変更対象のファイルがありませんでした。")
                     return
-
-                processed_files = []
-
-                # GitHubへ順次コミット＆プッシュ
-                for change in changes:
-                    target_path = change["file_path"]
-                    new_content = change["content"]
-
-                    try:
-                        current_file = repo.get_contents(target_path)
-                        repo.update_file(
-                            path=target_path,
-                            message=f"[AI] {commit_msg}",
-                            content=new_content,
-                            sha=current_file.sha
-                        )
-                        processed_files.append(f"更新: `{target_path}`")
-                    except GithubException:
-                        repo.create_file(
-                            path=target_path,
-                            message=f"[AI] {commit_msg}",
-                            content=new_content
-                        )
-                        processed_files.append(f"作成: `{target_path}`")
 
                 embed = discord.Embed(
                     title="AI開発タスク完了",
