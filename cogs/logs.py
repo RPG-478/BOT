@@ -7,7 +7,7 @@ class LogsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.command(name="logs")
+    @commands.command(name="tarmlogs")
     async def logs(self, ctx):
         try:
             result = subprocess.run(
