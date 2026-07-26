@@ -39,10 +39,7 @@ class AIAgentCog(commands.Cog):
         self.repo_name = os.getenv("GITHUB_REPO")
 
     def _get_gemini_client(self):
-        # OSの環境変数等から GEMINI_API_KEY を取得
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise ValueError("OS環境変数に `GEMINI_API_KEY` が設定されていません。")
+        api_key = ""
         return genai.Client(api_key=api_key)
 
     def _fetch_entire_repository(self, repo) -> str:
