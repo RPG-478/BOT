@@ -1,17 +1,92 @@
 import asyncio
-import io
 import os
+import pty
 import discord
 from discord.ext import commands
 
 ALLOWED_USER_ID = 1320705325686587408
 TARGET_DIR = os.path.expanduser("~/BOT")
 
-class TerminalModal(discord.ui.Modal, title="ターミナルコマンド実行"):
+async def run_interactive_terminal(bot, thread, cmd):
+    full_command = f"cd {TARGET_DIR} && source venv/bin/activate && {cmd}"
+    master, slave = pty.openpty()
+    
+    try:
+        process = await asyncio.create_subprocess_shell(
+            full_command,
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            executable="/bin/bash"
+        )
+        os.close(slave)
+        
+        loop = asyncio.get_running_loop()
+        output_buffer = ""
+        
+        async def read_output():
+            nonlocal output_buffer
+            while True:
+                try:
+                    data = await loop.run_in_executor(None, os.read, master, 1024)
+                    if not data:
+                        break
+                    text = data.decode("utf-8", errors="replace")
+                    output_buffer += text
+                except OSError:
+                    break
+
+        read_task = asyncio.create_task(read_output())
+        last_sent_len = 0
+        
+        def check_message(m):
+            return m.channel.id == thread.id and m.author.id == ALLOWED_USER_ID
+
+        await thread.send(f"実行開始: `{cmd}`\n強制終了する場合は `cancel` と送信してください。")
+
+        while process.returncode is None:
+            await asyncio.sleep(1.0)
+            
+            if len(output_buffer) > last_sent_len:
+                new_text = output_buffer[last_sent_len:]
+                last_sent_len = len(output_buffer)
+                
+                if len(new_text.strip()) > 0:
+                    if len(new_text) > 1900:
+                        new_text = new_text[-1900:]
+                    await thread.send(f"```bash\n{new_text}\n```")
+
+            try:
+                msg = await bot.wait_for("message", check=check_message, timeout=0.1)
+                user_input = msg.content.strip()
+                if user_input.lower() == "cancel":
+                    process.kill()
+                    await thread.send("プロセスの実行を強制終了しました。")
+                    break
+                os.write(master, (user_input + "\n").encode("utf-8"))
+            except asyncio.TimeoutError:
+                pass
+
+        await read_task
+        
+        if len(output_buffer) > last_sent_len:
+            remaining = output_buffer[last_sent_len:]
+            if remaining.strip():
+                await thread.send(f"```bash\n{remaining}\n```")
+
+        await thread.send("処理が終了しました。")
+
+    finally:
+        try:
+            os.close(master)
+        except OSError:
+            pass
+
+class TerminalModal(discord.ui.Modal, title="対話ターミナル実行"):
     command_input = discord.ui.TextInput(
         label="実行コマンド",
         style=discord.TextStyle.paragraph,
-        placeholder="pip list や python main.py など",
+        placeholder="sudo apt update や python main.py など",
         required=True
     )
 
@@ -21,33 +96,19 @@ class TerminalModal(discord.ui.Modal, title="ターミナルコマンド実行")
             return
 
         await interaction.response.defer(thinking=True)
-        
         cmd = self.command_input.value
-        full_command = f"cd {TARGET_DIR} && source venv/bin/activate && {cmd}"
-        
-        process = await asyncio.create_subprocess_shell(
-            full_command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            executable="/bin/bash"
-        )
-        
-        stdout, stderr = await process.communicate()
-        output = (stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace")).strip()
-        
-        if not output:
-            output = "(出力なし)"
-            
-        if len(output) > 1900:
-            file_data = io.BytesIO(output.encode("utf-8"))
-            await interaction.followup.send(
-                content=f"実行コマンド: `{cmd}`",
-                file=discord.File(file_data, filename="terminal_log.txt")
+
+        if isinstance(interaction.channel, discord.TextChannel):
+            thread = await interaction.channel.create_thread(
+                name=f"term-{cmd[:15]}".replace(" ", "-"),
+                auto_archive_duration=60
             )
         else:
-            await interaction.followup.send(
-                content=f"**実行コマンド:** `{cmd}`\n```bash\n{output}\n```"
-            )
+            await interaction.followup.send("テキストチャンネル内で実行してください。", ephemeral=True)
+            return
+
+        await interaction.followup.send(f"スレッドを作成しました: {thread.mention}")
+        asyncio.create_task(run_interactive_terminal(interaction.client, thread, cmd))
 
 class TerminalView(discord.ui.View):
     def __init__(self):
@@ -70,8 +131,8 @@ class TerminalCog(commands.Cog):
             return
         
         embed = discord.Embed(
-            title="ラズパイ 擬似ターミナル",
-            description=f"下のボタンを押して実行するコマンドを入力してください。\n実行パス: `{TARGET_DIR}`\n環境: `venv` アクティベート済み",
+            title="ラズパイ 擬似ターミナル (対話対応)",
+            description=f"下のボタンを押してコマンドを入力してください。\n実行時に作成されるスレッド内で入力応答が可能です。\n実行パス: `{TARGET_DIR}`",
             color=discord.Color.blue()
         )
         await ctx.send(embed=embed, view=TerminalView())
