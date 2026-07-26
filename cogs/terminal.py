@@ -10,7 +10,7 @@ TARGET_DIR = os.path.expanduser("~/BOT")
 async def run_interactive_terminal(bot, thread, cmd):
     full_command = f"cd {TARGET_DIR} && source venv/bin/activate && {cmd}"
     master, slave = pty.openpty()
-    
+
     try:
         process = await asyncio.create_subprocess_shell(
             full_command,
@@ -20,59 +20,76 @@ async def run_interactive_terminal(bot, thread, cmd):
             executable="/bin/bash"
         )
         os.close(slave)
-        
+
         loop = asyncio.get_running_loop()
-        output_buffer = ""
-        
+        input_queue = asyncio.Queue()
+
+        def check_message(m):
+            return m.channel.id == thread.id and m.author.id == ALLOWED_USER_ID
+
+        async def listen_messages():
+            while True:
+                try:
+                    msg = await bot.wait_for("message", check=check_message)
+                    await input_queue.put(msg.content.strip())
+                except asyncio.CancelledError:
+                    break
+
         async def read_output():
-            nonlocal output_buffer
             while True:
                 try:
                     data = await loop.run_in_executor(None, os.read, master, 1024)
                     if not data:
                         break
                     text = data.decode("utf-8", errors="replace")
-                    output_buffer += text
+                    
+                    await asyncio.sleep(0.1)
+                    while True:
+                        try:
+                            more_data = os.read(master, 1024)
+                            if not more_data:
+                                break
+                            text += more_data.decode("utf-8", errors="replace")
+                        except OSError:
+                            break
+
+                    if len(text.strip()) > 0:
+                        if len(text) > 1900:
+                            text = text[-1900:]
+                        await thread.send(f"```bash\n{text}\n```")
                 except OSError:
                     break
 
-        read_task = asyncio.create_task(read_output())
-        last_sent_len = 0
-        
-        def check_message(m):
-            return m.channel.id == thread.id and m.author.id == ALLOWED_USER_ID
-
-        await thread.send(f"実行開始: `{cmd}`\n強制終了する場合は `cancel` と送信してください。")
-
-        while process.returncode is None:
-            await asyncio.sleep(1.0)
-            
-            if len(output_buffer) > last_sent_len:
-                new_text = output_buffer[last_sent_len:]
-                last_sent_len = len(output_buffer)
-                
-                if len(new_text.strip()) > 0:
-                    if len(new_text) > 1900:
-                        new_text = new_text[-1900:]
-                    await thread.send(f"```bash\n{new_text}\n```")
-
-            try:
-                msg = await bot.wait_for("message", check=check_message, timeout=0.1)
-                user_input = msg.content.strip()
+        async def handle_input():
+            while True:
+                user_input = await input_queue.get()
                 if user_input.lower() == "cancel":
-                    process.kill()
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
                     await thread.send("プロセスの実行を強制終了しました。")
                     break
-                os.write(master, (user_input + "\n").encode("utf-8"))
-            except asyncio.TimeoutError:
-                pass
+                try:
+                    os.write(master, (user_input + "\n").encode("utf-8"))
+                except OSError:
+                    break
 
-        await read_task
+        await thread.send(f"実行開始: `{cmd}`\nキャンセルする場合は `cancel` と送信してください。")
+
+        listener_task = asyncio.create_task(listen_messages())
+        reader_task = asyncio.create_task(read_output())
+        writer_task = asyncio.create_task(handle_input())
+
+        await process.wait()
+
+        listener_task.cancel()
+        writer_task.cancel()
         
-        if len(output_buffer) > last_sent_len:
-            remaining = output_buffer[last_sent_len:]
-            if remaining.strip():
-                await thread.send(f"```bash\n{remaining}\n```")
+        try:
+            await reader_task
+        except Exception:
+            pass
 
         await thread.send("処理が終了しました。")
 
