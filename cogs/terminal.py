@@ -11,6 +11,9 @@ async def run_interactive_terminal(bot, thread, cmd):
     full_command = f"cd {TARGET_DIR} && source venv/bin/activate && {cmd}"
     master, slave = pty.openpty()
 
+    # masterを非ブロックモードに設定（イベントループのフリーズ防止）
+    os.set_blocking(master, False)
+
     try:
         process = await asyncio.create_subprocess_shell(
             full_command,
@@ -21,7 +24,6 @@ async def run_interactive_terminal(bot, thread, cmd):
         )
         os.close(slave)
 
-        loop = asyncio.get_running_loop()
         input_queue = asyncio.Queue()
 
         def check_message(m):
@@ -36,28 +38,31 @@ async def run_interactive_terminal(bot, thread, cmd):
                     break
 
         async def read_output():
+            output_buffer = ""
             while True:
                 try:
-                    data = await loop.run_in_executor(None, os.read, master, 1024)
-                    if not data:
-                        break
-                    text = data.decode("utf-8", errors="replace")
-                    
-                    await asyncio.sleep(0.1)
-                    while True:
-                        try:
-                            more_data = os.read(master, 1024)
-                            if not more_data:
-                                break
-                            text += more_data.decode("utf-8", errors="replace")
-                        except OSError:
-                            break
+                    try:
+                        data = os.read(master, 1024)
+                    except (BlockingIOError, OSError):
+                        data = None
 
-                    if len(text.strip()) > 0:
-                        if len(text) > 1900:
-                            text = text[-1900:]
-                        await thread.send(f"```bash\n{text}\n```")
-                except OSError:
+                    if data:
+                        output_buffer += data.decode("utf-8", errors="replace")
+
+                    # 出力バッファが存在し、一時的に追加データが無くなったタイミングでDiscordに送信
+                    if output_buffer and not data:
+                        text_to_send = output_buffer
+                        output_buffer = ""
+                        if len(text_to_send.strip()) > 0:
+                            if len(text_to_send) > 1900:
+                                text_to_send = text_to_send[-1900:]
+                            await thread.send(f"```bash\n{text_to_send}\n```")
+
+                    if process.returncode is not None and not data:
+                        break
+
+                    await asyncio.sleep(0.2)
+                except asyncio.CancelledError:
                     break
 
         async def handle_input():
@@ -83,13 +88,12 @@ async def run_interactive_terminal(bot, thread, cmd):
 
         await process.wait()
 
+        # 残りの出力を読み切るための猶予時間
+        await asyncio.sleep(0.5)
+
         listener_task.cancel()
+        reader_task.cancel()
         writer_task.cancel()
-        
-        try:
-            await reader_task
-        except Exception:
-            pass
 
         await thread.send("処理が終了しました。")
 
@@ -103,7 +107,7 @@ class TerminalModal(discord.ui.Modal, title="対話ターミナル実行"):
     command_input = discord.ui.TextInput(
         label="実行コマンド",
         style=discord.TextStyle.paragraph,
-        placeholder="sudo apt update や python main.py など",
+        placeholder="sudo certbot --- や python main.py など",
         required=True
     )
 
