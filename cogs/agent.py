@@ -29,7 +29,7 @@ class AIAgentCog(commands.Cog):
         self.repo_name = os.getenv("GITHUB_REPO")
 
     def _get_gemini_client(self):
-        api_key = ""
+        api_key = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
         return genai.Client(api_key=api_key)
 
     def _fetch_entire_repository(self, repo) -> str:
