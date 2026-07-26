@@ -1,7 +1,7 @@
 {
   "7203": {
     "version": "v2_precision",
-    "last_trained": "2026-07-26T10:04:05.502179",
+    "last_trained": "2026-07-26T10:04:59.301478",
     "rolling_steps": 60,
     "avg_loss": 0.7298458980806971,
     "accuracy": 58.333333333333336,
