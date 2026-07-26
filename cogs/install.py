@@ -1,39 +1,4 @@
-import sys
-import subprocess
-from pathlib import Path
-
-REQUIRED_PACKAGES = [
-    "psutil>=5.9.0"
-]
-
-def check_and_install_packages():
-    print("=== 1. 依存ライブラリの確認とインストール ===")
-    for pkg in REQUIRED_PACKAGES:
-        pkg_name = pkg.split(">=")[0]
-        try:
-            __import__(pkg_name)
-            print(f"  [OK] {pkg_name} は既にインストールされています。")
-        except ImportError:
-            print(f"  [+] {pkg_name} が見つかりません。インストール中...")
-            try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
-                print(f"  [OK] {pkg_name} のインストールに成功しました。")
-            except subprocess.CalledProcessError as e:
-                print(f"  [Error] {pkg_name} のインストールに失敗しました: {e}")
-                sys.exit(1)
-
-def setup_cogs_directory():
-    print("\n=== 2. cogs ディレクトリ構造のセットアップ ===")
-    cogs_dir = Path("cogs")
-    if not cogs_dir.exists():
-        cogs_dir.mkdir(parents=True, exist_ok=True)
-        print("  [+] 'cogs' ディレクトリを作成しました。")
-    else:
-        print("  [OK] 'cogs' ディレクトリは既に存在します。")
-
-    target_file = cogs_dir / "system_stats.py"
-    
-    cog_code = """import datetime
+import datetime
 import os
 import platform
 import subprocess
@@ -92,12 +57,12 @@ class SystemStatsCog(commands.Cog):
                     tree_lines.append(f"{prefix}{connector}{entry.name}")
 
         build_tree(root_dir)
-        tree_text = "\\n".join(tree_lines)
+        tree_text = "\n".join(tree_lines)
         
         if len(tree_text) > 950:
-            tree_text = tree_text[:900] + "\\n... (省略されました)"
+            tree_text = tree_text[:900] + "\n... (省略されました)"
 
-        return f"```\\n{tree_text}\\n```" if tree_text else "`.py` ファイルが見つかりません"
+        return f"```\n{tree_text}\n```" if tree_text else "`.py` ファイルが見つかりません"
 
     @commands.command(name="all_stats", aliases=["stats", "spec"])
     async def all_stats(self, ctx: commands.Context):
@@ -138,8 +103,8 @@ class SystemStatsCog(commands.Cog):
             embed.add_field(
                 name="Bot状態",
                 value=(
-                    f"**Ping:** `{ping} ms`\\n"
-                    f"**稼働時間:** `{uptime_str}`\\n"
+                    f"**Ping:** `{ping} ms`\n"
+                    f"**稼働時間:** `{uptime_str}`\n"
                     f"**Python:** `v{platform.python_version()}` | **discord.py:** `v{discord.__version__}`"
                 ),
                 inline=False
@@ -148,9 +113,9 @@ class SystemStatsCog(commands.Cog):
             embed.add_field(
                 name="サーバースペック (全体)",
                 value=(
-                    f"**OS:** `{platform.system()} {platform.release()}`\\n"
-                    f"**CPU使用率:** `{cpu_usage}%` ({cpu_count} Cores)\\n"
-                    f"**RAM:** `{mem_used_gb} GB / {mem_total_gb} GB` ({mem.percent}%)\\n"
+                    f"**OS:** `{platform.system()} {platform.release()}`\n"
+                    f"**CPU使用率:** `{cpu_usage}%` ({cpu_count} Cores)\n"
+                    f"**RAM:** `{mem_used_gb} GB / {mem_total_gb} GB` ({mem.percent}%)\n"
                     f"**Disk:** `{disk_free_gb} GB 空き / {disk_total_gb} GB` ({disk.percent}%)"
                 ),
                 inline=True
@@ -159,7 +124,7 @@ class SystemStatsCog(commands.Cog):
             embed.add_field(
                 name="Botプロセス (単体)",
                 value=(
-                    f"**メモリ使用量:** `{bot_mem_mb} MB`\\n"
+                    f"**メモリ使用量:** `{bot_mem_mb} MB`\n"
                     f"**CPU使用率:** `{bot_cpu_usage}%`"
                 ),
                 inline=True
@@ -168,8 +133,8 @@ class SystemStatsCog(commands.Cog):
             embed.add_field(
                 name="Discord接続規模",
                 value=(
-                    f"**参加サーバー数:** `{guild_count}`\\n"
-                    f"**アクセスユーザー数:** `{user_count}`\\n"
+                    f"**参加サーバー数:** `{guild_count}`\n"
+                    f"**アクセスユーザー数:** `{user_count}`\n"
                     f"**読み込み済Cog:** {loaded_cogs}"
                 ),
                 inline=False
@@ -193,17 +158,3 @@ class SystemStatsCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SystemStatsCog(bot))
-"""
-
-    if not target_file.exists():
-        with open(target_file, "w", encoding="utf-8") as f:
-            f.write(cog_code.strip())
-        print(f"  [+] '{target_file}' を自動生成しました。")
-    else:
-        print(f"  [INFO] '{target_file}' は既に存在するため上書きしませんでした。")
-
-if __name__ == "__main__":
-    print("=== Discord Bot ステータスCog インストーラー ===\n")
-    check_and_install_packages()
-    setup_cogs_directory()
-    print("\nセットアップが完了しました。")
