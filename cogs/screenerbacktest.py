@@ -377,7 +377,8 @@ class RealisticBacktestEngine:
         for pos in self.positions:
             df = self.data_map.get(pos.symbol)
             if df is not None and current_date in df.index:
-                price = float(df.loc[current_date, "Close"])
+                val = df.loc[current_date, "Close"]
+                price = float(val.iloc[0] if isinstance(val, pd.Series) else val)
                 pos.current_price = price
                 if pos.side == "LONG":
                     pos.unrealized_pnl = (price - pos.entry_price) * pos.shares
@@ -386,17 +387,12 @@ class RealisticBacktestEngine:
                     daily_short_fee = (pos.entry_price * pos.shares) * self.config.short_fee_daily
                     self.cash -= daily_short_fee
 
-# ==========================================
-# RealisticBacktestEngine 内の該当メソッド差し替え
-# ==========================================
-
     def _process_exits_and_adjustments(self, current_date: pd.Timestamp):
         positions_to_remove = []
 
         total_portfolio_val = self.cash + sum(p.unrealized_pnl for p in self.positions)
         total_unrealized_loss = sum(p.unrealized_pnl for p in self.positions if p.unrealized_pnl < 0)
 
-        # ヘッジ発動対象のポジションを抽出（ループ外で注文発注を行うことでリスト破壊を防止）
         hedge_targets = []
         if self.config.allow_hedge and total_portfolio_val > 0 and (abs(total_unrealized_loss) / total_portfolio_val) >= self.config.hedge_trigger_drawdown:
             for p in self.positions:
@@ -419,12 +415,21 @@ class RealisticBacktestEngine:
             exit_needed = False
             exit_reason = ""
 
-            if pos.stop_loss_price and current_price <= pos.stop_loss_price and pos.side == "LONG":
-                exit_needed = True
-                exit_reason = "STOP_LOSS"
-            elif pos.take_profit_price and current_price >= pos.take_profit_price and pos.side == "LONG":
-                exit_needed = True
-                exit_reason = "TAKE_PROFIT"
+            # LONG / SHORT 両対応のストップロス・テイクプロフィット判定
+            if pos.side == "LONG":
+                if pos.stop_loss_price and current_price <= pos.stop_loss_price:
+                    exit_needed = True
+                    exit_reason = "STOP_LOSS"
+                elif pos.take_profit_price and current_price >= pos.take_profit_price:
+                    exit_needed = True
+                    exit_reason = "TAKE_PROFIT"
+            elif pos.side == "SHORT":
+                if pos.stop_loss_price and current_price >= pos.stop_loss_price:
+                    exit_needed = True
+                    exit_reason = "STOP_LOSS"
+                elif pos.take_profit_price and current_price <= pos.take_profit_price:
+                    exit_needed = True
+                    exit_reason = "TAKE_PROFIT"
 
             if not exit_needed and self.config.trailing_stop_percent and pos.side == "LONG":
                 drop_ratio = (pos.highest_price - current_price) / pos.highest_price
@@ -879,7 +884,7 @@ class StockScreenerBacktestCog(commands.Cog):
                 if len(target_symbols) == 1:
                     df = data.copy()
                 else:
-                    if sym not in data.columns.levels[0]:
+                    if not isinstance(data.columns, pd.MultiIndex) or sym not in data.columns.levels[0]:
                         continue
                     df = data[sym].dropna()
 
@@ -906,7 +911,6 @@ class StockScreenerBacktestCog(commands.Cog):
         except Exception as e:
             print(f"[Backtest Pipeline Error] {e}", file=sys.stderr)
             return None
-
 
 async def setup(bot: commands.Bot):
     if not HAS_REQUIRED_LIBS:
