@@ -386,19 +386,26 @@ class RealisticBacktestEngine:
                     daily_short_fee = (pos.entry_price * pos.shares) * self.config.short_fee_daily
                     self.cash -= daily_short_fee
 
+# ==========================================
+# RealisticBacktestEngine 内の該当メソッド差し替え
+# ==========================================
+
     def _process_exits_and_adjustments(self, current_date: pd.Timestamp):
         positions_to_remove = []
 
         total_portfolio_val = self.cash + sum(p.unrealized_pnl for p in self.positions)
         total_unrealized_loss = sum(p.unrealized_pnl for p in self.positions if p.unrealized_pnl < 0)
 
-        # ヘッジ発動処理（フラグ更新 ＋ 動的ヘッジ注文）
+        # ヘッジ発動対象のポジションを抽出（ループ外で注文発注を行うことでリスト破壊を防止）
+        hedge_targets = []
         if self.config.allow_hedge and total_portfolio_val > 0 and (abs(total_unrealized_loss) / total_portfolio_val) >= self.config.hedge_trigger_drawdown:
             for p in self.positions:
                 if p.side == "LONG" and not p.is_hedged:
                     p.is_hedged = True
-                    # 指数または同一銘柄のショートポジションを建ててヘッジ
-                    self._execute_open(p.symbol, current_date, p.current_price, "SHORT", "HEDGE_SHORT")
+                    hedge_targets.append(p)
+
+        for p in hedge_targets:
+            self._execute_open(p.symbol, current_date, p.current_price, "SHORT", "HEDGE_SHORT")
 
         for pos in self.positions:
             df = self.data_map.get(pos.symbol)
@@ -412,7 +419,6 @@ class RealisticBacktestEngine:
             exit_needed = False
             exit_reason = ""
 
-            # ストップロス / テイクプロフィット判定
             if pos.stop_loss_price and current_price <= pos.stop_loss_price and pos.side == "LONG":
                 exit_needed = True
                 exit_reason = "STOP_LOSS"
@@ -420,14 +426,12 @@ class RealisticBacktestEngine:
                 exit_needed = True
                 exit_reason = "TAKE_PROFIT"
 
-            # トレーリングストップ判定（追記）
             if not exit_needed and self.config.trailing_stop_percent and pos.side == "LONG":
                 drop_ratio = (pos.highest_price - current_price) / pos.highest_price
                 if drop_ratio >= self.config.trailing_stop_percent:
                     exit_needed = True
                     exit_reason = "TRAILING_STOP"
 
-            # 部分利確判定
             if not exit_needed and self.config.partial_exit_profit and pos.side == "LONG":
                 pnl_ratio = (current_price - pos.entry_price) / pos.entry_price
                 if pnl_ratio >= self.config.partial_exit_profit and pos.shares > 100:
@@ -466,11 +470,10 @@ class RealisticBacktestEngine:
                     if abs(pnl_pct) >= self.config.pyramiding_step:
                         self._execute_open(symbol, current_date, raw_price, existing_pos.side, "PYRAMIDING")
             else:
-                # ロングエントリー
-                self._execute_open(symbol, current_date, raw_price, "LONG", "SCREENING_ENTRY")
-                # 空売り許可時のショートエントリー判定（追記）
-                if self.config.allow_short and len(self.positions) < self.config.max_positions:
-                    self._execute_open(symbol, current_date, raw_price, "SHORT", "SCREENING_SHORT_ENTRY")
+                # 買い（LONG）エントリーまたは空売り（SHORT）エントリーの選択的判定
+                entry_side = "SHORT" if self.config.allow_short else "LONG"
+                entry_reason = "SCREENING_SHORT_ENTRY" if self.config.allow_short else "SCREENING_ENTRY"
+                self._execute_open(symbol, current_date, raw_price, entry_side, entry_reason)
 
     def _execute_open(self, symbol: str, current_date: pd.Timestamp, price: float, side: str, reason: str):
         exec_price = price * (1 + self.config.slippage_rate) if side == "LONG" else price * (1 - self.config.slippage_rate)
