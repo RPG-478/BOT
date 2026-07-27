@@ -657,8 +657,7 @@ class StockScreenerBacktestCog(commands.Cog):
         self.is_updating = False
         await interaction.followup.send("財務およびテクニカルキャッシュデータの更新が完了しました。")
 # ==========================================
-# 修正箇所 1: StockScreenerBacktestCog クラス内
-# screening コマンドおよび _execute_screening_filter メソッドの修正
+# 修正箇所: StockScreenerBacktestCog 内のクラスメソッド差し替え
 # ==========================================
 
     @app_commands.command(name="screening", description="高機能条件指定およびカスタムクエリで銘柄をスクリーニングします")
@@ -780,12 +779,6 @@ class StockScreenerBacktestCog(commands.Cog):
 
         return matched
 
-
-# ==========================================
-# 修正箇所 2: StockScreenerBacktestCog クラス内
-# backtest コマンドおよび _execute_backtest_pipeline メソッドの修正
-# ==========================================
-
     @app_commands.command(name="backtest", description="スクリーニング対象条件に基づくリアルな過去売買シミュレーションを実行します")
     @app_commands.describe(
         initial_capital="初期資金 (円)",
@@ -877,7 +870,6 @@ class StockScreenerBacktestCog(commands.Cog):
 
         target_symbols = [f"{s['code']}.T" for s in filtered_symbols[:max_symbols]]
         
-        # 修正: 辞書変数の初期化を追加
         historical_map = {}
         screening_signals = {}
 
