@@ -74,5 +74,7 @@ class SaitoRelay(commands.Cog):
             await ctx.voice_client.disconnect()
             await ctx.send("通話を終了しました。")
 
+async def setup(bot):
+    await bot.add_cog(SaitoRelay(bot))
 
 
