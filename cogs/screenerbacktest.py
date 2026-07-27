@@ -1,13 +1,14 @@
 import asyncio
-import ast
+import sqlite3
 import json
 import os
 import sys
 import math
-from datetime import datetime, date
+from datetime import datetime, timedelta
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, Tuple
 from concurrent.futures import ThreadPoolExecutor
+from enum import Enum
 
 import discord
 from discord import app_commands
@@ -17,19 +18,73 @@ import pandas as pd
 
 try:
     import yfinance as yf
+    import config
     HAS_REQUIRED_LIBS = True
 except ImportError as e:
     print(f"[StockScreener Critical Error] ライブラリのインポートに失敗しました: {e}", file=sys.stderr)
     HAS_REQUIRED_LIBS = False
 
 
-# ==========================================
-# 1. データモデル (Dataclasses)
-# ==========================================
+class ScreeningCategory(Enum):
+    TECHNICAL = "テクニカル指標"
+    FUNDAMENTAL = "ファンダメンタルズ"
+    FINANCIAL_SAFETY = "財務・安全性"
+    PRICE_VOLUME = "株価・出来高"
+
+
+TECHNICAL_INDICATORS = {
+    "SMA交差": ("sma_25_75", "25日線と75日線の交差を検出"),
+    "ゴールデンクロス": ("golden_cross", "買いシグナル"),
+    "デッドクロス": ("dead_cross", "売りシグナル"),
+    "バイアス25": ("bias_25", "25日線からの乖離率"),
+    "バイアス75": ("bias_75", "75日線からの乖離率"),
+    "バイアス200": ("bias_200", "200日線からの乖離率"),
+    "MACD": ("macd", "トレンド追従"),
+    "RSI": ("rsi", "オシレーター"),
+    "RCI": ("rci_9", "価格の買われすぎ/売られすぎ"),
+    "DMI": ("plus_di", "トレンド強度"),
+    "ボリンジャーバンド上": ("bollinger_upper_2s", "上限バンド"),
+    "ボリンジャーバンド下": ("bollinger_lower_2s", "下限バンド"),
+    "VWAP": ("vwap", "出来高加重平均価格"),
+    "VWAP乖離": ("vwap_bias", "VWAP乖離率"),
+    "騰落率1週間": ("roc_1w", "1週間の騰落率"),
+    "騰落率1ヶ月": ("roc_1m", "1ヶ月の騰落率"),
+    "騰落率3ヶ月": ("roc_3m", "3ヶ月の騰落率"),
+    "騰落率1年": ("roc_1y", "1年の騰落率"),
+}
+
+FUNDAMENTAL_INDICATORS = {
+    "PER (予想)": ("forward_per", "予想PER"),
+    "PER (実績)": ("per", "実績PER"),
+    "PBR": ("pbr", "株価純資産倍率"),
+    "PSR": ("psr", "株価売上高倍率"),
+    "PCFR": ("pcfr", "キャッシュフロー倍率"),
+    "EV/EBITDA": ("ev_ebitda", "企業価値倍率"),
+    "ROE": ("roe", "自己資本利益率"),
+    "ROA": ("roa", "総資産利益率"),
+    "配当利回り": ("dividend_yield", "配当利回り"),
+}
+
+FINANCIAL_SAFETY_INDICATORS = {
+    "営業利益率": ("operating_margin", "営業利益率"),
+    "売上高成長率": ("revenue_growth", "売上成長率"),
+    "EPS成長率": ("earnings_growth", "利益成長率"),
+    "配当性向": ("payout_ratio", "配当性向"),
+    "時価総額": ("market_cap_oku", "時価総額（億円）"),
+}
+
+PRICE_VOLUME_INDICATORS = {
+    "52週高値からの下落": ("high_52w_drop", "52週高値比"),
+    "52週安値からの上昇": ("low_52w_rise", "52週安値比"),
+    "出来高変化率": ("volume_change", "出来高変化"),
+    "出来高MA20比": ("volume_ratio_ma20", "出来高の20日MA比"),
+}
+
+
 @dataclass
 class TradePosition:
     symbol: str
-    side: str  # "LONG" または "SHORT"
+    side: str
     entry_date: datetime
     entry_price: float
     shares: int
@@ -38,24 +93,29 @@ class TradePosition:
     is_hedged: bool = False
     current_price: float = 0.0
     unrealized_pnl: float = 0.0
-    highest_price: float = 0.0  # 追記: トレーリングストップ用
+    highest_price: float = 0.0
+
+
 @dataclass
 class BacktestConfig:
     initial_capital: float = 10000000.0
-    tax_rate: float = 0.20315
     commission_rate: float = 0.001
     slippage_rate: float = 0.001
+    tax_rate: float = 0.20315
     short_fee_daily: float = 0.0115 / 365.0
     max_position_percent: float = 0.10
     max_positions: int = 10
     allow_short: bool = False
     allow_pyramiding: bool = False
     pyramiding_step: float = 0.05
+    pyramiding_trigger_down: float = 0.05
     allow_hedge: bool = False
     hedge_trigger_drawdown: float = 0.10
+    stop_loss_percent: Optional[float] = None
+    take_profit_percent: Optional[float] = None
+    trailing_stop_percent: Optional[float] = None
     partial_exit_profit: Optional[float] = None
     partial_exit_loss: Optional[float] = None
-    trailing_stop_percent: Optional[float] = None
 
 
 @dataclass
@@ -74,9 +134,7 @@ class TradeResult:
     max_drawdown_amount: float
     sharpe_ratio: float
     trade_logs: List[Dict[str, Any]] = field(default_factory=list)
-# ==========================================
-# 2. 指標計算モジュール (IndicatorEngine)
-# ==========================================
+
 
 class IndicatorEngine:
     @staticmethod
@@ -85,7 +143,6 @@ class IndicatorEngine:
             return df
 
         df = df.copy()
-        
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
@@ -119,6 +176,8 @@ class IndicatorEngine:
 
         def calc_rci(series):
             n = len(series)
+            if n < 2:
+                return 0
             ranks = np.arange(n, 0, -1)
             price_ranks = series.rank(ascending=False).values
             d_sq = np.sum((ranks - price_ranks) ** 2)
@@ -187,7 +246,7 @@ class IndicatorEngine:
             "forward_per": info.get("forwardPE"),
             "pbr": info.get("priceToBook"),
             "psr": psr,
-            "pcfr": info.get("priceToToOperatingCashFlow"),
+            "pcfr": info.get("priceToOperatingCashFlow"),
             "ev_ebitda": info.get("enterpriseToEBITDA"),
             "roe": info.get("returnOnEquity") * 100 if info.get("returnOnEquity") is not None else None,
             "roa": info.get("returnOnAssets") * 100 if info.get("returnOnAssets") is not None else None,
@@ -200,99 +259,93 @@ class IndicatorEngine:
             "earnings_growth": info.get("earningsGrowth") * 100 if info.get("earningsGrowth") is not None else None,
             "free_cashflow": info.get("freeCashflow"),
             "operating_cashflow": info.get("operatingCashflow"),
-            "target_mean_price": info.get("targetMeanPrice"),
-            "analyst_rating": info.get("recommendationMean")
         }
-# ==========================================
-# 3. クエリ構文解析・評価モジュール (QueryParserEngine)
-# ==========================================
 
-class QueryParserEngine:
-    ALLOWED_OPERATORS = {
-        ast.Gt: lambda a, b: a > b,
-        ast.GtE: lambda a, b: a >= b,
-        ast.Lt: lambda a, b: a < b,
-        ast.LtE: lambda a, b: a <= b,
-        ast.Eq: lambda a, b: a == b,
-        ast.NotEq: lambda a, b: a != b,
-        ast.And: lambda a, b: a and b,
-        ast.Or: lambda a, b: a or b,
-        ast.Add: lambda a, b: a + b,
-        ast.Sub: lambda a, b: a - b,
-        ast.Mult: lambda a, b: a * b,
-        ast.Div: lambda a, b: a / b if b != 0 else 0,
-    }
 
-    @classmethod
-    def eval_condition(cls, expr: str, context_data: Dict[str, Any]) -> bool:
-        if not expr or not expr.strip():
-            return True
+class DatabaseManager:
+    def __init__(self, db_path: str = "screener_data.db"):
+        self.db_path = db_path
+        self._init_db()
 
-        try:
-            tree = ast.parse(expr, mode="eval")
-            return bool(cls._eval_node(tree.body, context_data))
-        except Exception:
-            return False
+    def _init_db(self):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS stocks (
+                code TEXT PRIMARY KEY,
+                name TEXT,
+                market TEXT,
+                last_update TIMESTAMP,
+                technical_data TEXT,
+                fundamental_data TEXT
+            )
+        ''')
+        conn.commit()
+        conn.close()
 
-    @classmethod
-    def _eval_node(cls, node: ast.AST, context: Dict[str, Any]) -> Any:
-        if isinstance(node, ast.Constant):
-            return node.value
-        elif isinstance(node, ast.Name):
-            val = context.get(node.id)
-            if val is None:
-                raise ValueError(f"Variable '{node.id}' not found in context")
-            return val
-        elif isinstance(node, ast.UnaryOp):
-            if isinstance(node.op, ast.USub):
-                return -cls._eval_node(node.operand, context)
-            elif isinstance(node.op, ast.Not):
-                return not cls._eval_node(node.operand, context)
-            raise ValueError(f"Unsupported unary operator: {type(node.op)}")
-        elif isinstance(node, ast.BinOp):
-            op_type = type(node.op)
-            if op_type in cls.ALLOWED_OPERATORS:
-                left = cls._eval_node(node.left, context)
-                right = cls._eval_node(node.right, context)
-                if left is None or right is None:
-                    return False
-                return cls.ALLOWED_OPERATORS[op_type](left, right)
-            raise ValueError(f"Unsupported binary operator: {op_type}")
-        elif isinstance(node, ast.Compare):
-            left = cls._eval_node(node.left, context)
-            if left is None:
-                return False
-            for op, comparator in zip(node.ops, node.comparators):
-                op_type = type(op)
-                right = cls._eval_node(comparator, context)
-                if right is None:
-                    return False
-                if op_type not in cls.ALLOWED_OPERATORS:
-                    raise ValueError(f"Unsupported comparison operator: {op_type}")
-                if not cls.ALLOWED_OPERATORS[op_type](left, right):
-                    return False
-                left = right
-            return True
-        elif isinstance(node, ast.BoolOp):
-            op_type = type(node.op)
-            if op_type == ast.And:
-                for value in node.values:
-                    res = cls._eval_node(value, context)
-                    if not res:
-                        return False
-                return True
-            elif op_type == ast.Or:
-                for value in node.values:
-                    res = cls._eval_node(value, context)
-                    if res:
-                        return True
-                return False
-            raise ValueError(f"Unsupported boolean operator: {op_type}")
-        else:
-            raise ValueError(f"Unsupported AST node type: {type(node)}")
-# ==========================================
-# 4. 高精度バックテスト処理モジュール (RealisticBacktestEngine)
-# ==========================================
+    def save_stock_data(self, code: str, name: str, market: str, technical_data: str, fundamental_data: str):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute('''
+            INSERT OR REPLACE INTO stocks (code, name, market, last_update, technical_data, fundamental_data)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (code, name, market, datetime.now().isoformat(), technical_data, fundamental_data))
+        conn.commit()
+        conn.close()
+
+    def get_all_stocks(self) -> List[Dict[str, Any]]:
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute('SELECT code, name, market, technical_data, fundamental_data FROM stocks')
+        results = c.fetchall()
+        conn.close()
+
+        stocks = []
+        for code, name, market, tech_data, fund_data in results:
+            try:
+                tech = json.loads(tech_data) if tech_data else {}
+                fund = json.loads(fund_data) if fund_data else {}
+                stocks.append({
+                    "code": code,
+                    "name": name,
+                    "market": market,
+                    **tech,
+                    **fund
+                })
+            except json.JSONDecodeError:
+                continue
+
+        return stocks
+
+    def screening_filter(self, conditions: List[Dict[str, Any]], universe: Optional[str] = None) -> List[Dict[str, Any]]:
+        stocks = self.get_all_stocks()
+        
+        if universe and universe.lower() != "all":
+            stocks = [s for s in stocks if universe.lower() in s.get("market", "").lower()]
+
+        for condition in conditions:
+            field_name = condition.get("field")
+            operator = condition.get("operator")
+            threshold = condition.get("threshold")
+
+            if not field_name or not operator or threshold is None:
+                continue
+
+            if operator == ">":
+                stocks = [s for s in stocks if s.get(field_name) is not None and s.get(field_name) > threshold]
+            elif operator == ">=":
+                stocks = [s for s in stocks if s.get(field_name) is not None and s.get(field_name) >= threshold]
+            elif operator == "<":
+                stocks = [s for s in stocks if s.get(field_name) is not None and s.get(field_name) < threshold]
+            elif operator == "<=":
+                stocks = [s for s in stocks if s.get(field_name) is not None and s.get(field_name) <= threshold]
+            elif operator == "==":
+                stocks = [s for s in stocks if s.get(field_name) is not None and s.get(field_name) == threshold]
+            elif operator == "between":
+                stocks = [s for s in stocks if s.get(field_name) is not None and threshold[0] <= s.get(field_name) <= threshold[1]]
+
+        return stocks
+
 
 class RealisticBacktestEngine:
     def __init__(self, config: BacktestConfig, historical_data_map: Dict[str, pd.DataFrame]):
@@ -390,170 +443,81 @@ class RealisticBacktestEngine:
     def _process_exits_and_adjustments(self, current_date: pd.Timestamp):
         positions_to_remove = []
 
-        total_portfolio_val = self.cash + sum(p.unrealized_pnl for p in self.positions)
-        total_unrealized_loss = sum(p.unrealized_pnl for p in self.positions if p.unrealized_pnl < 0)
+        for pos in self.positions[:]:
+            should_exit = False
 
-        hedge_targets = []
-        if self.config.allow_hedge and total_portfolio_val > 0 and (abs(total_unrealized_loss) / total_portfolio_val) >= self.config.hedge_trigger_drawdown:
-            for p in self.positions:
-                if p.side == "LONG" and not p.is_hedged:
-                    p.is_hedged = True
-                    hedge_targets.append(p)
+            if self.config.stop_loss_percent and pos.unrealized_pnl < 0:
+                loss_pct = (abs(pos.unrealized_pnl) / (pos.entry_price * pos.shares)) * 100
+                if loss_pct >= self.config.stop_loss_percent:
+                    should_exit = True
 
-        for p in hedge_targets:
-            self._execute_open(p.symbol, current_date, p.current_price, "SHORT", "HEDGE_SHORT")
+            if self.config.take_profit_percent and pos.unrealized_pnl > 0:
+                profit_pct = (pos.unrealized_pnl / (pos.entry_price * pos.shares)) * 100
+                if profit_pct >= self.config.take_profit_percent:
+                    should_exit = True
 
-        for pos in self.positions:
-            df = self.data_map.get(pos.symbol)
-            if df is None or current_date not in df.index:
-                continue
+            if should_exit:
+                exit_price = pos.current_price * (1 - self.config.slippage_rate)
+                if pos.side == "SHORT":
+                    exit_price = pos.current_price * (1 + self.config.slippage_rate)
 
-            current_price = pos.current_price
-            if current_price > pos.highest_price:
-                pos.highest_price = current_price
+                commission = (exit_price * pos.shares) * self.config.commission_rate
+                net_pnl = pos.unrealized_pnl - commission
+                tax = max(0, net_pnl * self.config.tax_rate) if net_pnl > 0 else 0
 
-            exit_needed = False
-            exit_reason = ""
-
-            # LONG / SHORT 両対応のストップロス・テイクプロフィット判定
-            if pos.side == "LONG":
-                if pos.stop_loss_price and current_price <= pos.stop_loss_price:
-                    exit_needed = True
-                    exit_reason = "STOP_LOSS"
-                elif pos.take_profit_price and current_price >= pos.take_profit_price:
-                    exit_needed = True
-                    exit_reason = "TAKE_PROFIT"
-            elif pos.side == "SHORT":
-                if pos.stop_loss_price and current_price >= pos.stop_loss_price:
-                    exit_needed = True
-                    exit_reason = "STOP_LOSS"
-                elif pos.take_profit_price and current_price <= pos.take_profit_price:
-                    exit_needed = True
-                    exit_reason = "TAKE_PROFIT"
-
-            if not exit_needed and self.config.trailing_stop_percent and pos.side == "LONG":
-                drop_ratio = (pos.highest_price - current_price) / pos.highest_price
-                if drop_ratio >= self.config.trailing_stop_percent:
-                    exit_needed = True
-                    exit_reason = "TRAILING_STOP"
-
-            if not exit_needed and self.config.partial_exit_profit and pos.side == "LONG":
-                pnl_ratio = (current_price - pos.entry_price) / pos.entry_price
-                if pnl_ratio >= self.config.partial_exit_profit and pos.shares > 100:
-                    exit_shares = pos.shares // 2
-                    self._execute_close(pos, current_date, current_price, exit_shares, "PARTIAL_TAKE_PROFIT")
-
-            if exit_needed:
-                self._execute_close(pos, current_date, current_price, pos.shares, exit_reason)
-                positions_to_remove.append(pos)
-
-        for p in positions_to_remove:
-            if p in self.positions:
-                self.positions.remove(p)
+                self.cash += exit_price * pos.shares - commission
+                self.total_tax_paid += tax
+                self.trade_logs.append({
+                    "symbol": pos.symbol,
+                    "side": pos.side,
+                    "entry_date": pos.entry_date,
+                    "exit_date": current_date,
+                    "entry_price": pos.entry_price,
+                    "exit_price": exit_price,
+                    "shares": pos.shares,
+                    "gross_pnl": pos.unrealized_pnl,
+                    "net_pnl": net_pnl
+                })
+                self.positions.remove(pos)
 
     def _process_entries(self, current_date: pd.Timestamp, screening_signals: Dict[str, pd.Series]):
-        if len(self.positions) >= self.config.max_positions:
-            return
-
-        for symbol, signal_series in screening_signals.items():
-            if len(self.positions) >= self.config.max_positions:
-                break
-
-            if current_date not in signal_series.index or not bool(signal_series.loc[current_date]):
+        for symbol, signals in screening_signals.items():
+            if current_date not in signals.index or not signals.loc[current_date]:
                 continue
 
             df = self.data_map.get(symbol)
             if df is None or current_date not in df.index:
                 continue
 
-            val = df.loc[current_date, "Close"]
-            raw_price = float(val.iloc[0] if isinstance(val, pd.Series) else val)
-            existing_pos = next((p for p in self.positions if p.symbol == symbol), None)
+            entry_price = float(df.loc[current_date, "Close"])
+            entry_price_with_slippage = entry_price * (1 + self.config.slippage_rate)
 
-            if existing_pos:
-                if self.config.allow_pyramiding:
-                    pnl_pct = (raw_price - existing_pos.entry_price) / existing_pos.entry_price
-                    if abs(pnl_pct) >= self.config.pyramiding_step:
-                        self._execute_open(symbol, current_date, raw_price, existing_pos.side, "PYRAMIDING")
-            else:
-                entry_side = "SHORT" if self.config.allow_short else "LONG"
-                entry_reason = "SCREENING_SHORT_ENTRY" if self.config.allow_short else "SCREENING_ENTRY"
-                self._execute_open(symbol, current_date, raw_price, entry_side, entry_reason)
+            allocation = self.cash * self.config.max_position_percent
+            shares = int(allocation / entry_price_with_slippage)
 
-    def _execute_open(self, symbol: str, current_date: pd.Timestamp, price: float, side: str, reason: str):
-        exec_price = price * (1 + self.config.slippage_rate) if side == "LONG" else price * (1 - self.config.slippage_rate)
-        max_alloc = self.cash * self.config.max_position_percent
-        shares = int(max_alloc // (exec_price * 100)) * 100
+            if shares > 0 and self.cash >= (entry_price_with_slippage * shares):
+                if len([p for p in self.positions if p.side == "LONG"]) < self.config.max_positions:
+                    commission = (entry_price_with_slippage * shares) * self.config.commission_rate
+                    total_cost = (entry_price_with_slippage * shares) + commission
 
-        if shares <= 0:
-            return
-
-        cost = shares * exec_price
-        commission = cost * self.config.commission_rate
-
-        if self.cash < (cost + commission):
-            return
-
-        self.cash -= (cost + commission)
-
-        if side == "LONG":
-            sl = exec_price * (1 - self.config.partial_exit_loss) if self.config.partial_exit_loss else None
-            tp = exec_price * (1 + self.config.partial_exit_profit) if self.config.partial_exit_profit else None
-        else:
-            sl = exec_price * (1 + self.config.partial_exit_loss) if self.config.partial_exit_loss else None
-            tp = exec_price * (1 - self.config.partial_exit_profit) if self.config.partial_exit_profit else None
-
-        pos = TradePosition(
-            symbol=symbol,
-            side=side,
-            entry_date=current_date,
-            entry_price=exec_price,
-            shares=shares,
-            stop_loss_price=sl,
-            take_profit_price=tp,
-            current_price=exec_price,
-            highest_price=exec_price,
-            unrealized_pnl=0.0
-        )
-        self.positions.append(pos)
-
-    def _execute_close(self, pos: TradePosition, current_date: pd.Timestamp, price: float, shares: int, reason: str):
-        exec_price = price * (1 - self.config.slippage_rate) if pos.side == "LONG" else price * (1 + self.config.slippage_rate)
-        revenue = shares * exec_price
-        commission = revenue * self.config.commission_rate
-        gross_pnl = (exec_price - pos.entry_price) * shares if pos.side == "LONG" else (pos.entry_price - exec_price) * shares
-
-        tax = 0.0
-        if gross_pnl > 0:
-            tax = gross_pnl * self.config.tax_rate
-
-        net_pnl = gross_pnl - commission - tax
-        self.cash += (revenue - commission - tax)
-        self.total_tax_paid += tax
-        pos.shares -= shares
-
-        self.trade_logs.append({
-            "symbol": pos.symbol,
-            "side": pos.side,
-            "entry_date": pos.entry_date.strftime("%Y-%m-%d"),
-            "exit_date": current_date.strftime("%Y-%m-%d"),
-            "entry_price": pos.entry_price,
-            "exit_price": exec_price,
-            "shares": shares,
-            "gross_pnl": gross_pnl,
-            "tax": tax,
-            "commission": commission,
-            "net_pnl": net_pnl,
-            "reason": reason
-        })
+                    if self.cash >= total_cost:
+                        self.cash -= total_cost
+                        pos = TradePosition(
+                            symbol=symbol,
+                            side="LONG",
+                            entry_date=current_date,
+                            entry_price=entry_price_with_slippage,
+                            shares=shares
+                        )
+                        self.positions.append(pos)
 
     def _empty_result(self) -> TradeResult:
         return TradeResult(
             initial_capital=self.config.initial_capital,
             final_capital=self.config.initial_capital,
-            total_profit_loss=0.0,
-            tax_amount=0.0,
-            net_profit=0.0,
+            total_profit_loss=0,
+            tax_amount=0,
+            net_profit=0,
             total_trades=0,
             win_trades=0,
             lose_trades=0,
@@ -561,350 +525,344 @@ class RealisticBacktestEngine:
             profit_factor=0.0,
             max_drawdown_percent=0.0,
             max_drawdown_amount=0.0,
-            sharpe_ratio=0.0,
-            trade_logs=[]
+            sharpe_ratio=0.0
         )
-# ==========================================
-# 5. Discord Cog本体 (StockScreenerBacktestCog)
-# ==========================================
+
+
+class ScreeningDashboardView(discord.ui.View):
+    def __init__(self, cog: 'StockScreenerBacktestCog', timeout: float = 600):
+        super().__init__(timeout=timeout)
+        self.cog = cog
+        self.selected_universe = "ALL"
+        self.screening_conditions: List[Dict[str, Any]] = []
+        self.screening_results: List[Dict[str, Any]] = []
+
+    async def update_dashboard(self, interaction: discord.Interaction):
+        results = self.cog.db_manager.screening_filter(self.screening_conditions, self.selected_universe)
+        self.screening_results = results
+
+        embed = discord.Embed(
+            title="SCREENING DASHBOARD",
+            color=0x00D9FF,
+            description=f"Universe: {self.selected_universe} | Matches: {len(results)}"
+        )
+        embed.add_field(name="Conditions", value=f"{len(self.screening_conditions)} active", inline=True)
+
+        await interaction.response.defer()
+        await interaction.edit_original_response(embed=embed, view=self)
+
+    @discord.ui.button(label="Universe Select", style=discord.ButtonStyle.primary)
+    async def button_universe(self, interaction: discord.Interaction, button: discord.ui.Button):
+        select = discord.ui.Select(
+            placeholder="Choose universe",
+            options=[
+                discord.SelectOption(label="ALL", value="all"),
+                discord.SelectOption(label="Nikkei 225", value="nikkei"),
+                discord.SelectOption(label="TOPIX 100", value="topix"),
+                discord.SelectOption(label="Prime", value="prime"),
+                discord.SelectOption(label="Standard", value="standard"),
+                discord.SelectOption(label="Growth", value="growth"),
+            ]
+        )
+        async def select_callback(interaction: discord.Interaction):
+            self.selected_universe = select.values[0].upper()
+            await self.update_dashboard(interaction)
+
+        select.callback = select_callback
+        view = discord.ui.View()
+        view.add_item(select)
+        await interaction.response.send_message("Select universe:", view=view, ephemeral=True)
+
+    @discord.ui.button(label="Add Condition", style=discord.ButtonStyle.success)
+    async def button_add_condition(self, interaction: discord.Interaction, button: discord.ui.Button):
+        categories = [
+            discord.SelectOption(label=cat.value, value=cat.name) for cat in ScreeningCategory
+        ]
+        select = discord.ui.Select(placeholder="Select category", options=categories)
+
+        async def select_callback(interaction: discord.Interaction):
+            category = select.values[0]
+            
+            if category == "TECHNICAL":
+                options = [discord.SelectOption(label=k, value=v[0]) for k, v in TECHNICAL_INDICATORS.items()]
+            elif category == "FUNDAMENTAL":
+                options = [discord.SelectOption(label=k, value=v[0]) for k, v in FUNDAMENTAL_INDICATORS.items()]
+            elif category == "FINANCIAL_SAFETY":
+                options = [discord.SelectOption(label=k, value=v[0]) for k, v in FINANCIAL_SAFETY_INDICATORS.items()]
+            else:
+                options = [discord.SelectOption(label=k, value=v[0]) for k, v in PRICE_VOLUME_INDICATORS.items()]
+
+            indicator_select = discord.ui.Select(placeholder="Select indicator", options=options[:25])
+
+            async def indicator_callback(interaction: discord.Interaction):
+                field_name = indicator_select.values[0]
+                await self._show_condition_modal(interaction, field_name)
+
+            indicator_select.callback = indicator_callback
+            view = discord.ui.View()
+            view.add_item(indicator_select)
+            await interaction.response.send_message("Select indicator:", view=view, ephemeral=True)
+
+        select.callback = select_callback
+        view = discord.ui.View()
+        view.add_item(select)
+        await interaction.response.send_message("Select category:", view=view, ephemeral=True)
+
+    async def _show_condition_modal(self, interaction: discord.Interaction, field_name: str):
+        class ConditionModal(discord.ui.Modal, title="Set Condition"):
+            operator = discord.ui.TextInput(label="Operator (>, >=, <, <=, ==, between)", required=True)
+            threshold = discord.ui.TextInput(label="Threshold Value", required=True)
+
+            async def on_submit(self, interaction: discord.Interaction):
+                try:
+                    op = operator.value.strip()
+                    val = float(threshold.value.strip())
+                    if op == "between":
+                        val = [val, val]
+
+                    self.parent.screening_conditions.append({
+                        "field": field_name,
+                        "operator": op,
+                        "threshold": val
+                    })
+                    await self.parent.update_dashboard(interaction)
+                except ValueError:
+                    await interaction.response.send_message("Invalid threshold value", ephemeral=True)
+
+            parent = self
+
+        modal = ConditionModal()
+        modal.parent = self
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Execute Screening", style=discord.ButtonStyle.green)
+    async def button_execute(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.screening_results:
+            await interaction.response.send_message("No results found", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        embed = discord.Embed(title="SCREENING RESULTS", color=0x00FFA3)
+
+        for stock in self.screening_results[:20]:
+            name = stock.get("name", "N/A")
+            code = stock.get("code", "N/A")
+            per = f"{stock.get('per', 0):.1f}" if stock.get("per") else "N/A"
+            pbr = f"{stock.get('pbr', 0):.2f}" if stock.get("pbr") else "N/A"
+            roe = f"{stock.get('roe', 0):.1f}%" if stock.get("roe") else "N/A"
+
+            embed.add_field(
+                name=f"{name} ({code})",
+                value=f"PER: {per} | PBR: {pbr} | ROE: {roe}",
+                inline=False
+            )
+
+        await interaction.followup.send(embed=embed)
+
+
+class BacktestDashboardView(discord.ui.View):
+    def __init__(self, cog: 'StockScreenerBacktestCog', timeout: float = 600):
+        super().__init__(timeout=timeout)
+        self.cog = cog
+        self.config = BacktestConfig()
+
+    @discord.ui.button(label="Capital & Cost", style=discord.ButtonStyle.primary)
+    async def button_capital(self, interaction: discord.Interaction, button: discord.ui.Button):
+        class CapitalModal(discord.ui.Modal, title="Capital & Cost Settings"):
+            initial_capital = discord.ui.TextInput(label="Initial Capital (JPY)", required=True)
+            commission = discord.ui.TextInput(label="Commission Rate (%)", required=True)
+            slippage = discord.ui.TextInput(label="Slippage Rate (%)", required=True)
+
+            async def on_submit(self, modal_self, interaction: discord.Interaction):
+                try:
+                    self.config.initial_capital = float(initial_capital.value)
+                    self.config.commission_rate = float(commission.value) / 100.0
+                    self.config.slippage_rate = float(slippage.value) / 100.0
+                    await interaction.response.send_message("Settings saved", ephemeral=True)
+                except ValueError:
+                    await interaction.response.send_message("Invalid input", ephemeral=True)
+
+        modal = CapitalModal()
+        modal.config = self.config
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Trade Direction", style=discord.ButtonStyle.primary)
+    async def button_direction(self, interaction: discord.Interaction, button: discord.ui.Button):
+        select = discord.ui.Select(
+            placeholder="Select trade direction",
+            options=[
+                discord.SelectOption(label="LONG Only", value="long"),
+                discord.SelectOption(label="SHORT Allowed", value="short"),
+                discord.SelectOption(label="Both (Hedge)", value="both"),
+            ]
+        )
+
+        async def select_callback(interaction: discord.Interaction):
+            if select.values[0] == "long":
+                self.config.allow_short = False
+            elif select.values[0] == "short":
+                self.config.allow_short = True
+            else:
+                self.config.allow_short = True
+                self.config.allow_hedge = True
+
+            await interaction.response.send_message("Trade direction set", ephemeral=True)
+
+        select.callback = select_callback
+        view = discord.ui.View()
+        view.add_item(select)
+        await interaction.response.send_message("Select trade direction:", view=view, ephemeral=True)
+
+    @discord.ui.button(label="Risk Management", style=discord.ButtonStyle.primary)
+    async def button_risk(self, interaction: discord.Interaction, button: discord.ui.Button):
+        class RiskModal(discord.ui.Modal, title="Risk Management"):
+            stop_loss = discord.ui.TextInput(label="Stop Loss (%)", required=False)
+            take_profit = discord.ui.TextInput(label="Take Profit (%)", required=False)
+            trailing_stop = discord.ui.TextInput(label="Trailing Stop (%)", required=False)
+
+            async def on_submit(self, modal_self, interaction: discord.Interaction):
+                try:
+                    if stop_loss.value:
+                        self.config.stop_loss_percent = float(stop_loss.value)
+                    if take_profit.value:
+                        self.config.take_profit_percent = float(take_profit.value)
+                    if trailing_stop.value:
+                        self.config.trailing_stop_percent = float(trailing_stop.value)
+                    await interaction.response.send_message("Risk settings saved", ephemeral=True)
+                except ValueError:
+                    await interaction.response.send_message("Invalid input", ephemeral=True)
+
+        modal = RiskModal()
+        modal.config = self.config
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Execute Backtest", style=discord.ButtonStyle.green)
+    async def button_execute(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            self.cog.executor,
+            self.cog._execute_backtest_pipeline,
+            self.config
+        )
+
+        if not result:
+            await interaction.followup.send("Backtest failed")
+            return
+
+        embed = discord.Embed(
+            title="BACKTEST RESULTS",
+            color=0x00FFA3 if result.net_profit > 0 else 0xFF0055
+        )
+
+        embed.add_field(
+            name="Capital & PnL",
+            value=f"Initial: ¥{result.initial_capital:,.0f}\nFinal: ¥{result.final_capital:,.0f}\nNet Profit: ¥{result.net_profit:,.0f}",
+            inline=False
+        )
+
+        embed.add_field(
+            name="Performance",
+            value=f"Win Rate: {result.win_rate:.1f}%\nTotal Trades: {result.total_trades}\nProfit Factor: {result.profit_factor:.2f}\nSharpe Ratio: {result.sharpe_ratio:.2f}",
+            inline=False
+        )
+
+        await interaction.followup.send(embed=embed)
+
 
 class StockScreenerBacktestCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.symbols_file = "tse_gps_symbols.json"
-        self.cache_file = "financial_cache.json"
-        self.symbols_data: List[Dict[str, str]] = []
-        self.financial_cache: Dict[str, Dict[str, Any]] = {}
-        self.is_updating = False
         self.executor = ThreadPoolExecutor(max_workers=4)
+        self.db_manager = DatabaseManager("screener_data.db")
 
-        self.load_symbols()
-        self.load_cache()
+    @app_commands.command(name="screening", description="Interactive stock screening dashboard")
+    async def screening(self, interaction: discord.Interaction):
+        view = ScreeningDashboardView(self)
+        embed = discord.Embed(title="SCREENING DASHBOARD", color=0x00D9FF)
+        embed.add_field(name="Status", value="Ready to screen", inline=True)
+        await interaction.response.send_message(embed=embed, view=view)
 
-    def load_symbols(self):
-        if os.path.exists(self.symbols_file):
-            try:
-                with open(self.symbols_file, "r", encoding="utf-8") as f:
-                    self.symbols_data = json.load(f)
-            except Exception as e:
-                print(f"[StockScreener Error] Symbols load failed: {e}", file=sys.stderr)
+    @app_commands.command(name="backtest", description="Execute backtest with custom settings")
+    async def backtest(self, interaction: discord.Interaction):
+        view = BacktestDashboardView(self)
+        embed = discord.Embed(title="BACKTEST DASHBOARD", color=0xFF6B6B)
+        embed.add_field(name="Status", value="Configure backtest parameters", inline=True)
+        await interaction.response.send_message(embed=embed, view=view)
 
-    def load_cache(self):
-        if os.path.exists(self.cache_file):
-            try:
-                with open(self.cache_file, "r", encoding="utf-8") as f:
-                    self.financial_cache = json.load(f)
-            except Exception as e:
-                print(f"[StockScreener Error] Cache load failed: {e}", file=sys.stderr)
-
-    def save_cache(self):
-        try:
-            with open(self.cache_file, "w", encoding="utf-8") as f:
-                json.dump(self.financial_cache, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"[StockScreener Error] Cache save failed: {e}", file=sys.stderr)
-
-    def sync_fetch_all_cache(self):
-        if not self.symbols_data:
-            return
-
-        for item in self.symbols_data:
-            code = item.get("code")
-            if not code:
-                continue
-            symbol = f"{code}.T"
-            try:
-                ticker = yf.Ticker(symbol)
-                info = ticker.info
-                fund_metrics = IndicatorEngine.process_fundamental_metrics(info)
-
-                hist = ticker.history(period="1y")
-                tech_metrics = {}
-                if not hist.empty and len(hist) > 30:
-                    hist_calc = IndicatorEngine.calculate_technical_indicators(hist)
-                    latest = hist_calc.iloc[-1]
-                    tech_metrics = {
-                        "close": float(latest.get("Close", 0.0)),
-                        "sma_25": float(latest.get("sma_25", 0.0)),
-                        "sma_75": float(latest.get("sma_75", 0.0)),
-                        "sma_200": float(latest.get("sma_200", 0.0)),
-                        "bias_25": float(latest.get("bias_25", 0.0)),
-                        "macd": float(latest.get("macd", 0.0)),
-                        "macd_hist": float(latest.get("macd_hist", 0.0)),
-                        "rsi": float(latest.get("rsi", 0.0)),
-                        "rci_9": float(latest.get("rci_9", 0.0)),
-                        "adx": float(latest.get("adx", 0.0)),
-                        "vwap": float(latest.get("vwap", 0.0)),
-                        "vwap_bias": float(latest.get("vwap_bias", 0.0)),
-                        "roc_1m": float(latest.get("roc_1m", 0.0)),
-                        "volume_ratio_ma20": float(latest.get("volume_ratio_ma20", 0.0))
-                    }
-
-                cache_entry = {
-                    "code": code,
-                    "name": item.get("name", ""),
-                    "market": item.get("market", "")
-                }
-                cache_entry.update(fund_metrics)
-                cache_entry.update(tech_metrics)
-
-                self.financial_cache[code] = cache_entry
-            except Exception:
-                continue
-
-        self.save_cache()
-
-    @app_commands.command(name="update_screener_cache", description="財務およびテクニカルキャッシュデータを全件更新します")
+    @app_commands.command(name="update_screener_cache", description="Update screener database from yfinance")
     async def update_screener_cache(self, interaction: discord.Interaction):
-        if self.is_updating:
-            await interaction.response.send_message("キャッシュ更新処理が既に実行中です。", ephemeral=True)
-            return
-
-        self.is_updating = True
-        await interaction.response.send_message("全銘柄のキャッシュデータ同期を開始しました。完了まで時間がかかります。")
-
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(self.executor, self.sync_fetch_all_cache)
-
-        self.is_updating = False
-        await interaction.followup.send("財務およびテクニカルキャッシュデータの更新が完了しました。")
-
-    @app_commands.command(name="screening", description="高機能条件指定およびカスタムクエリで銘柄をスクリーニングします")
-    @app_commands.describe(
-        min_per="PER 最小値",
-        max_per="PER 最大値",
-        min_pbr="PBR 最小値",
-        max_pbr="PBR 最大値",
-        min_roe="ROE 最小値 (%)",
-        min_psr="PSR 最小値",
-        min_yield="配当利回り 最小値 (%)",
-        market_cap_min_oku="最小時価総額 (億円)",
-        universe="対象市場区分 (Prime / Standard / Growth / All)",
-        query="カスタム判定クエリ (例: psr < 2.0 and roe > 10 and vwap_bias > 0)"
-    )
-    async def screening(
-        self,
-        interaction: discord.Interaction,
-        min_per: Optional[float] = None,
-        max_per: Optional[float] = None,
-        min_pbr: Optional[float] = None,
-        max_pbr: Optional[float] = None,
-        min_roe: Optional[float] = None,
-        min_psr: Optional[float] = None,
-        min_yield: Optional[float] = None,
-        market_cap_min_oku: Optional[float] = None,
-        universe: Optional[str] = "All",
-        query: Optional[str] = None
-    ):
         await interaction.response.defer()
 
-        if not self.financial_cache:
-            await interaction.followup.send("キャッシュデータが存在しません。先に /update_screener_cache を実行してください。")
-            return
-
         loop = asyncio.get_running_loop()
-        results = await loop.run_in_executor(
+        await loop.run_in_executor(
             self.executor,
-            self._execute_screening_filter,
-            min_per, max_per, min_pbr, max_pbr, min_roe, min_psr, min_yield, market_cap_min_oku, universe, query
+            self._update_cache_task,
+            interaction
         )
 
-        if not results:
-            await interaction.followup.send("指定された条件に一致する銘柄は見つかりませんでした。")
-            return
-
-        embed = discord.Embed(
-            title=f"SCREENING RESULTS // TOTAL: {len(results)} ITEMS",
-            color=0x8A2BE2
-        )
-
-        for item in results[:20]:
-            name = item.get("name", "")
-            code = item.get("code", "")
-            per_v = f"{item['per']:.1f}" if item.get("per") is not None else "N/A"
-            pbr_v = f"{item['pbr']:.2f}" if item.get("pbr") is not None else "N/A"
-            psr_v = f"{item['psr']:.2f}" if item.get("psr") is not None else "N/A"
-            roe_v = f"{item['roe']:.1f}%" if item.get("roe") is not None else "N/A"
-            vwap_b = f"{item['vwap_bias']:.2f}%" if item.get("vwap_bias") is not None else "N/A"
-
-            val_str = f"PER: {per_v} | PBR: {pbr_v} | PSR: {psr_v} | ROE: {roe_v} | VWAP乖離: {vwap_b}"
-            embed.add_field(name=f"{name} ({code})", value=val_str, inline=False)
-
-        if len(results) > 20:
-            embed.set_footer(text=f"SHOWING TOP 20 OF {len(results)} MATCHES")
-
-        await interaction.followup.send(embed=embed)
-
-    def _execute_screening_filter(
-        self,
-        min_per: Optional[float],
-        max_per: Optional[float],
-        min_pbr: Optional[float],
-        max_pbr: Optional[float],
-        min_roe: Optional[float],
-        min_psr: Optional[float],
-        min_yield: Optional[float],
-        market_cap_min_oku: Optional[float],
-        universe: Optional[str],
-        query: Optional[str]
-    ) -> List[Dict[str, Any]]:
-        matched = []
-
-        for code, data in self.financial_cache.items():
-            per = data.get("per")
-            pbr = data.get("pbr")
-            roe = data.get("roe")
-            psr = data.get("psr")
-            div_yield = data.get("dividend_yield")
-            mcap_oku = data.get("market_cap_oku")
-            
-            if universe and universe.lower() != "all":
-                data_market = str(data.get("market", "")).lower()
-                if universe.lower() not in data_market:
-                    continue
-
-            if min_per is not None and (per is None or per < min_per):
-                continue
-            if max_per is not None and (per is None or per > max_per):
-                continue
-            if min_pbr is not None and (pbr is None or pbr < min_pbr):
-                continue
-            if max_pbr is not None and (pbr is None or pbr > max_pbr):
-                continue
-            if min_roe is not None and (roe is None or roe < min_roe):
-                continue
-            if min_psr is not None and (psr is None or psr < min_psr):
-                continue
-            if min_yield is not None and (div_yield is None or div_yield < min_yield):
-                continue
-            if market_cap_min_oku is not None and (mcap_oku is None or mcap_oku < market_cap_min_oku):
-                continue
-
-            if query and query.strip():
-                if not QueryParserEngine.eval_condition(query, data):
-                    continue
-
-            matched.append(data)
-
-        return matched
-
-    @app_commands.command(name="backtest", description="スクリーニング対象条件に基づくリアルな過去売買シミュレーションを実行します")
-    @app_commands.describe(
-        initial_capital="初期資金 (円)",
-        universe="対象市場区分 (Prime / Standard / Growth / All)",
-        allow_short="空売りを許可する",
-        allow_pyramiding="買い増し(ナンピン・ピラミッディング)を許可する",
-        allow_hedge="一定ドローダウン到達時に自動ヘッジを発動する",
-        query="エントリーシグナル用クエリ条件式"
-    )
-    async def backtest(
-        self,
-        interaction: discord.Interaction,
-        initial_capital: float = 10000000.0,
-        universe: Optional[str] = "All",
-        allow_short: bool = False,
-        allow_pyramiding: bool = False,
-        allow_hedge: bool = False,
-        query: Optional[str] = "bias_25 < -5 and rsi < 35"
-    ):
-        await interaction.response.defer()
-
-        config = BacktestConfig(
-            initial_capital=initial_capital,
-            allow_short=allow_short,
-            allow_pyramiding=allow_pyramiding,
-            allow_hedge=allow_hedge,
-            tax_rate=0.20315
-        )
-
-        loop = asyncio.get_running_loop()
-        res = await loop.run_in_executor(
-            self.executor,
-            self._execute_backtest_pipeline,
-            config,
-            query,
-            universe
-        )
-
-        if not res:
-            await interaction.followup.send("バックテストの実行に必要なヒストリカルデータの取得に失敗しました。")
-            return
-
-        embed = discord.Embed(
-            title="QUANTITATIVE BACKTEST REPORT // REALISTIC ENGINE",
-            color=0x00FFA3 if res.net_profit >= 0 else 0xFF0055
-        )
-
-        embed.add_field(
-            name="[ CAPITAL & PnL ]",
-            value=f"```text\n"
-                  f"INITIAL CAPITAL : ¥{res.initial_capital:,.0f}\n"
-                  f"FINAL CAPITAL   : ¥{res.final_capital:,.0f}\n"
-                  f"GROSS PROFIT    : ¥{res.total_profit_loss:,.0f}\n"
-                  f"TAX DEDUCTED    : ¥{res.tax_amount:,.0f} (20.315%)\n"
-                  f"NET PROFIT      : ¥{res.net_profit:,.0f}\n"
-                  f"```",
-            inline=False
-        )
-
-        embed.add_field(
-            name="[ PERFORMANCE METRICS ]",
-            value=f"```text\n"
-                  f"WIN RATE        : {res.win_rate:.1f}% ({res.win_trades}W / {res.lose_trades}L)\n"
-                  f"TOTAL TRADES    : {res.total_trades}\n"
-                  f"PROFIT FACTOR   : {res.profit_factor:.2f}\n"
-                  f"MAX DRAWDOWN    : {res.max_drawdown_percent:.2f}% (¥{res.max_drawdown_amount:,.0f})\n"
-                  f"SHARPE RATIO    : {res.sharpe_ratio:.2f}\n"
-                  f"```",
-            inline=False
-        )
-
-        embed.set_footer(text="QUANT SYSTEM ENGINE // BACKTEST COMPLETE")
-        await interaction.followup.send(embed=embed)
-
-    def _execute_backtest_pipeline(
-        self,
-        config: BacktestConfig,
-        query: Optional[str],
-        universe: Optional[str] = "All",
-        max_symbols: int = 100
-    ) -> Optional[TradeResult]:
-        
-        filtered_symbols = self.symbols_data
-        if universe and universe.lower() != "all":
-            filtered_symbols = [
-                s for s in self.symbols_data 
-                if universe.lower() in str(s.get("market", "")).lower()
-            ]
-
-        target_symbols = [f"{s['code']}.T" for s in filtered_symbols[:max_symbols]]
-        
-        historical_map = {}
-        screening_signals = {}
-
+    def _update_cache_task(self, interaction: discord.Interaction):
         try:
-            data = yf.download(target_symbols, period="2y", group_by="ticker", progress=False)
-            for sym in target_symbols:
-                if len(target_symbols) == 1:
-                    df = data.copy()
-                else:
-                    if not isinstance(data.columns, pd.MultiIndex) or sym not in data.columns.levels[0]:
+            symbols = ["1001.T", "1002.T", "1003.T", "1004.T", "1005.T"]
+            processed = 0
+            total = len(symbols)
+
+            for sym in symbols:
+                try:
+                    data = yf.download(sym, period="2y", progress=False)
+                    info = yf.Ticker(sym).info
+
+                    if not data.empty:
+                        df = IndicatorEngine.calculate_technical_indicators(data)
+                        tech_data = {
+                            "bias_25": float(df["bias_25"].iloc[-1]),
+                            "rsi": float(df["rsi"].iloc[-1]),
+                            "vwap_bias": float(df["vwap_bias"].iloc[-1]),
+                        }
+                    else:
+                        tech_data = {}
+
+                    fund_data = IndicatorEngine.process_fundamental_metrics(info)
+
+                    code = sym.replace(".T", "")
+                    name = info.get("longName", code)
+                    market = info.get("market", "Unknown")
+
+                    self.db_manager.save_stock_data(
+                        code, name, market,
+                        json.dumps(tech_data),
+                        json.dumps(fund_data)
+                    )
+
+                except Exception as e:
+                    print(f"Error processing {sym}: {e}", file=sys.stderr)
+
+                processed += 1
+                pct = (processed / total) * 100
+                print(f"[Cache Update] {pct:.0f}% ({processed}/{total})")
+
+        except Exception as e:
+            print(f"[Cache Update Error] {e}", file=sys.stderr)
+
+    def _execute_backtest_pipeline(self, config: BacktestConfig) -> Optional[TradeResult]:
+        try:
+            symbols = ["1001.T", "1002.T", "1003.T"]
+            historical_map = {}
+            screening_signals = {}
+
+            for sym in symbols:
+                try:
+                    data = yf.download(sym, period="2y", progress=False)
+                    if data.empty or len(data) < 50:
                         continue
-                    df = data[sym].dropna()
 
-                if df.empty or len(df) < 50:
+                    df_calc = IndicatorEngine.calculate_technical_indicators(data)
+                    historical_map[sym] = df_calc
+                    screening_signals[sym] = pd.Series(False, index=df_calc.index)
+
+                except Exception:
                     continue
-
-                df_calc = IndicatorEngine.calculate_technical_indicators(df)
-                historical_map[sym] = df_calc
-
-                signals = pd.Series(False, index=df_calc.index)
-                for idx in range(len(df_calc)):
-                    row_dict = df_calc.iloc[idx].to_dict()
-                    if query and QueryParserEngine.eval_condition(query, row_dict):
-                        signals.iloc[idx] = True
-
-                screening_signals[sym] = signals
 
             if not historical_map:
                 return None
@@ -913,12 +871,13 @@ class StockScreenerBacktestCog(commands.Cog):
             return engine.run(screening_signals)
 
         except Exception as e:
-            print(f"[Backtest Pipeline Error] {e}", file=sys.stderr)
+            print(f"[Backtest Error] {e}", file=sys.stderr)
             return None
+
 
 async def setup(bot: commands.Bot):
     if not HAS_REQUIRED_LIBS:
-        print("[StockScreener Error] 依存ライブラリ不足のため StockScreenerBacktestCog のロードを中止します。", file=sys.stderr)
+        print("[StockScreener Error] Missing required libraries", file=sys.stderr)
         return
     await bot.add_cog(StockScreenerBacktestCog(bot))
-    print("[StockScreener] StockScreenerBacktestCog が正常にロードされました。")
+    print("[StockScreener] StockScreenerBacktestCog loaded successfully")
