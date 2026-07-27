@@ -667,7 +667,7 @@ class StockScreenerBacktestCog(commands.Cog):
         min_psr="PSR 最小値",
         min_yield="配当利回り 最小値 (%)",
         market_cap_min_oku="最小時価総額 (億円)",
-        universe="対象市場区分 (Prime / Standard / Growth / All)",  # 追記
+        universe="対象市場区分 (Prime / Standard / Growth / All)",
         query="カスタム判定クエリ (例: psr < 2.0 and roe > 10 and vwap_bias > 0)"
     )
     async def screening(
@@ -681,7 +681,7 @@ class StockScreenerBacktestCog(commands.Cog):
         min_psr: Optional[float] = None,
         min_yield: Optional[float] = None,
         market_cap_min_oku: Optional[float] = None,
-        universe: Optional[str] = "All",  # 追記
+        universe: Optional[str] = "All",
         query: Optional[str] = None
     ):
         await interaction.response.defer()
@@ -694,7 +694,7 @@ class StockScreenerBacktestCog(commands.Cog):
         results = await loop.run_in_executor(
             self.executor,
             self._execute_screening_filter,
-            min_per, max_per, min_pbr, max_pbr, min_roe, min_psr, min_yield, market_cap_min_oku, query
+            min_per, max_per, min_pbr, max_pbr, min_roe, min_psr, min_yield, market_cap_min_oku, universe, query
         )
 
         if not results:
@@ -733,6 +733,7 @@ class StockScreenerBacktestCog(commands.Cog):
         min_psr: Optional[float],
         min_yield: Optional[float],
         market_cap_min_oku: Optional[float],
+        universe: Optional[str],
         query: Optional[str]
     ) -> List[Dict[str, Any]]:
         matched = []
@@ -745,11 +746,11 @@ class StockScreenerBacktestCog(commands.Cog):
             div_yield = data.get("dividend_yield")
             mcap_oku = data.get("market_cap_oku")
             
-                        # 市場区分 (universe) フィルタ判定の追記
             if universe and universe.lower() != "all":
                 data_market = str(data.get("market", "")).lower()
                 if universe.lower() not in data_market:
                     continue
+
             if min_per is not None and (per is None or per < min_per):
                 continue
             if max_per is not None and (per is None or per > max_per):
@@ -778,6 +779,7 @@ class StockScreenerBacktestCog(commands.Cog):
     @app_commands.command(name="backtest", description="スクリーニング対象条件に基づくリアルな過去売買シミュレーションを実行します")
     @app_commands.describe(
         initial_capital="初期資金 (円)",
+        universe="対象市場区分 (Prime / Standard / Growth / All)",
         allow_short="空売りを許可する",
         allow_pyramiding="買い増し(ナンピン・ピラミッディング)を許可する",
         allow_hedge="一定ドローダウン到達時に自動ヘッジを発動する",
@@ -787,6 +789,7 @@ class StockScreenerBacktestCog(commands.Cog):
         self,
         interaction: discord.Interaction,
         initial_capital: float = 10000000.0,
+        universe: Optional[str] = "All",
         allow_short: bool = False,
         allow_pyramiding: bool = False,
         allow_hedge: bool = False,
@@ -803,7 +806,13 @@ class StockScreenerBacktestCog(commands.Cog):
         )
 
         loop = asyncio.get_running_loop()
-        res = await loop.run_in_executor(self.executor, self._execute_backtest_pipeline, config, query)
+        res = await loop.run_in_executor(
+            self.executor,
+            self._execute_backtest_pipeline,
+            config,
+            query,
+            universe
+        )
 
         if not res:
             await interaction.followup.send("バックテストの実行に必要なヒストリカルデータの取得に失敗しました。")
@@ -846,7 +855,7 @@ class StockScreenerBacktestCog(commands.Cog):
         config: BacktestConfig,
         query: Optional[str],
         universe: Optional[str] = "All",
-        max_symbols: int = 100  # 追記: 件数制御
+        max_symbols: int = 100
     ) -> Optional[TradeResult]:
         
         filtered_symbols = self.symbols_data
@@ -857,6 +866,8 @@ class StockScreenerBacktestCog(commands.Cog):
             ]
 
         target_symbols = [f"{s['code']}.T" for s in filtered_symbols[:max_symbols]]
+        historical_map = {}
+        screening_signals = {}
 
         try:
             data = yf.download(target_symbols, period="2y", group_by="ticker", progress=False)
