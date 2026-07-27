@@ -26,7 +26,6 @@ except ImportError as e:
 # ==========================================
 # 1. データモデル (Dataclasses)
 # ==========================================
-
 @dataclass
 class TradePosition:
     symbol: str
@@ -39,8 +38,7 @@ class TradePosition:
     is_hedged: bool = False
     current_price: float = 0.0
     unrealized_pnl: float = 0.0
-
-
+    highest_price: float = 0.0  # 追記: トレーリングストップ用
 @dataclass
 class BacktestConfig:
     initial_capital: float = 10000000.0
@@ -394,10 +392,13 @@ class RealisticBacktestEngine:
         total_portfolio_val = self.cash + sum(p.unrealized_pnl for p in self.positions)
         total_unrealized_loss = sum(p.unrealized_pnl for p in self.positions if p.unrealized_pnl < 0)
 
-        if self.config.allow_hedge and (abs(total_unrealized_loss) / total_portfolio_val) >= self.config.hedge_trigger_drawdown:
+        # ヘッジ発動処理（フラグ更新 ＋ 動的ヘッジ注文）
+        if self.config.allow_hedge and total_portfolio_val > 0 and (abs(total_unrealized_loss) / total_portfolio_val) >= self.config.hedge_trigger_drawdown:
             for p in self.positions:
                 if p.side == "LONG" and not p.is_hedged:
                     p.is_hedged = True
+                    # 指数または同一銘柄のショートポジションを建ててヘッジ
+                    self._execute_open(p.symbol, current_date, p.current_price, "SHORT", "HEDGE_SHORT")
 
         for pos in self.positions:
             df = self.data_map.get(pos.symbol)
@@ -405,9 +406,13 @@ class RealisticBacktestEngine:
                 continue
 
             current_price = pos.current_price
+            if current_price > pos.highest_price:
+                pos.highest_price = current_price
+
             exit_needed = False
             exit_reason = ""
 
+            # ストップロス / テイクプロフィット判定
             if pos.stop_loss_price and current_price <= pos.stop_loss_price and pos.side == "LONG":
                 exit_needed = True
                 exit_reason = "STOP_LOSS"
@@ -415,7 +420,15 @@ class RealisticBacktestEngine:
                 exit_needed = True
                 exit_reason = "TAKE_PROFIT"
 
-            if not exit_needed and self.config.partial_exit_profit:
+            # トレーリングストップ判定（追記）
+            if not exit_needed and self.config.trailing_stop_percent and pos.side == "LONG":
+                drop_ratio = (pos.highest_price - current_price) / pos.highest_price
+                if drop_ratio >= self.config.trailing_stop_percent:
+                    exit_needed = True
+                    exit_reason = "TRAILING_STOP"
+
+            # 部分利確判定
+            if not exit_needed and self.config.partial_exit_profit and pos.side == "LONG":
                 pnl_ratio = (current_price - pos.entry_price) / pos.entry_price
                 if pnl_ratio >= self.config.partial_exit_profit and pos.shares > 100:
                     exit_shares = pos.shares // 2
@@ -451,9 +464,13 @@ class RealisticBacktestEngine:
                 if self.config.allow_pyramiding:
                     pnl_pct = (raw_price - existing_pos.entry_price) / existing_pos.entry_price
                     if abs(pnl_pct) >= self.config.pyramiding_step:
-                        self._execute_open(symbol, current_date, raw_price, "LONG", "PYRAMIDING")
+                        self._execute_open(symbol, current_date, raw_price, existing_pos.side, "PYRAMIDING")
             else:
+                # ロングエントリー
                 self._execute_open(symbol, current_date, raw_price, "LONG", "SCREENING_ENTRY")
+                # 空売り許可時のショートエントリー判定（追記）
+                if self.config.allow_short and len(self.positions) < self.config.max_positions:
+                    self._execute_open(symbol, current_date, raw_price, "SHORT", "SCREENING_SHORT_ENTRY")
 
     def _execute_open(self, symbol: str, current_date: pd.Timestamp, price: float, side: str, reason: str):
         exec_price = price * (1 + self.config.slippage_rate) if side == "LONG" else price * (1 - self.config.slippage_rate)
@@ -483,6 +500,7 @@ class RealisticBacktestEngine:
             stop_loss_price=sl,
             take_profit_price=tp,
             current_price=exec_price,
+            highest_price=exec_price,
             unrealized_pnl=0.0
         )
         self.positions.append(pos)
@@ -649,6 +667,7 @@ class StockScreenerBacktestCog(commands.Cog):
         min_psr="PSR 最小値",
         min_yield="配当利回り 最小値 (%)",
         market_cap_min_oku="最小時価総額 (億円)",
+        universe="対象市場区分 (Prime / Standard / Growth / All)",  # 追記
         query="カスタム判定クエリ (例: psr < 2.0 and roe > 10 and vwap_bias > 0)"
     )
     async def screening(
@@ -662,6 +681,7 @@ class StockScreenerBacktestCog(commands.Cog):
         min_psr: Optional[float] = None,
         min_yield: Optional[float] = None,
         market_cap_min_oku: Optional[float] = None,
+        universe: Optional[str] = "All",  # 追記
         query: Optional[str] = None
     ):
         await interaction.response.defer()
@@ -724,7 +744,12 @@ class StockScreenerBacktestCog(commands.Cog):
             psr = data.get("psr")
             div_yield = data.get("dividend_yield")
             mcap_oku = data.get("market_cap_oku")
-
+            
+                        # 市場区分 (universe) フィルタ判定の追記
+            if universe and universe.lower() != "all":
+                data_market = str(data.get("market", "")).lower()
+                if universe.lower() not in data_market:
+                    continue
             if min_per is not None and (per is None or per < min_per):
                 continue
             if max_per is not None and (per is None or per > max_per):
@@ -816,10 +841,22 @@ class StockScreenerBacktestCog(commands.Cog):
         embed.set_footer(text="QUANT SYSTEM ENGINE // BACKTEST COMPLETE")
         await interaction.followup.send(embed=embed)
 
-    def _execute_backtest_pipeline(self, config: BacktestConfig, query: Optional[str]) -> Optional[TradeResult]:
-        target_symbols = [f"{s['code']}.T" for s in self.symbols_data[:30]]
-        historical_map = {}
-        screening_signals = {}
+    def _execute_backtest_pipeline(
+        self,
+        config: BacktestConfig,
+        query: Optional[str],
+        universe: Optional[str] = "All",
+        max_symbols: int = 100  # 追記: 件数制御
+    ) -> Optional[TradeResult]:
+        
+        filtered_symbols = self.symbols_data
+        if universe and universe.lower() != "all":
+            filtered_symbols = [
+                s for s in self.symbols_data 
+                if universe.lower() in str(s.get("market", "")).lower()
+            ]
+
+        target_symbols = [f"{s['code']}.T" for s in filtered_symbols[:max_symbols]]
 
         try:
             data = yf.download(target_symbols, period="2y", group_by="ticker", progress=False)
