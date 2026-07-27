@@ -466,7 +466,8 @@ class RealisticBacktestEngine:
             if df is None or current_date not in df.index:
                 continue
 
-            raw_price = float(df.loc[current_date, "Close"])
+            val = df.loc[current_date, "Close"]
+            raw_price = float(val.iloc[0] if isinstance(val, pd.Series) else val)
             existing_pos = next((p for p in self.positions if p.symbol == symbol), None)
 
             if existing_pos:
@@ -475,7 +476,6 @@ class RealisticBacktestEngine:
                     if abs(pnl_pct) >= self.config.pyramiding_step:
                         self._execute_open(symbol, current_date, raw_price, existing_pos.side, "PYRAMIDING")
             else:
-                # 買い（LONG）エントリーまたは空売り（SHORT）エントリーの選択的判定
                 entry_side = "SHORT" if self.config.allow_short else "LONG"
                 entry_reason = "SCREENING_SHORT_ENTRY" if self.config.allow_short else "SCREENING_ENTRY"
                 self._execute_open(symbol, current_date, raw_price, entry_side, entry_reason)
@@ -496,8 +496,12 @@ class RealisticBacktestEngine:
 
         self.cash -= (cost + commission)
 
-        sl = exec_price * (1 - self.config.partial_exit_loss) if self.config.partial_exit_loss else None
-        tp = exec_price * (1 + self.config.partial_exit_profit) if self.config.partial_exit_profit else None
+        if side == "LONG":
+            sl = exec_price * (1 - self.config.partial_exit_loss) if self.config.partial_exit_loss else None
+            tp = exec_price * (1 + self.config.partial_exit_profit) if self.config.partial_exit_profit else None
+        else:
+            sl = exec_price * (1 + self.config.partial_exit_loss) if self.config.partial_exit_loss else None
+            tp = exec_price * (1 - self.config.partial_exit_profit) if self.config.partial_exit_profit else None
 
         pos = TradePosition(
             symbol=symbol,
