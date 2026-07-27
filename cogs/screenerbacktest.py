@@ -25,6 +25,22 @@ except ImportError as e:
     HAS_REQUIRED_LIBS = False
 
 
+JAPAN_STOCK_SYMBOLS = [
+    ("9984", "ソフトバンクG"),
+    ("6758", "Sony"),
+    ("7203", "トヨタ"),
+    ("9437", "NTT DoCoMo"),
+    ("8306", "三菱UFJ"),
+    ("8411", "みずほFG"),
+    ("8001", "伊藤忠"),
+    ("9020", "JR東日本"),
+    ("6902", "デンソー"),
+    ("9983", "ファーストリテイリング"),
+]
+
+JAPAN_STOCK_TICKERS = [f"{code}.T" for code, _ in JAPAN_STOCK_SYMBOLS]
+
+
 class ScreeningCategory(Enum):
     TECHNICAL = "テクニカル指標"
     FUNDAMENTAL = "ファンダメンタルズ"
@@ -33,9 +49,6 @@ class ScreeningCategory(Enum):
 
 
 TECHNICAL_INDICATORS = {
-    "SMA交差": ("sma_25_75", "25日線と75日線の交差を検出"),
-    "ゴールデンクロス": ("golden_cross", "買いシグナル"),
-    "デッドクロス": ("dead_cross", "売りシグナル"),
     "バイアス25": ("bias_25", "25日線からの乖離率"),
     "バイアス75": ("bias_75", "75日線からの乖離率"),
     "バイアス200": ("bias_200", "200日線からの乖離率"),
@@ -43,14 +56,9 @@ TECHNICAL_INDICATORS = {
     "RSI": ("rsi", "オシレーター"),
     "RCI": ("rci_9", "価格の買われすぎ/売られすぎ"),
     "DMI": ("plus_di", "トレンド強度"),
-    "ボリンジャーバンド上": ("bollinger_upper_2s", "上限バンド"),
-    "ボリンジャーバンド下": ("bollinger_lower_2s", "下限バンド"),
-    "VWAP": ("vwap", "出来高加重平均価格"),
     "VWAP乖離": ("vwap_bias", "VWAP乖離率"),
     "騰落率1週間": ("roc_1w", "1週間の騰落率"),
     "騰落率1ヶ月": ("roc_1m", "1ヶ月の騰落率"),
-    "騰落率3ヶ月": ("roc_3m", "3ヶ月の騰落率"),
-    "騰落率1年": ("roc_1y", "1年の騰落率"),
 }
 
 FUNDAMENTAL_INDICATORS = {
@@ -58,10 +66,7 @@ FUNDAMENTAL_INDICATORS = {
     "PER (実績)": ("per", "実績PER"),
     "PBR": ("pbr", "株価純資産倍率"),
     "PSR": ("psr", "株価売上高倍率"),
-    "PCFR": ("pcfr", "キャッシュフロー倍率"),
-    "EV/EBITDA": ("ev_ebitda", "企業価値倍率"),
     "ROE": ("roe", "自己資本利益率"),
-    "ROA": ("roa", "総資産利益率"),
     "配当利回り": ("dividend_yield", "配当利回り"),
 }
 
@@ -77,7 +82,6 @@ PRICE_VOLUME_INDICATORS = {
     "52週高値からの下落": ("high_52w_drop", "52週高値比"),
     "52週安値からの上昇": ("low_52w_rise", "52週安値比"),
     "出来高変化率": ("volume_change", "出来高変化"),
-    "出来高MA20比": ("volume_ratio_ma20", "出来高の20日MA比"),
 }
 
 
@@ -276,52 +280,79 @@ class DatabaseManager:
                 name TEXT,
                 market TEXT,
                 last_update TIMESTAMP,
-                technical_data TEXT,
-                fundamental_data TEXT
+                bias_25 REAL,
+                bias_75 REAL,
+                bias_200 REAL,
+                macd REAL,
+                rsi REAL,
+                rci_9 REAL,
+                plus_di REAL,
+                vwap_bias REAL,
+                roc_1w REAL,
+                roc_1m REAL,
+                roc_3m REAL,
+                roc_1y REAL,
+                per REAL,
+                forward_per REAL,
+                pbr REAL,
+                psr REAL,
+                roe REAL,
+                dividend_yield REAL,
+                operating_margin REAL,
+                revenue_growth REAL,
+                earnings_growth REAL,
+                payout_ratio REAL,
+                market_cap_oku REAL,
+                high_52w_drop REAL,
+                low_52w_rise REAL,
+                volume_change REAL
             )
         ''')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_code ON stocks(code)')
         conn.commit()
         conn.close()
 
-    def save_stock_data(self, code: str, name: str, market: str, technical_data: str, fundamental_data: str):
+    def save_stock_data(self, code: str, name: str, market: str, tech_data: dict, fund_data: dict):
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
-        c.execute('''
-            INSERT OR REPLACE INTO stocks (code, name, market, last_update, technical_data, fundamental_data)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (code, name, market, datetime.now().isoformat(), technical_data, fundamental_data))
+        
+        all_data = {**tech_data, **fund_data}
+        columns = ['code', 'name', 'market', 'last_update'] + list(all_data.keys())
+        values = [code, name, market, datetime.now().isoformat()] + list(all_data.values())
+        
+        placeholders = ','.join(['?' for _ in columns])
+        cols_str = ','.join(columns)
+        
+        c.execute(f'''
+            INSERT OR REPLACE INTO stocks ({cols_str})
+            VALUES ({placeholders})
+        ''', values)
         conn.commit()
         conn.close()
 
     def get_all_stocks(self) -> List[Dict[str, Any]]:
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
-        c.execute('SELECT code, name, market, technical_data, fundamental_data FROM stocks')
+        c.execute('SELECT * FROM stocks')
         results = c.fetchall()
         conn.close()
 
+        if not results:
+            return []
+
+        columns = [desc[0] for desc in c.description]
         stocks = []
-        for code, name, market, tech_data, fund_data in results:
-            try:
-                tech = json.loads(tech_data) if tech_data else {}
-                fund = json.loads(fund_data) if fund_data else {}
-                stocks.append({
-                    "code": code,
-                    "name": name,
-                    "market": market,
-                    **tech,
-                    **fund
-                })
-            except json.JSONDecodeError:
-                continue
+        for row in results:
+            stocks.append(dict(zip(columns, row)))
 
         return stocks
 
     def screening_filter(self, conditions: List[Dict[str, Any]], universe: Optional[str] = None) -> List[Dict[str, Any]]:
-        stocks = self.get_all_stocks()
-        
-        if universe and universe.lower() != "all":
-            stocks = [s for s in stocks if universe.lower() in s.get("market", "").lower()]
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+
+        query = 'SELECT * FROM stocks WHERE 1=1'
+        params = []
 
         for condition in conditions:
             field_name = condition.get("field")
@@ -332,19 +363,36 @@ class DatabaseManager:
                 continue
 
             if operator == ">":
-                stocks = [s for s in stocks if s.get(field_name) is not None and s.get(field_name) > threshold]
+                query += f' AND {field_name} > ?'
+                params.append(threshold)
             elif operator == ">=":
-                stocks = [s for s in stocks if s.get(field_name) is not None and s.get(field_name) >= threshold]
+                query += f' AND {field_name} >= ?'
+                params.append(threshold)
             elif operator == "<":
-                stocks = [s for s in stocks if s.get(field_name) is not None and s.get(field_name) < threshold]
+                query += f' AND {field_name} < ?'
+                params.append(threshold)
             elif operator == "<=":
-                stocks = [s for s in stocks if s.get(field_name) is not None and s.get(field_name) <= threshold]
+                query += f' AND {field_name} <= ?'
+                params.append(threshold)
             elif operator == "==":
-                stocks = [s for s in stocks if s.get(field_name) is not None and s.get(field_name) == threshold]
+                query += f' AND {field_name} = ?'
+                params.append(threshold)
             elif operator == "between":
-                stocks = [s for s in stocks if s.get(field_name) is not None and threshold[0] <= s.get(field_name) <= threshold[1]]
+                query += f' AND {field_name} BETWEEN ? AND ?'
+                params.extend([threshold[0], threshold[1]])
 
-        return stocks
+        try:
+            c.execute(query, params)
+            results = c.fetchall()
+            columns = [desc[0] for desc in c.description]
+            conn.close()
+
+            stocks = [dict(zip(columns, row)) for row in results]
+            return stocks
+        except Exception as e:
+            print(f"[DB Error] {e}", file=sys.stderr)
+            conn.close()
+            return []
 
 
 class RealisticBacktestEngine:
@@ -441,8 +489,6 @@ class RealisticBacktestEngine:
                     self.cash -= daily_short_fee
 
     def _process_exits_and_adjustments(self, current_date: pd.Timestamp):
-        positions_to_remove = []
-
         for pos in self.positions[:]:
             should_exit = False
 
@@ -490,26 +536,37 @@ class RealisticBacktestEngine:
                 continue
 
             entry_price = float(df.loc[current_date, "Close"])
-            entry_price_with_slippage = entry_price * (1 + self.config.slippage_rate)
+
+            existing_long = len([p for p in self.positions if p.side == "LONG"])
+            existing_short = len([p for p in self.positions if p.side == "SHORT"])
+
+            should_enter_long = existing_long < self.config.max_positions
+            should_enter_short = self.config.allow_short and existing_short < self.config.max_positions
+
+            if not should_enter_long and not should_enter_short:
+                continue
+
+            side = "LONG" if should_enter_long else "SHORT"
+            entry_price_with_slippage = entry_price * (1 + self.config.slippage_rate) if side == "LONG" else entry_price * (1 - self.config.slippage_rate)
 
             allocation = self.cash * self.config.max_position_percent
             shares = int(allocation / entry_price_with_slippage)
 
-            if shares > 0 and self.cash >= (entry_price_with_slippage * shares):
-                if len([p for p in self.positions if p.side == "LONG"]) < self.config.max_positions:
-                    commission = (entry_price_with_slippage * shares) * self.config.commission_rate
-                    total_cost = (entry_price_with_slippage * shares) + commission
+            if shares > 0:
+                commission = (entry_price_with_slippage * shares) * self.config.commission_rate
+                total_cost = (entry_price_with_slippage * shares) + commission
 
-                    if self.cash >= total_cost:
+                if self.cash >= total_cost or side == "SHORT":
+                    if side == "LONG":
                         self.cash -= total_cost
-                        pos = TradePosition(
-                            symbol=symbol,
-                            side="LONG",
-                            entry_date=current_date,
-                            entry_price=entry_price_with_slippage,
-                            shares=shares
-                        )
-                        self.positions.append(pos)
+                    pos = TradePosition(
+                        symbol=symbol,
+                        side=side,
+                        entry_date=current_date,
+                        entry_price=entry_price_with_slippage,
+                        shares=shares
+                    )
+                    self.positions.append(pos)
 
     def _empty_result(self) -> TradeResult:
         return TradeResult(
@@ -536,8 +593,9 @@ class ScreeningDashboardView(discord.ui.View):
         self.selected_universe = "ALL"
         self.screening_conditions: List[Dict[str, Any]] = []
         self.screening_results: List[Dict[str, Any]] = []
+        self.parent_message: Optional[discord.Message] = None
 
-    async def update_dashboard(self, interaction: discord.Interaction):
+    async def update_dashboard(self, parent_interaction: discord.Interaction):
         results = self.cog.db_manager.screening_filter(self.screening_conditions, self.selected_universe)
         self.screening_results = results
 
@@ -546,10 +604,10 @@ class ScreeningDashboardView(discord.ui.View):
             color=0x00D9FF,
             description=f"Universe: {self.selected_universe} | Matches: {len(results)}"
         )
-        embed.add_field(name="Conditions", value=f"{len(self.screening_conditions)} active", inline=True)
+        embed.add_field(name="Active Conditions", value=f"{len(self.screening_conditions)}", inline=True)
+        embed.add_field(name="Results", value=f"{len(results)} stocks", inline=True)
 
-        await interaction.response.defer()
-        await interaction.edit_original_response(embed=embed, view=self)
+        await parent_interaction.edit_original_response(embed=embed, view=self)
 
     @discord.ui.button(label="Universe Select", style=discord.ButtonStyle.primary)
     async def button_universe(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -564,9 +622,11 @@ class ScreeningDashboardView(discord.ui.View):
                 discord.SelectOption(label="Growth", value="growth"),
             ]
         )
-        async def select_callback(interaction: discord.Interaction):
+
+        async def select_callback(select_interaction: discord.Interaction):
             self.selected_universe = select.values[0].upper()
             await self.update_dashboard(interaction)
+            await select_interaction.response.defer()
 
         select.callback = select_callback
         view = discord.ui.View()
@@ -580,7 +640,7 @@ class ScreeningDashboardView(discord.ui.View):
         ]
         select = discord.ui.Select(placeholder="Select category", options=categories)
 
-        async def select_callback(interaction: discord.Interaction):
+        async def select_callback(select_interaction: discord.Interaction):
             category = select.values[0]
             
             if category == "TECHNICAL":
@@ -594,45 +654,44 @@ class ScreeningDashboardView(discord.ui.View):
 
             indicator_select = discord.ui.Select(placeholder="Select indicator", options=options[:25])
 
-            async def indicator_callback(interaction: discord.Interaction):
+            async def indicator_callback(ind_interaction: discord.Interaction):
                 field_name = indicator_select.values[0]
-                await self._show_condition_modal(interaction, field_name)
+                await self._show_condition_modal(ind_interaction, field_name, interaction)
 
             indicator_select.callback = indicator_callback
             view = discord.ui.View()
             view.add_item(indicator_select)
-            await interaction.response.send_message("Select indicator:", view=view, ephemeral=True)
+            await select_interaction.response.send_message("Select indicator:", view=view, ephemeral=True)
 
         select.callback = select_callback
         view = discord.ui.View()
         view.add_item(select)
         await interaction.response.send_message("Select category:", view=view, ephemeral=True)
 
-    async def _show_condition_modal(self, interaction: discord.Interaction, field_name: str):
+    async def _show_condition_modal(self, interaction: discord.Interaction, field_name: str, parent_interaction: discord.Interaction):
         class ConditionModal(discord.ui.Modal, title="Set Condition"):
-            operator = discord.ui.TextInput(label="Operator (>, >=, <, <=, ==, between)", required=True)
-            threshold = discord.ui.TextInput(label="Threshold Value", required=True)
+            operator_input = discord.ui.TextInput(label="Operator (>, >=, <, <=, ==, between)", required=True)
+            threshold_input = discord.ui.TextInput(label="Threshold Value", required=True)
 
-            async def on_submit(self, interaction: discord.Interaction):
+            async def on_submit(self, modal_interaction: discord.Interaction):
                 try:
-                    op = operator.value.strip()
-                    val = float(threshold.value.strip())
+                    op = operator_input.value.strip()
+                    val = float(threshold_input.value.strip())
                     if op == "between":
                         val = [val, val]
 
-                    self.parent.screening_conditions.append({
+                    self.parent_view.screening_conditions.append({
                         "field": field_name,
                         "operator": op,
                         "threshold": val
                     })
-                    await self.parent.update_dashboard(interaction)
+                    await self.parent_view.update_dashboard(parent_interaction)
+                    await modal_interaction.response.defer()
                 except ValueError:
-                    await interaction.response.send_message("Invalid threshold value", ephemeral=True)
-
-            parent = self
+                    await modal_interaction.response.send_message("Invalid threshold value", ephemeral=True)
 
         modal = ConditionModal()
-        modal.parent = self
+        modal.parent_view = self
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(label="Execute Screening", style=discord.ButtonStyle.green)
@@ -659,6 +718,18 @@ class ScreeningDashboardView(discord.ui.View):
 
         await interaction.followup.send(embed=embed)
 
+    @discord.ui.button(label="Go to Backtest", style=discord.ButtonStyle.blurple)
+    async def button_backtest(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.cog.current_screening_conditions = self.screening_conditions
+        self.cog.current_screening_results = self.screening_results
+        
+        await interaction.response.defer()
+        view = BacktestDashboardView(self.cog)
+        embed = discord.Embed(title="BACKTEST DASHBOARD", color=0xFF6B6B)
+        embed.add_field(name="Screening Conditions", value=f"{len(self.screening_conditions)} active", inline=True)
+        
+        await interaction.edit_original_response(embed=embed, view=view)
+
 
 class BacktestDashboardView(discord.ui.View):
     def __init__(self, cog: 'StockScreenerBacktestCog', timeout: float = 600):
@@ -673,17 +744,17 @@ class BacktestDashboardView(discord.ui.View):
             commission = discord.ui.TextInput(label="Commission Rate (%)", required=True)
             slippage = discord.ui.TextInput(label="Slippage Rate (%)", required=True)
 
-            async def on_submit(self, modal_self, interaction: discord.Interaction):
+            async def on_submit(self, modal_self, modal_interaction: discord.Interaction):
                 try:
-                    self.config.initial_capital = float(initial_capital.value)
-                    self.config.commission_rate = float(commission.value) / 100.0
-                    self.config.slippage_rate = float(slippage.value) / 100.0
-                    await interaction.response.send_message("Settings saved", ephemeral=True)
+                    self.parent_config.initial_capital = float(initial_capital.value)
+                    self.parent_config.commission_rate = float(commission.value) / 100.0
+                    self.parent_config.slippage_rate = float(slippage.value) / 100.0
+                    await modal_interaction.response.send_message("Settings saved", ephemeral=True)
                 except ValueError:
-                    await interaction.response.send_message("Invalid input", ephemeral=True)
+                    await modal_interaction.response.send_message("Invalid input", ephemeral=True)
 
         modal = CapitalModal()
-        modal.config = self.config
+        modal.parent_config = self.config
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(label="Trade Direction", style=discord.ButtonStyle.primary)
@@ -697,7 +768,7 @@ class BacktestDashboardView(discord.ui.View):
             ]
         )
 
-        async def select_callback(interaction: discord.Interaction):
+        async def select_callback(select_interaction: discord.Interaction):
             if select.values[0] == "long":
                 self.config.allow_short = False
             elif select.values[0] == "short":
@@ -706,7 +777,7 @@ class BacktestDashboardView(discord.ui.View):
                 self.config.allow_short = True
                 self.config.allow_hedge = True
 
-            await interaction.response.send_message("Trade direction set", ephemeral=True)
+            await select_interaction.response.send_message("Trade direction set", ephemeral=True)
 
         select.callback = select_callback
         view = discord.ui.View()
@@ -720,20 +791,20 @@ class BacktestDashboardView(discord.ui.View):
             take_profit = discord.ui.TextInput(label="Take Profit (%)", required=False)
             trailing_stop = discord.ui.TextInput(label="Trailing Stop (%)", required=False)
 
-            async def on_submit(self, modal_self, interaction: discord.Interaction):
+            async def on_submit(self, modal_self, modal_interaction: discord.Interaction):
                 try:
                     if stop_loss.value:
-                        self.config.stop_loss_percent = float(stop_loss.value)
+                        self.parent_config.stop_loss_percent = float(stop_loss.value)
                     if take_profit.value:
-                        self.config.take_profit_percent = float(take_profit.value)
+                        self.parent_config.take_profit_percent = float(take_profit.value)
                     if trailing_stop.value:
-                        self.config.trailing_stop_percent = float(trailing_stop.value)
-                    await interaction.response.send_message("Risk settings saved", ephemeral=True)
+                        self.parent_config.trailing_stop_percent = float(trailing_stop.value)
+                    await modal_interaction.response.send_message("Risk settings saved", ephemeral=True)
                 except ValueError:
-                    await interaction.response.send_message("Invalid input", ephemeral=True)
+                    await modal_interaction.response.send_message("Invalid input", ephemeral=True)
 
         modal = RiskModal()
-        modal.config = self.config
+        modal.parent_config = self.config
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(label="Execute Backtest", style=discord.ButtonStyle.green)
@@ -744,7 +815,9 @@ class BacktestDashboardView(discord.ui.View):
         result = await loop.run_in_executor(
             self.cog.executor,
             self.cog._execute_backtest_pipeline,
-            self.config
+            self.config,
+            self.cog.current_screening_conditions,
+            self.cog.current_screening_results
         )
 
         if not result:
@@ -776,6 +849,8 @@ class StockScreenerBacktestCog(commands.Cog):
         self.bot = bot
         self.executor = ThreadPoolExecutor(max_workers=4)
         self.db_manager = DatabaseManager("screener_data.db")
+        self.current_screening_conditions: List[Dict[str, Any]] = []
+        self.current_screening_results: List[Dict[str, Any]] = []
 
     @app_commands.command(name="screening", description="Interactive stock screening dashboard")
     async def screening(self, interaction: discord.Interaction):
@@ -793,65 +868,82 @@ class StockScreenerBacktestCog(commands.Cog):
 
     @app_commands.command(name="update_screener_cache", description="Update screener database from yfinance")
     async def update_screener_cache(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.send_message("Cache update started...")
+        progress_msg = await interaction.original_response()
 
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             self.executor,
             self._update_cache_task,
-            interaction
+            interaction,
+            progress_msg
         )
 
-    def _update_cache_task(self, interaction: discord.Interaction):
+    def _update_cache_task(self, interaction: discord.Interaction, progress_msg: discord.Message):
         try:
-            symbols = ["1001.T", "1002.T", "1003.T", "1004.T", "1005.T"]
-            processed = 0
-            total = len(symbols)
+            total = len(JAPAN_STOCK_TICKERS)
 
-            for sym in symbols:
+            for idx, sym in enumerate(JAPAN_STOCK_TICKERS):
                 try:
                     data = yf.download(sym, period="2y", progress=False)
                     info = yf.Ticker(sym).info
 
+                    tech_data = {}
+                    fund_data = {}
+
                     if not data.empty:
                         df = IndicatorEngine.calculate_technical_indicators(data)
                         tech_data = {
-                            "bias_25": float(df["bias_25"].iloc[-1]),
-                            "rsi": float(df["rsi"].iloc[-1]),
-                            "vwap_bias": float(df["vwap_bias"].iloc[-1]),
+                            "bias_25": float(df["bias_25"].iloc[-1]) if pd.notna(df["bias_25"].iloc[-1]) else None,
+                            "bias_75": float(df["bias_75"].iloc[-1]) if pd.notna(df["bias_75"].iloc[-1]) else None,
+                            "bias_200": float(df["bias_200"].iloc[-1]) if pd.notna(df["bias_200"].iloc[-1]) else None,
+                            "macd": float(df["macd"].iloc[-1]) if pd.notna(df["macd"].iloc[-1]) else None,
+                            "rsi": float(df["rsi"].iloc[-1]) if pd.notna(df["rsi"].iloc[-1]) else None,
+                            "rci_9": float(df["rci_9"].iloc[-1]) if pd.notna(df["rci_9"].iloc[-1]) else None,
+                            "plus_di": float(df["plus_di"].iloc[-1]) if pd.notna(df["plus_di"].iloc[-1]) else None,
+                            "vwap_bias": float(df["vwap_bias"].iloc[-1]) if pd.notna(df["vwap_bias"].iloc[-1]) else None,
+                            "roc_1w": float(df["roc_1w"].iloc[-1]) if pd.notna(df["roc_1w"].iloc[-1]) else None,
+                            "roc_1m": float(df["roc_1m"].iloc[-1]) if pd.notna(df["roc_1m"].iloc[-1]) else None,
+                            "roc_3m": float(df["roc_3m"].iloc[-1]) if pd.notna(df["roc_3m"].iloc[-1]) else None,
+                            "roc_1y": float(df["roc_1y"].iloc[-1]) if pd.notna(df["roc_1y"].iloc[-1]) else None,
+                            "high_52w_drop": float(df["high_52w_drop"].iloc[-1]) if pd.notna(df["high_52w_drop"].iloc[-1]) else None,
+                            "low_52w_rise": float(df["low_52w_rise"].iloc[-1]) if pd.notna(df["low_52w_rise"].iloc[-1]) else None,
+                            "volume_change": float(df["volume_change"].iloc[-1]) if pd.notna(df["volume_change"].iloc[-1]) else None,
                         }
-                    else:
-                        tech_data = {}
 
                     fund_data = IndicatorEngine.process_fundamental_metrics(info)
+                    fund_data = {k: (float(v) if isinstance(v, (int, np.integer)) else v) for k, v in fund_data.items()}
 
                     code = sym.replace(".T", "")
                     name = info.get("longName", code)
                     market = info.get("market", "Unknown")
 
-                    self.db_manager.save_stock_data(
-                        code, name, market,
-                        json.dumps(tech_data),
-                        json.dumps(fund_data)
-                    )
+                    self.db_manager.save_stock_data(code, name, market, tech_data, fund_data)
 
                 except Exception as e:
                     print(f"Error processing {sym}: {e}", file=sys.stderr)
 
-                processed += 1
-                pct = (processed / total) * 100
-                print(f"[Cache Update] {pct:.0f}% ({processed}/{total})")
+                pct = ((idx + 1) / total) * 100
+                print(f"[Cache Update] {pct:.0f}% ({idx + 1}/{total})")
 
         except Exception as e:
             print(f"[Cache Update Error] {e}", file=sys.stderr)
 
-    def _execute_backtest_pipeline(self, config: BacktestConfig) -> Optional[TradeResult]:
+    def _execute_backtest_pipeline(
+        self,
+        config: BacktestConfig,
+        screening_conditions: List[Dict[str, Any]],
+        screening_results: List[Dict[str, Any]]
+    ) -> Optional[TradeResult]:
         try:
-            symbols = ["1001.T", "1002.T", "1003.T"]
+            if not screening_results:
+                return None
+
+            target_symbols = [f"{s['code']}.T" for s in screening_results[:20]]
             historical_map = {}
             screening_signals = {}
 
-            for sym in symbols:
+            for sym in target_symbols:
                 try:
                     data = yf.download(sym, period="2y", progress=False)
                     if data.empty or len(data) < 50:
@@ -859,9 +951,49 @@ class StockScreenerBacktestCog(commands.Cog):
 
                     df_calc = IndicatorEngine.calculate_technical_indicators(data)
                     historical_map[sym] = df_calc
-                    screening_signals[sym] = pd.Series(False, index=df_calc.index)
 
-                except Exception:
+                    signals = pd.Series(False, index=df_calc.index)
+                    for idx in range(len(df_calc)):
+                        row_dict = df_calc.iloc[idx].to_dict()
+                        row_dict['code'] = sym.replace('.T', '')
+                        
+                        match = True
+                        for condition in screening_conditions:
+                            field = condition.get('field')
+                            op = condition.get('operator')
+                            threshold = condition.get('threshold')
+                            
+                            val = row_dict.get(field)
+                            if val is None:
+                                match = False
+                                break
+                            
+                            if op == '>' and not (val > threshold):
+                                match = False
+                                break
+                            elif op == '>=' and not (val >= threshold):
+                                match = False
+                                break
+                            elif op == '<' and not (val < threshold):
+                                match = False
+                                break
+                            elif op == '<=' and not (val <= threshold):
+                                match = False
+                                break
+                            elif op == '==' and not (val == threshold):
+                                match = False
+                                break
+                            elif op == 'between' and not (threshold[0] <= val <= threshold[1]):
+                                match = False
+                                break
+                        
+                        if match:
+                            signals.iloc[idx] = True
+
+                    screening_signals[sym] = signals
+
+                except Exception as e:
+                    print(f"Error processing {sym}: {e}", file=sys.stderr)
                     continue
 
             if not historical_map:
