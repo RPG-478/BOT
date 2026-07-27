@@ -656,9 +656,6 @@ class StockScreenerBacktestCog(commands.Cog):
 
         self.is_updating = False
         await interaction.followup.send("財務およびテクニカルキャッシュデータの更新が完了しました。")
-# ==========================================
-# 修正箇所: StockScreenerBacktestCog 内のクラスメソッド差し替え
-# ==========================================
 
     @app_commands.command(name="screening", description="高機能条件指定およびカスタムクエリで銘柄をスクリーニングします")
     @app_commands.describe(
