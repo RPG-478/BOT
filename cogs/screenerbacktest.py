@@ -292,20 +292,26 @@ class DatabaseManager:
                 roc_1m REAL,
                 roc_3m REAL,
                 roc_1y REAL,
+                high_52w_drop REAL,
+                low_52w_rise REAL,
+                volume_change REAL,
                 per REAL,
                 forward_per REAL,
                 pbr REAL,
                 psr REAL,
+                pcfr REAL,
+                ev_ebitda REAL,
                 roe REAL,
-                dividend_yield REAL,
+                roa REAL,
                 operating_margin REAL,
+                dividend_yield REAL,
+                payout_ratio REAL,
+                market_cap REAL,
+                market_cap_oku REAL,
                 revenue_growth REAL,
                 earnings_growth REAL,
-                payout_ratio REAL,
-                market_cap_oku REAL,
-                high_52w_drop REAL,
-                low_52w_rise REAL,
-                volume_change REAL
+                free_cashflow REAL,
+                operating_cashflow REAL
             )
         ''')
         c.execute('CREATE INDEX IF NOT EXISTS idx_code ON stocks(code)')
@@ -316,9 +322,22 @@ class DatabaseManager:
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
         
-        all_data = {**tech_data, **fund_data}
-        columns = ['code', 'name', 'market', 'last_update'] + list(all_data.keys())
-        values = [code, name, market, datetime.now().isoformat()] + list(all_data.values())
+        c.execute("PRAGMA table_info(stocks)")
+        valid_columns = {row[1] for row in c.fetchall()}
+
+        all_data = {
+            'code': code,
+            'name': name,
+            'market': market,
+            'last_update': datetime.now().isoformat(),
+            **tech_data,
+            **fund_data
+        }
+
+        filtered_data = {k: v for k, v in all_data.items() if k in valid_columns}
+        
+        columns = list(filtered_data.keys())
+        values = list(filtered_data.values())
         
         placeholders = ','.join(['?' for _ in columns])
         cols_str = ','.join(columns)
@@ -335,17 +354,13 @@ class DatabaseManager:
         c = conn.cursor()
         c.execute('SELECT * FROM stocks')
         results = c.fetchall()
+        columns = [desc[0] for desc in c.description]
         conn.close()
 
         if not results:
             return []
 
-        columns = [desc[0] for desc in c.description]
-        stocks = []
-        for row in results:
-            stocks.append(dict(zip(columns, row)))
-
-        return stocks
+        return [dict(zip(columns, row)) for row in results]
 
     def screening_filter(self, conditions: List[Dict[str, Any]], universe: Optional[str] = None) -> List[Dict[str, Any]]:
         conn = sqlite3.connect(self.db_path)
@@ -353,6 +368,10 @@ class DatabaseManager:
 
         query = 'SELECT * FROM stocks WHERE 1=1'
         params = []
+
+        if universe and universe.lower() != "all":
+            query += ' AND LOWER(market) LIKE ?'
+            params.append(f'%{universe.lower()}%')
 
         for condition in conditions:
             field_name = condition.get("field")
@@ -377,7 +396,7 @@ class DatabaseManager:
             elif operator == "==":
                 query += f' AND {field_name} = ?'
                 params.append(threshold)
-            elif operator == "between":
+            elif operator == "between" and isinstance(threshold, list) and len(threshold) == 2:
                 query += f' AND {field_name} BETWEEN ? AND ?'
                 params.extend([threshold[0], threshold[1]])
 
@@ -387,13 +406,11 @@ class DatabaseManager:
             columns = [desc[0] for desc in c.description]
             conn.close()
 
-            stocks = [dict(zip(columns, row)) for row in results]
-            return stocks
+            return [dict(zip(columns, row)) for row in results]
         except Exception as e:
             print(f"[DB Error] {e}", file=sys.stderr)
             conn.close()
             return []
-
 
 class RealisticBacktestEngine:
     def __init__(self, config: BacktestConfig, historical_data_map: Dict[str, pd.DataFrame]):
@@ -851,6 +868,20 @@ class StockScreenerBacktestCog(commands.Cog):
         self.db_manager = DatabaseManager("screener_data.db")
         self.current_screening_conditions: List[Dict[str, Any]] = []
         self.current_screening_results: List[Dict[str, Any]] = []
+        self.symbols_file = "tse_gps_symbols.json"
+
+    def _get_target_tickers(self) -> List[str]:
+        if os.path.exists(self.symbols_file):
+            try:
+                with open(self.symbols_file, "r", encoding="utf-8") as f:
+                    symbols_data = json.load(f)
+                    tickers = [f"{item['code']}.T" for item in symbols_data if "code" in item]
+                    if tickers:
+                        return tickers
+            except Exception as e:
+                print(f"[StockScreener Error] Symbols file load failed: {e}", file=sys.stderr)
+        return JAPAN_STOCK_TICKERS
+
 
     @app_commands.command(name="screening", description="Interactive stock screening dashboard")
     async def screening(self, interaction: discord.Interaction):
@@ -875,15 +906,17 @@ class StockScreenerBacktestCog(commands.Cog):
         await loop.run_in_executor(
             self.executor,
             self._update_cache_task,
-            interaction,
+            loop,
             progress_msg
         )
 
-    def _update_cache_task(self, interaction: discord.Interaction, progress_msg: discord.Message):
+    def _update_cache_task(self, loop: asyncio.AbstractEventLoop, progress_msg: discord.Message):
         try:
-            total = len(JAPAN_STOCK_TICKERS)
+            tickers = self._get_target_tickers()
+            total = len(tickers)
+            last_update_time = datetime.now()
 
-            for idx, sym in enumerate(JAPAN_STOCK_TICKERS):
+            for idx, sym in enumerate(tickers):
                 try:
                     data = yf.download(sym, period="2y", progress=False)
                     info = yf.Ticker(sym).info
@@ -891,7 +924,7 @@ class StockScreenerBacktestCog(commands.Cog):
                     tech_data = {}
                     fund_data = {}
 
-                    if not data.empty:
+                    if not data.empty and len(data) >= 2:
                         df = IndicatorEngine.calculate_technical_indicators(data)
                         tech_data = {
                             "bias_25": float(df["bias_25"].iloc[-1]) if pd.notna(df["bias_25"].iloc[-1]) else None,
@@ -923,11 +956,18 @@ class StockScreenerBacktestCog(commands.Cog):
                 except Exception as e:
                     print(f"Error processing {sym}: {e}", file=sys.stderr)
 
-                pct = ((idx + 1) / total) * 100
-                print(f"[Cache Update] {pct:.0f}% ({idx + 1}/{total})")
+                current_time = datetime.now()
+                if (current_time - last_update_time).total_seconds() >= 5 or (idx + 1) == total:
+                    pct = ((idx + 1) / total) * 100
+                    text = f"Cache updating: {pct:.1f}% ({idx + 1}/{total})"
+                    asyncio.run_coroutine_threadsafe(progress_msg.edit(content=text), loop)
+                    last_update_time = current_time
+
+            asyncio.run_coroutine_threadsafe(progress_msg.edit(content="Cache update completed."), loop)
 
         except Exception as e:
             print(f"[Cache Update Error] {e}", file=sys.stderr)
+
 
     def _execute_backtest_pipeline(
         self,
