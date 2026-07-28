@@ -585,8 +585,7 @@ class RealisticBacktestEngine:
                 total_cost = (entry_price_with_slippage * shares) + commission
 
                 if self.cash >= total_cost or side == "SHORT":
-                    if side == "LONG":
-                        self.cash -= total_cost
+                    self.cash -= total_cost
                     pos = TradePosition(
                         symbol=symbol,
                         side=side,
