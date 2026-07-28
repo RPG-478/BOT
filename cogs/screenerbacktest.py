@@ -318,34 +318,45 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
-    def save_stock_data(self, code: str, name: str, market: str, tech_data: dict, fund_data: dict):
+    def save_stock_data_batch(self, batch_data: List[Tuple[str, str, str, dict, dict]]):
+        if not batch_data:
+            return
+
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
         
         c.execute("PRAGMA table_info(stocks)")
         valid_columns = {row[1] for row in c.fetchall()}
 
-        all_data = {
-            'code': code,
-            'name': name,
-            'market': market,
-            'last_update': datetime.now().isoformat(),
-            **tech_data,
-            **fund_data
-        }
+        rows_to_insert = []
+        all_cols_set = set()
 
-        filtered_data = {k: v for k, v in all_data.items() if k in valid_columns}
-        
-        columns = list(filtered_data.keys())
-        values = list(filtered_data.values())
-        
-        placeholders = ','.join(['?' for _ in columns])
+        for code, name, market, tech_data, fund_data in batch_data:
+            combined = {
+                'code': code,
+                'name': name,
+                'market': market,
+                'last_update': datetime.now().isoformat(),
+                **tech_data,
+                **fund_data
+            }
+            filtered = {k: v for k, v in combined.items() if k in valid_columns}
+            all_cols_set.update(filtered.keys())
+            rows_to_insert.append(filtered)
+
+        columns = list(all_cols_set)
         cols_str = ','.join(columns)
-        
-        c.execute(f'''
+        placeholders = ','.join(['?' for _ in columns])
+
+        values_matrix = []
+        for row in rows_to_insert:
+            values_matrix.append([row.get(col) for col in columns])
+
+        c.executemany(f'''
             INSERT OR REPLACE INTO stocks ({cols_str})
             VALUES ({placeholders})
-        ''', values)
+        ''', values_matrix)
+
         conn.commit()
         conn.close()
 
@@ -869,7 +880,44 @@ class StockScreenerBacktestCog(commands.Cog):
         self.current_screening_conditions: List[Dict[str, Any]] = []
         self.current_screening_results: List[Dict[str, Any]] = []
         self.symbols_file = "tse_gps_symbols.json"
+    def _fetch_single_stock_cache(self, sym: str) -> Optional[Tuple[str, str, str, dict, dict]]:
+        try:
+            ticker = yf.Ticker(sym)
+            data = ticker.history(period="2y")
+            info = ticker.info
 
+            tech_data = {}
+            if not data.empty and len(data) >= 2:
+                df = IndicatorEngine.calculate_technical_indicators(data)
+                tech_data = {
+                    "bias_25": float(df["bias_25"].iloc[-1]) if pd.notna(df["bias_25"].iloc[-1]) else None,
+                    "bias_75": float(df["bias_75"].iloc[-1]) if pd.notna(df["bias_75"].iloc[-1]) else None,
+                    "bias_200": float(df["bias_200"].iloc[-1]) if pd.notna(df["bias_200"].iloc[-1]) else None,
+                    "macd": float(df["macd"].iloc[-1]) if pd.notna(df["macd"].iloc[-1]) else None,
+                    "rsi": float(df["rsi"].iloc[-1]) if pd.notna(df["rsi"].iloc[-1]) else None,
+                    "rci_9": float(df["rci_9"].iloc[-1]) if pd.notna(df["rci_9"].iloc[-1]) else None,
+                    "plus_di": float(df["plus_di"].iloc[-1]) if pd.notna(df["plus_di"].iloc[-1]) else None,
+                    "vwap_bias": float(df["vwap_bias"].iloc[-1]) if pd.notna(df["vwap_bias"].iloc[-1]) else None,
+                    "roc_1w": float(df["roc_1w"].iloc[-1]) if pd.notna(df["roc_1w"].iloc[-1]) else None,
+                    "roc_1m": float(df["roc_1m"].iloc[-1]) if pd.notna(df["roc_1m"].iloc[-1]) else None,
+                    "roc_3m": float(df["roc_3m"].iloc[-1]) if pd.notna(df["roc_3m"].iloc[-1]) else None,
+                    "roc_1y": float(df["roc_1y"].iloc[-1]) if pd.notna(df["roc_1y"].iloc[-1]) else None,
+                    "high_52w_drop": float(df["high_52w_drop"].iloc[-1]) if pd.notna(df["high_52w_drop"].iloc[-1]) else None,
+                    "low_52w_rise": float(df["low_52w_rise"].iloc[-1]) if pd.notna(df["low_52w_rise"].iloc[-1]) else None,
+                    "volume_change": float(df["volume_change"].iloc[-1]) if pd.notna(df["volume_change"].iloc[-1]) else None,
+                }
+
+            fund_data = IndicatorEngine.process_fundamental_metrics(info)
+            fund_data = {k: (float(v) if isinstance(v, (int, np.integer)) else v) for k, v in fund_data.items()}
+
+            code = sym.replace(".T", "")
+            name = info.get("longName", code)
+            market = info.get("market", "Unknown")
+
+            return (code, name, market, tech_data, fund_data)
+        except Exception as e:
+            print(f"Error fetching {sym}: {e}", file=sys.stderr)
+            return None
     def _get_target_tickers(self) -> List[str]:
         if os.path.exists(self.symbols_file):
             try:
@@ -914,78 +962,64 @@ class StockScreenerBacktestCog(commands.Cog):
         try:
             tickers = self._get_target_tickers()
             total = len(tickers)
+            completed = 0
             last_update_time = datetime.now()
+            batch_data = []
 
-            for idx, sym in enumerate(tickers):
-                try:
-                    data = yf.download(sym, period="2y", progress=False)
-                    info = yf.Ticker(sym).info
+            max_workers = min(10, os.cpu_count() * 2 if os.cpu_count() else 8)
 
-                    tech_data = {}
-                    fund_data = {}
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(self._fetch_single_stock_cache, sym): sym for sym in tickers}
 
-                    if not data.empty and len(data) >= 2:
-                        df = IndicatorEngine.calculate_technical_indicators(data)
-                        tech_data = {
-                            "bias_25": float(df["bias_25"].iloc[-1]) if pd.notna(df["bias_25"].iloc[-1]) else None,
-                            "bias_75": float(df["bias_75"].iloc[-1]) if pd.notna(df["bias_75"].iloc[-1]) else None,
-                            "bias_200": float(df["bias_200"].iloc[-1]) if pd.notna(df["bias_200"].iloc[-1]) else None,
-                            "macd": float(df["macd"].iloc[-1]) if pd.notna(df["macd"].iloc[-1]) else None,
-                            "rsi": float(df["rsi"].iloc[-1]) if pd.notna(df["rsi"].iloc[-1]) else None,
-                            "rci_9": float(df["rci_9"].iloc[-1]) if pd.notna(df["rci_9"].iloc[-1]) else None,
-                            "plus_di": float(df["plus_di"].iloc[-1]) if pd.notna(df["plus_di"].iloc[-1]) else None,
-                            "vwap_bias": float(df["vwap_bias"].iloc[-1]) if pd.notna(df["vwap_bias"].iloc[-1]) else None,
-                            "roc_1w": float(df["roc_1w"].iloc[-1]) if pd.notna(df["roc_1w"].iloc[-1]) else None,
-                            "roc_1m": float(df["roc_1m"].iloc[-1]) if pd.notna(df["roc_1m"].iloc[-1]) else None,
-                            "roc_3m": float(df["roc_3m"].iloc[-1]) if pd.notna(df["roc_3m"].iloc[-1]) else None,
-                            "roc_1y": float(df["roc_1y"].iloc[-1]) if pd.notna(df["roc_1y"].iloc[-1]) else None,
-                            "high_52w_drop": float(df["high_52w_drop"].iloc[-1]) if pd.notna(df["high_52w_drop"].iloc[-1]) else None,
-                            "low_52w_rise": float(df["low_52w_rise"].iloc[-1]) if pd.notna(df["low_52w_rise"].iloc[-1]) else None,
-                            "volume_change": float(df["volume_change"].iloc[-1]) if pd.notna(df["volume_change"].iloc[-1]) else None,
-                        }
+                for future in futures:
+                    res = future.result()
+                    completed += 1
 
-                    fund_data = IndicatorEngine.process_fundamental_metrics(info)
-                    fund_data = {k: (float(v) if isinstance(v, (int, np.integer)) else v) for k, v in fund_data.items()}
+                    if res:
+                        batch_data.append(res)
 
-                    code = sym.replace(".T", "")
-                    name = info.get("longName", code)
-                    market = info.get("market", "Unknown")
+                    if len(batch_data) >= 20 or completed == total:
+                        self.db_manager.save_stock_data_batch(batch_data)
+                        batch_data.clear()
 
-                    self.db_manager.save_stock_data(code, name, market, tech_data, fund_data)
-
-                except Exception as e:
-                    print(f"Error processing {sym}: {e}", file=sys.stderr)
-
-                current_time = datetime.now()
-                if (current_time - last_update_time).total_seconds() >= 5 or (idx + 1) == total:
-                    pct = ((idx + 1) / total) * 100
-                    text = f"Cache updating: {pct:.1f}% ({idx + 1}/{total})"
-                    asyncio.run_coroutine_threadsafe(progress_msg.edit(content=text), loop)
-                    last_update_time = current_time
+                    current_time = datetime.now()
+                    if (current_time - last_update_time).total_seconds() >= 5 or completed == total:
+                        pct = (completed / total) * 100
+                        text = f"Cache updating: {pct:.1f}% ({completed}/{total})"
+                        asyncio.run_coroutine_threadsafe(progress_msg.edit(content=text), loop)
+                        last_update_time = current_time
 
             asyncio.run_coroutine_threadsafe(progress_msg.edit(content="Cache update completed."), loop)
 
         except Exception as e:
             print(f"[Cache Update Error] {e}", file=sys.stderr)
 
-
     def _execute_backtest_pipeline(
         self,
         config: BacktestConfig,
         screening_conditions: List[Dict[str, Any]],
-        screening_results: List[Dict[str, Any]]
+        screening_results: List[Dict[str, Any]],
+        max_symbols: int = 100
     ) -> Optional[TradeResult]:
         try:
             if not screening_results:
                 return None
 
-            target_symbols = [f"{s['code']}.T" for s in screening_results[:20]]
+            target_symbols = [f"{s['code']}.T" for s in screening_results[:max_symbols]]
             historical_map = {}
             screening_signals = {}
 
+            data_batch = yf.download(target_symbols, period="2y", group_by="ticker", progress=False, threads=True)
+
             for sym in target_symbols:
                 try:
-                    data = yf.download(sym, period="2y", progress=False)
+                    if len(target_symbols) == 1:
+                        data = data_batch.dropna()
+                    else:
+                        if not isinstance(data_batch.columns, pd.MultiIndex) or sym not in data_batch.columns.levels[0]:
+                            continue
+                        data = data_batch[sym].dropna()
+
                     if data.empty or len(data) < 50:
                         continue
 
@@ -1023,7 +1057,7 @@ class StockScreenerBacktestCog(commands.Cog):
                             elif op == '==' and not (val == threshold):
                                 match = False
                                 break
-                            elif op == 'between' and not (threshold[0] <= val <= threshold[1]):
+                            elif op == 'between' and not (isinstance(threshold, list) and len(threshold) == 2 and threshold[0] <= val <= threshold[1]):
                                 match = False
                                 break
                         
