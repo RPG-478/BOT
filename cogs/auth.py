@@ -79,15 +79,24 @@ class QuestionModal(discord.ui.Modal, title="認証フォーム"):
 class VerifyView(discord.ui.View):
     def __init__(self, role_id: int):
         super().__init__(timeout=None)
-        self.role_id = role_id
-
-    @discord.ui.button(label="認証を開始する", style=discord.ButtonStyle.green, custom_id="verify_button_persistent")
-    async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(QuestionModal(self.role_id))
+        button = discord.ui.Button(
+            label="認証を開始する",
+            style=discord.ButtonStyle.green,
+            custom_id=f"verify_button:{role_id}"
+        )
+        self.add_item(button)
 
 class VerificationCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        if interaction.type == discord.InteractionType.component:
+            custom_id = interaction.data.get("custom_id", "")
+            if custom_id.startswith("verify_button:"):
+                role_id = int(custom_id.split(":")[1])
+                await interaction.response.send_modal(QuestionModal(role_id))
 
     @app_commands.command(name="send_panel", description="指定したチャンネルに認証パネルを送信します")
     @app_commands.checks.has_permissions(administrator=True)
