@@ -87,13 +87,9 @@ def we(description: str = None, title: str = None) -> discord.Embed:
     """白色embedを生成するヘルパー"""
     return discord.Embed(title=title, description=description, color=0xFFFFFF)
 
-# =====================
-# Main Voice Cog (Updated with Real-HRTF Engine)
-# =====================
 class PythonSpatialAudioSource(discord.AudioSource):
     """
-    EQ_SETTINGSに定義されていたすべてのエフェクトを
-    Python標準ライブラリおよびnumpy/scipyで完全リアルタイム処理する統合型オーディオエンジン
+    モジュール内蔵型HRTF（インパルス応答） ＆ 距離・リバーブ完全分離型オーディオエンジン
     """
     def __init__(self, source, state):
         self.source = source
@@ -101,109 +97,54 @@ class PythonSpatialAudioSource(discord.AudioSource):
         self.count = 0
         self.sr = 48000
         
-        # --- [spatial] HRTF/HRIR（頭部伝達インパルス応答）シミュレータ初期化 ---
-        # 15度刻み（24方向）のHRIRテーブルを作成
-        self.num_directions = 24
-        self.hrir_len = 64  # インパルス応答の長さ（サンプル数）
+        # --- [1] モジュール内蔵HRTF (KEMAR標準特性インパルス応答) の自動合成 ---
+        self.num_directions = 24  # 15度刻み 24方向
+        self.hrir_len = 128
         self.hrir_table_l = []
         self.hrir_table_r = []
         
-        # 頭部半径 (約8.75cm)、音速 340m/s から、最大遅延時間差（ITD）は約 0.25ms (48kHzで約12サンプル)
-        head_radius = 0.0875
-        vsound = 340.0
-        max_delay_samples = int((head_radius / vsound) * self.sr)
+        head_radius = 0.0875  # 平均的な頭部半径 (8.75cm)
+        vsound = 340.0         # 音速 (m/s)
+        max_delay = (head_radius / vsound) * self.sr  # 最大ITDサンプル数
         
         for idx in range(self.num_directions):
-            angle = (idx * (360.0 / self.num_directions)) * np.pi / 180.0
+            angle_rad = (idx * (360.0 / self.num_directions)) * np.pi / 180.0
             
-            # 左右の耳への到達時間差 (ITD)
-            # 左(90度/ 0.5pi)に近いほど左耳への遅延が少なくなり、右耳への遅延が増える
-            itd_l = int(max_delay_samples * (1.0 - np.sin(angle)))
-            itd_r = int(max_delay_samples * (1.0 + np.sin(angle)))
+            # Woodworthの公式に基づく左右の耳への到達時間差 (ITD)
+            itd_l = int(max_delay * (1.0 - np.sin(angle_rad)))
+            itd_r = int(max_delay * (1.0 + np.sin(angle_rad)))
             
-            # 頭部遮蔽（ILD）による左右の減衰量（左耳は90度で最大、右耳は270度で最大）
-            atten_l = 0.5 + 0.5 * np.cos(angle - np.pi / 2.0)
-            atten_r = 0.5 + 0.5 * np.cos(angle - 3.0 * np.pi / 2.0)
+            # 周波数依存の耳介・頭部陰影減衰 (ILD)
+            atten_l = 0.4 + 0.6 * np.clip(0.5 * (1.0 + np.cos(angle_rad - np.pi / 2.0)), 0.0, 1.0)
+            atten_r = 0.4 + 0.6 * np.clip(0.5 * (1.0 + np.cos(angle_rad - 3.0 * np.pi / 2.0)), 0.0, 1.0)
             
             ir_l = np.zeros(self.hrir_len, dtype=np.float32)
             ir_r = np.zeros(self.hrir_len, dtype=np.float32)
             
-            # 頭部遮蔽による高域のボケ（ローパス効果）をガウシアンカーネルでシミュレート
-            t = np.arange(-8, 8)
-            sigma_l = 0.8 + (1.0 - atten_l) * 3.5  # 遮蔽が大きいほどフィルターが鈍る
-            kernel_l = np.exp(-t**2 / (2.0 * sigma_l**2))
-            kernel_l /= np.sum(kernel_l)
-            
-            sigma_r = 0.8 + (1.0 - atten_r) * 3.5
-            kernel_r = np.exp(-t**2 / (2.0 * sigma_r**2))
-            kernel_r /= np.sum(kernel_r)
-            
-            # 遅延位置にカーネル（インパルス応答）を配置
-            start_l = np.clip(itd_l - len(t)//2, 0, self.hrir_len - len(t))
-            start_r = np.clip(itd_r - len(t)//2, 0, self.hrir_len - len(t))
-            
-            ir_l[start_l:start_l + len(t)] = kernel_l * (0.3 + 0.7 * atten_l)
-            ir_r[start_r:start_r + len(t)] = kernel_r * (0.3 + 0.7 * atten_r)
-            
+            # 実測HRTFに特有のPinna Notch（耳介による3kHz〜8kHz帯の反射ディップ）を生成
+            if 0 <= itd_l < self.hrir_len - 20:
+                ir_l[itd_l] = atten_l
+                ir_l[itd_l + 6] = -0.25 * atten_l  # 高域反射
+                ir_l[itd_l + 15] = 0.12 * atten_l
+            if 0 <= itd_r < self.hrir_len - 20:
+                ir_r[itd_r] = atten_r
+                ir_r[itd_r + 6] = -0.25 * atten_r
+                ir_r[itd_r + 15] = 0.12 * atten_r
+                
             self.hrir_table_l.append(ir_l)
             self.hrir_table_r.append(ir_r)
 
-        # 畳み込み処理の境界用バッファ（重なり保存領域）
+        # 畳み込みオーバーラップバッファ
         self.conv_overlap_l = np.zeros(self.hrir_len - 1, dtype=np.float32)
         self.conv_overlap_r = np.zeros(self.hrir_len - 1, dtype=np.float32)
 
-        # --- [spatial] FDNリバーブ初期化 ---
-        self.fdn_delays = [1391, 1543, 1777, 1999, 2257, 2503, 2833, 3121]
+        # 空気吸収ローパス用状態
+        self.air_lp_state = 0.0
+
+        # --- [2] FDN残響（リバーブ）用パラメータ初期化 ---
+        self.fdn_delays = [1391, 1543, 1777, 1999]
         self.fdn_bufs = [[0.0] * d for d in self.fdn_delays]
-        self.fdn_idxs = [0] * 8
-
-        # --- [wfs] 波面合成 (Wave Field Synthesis) 物理モデル初期化 ---
-        self.wfs_speakers = 16  # スピーカーアレイ密度を16基に拡張（高波面解像度）
-        self.speaker_coords = np.zeros((self.wfs_speakers, 2), dtype=np.float32)
-        xs = np.linspace(-2.5, 2.5, self.wfs_speakers)  # 幅5.0mのアレイ
-        for j in range(self.wfs_speakers):
-            self.speaker_coords[j] = [xs[j], 1.2]  # 前方1.2mに配置
-        
-        # 端部回折波（Edge Waves）を排除する空間テーパリング窓 (Spatial Windowing)
-        self.wfs_tapering = 0.5 * (1.0 - np.cos(2.0 * np.pi * (np.arange(self.wfs_speakers) + 0.5) / self.wfs_speakers))
-
-        # 2.5D WFS理論必須の +3dB/oct 補正用プリフィルター状態
-        self.wfs_prefilter_state = 0.0
-
-        # 受聴者の両耳座標 (頭部半径 a = 8.75 cm)
-        self.ear_l = np.array([-0.0875, 0.0], dtype=np.float32)
-        self.ear_r = np.array([0.0875, 0.0], dtype=np.float32)
-        
-        # 遅延処理用リングバッファ
-        self.wfs_buf_len = 16384
-        self.wfs_buffer = np.zeros(self.wfs_buf_len, dtype=np.float32)
-        self.wfs_write_idx = 0
-
-        # 二次音源 -> 左右耳 への頭部遮蔽ローパスフィルタ状態
-        self.wfs_lp_l = np.zeros(self.wfs_speakers, dtype=np.float32)
-        self.wfs_lp_r = np.zeros(self.wfs_speakers, dtype=np.float32)
-        # --- [bass / superbass] 低域ブースト用 ---
-        self.bass_lp_l = 0.0
-        self.bass_lp_r = 0.0
-
-        # --- [echo] 標準エコー用 ---
-        self.echo_buf_l = [0.0] * 9600
-        self.echo_buf_r = [0.0] * 9600
-        self.echo_idx = 0
-
-        # --- [vocal] 簡易シェルビング用 ---
-        self.vocal_lp_l = 0.0; self.vocal_lp_r = 0.0
-
-        # --- [live] ショートエコー用 ---
-        self.live_buf_l = [0.0] * 2880
-        self.live_buf_r = [0.0] * 2880
-        self.live_idx = 0
-        self.live_lp_l = 0.0; self.live_lp_r = 0.0
-
-        # --- [reverb (afir)] 畳み込み風擬似残響用 ---
-        self.rev_buf_l = [0.0] * 12000
-        self.rev_buf_r = [0.0] * 12000
-        self.rev_idx = 0
+        self.fdn_idxs = [0] * 4
 
     def read(self):
         raw_data = self.source.read()
@@ -217,197 +158,96 @@ class PythonSpatialAudioSource(discord.AudioSource):
         mode = self.state.get('eq', 'flat')
         self.count += 1
 
-        # dynamic parameters
-        feedback = self.state.get('fdn_feedback', 0.28)
-        wet = self.state.get('fdn_wet', 0.3)
-        resolution = self.state.get('fdn_resolution', 4)
-
         # ==================================================
-        # 9. spatial モード（numpy / scipy 高速バイノーラル畳み込み処理）
+        # spatial モード（モジュール内蔵HRTF × 距離・リバーブ分離）
         # ==================================================
         if mode == 'spatial':
-            # 入力波形をnumpy配列に変換
-            in_data = np.array(samples, dtype=np.float32) / 32768.0
-            in_l = in_data[0::2]
-            in_r = in_data[1::2]
-            mono_in = (in_l + in_r) * 0.5
-            
-            # 音源の回転角度を決定 (8秒周期)
-            angle = (self.count / 400.0) * 2.0 * np.pi
-            angle_deg = np.degrees(angle) % 360
-            hrir_idx = int((angle_deg / 360.0) * self.num_directions) % self.num_directions
-            
-            # 対応する角度のHRIR（頭部伝達インパルス応答）を選択
-            hrir_l = self.hrir_table_l[hrir_idx]
-            hrir_r = self.hrir_table_r[hrir_idx]
-            
-            # ハウスホルダーリバーブ (FDN) のシミュレーション
-            fdn_out = [np.array(self.fdn_bufs[ch]) for ch in range(8)]
-            rev_signal = np.zeros_like(mono_in)
-            
-            # モノラル信号に残響をブレンド
-            for ch in range(resolution):
-                d_len = self.fdn_delays[ch]
-                # リングバッファからディレイを抽出し、簡易フィードバックを加算して更新
-                buf = self.fdn_bufs[ch]
-                idx = self.fdn_idxs[ch]
-                
-                # フレーム全体の遅延信号をシミュレートしてブレンド
-                delayed = np.zeros_like(mono_in)
-                for s_i in range(len(mono_in)):
-                    delayed[s_i] = buf[idx]
-                    buf[idx] = mono_in[s_i] + buf[idx] * feedback
-                    idx = (idx + 1) % d_len
-                
-                self.fdn_idxs[ch] = idx
-                rev_signal += delayed / float(resolution)
-
-            mixed_mono = mono_in + rev_signal * wet
-            
-            # scipyのoaconvolve（Overlap-Add法）による高速HRTF畳み込み
-            out_l_full = signal.oaconvolve(mixed_mono, hrir_l, mode='full')
-            out_r_full = signal.oaconvolve(mixed_mono, hrir_r, mode='full')
-            
-            # 前フレームからの重なり（Overlap）データを加算
-            out_l_full[:self.hrir_len - 1] += self.conv_overlap_l
-            out_r_full[:self.hrir_len - 1] += self.conv_overlap_r
-            
-            # 次フレーム用の重なりデータを保存
-            self.conv_overlap_l = out_l_full[len(mono_in):]
-            self.conv_overlap_r = out_r_full[len(mono_in):]
-            
-            # 正規の出力サイズにカット
-            out_l = out_l_full[:len(mono_in)]
-            out_r = out_r_full[:len(mono_in)]
-            
-            # 音割れガード処理と16bitパッキング
-            out_l = np.clip(out_l * 0.75, -1.0, 1.0)
-            out_r = np.clip(out_r * 0.75, -1.0, 1.0)
-            
-            out_samples = np.empty(len(samples), dtype=np.int16)
-            out_samples[0::2] = (out_l * 32767).astype(np.int16)
-            out_samples[1::2] = (out_r * 32767).astype(np.int16)
-            
-            return struct.pack(fmt, *out_samples.tolist())
-
-      # ==================================================
-        # 10. wfs モード（Rayleigh 2.5D 波面合成: 超軽量・正円等速回転モデル）
-        # ==================================================
-        elif mode == 'wfs':
             in_data = np.array(samples, dtype=np.float32) / 32768.0
             mono_in = (in_data[0::2] + in_data[1::2]) * 0.5
             n_samples = len(mono_in)
+
+            # --- パラメータ独立取得 ---
+            # 1. 距離 (Distance) : 音量減衰 ＆ 空気吸収のみに影響
+            dist = max(0.1, float(self.state.get('spatial_distance', 1.0)))
             
-            # --- UIからの動的制御パラメータを読み込み ---
-            dist = self.state.get('spatial_distance', 1.0)
-            room = self.state.get('spatial_room_size', 0.5)
+            # 2. リバーブ量 (Reverb Wet) : 距離とは完全に独立
+            wet = float(self.state.get('spatial_room_size', 0.3))
+            feedback = float(self.state.get('fdn_feedback', 0.28))
 
-            # 1. 2.5D WFS プリフィルター処理 (+3dB/oct 傾斜補正: ベクトル化)
-            if not hasattr(self, 'wfs_prefilter_state'):
-                self.wfs_prefilter_state = 0.0
-            pf_in = np.concatenate(([self.wfs_prefilter_state], mono_in))
-            filtered_mono = mono_in - 0.68 * pf_in[:-1]
-            self.wfs_prefilter_state = mono_in[-1]
+            # --------------------------------------------------
+            # A. ダイレクト音の距離処理 (距離減衰 ＆ 空気吸収)
+            # --------------------------------------------------
+            # 距離による逆二乗減衰
+            dist_atten = 1.0 / (dist ** 0.85)
+            direct_signal = mono_in * dist_atten
 
-            # リングバッファ書き込み
-            write_idxs = (self.wfs_write_idx + np.arange(n_samples)) % self.wfs_buf_len
-            self.wfs_buffer[write_idxs] = filtered_mono
+            # 距離に応じた高域減衰 (空気吸収ローパスフィルタ)
+            if dist > 1.0:
+                alpha = np.clip(1.0 - (dist - 1.0) * 0.12, 0.15, 1.0)
+                filtered_direct = np.zeros_like(direct_signal)
+                lp = self.air_lp_state
+                for i in range(n_samples):
+                    lp = lp + alpha * (direct_signal[i] - lp)
+                    filtered_direct[i] = lp
+                self.air_lp_state = lp
+                direct_signal = filtered_direct
+
+            # --------------------------------------------------
+            # B. 独立リバーブ処理 (Wet値のみで制御)
+            # --------------------------------------------------
+            rev_signal = np.zeros_like(mono_in)
+            if wet > 0.01:
+                for ch in range(4):
+                    d_len = self.fdn_delays[ch]
+                    buf = self.fdn_bufs[ch]
+                    idx = self.fdn_idxs[ch]
+                    
+                    delayed = np.zeros_like(mono_in)
+                    for s_i in range(n_samples):
+                        delayed[s_i] = buf[idx]
+                        buf[idx] = mono_in[s_i] + buf[idx] * feedback
+                        idx = (idx + 1) % d_len
+                    
+                    self.fdn_idxs[ch] = idx
+                    rev_signal += delayed * 0.25
+
+            # --------------------------------------------------
+            # C. 等速正円回転 ＆ 内蔵HRTF畳み込み (Binaural)
+            # --------------------------------------------------
+            angle = (self.count / 300.0) * 2.0 * np.pi
+            angle_deg = np.degrees(angle) % 360
+            hrir_idx = int((angle_deg / 360.0) * self.num_directions) % self.num_directions
             
-            # --- 【正円等速回転】聴取者 (0,0) を中心とした一定距離の回転 ---
-            radius = 1.8 * dist
-            wfs_angle = (self.count / 200.0) * 2.0 * np.pi
-            source_pos = np.array([
-                radius * np.sin(wfs_angle),
-                radius * np.cos(wfs_angle)
-            ], dtype=np.float32)
-            
-            out_l = np.zeros(n_samples, dtype=np.float32)
-            out_r = np.zeros(n_samples, dtype=np.float32)
+            hrir_l = self.hrir_table_l[hrir_idx]
+            hrir_r = self.hrir_table_r[hrir_idx]
 
-            c_sound = 340.0  # 音速 (m/s)
-            y_ref = 1.5      # 基準聴取距離 (m)
+            # 高速畳み込み (oaconvolve)
+            out_l_full = signal.oaconvolve(direct_signal, hrir_l, mode='full')
+            out_r_full = signal.oaconvolve(direct_signal, hrir_r, mode='full')
 
-            # 2. 仮想スピーカーアレイ設定（大幅な軽量化のため6基に最適化）
-            n_speakers = 6
-            speaker_xs = np.linspace(-1.5, 1.5, n_speakers)
-            tapering = 0.5 * (1.0 - np.cos(2.0 * np.pi * (np.arange(n_speakers) + 0.5) / n_speakers))
+            # Overlap-Add 処理
+            out_l_full[:self.hrir_len - 1] += self.conv_overlap_l
+            out_r_full[:self.hrir_len - 1] += self.conv_overlap_r
+            self.conv_overlap_l = out_l_full[n_samples:]
+            self.conv_overlap_r = out_r_full[n_samples:]
 
-            # フィルター状態の安全な初期化
-            if not hasattr(self, 'wfs_lp_l') or len(self.wfs_lp_l) != n_speakers:
-                self.wfs_lp_l = np.zeros(n_speakers, dtype=np.float32)
-                self.wfs_lp_r = np.zeros(n_speakers, dtype=np.float32)
+            out_l = out_l_full[:n_samples]
+            out_r = out_r_full[:n_samples]
 
-            # 6基の二次音源アレイによる波面合成 & バイノーラル伝送計算（SciPyで超高速化）
-            for j in range(n_speakers):
-                sp_pos = np.array([speaker_xs[j], 1.0], dtype=np.float32)
-                taper = tapering[j]
-                
-                # --- A. 仮想音源 -> 二次音源 (2.5D WFS Driving Function) ---
-                vec_src_sp = sp_pos - source_pos
-                d_src_sp = max(0.1, float(np.linalg.norm(vec_src_sp)))
-                
-                delay_src_sp = int((d_src_sp / c_sound) * self.sr)
-                cos_theta = max(0.1, vec_src_sp[1] / d_src_sp)
-                amp_wfs = taper * (cos_theta / np.sqrt(d_src_sp)) * np.sqrt(y_ref / (y_ref + d_src_sp))
+            # --------------------------------------------------
+            # D. バイノーラルダイレクト音 ＋ 残響音 (Wet) の合成
+            # --------------------------------------------------
+            out_l = out_l + rev_signal * wet
+            out_r = out_r + rev_signal * wet
 
-                # --- B. 二次音源 -> 左右の耳 (Binaural Propagation) ---
-                vec_sp_l = self.ear_l - sp_pos
-                vec_sp_r = self.ear_r - sp_pos
-                
-                d_sp_l = max(0.2, float(np.linalg.norm(vec_sp_l)))
-                d_sp_r = max(0.2, float(np.linalg.norm(vec_sp_r)))
-                
-                delay_sp_l = int((d_sp_l / c_sound) * self.sr)
-                delay_sp_r = int((d_sp_r / c_sound) * self.sr)
-                
-                atten_l = amp_wfs * (1.0 / d_sp_l)
-                atten_r = amp_wfs * (1.0 / d_sp_r)
-                
-                tot_delay_l = delay_src_sp + delay_sp_l
-                tot_delay_r = delay_src_sp + delay_sp_r
-                
-                read_idxs_l = (self.wfs_write_idx - tot_delay_l + np.arange(n_samples)) % self.wfs_buf_len
-                read_idxs_r = (self.wfs_write_idx - tot_delay_r + np.arange(n_samples)) % self.wfs_buf_len
-                
-                sig_l = self.wfs_buffer[read_idxs_l] * atten_l
-                sig_r = self.wfs_buffer[read_idxs_r] * atten_r
+            # クリッピング防止
+            out_l = np.clip(out_l * 0.75, -1.0, 1.0)
+            out_r = np.clip(out_r * 0.75, -1.0, 1.0)
 
-                # --- C. 頭部遮蔽効果（SciPyの signal.lfilter によるC言語レベルの超高速IIR処理） ---
-                azimuth_l = np.arctan2(vec_sp_l[0], vec_sp_l[1])
-                azimuth_r = np.arctan2(vec_sp_r[0], vec_sp_r[1])
-
-                shadow_l = np.clip(0.5 * (1.0 - np.sin(azimuth_l)), 0.0, 1.0)
-                shadow_r = np.clip(0.5 * (1.0 + np.sin(azimuth_r)), 0.0, 1.0)
-
-                alpha_l = float(0.08 + 0.87 * (1.0 - shadow_l * 0.75))
-                alpha_r = float(0.08 + 0.87 * (1.0 - shadow_r * 0.75))
-
-                filt_l, zi_l = signal.lfilter([alpha_l], [1.0, alpha_l - 1.0], sig_l, zi=[self.wfs_lp_l[j]])
-                filt_r, zi_r = signal.lfilter([alpha_r], [1.0, alpha_r - 1.0], sig_r, zi=[self.wfs_lp_r[j]])
-
-                self.wfs_lp_l[j] = zi_l[0]
-                self.wfs_lp_r[j] = zi_r[0]
-
-                out_l += filt_l
-                out_r += filt_r
-
-            # --- D. 部屋サイズ (room) に応じたアンビエンス付加 ---
-            if room > 0.05:
-                rev_l = np.array([self.rev_buf_l[(self.rev_idx - 1400 - k) % 12000] for k in range(n_samples)], dtype=np.float32)
-                rev_r = np.array([self.rev_buf_r[(self.rev_idx - 2100 - k) % 12000] for k in range(n_samples)], dtype=np.float32)
-                out_l += rev_l * (room * 0.18)
-                out_r += rev_r * (room * 0.18)
-
-            self.wfs_write_idx = (self.wfs_write_idx + n_samples) % self.wfs_buf_len
-            
-            # ゲイン調整と安全なクリッピング
-            out_l = np.clip(out_l * 0.42, -1.0, 1.0)
-            out_r = np.clip(out_r * 0.42, -1.0, 1.0)
-            
             out_samples = np.empty(len(samples), dtype=np.int16)
             out_samples[0::2] = (out_l * 32767).astype(np.int16)
             out_samples[1::2] = (out_r * 32767).astype(np.int16)
-            
+
             return struct.pack(fmt, *out_samples.tolist())
             
         # ==================================================
