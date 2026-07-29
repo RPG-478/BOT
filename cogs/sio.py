@@ -290,7 +290,7 @@ class PythonSpatialAudioSource(discord.AudioSource):
             
             return struct.pack(fmt, *out_samples.tolist())
 
-       # ==================================================
+      # ==================================================
         # 10. wfs モード（Rayleigh 2.5D 波面合成: 正円等速回転モデル）
         # ==================================================
         elif mode == 'wfs':
