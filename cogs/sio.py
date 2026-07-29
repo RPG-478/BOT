@@ -157,24 +157,31 @@ class PythonSpatialAudioSource(discord.AudioSource):
         self.fdn_bufs = [[0.0] * d for d in self.fdn_delays]
         self.fdn_idxs = [0] * 8
 
-        # --- [wfs] バイノーラル波面合成 (Wave Field Synthesis) 初期化 ---
-        self.wfs_speakers = 12  # 仮想スピーカー数を12基に拡張（波面解像度の向上）
+        # --- [wfs] 波面合成 (Wave Field Synthesis) 物理モデル初期化 ---
+        self.wfs_speakers = 16  # スピーカーアレイ密度を16基に拡張（高波面解像度）
         self.speaker_coords = np.zeros((self.wfs_speakers, 2), dtype=np.float32)
-        xs = np.linspace(-2.2, 2.2, self.wfs_speakers)  # 前方2.2mのアレイ幅
+        xs = np.linspace(-2.5, 2.5, self.wfs_speakers)  # 幅5.0mのアレイ
         for j in range(self.wfs_speakers):
-            self.speaker_coords[j] = [xs[j], 1.2]
+            self.speaker_coords[j] = [xs[j], 1.2]  # 前方1.2mに配置
         
-        self.ear_l = np.array([-0.085, 0.0], dtype=np.float32)  # 左耳
-        self.ear_r = np.array([0.085, 0.0], dtype=np.float32)   # 右耳
+        # 端部回折波（Edge Waves）を排除する空間テーパリング窓 (Spatial Windowing)
+        self.wfs_tapering = 0.5 * (1.0 - np.cos(2.0 * np.pi * (np.arange(self.wfs_speakers) + 0.5) / self.wfs_speakers))
+
+        # 2.5D WFS理論必須の +3dB/oct 補正用プリフィルター状態
+        self.wfs_prefilter_state = 0.0
+
+        # 受聴者の両耳座標 (頭部半径 a = 8.75 cm)
+        self.ear_l = np.array([-0.0875, 0.0], dtype=np.float32)
+        self.ear_r = np.array([0.0875, 0.0], dtype=np.float32)
         
-        self.wfs_buf_len = 8192
+        # 遅延処理用リングバッファ
+        self.wfs_buf_len = 16384
         self.wfs_buffer = np.zeros(self.wfs_buf_len, dtype=np.float32)
         self.wfs_write_idx = 0
 
-        # スピーカーごとの頭部遮蔽（ヘッドシャドウ）用ローパスフィルタ保持領域
+        # 二次音源 -> 左右耳 への頭部遮蔽ローパスフィルタ状態
         self.wfs_lp_l = np.zeros(self.wfs_speakers, dtype=np.float32)
         self.wfs_lp_r = np.zeros(self.wfs_speakers, dtype=np.float32)
-
         # --- [bass / superbass] 低域ブースト用 ---
         self.bass_lp_l = 0.0
         self.bass_lp_r = 0.0
@@ -283,103 +290,131 @@ class PythonSpatialAudioSource(discord.AudioSource):
             
             return struct.pack(fmt, *out_samples.tolist())
 
-        # ==================================================
-        # 10. wfs モード（高解像度バイノーラル波面合成 + 頭部遮蔽シミュレーション）
+       # ==================================================
+        # 10. wfs モード（Rayleigh 2.5D 波面合成 + バイノーラルレンダリング）
         # ==================================================
         elif mode == 'wfs':
             in_data = np.array(samples, dtype=np.float32) / 32768.0
             mono_in = (in_data[0::2] + in_data[1::2]) * 0.5
             n_samples = len(mono_in)
             
-            # UIからの動的パラメータ読み込み
+            # UIからの動的制御パラメータ
             dist = self.state.get('spatial_distance', 1.0)
             room = self.state.get('spatial_room_size', 0.5)
 
-            # リングバッファ格納
+            # 1. 2.5D WFS プリフィルター処理 (+3dB/oct 傾斜補正)
+            # 1次元アレイ特有の低域濁りと高域位相のボケを補正
+            filtered_mono = np.zeros_like(mono_in)
+            pf_state = self.wfs_prefilter_state
+            for i in range(n_samples):
+                pf_out = mono_in[i] - 0.68 * pf_state
+                pf_state = mono_in[i]
+                filtered_mono[i] = pf_out
+            self.wfs_prefilter_state = pf_state
+
+            # リングバッファ書き込み
             write_idxs = (self.wfs_write_idx + np.arange(n_samples)) % self.wfs_buf_len
-            self.wfs_buffer[write_idxs] = mono_in
+            self.wfs_buffer[write_idxs] = filtered_mono
             
-            # 仮想音源位置（前方の空間を動的に旋回する3D点音源）
-            wfs_angle = (self.count / 250.0) * 2.0 * np.pi
+            # 仮想点音源位置 xs(t) (空間を滑らかに旋回・遠近運動する軌道)
+            wfs_angle = (self.count / 220.0) * 2.0 * np.pi
             source_pos = np.array([
-                2.2 * dist * np.sin(wfs_angle),
-                (1.5 + 0.8 * np.cos(wfs_angle)) * dist
+                2.4 * dist * np.sin(wfs_angle),
+                (1.6 + 0.6 * np.cos(wfs_angle)) * dist
             ], dtype=np.float32)
             
             out_l = np.zeros(n_samples, dtype=np.float32)
             out_r = np.zeros(n_samples, dtype=np.float32)
 
-            # 12基の仮想スピーカーアレイによる波面干渉＆頭部遮蔽の合成
+            c_sound = 340.0  # 音速 (m/s)
+            y_ref = 1.5      # 基準聴取距離 (m)
+
+            # 16基の二次音源アレイによる波面合成 & バイノーラル伝送計算
             for j in range(self.wfs_speakers):
                 sp_pos = self.speaker_coords[j]
+                taper = self.wfs_tapering[j]
                 
-                # 1. 音源 -> 仮想スピーカー (WFS 2.5D減衰理論 1/sqrt(d))
-                d_src_sp = np.linalg.norm(source_pos - sp_pos)
-                delay_src_sp = int((d_src_sp / 340.0) * self.sr)
-                atten_src_sp = 1.0 / np.sqrt(max(0.2, d_src_sp))
+                # --- A. 仮想音源 -> 二次音源 (2.5D WFS Driving Function) ---
+                vec_src_sp = sp_pos - source_pos
+                d_src_sp = max(0.1, np.linalg.norm(vec_src_sp))
                 
-                # 2. 仮想スピーカー -> 左右の耳
+                # 到達遅延 (サンプリング単位)
+                delay_src_sp = int((d_src_sp / c_sound) * self.sr)
+                
+                # 斜角因子 (cos theta: アレイ法線方向(0,1)との角度)
+                cos_theta = max(0.1, vec_src_sp[1] / d_src_sp)
+                
+                # 2.5D 駆動関数振幅振幅係数
+                amp_wfs = taper * (cos_theta / np.sqrt(d_src_sp)) * np.sqrt(y_ref / (y_ref + d_src_sp))
+
+                # --- B. 二次音源 -> 左右の耳 (Binaural Propagation) ---
                 vec_sp_l = self.ear_l - sp_pos
                 vec_sp_r = self.ear_r - sp_pos
-                d_sp_l = np.linalg.norm(vec_sp_l)
-                d_sp_r = np.linalg.norm(vec_sp_r)
                 
-                delay_sp_l = int((d_sp_l / 340.0) * self.sr)
-                delay_sp_r = int((d_sp_r / 340.0) * self.sr)
+                d_sp_l = max(0.2, np.linalg.norm(vec_sp_l))
+                d_sp_r = max(0.2, np.linalg.norm(vec_sp_r))
                 
-                atten_sp_l = 1.0 / max(0.4, d_sp_l)
-                atten_sp_r = 1.0 / max(0.4, d_sp_r)
+                delay_sp_l = int((d_sp_l / c_sound) * self.sr)
+                delay_sp_r = int((d_sp_r / c_sound) * self.sr)
                 
-                # 3. 頭部遮蔽（Head Shadowing）角度およびカットオフの算出
-                angle_l = np.arctan2(vec_sp_l[1], vec_sp_l[0])
-                angle_r = np.arctan2(vec_sp_r[1], vec_sp_r[0])
+                # 距離減衰の乗算
+                atten_l = amp_wfs * (1.0 / d_sp_l)
+                atten_r = amp_wfs * (1.0 / d_sp_r)
                 
-                shadow_l = 0.5 + 0.5 * np.cos(angle_l - np.pi)  # 影になるほど0に近づく
-                shadow_r = 0.5 + 0.5 * np.cos(angle_r)
+                # 合計遅延計算 (音源 -> スピーカー -> 耳)
+                tot_delay_l = delay_src_sp + delay_sp_l
+                tot_delay_r = delay_src_sp + delay_sp_r
+                
+                read_idxs_l = (self.wfs_write_idx - tot_delay_l + np.arange(n_samples)) % self.wfs_buf_len
+                read_idxs_r = (self.wfs_write_idx - tot_delay_r + np.arange(n_samples)) % self.wfs_buf_len
+                
+                sig_l = self.wfs_buffer[read_idxs_l] * atten_l
+                sig_r = self.wfs_buffer[read_idxs_r] * atten_r
 
-                alpha_l = 0.15 + 0.8 * shadow_l  # ローパスフィルター追従率
-                alpha_r = 0.15 + 0.8 * shadow_r
+                # --- C. 頭部遮蔽効果 (Woodworth球面モデルに基づくローパスフィルタ) ---
+                azimuth_l = np.arctan2(vec_sp_l[0], vec_sp_l[1])  # 左耳アジマス角
+                azimuth_r = np.arctan2(vec_sp_r[0], vec_sp_r[1])  # 右耳アジマス角
 
-                total_delay_l = delay_src_sp + delay_sp_l
-                total_delay_r = delay_src_sp + delay_sp_r
-                
-                read_idxs_l = (self.wfs_write_idx - total_delay_l + np.arange(n_samples)) % self.wfs_buf_len
-                read_idxs_r = (self.wfs_write_idx - total_delay_r + np.arange(n_samples)) % self.wfs_buf_len
-                
-                sp_sig_l = self.wfs_buffer[read_idxs_l] * (atten_src_sp * atten_sp_l)
-                sp_sig_r = self.wfs_buffer[read_idxs_r] * (atten_src_sp * atten_sp_r)
+                # 影になる耳側の遮蔽度 (0: 直接到達, 1: 完全な陰)
+                shadow_l = np.clip(0.5 * (1.0 - np.sin(azimuth_l)), 0.0, 1.0)
+                shadow_r = np.clip(0.5 * (1.0 + np.sin(azimuth_r)), 0.0, 1.0)
 
-                # 頭部遮蔽ローパスフィルタをシミュレート
+                # 遮蔽に応じたローパスフィルター追従率
+                alpha_l = 0.08 + 0.87 * (1.0 - shadow_l * 0.75)
+                alpha_r = 0.08 + 0.87 * (1.0 - shadow_r * 0.75)
+
                 lp_l = self.wfs_lp_l[j]
                 lp_r = self.wfs_lp_r[j]
-                filtered_l = np.zeros_like(sp_sig_l)
-                filtered_r = np.zeros_like(sp_sig_r)
+                filt_l = np.zeros(n_samples, dtype=np.float32)
+                filt_r = np.zeros(n_samples, dtype=np.float32)
 
                 for idx in range(n_samples):
-                    lp_l = lp_l + alpha_l * (sp_sig_l[idx] - lp_l)
-                    lp_r = lp_r + alpha_r * (sp_sig_r[idx] - lp_r)
-                    filtered_l[idx] = lp_l
-                    filtered_r[idx] = lp_r
+                    lp_l += alpha_l * (sig_l[idx] - lp_l)
+                    lp_r += alpha_r * (sig_r[idx] - lp_r)
+                    filt_l[idx] = lp_l
+                    filt_r[idx] = lp_r
                 
                 self.wfs_lp_l[j] = lp_l
                 self.wfs_lp_r[j] = lp_r
 
-                out_l += filtered_l
-                out_r += filtered_r
+                # 全二次音源の波面重ね合わせ (干渉)
+                out_l += filt_l
+                out_r += filt_r
 
-            # 4. 部屋のサイズ（残響・アンビエンス感）を連動ブレンド
-            if room > 0.1:
-                rev_l = self.rev_buf_l[(self.rev_idx - 1800) % 12000]
-                rev_r = self.rev_buf_r[(self.rev_idx - 2400) % 12000]
-                out_l += np.array(rev_l) * (room * 0.22)
-                out_r += np.array(rev_r) * (room * 0.22)
+            # 4. 部屋サイズに応じた初期反射・室内アンビエンス成分の付加
+            if room > 0.05:
+                rev_l = np.array([self.rev_buf_l[(self.rev_idx - 1400 - k) % 12000] for k in range(n_samples)])
+                rev_r = np.array([self.rev_buf_r[(self.rev_idx - 2100 - k) % 12000] for k in range(n_samples)])
+                out_l += rev_l * (room * 0.18)
+                out_r += rev_r * (room * 0.18)
 
             self.wfs_write_idx = (self.wfs_write_idx + n_samples) % self.wfs_buf_len
             
-            # 音量ゲイン調整と安全なクリッピング
-            out_l = np.clip(out_l * 0.45, -1.0, 1.0)
-            out_r = np.clip(out_r * 0.45, -1.0, 1.0)
+            # ゲイン調整と安全なクリッピング
+            out_l = np.clip(out_l * 0.38, -1.0, 1.0)
+            out_r = np.clip(out_r * 0.38, -1.0, 1.0)
             
+            # ステレオ16bit PCMバイナリ出力
             out_samples = np.empty(len(samples), dtype=np.int16)
             out_samples[0::2] = (out_l * 32767).astype(np.int16)
             out_samples[1::2] = (out_r * 32767).astype(np.int16)
