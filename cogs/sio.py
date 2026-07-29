@@ -89,7 +89,7 @@ def we(description: str = None, title: str = None) -> discord.Embed:
 
 class PythonSpatialAudioSource(discord.AudioSource):
     """
-    3帯域独立回転 × スピーカー特性切り替え（スタジオ/シアター/PA/小型） × 壁面吸音リバーブ回路統合エンジン
+    バッファエラー修復済み：3帯域独立回転 × スピーカー特性切り替え × 壁面吸音リバーブ統合エンジン
     """
     def __init__(self, source, state):
         self.source = source
@@ -97,17 +97,16 @@ class PythonSpatialAudioSource(discord.AudioSource):
         self.count = 0
         self.sr = 48000
         
-        # --- [1] HRTF (頭部伝達関数) テーブル構築 ---
+        # --- [1] HRTF テーブル構築 ---
         self.num_directions = 36  # 10度刻み
         self.hrir_len = 96
         self.hrir_table_l = {}
         self.hrir_table_r = {}
         
-        head_radius = 0.0875  # 頭部半径
+        head_radius = 0.0875
         vsound = 340.0
         max_delay = (head_radius / vsound) * self.sr
 
-        # 高さ Y座標 (-4, 0, +4) ごとに耳介反射変調付きHRTFを生成
         for y_pos in [-4.0, 0.0, 4.0]:
             elevation_factor = 1.0 + (y_pos * 0.05)
             for idx in range(self.num_directions):
@@ -132,7 +131,7 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 self.hrir_table_l[(y_pos, idx)] = ir_l
                 self.hrir_table_r[(y_pos, idx)] = ir_r
 
-        # --- [2] 帯域分割フィルター (Biquad / ButterWise SOS) ---
+        # --- [2] 帯域分割フィルター ---
         self.sos_low = signal.iirfilter(2, 320 / (self.sr / 2), btype='lowpass', ftype='butter', output='sos')
         self.zi_low = np.zeros((self.sos_low.shape[0], 2), dtype=np.float32)
 
@@ -144,47 +143,27 @@ class PythonSpatialAudioSource(discord.AudioSource):
         self.sos_high = signal.iirfilter(2, 5000 / (self.sr / 2), btype='highpass', ftype='butter', output='sos')
         self.zi_high = np.zeros((self.sos_high.shape[0], 2), dtype=np.float32)
 
-        # 帯域基本パラメーター
         self.band_configs = [
             {'type': 'low',  'y': -4.0, 'speed': 0.5, 'angle': 0.0},
             {'type': 'mid',  'y':  0.0, 'speed': 1.0, 'angle': 0.0},
             {'type': 'high', 'y':  4.0, 'speed': 2.5, 'angle': 0.0},
         ]
 
+        # 畳み込みオーバーラップバッファの初期化
         self.conv_overlap_l = np.zeros(self.hrir_len - 1, dtype=np.float32)
         self.conv_overlap_r = np.zeros(self.hrir_len - 1, dtype=np.float32)
 
-        # --- [3] スピーカー特性プリセットの定義 ---
+        # --- [3] スピーカー特性プリセット ---
         self.speaker_presets = {
-            # 1. スタジオモニター（高解像度・フラット・高解像度HRTF表現）
-            'studio': {
-                'gains': [1.0, 1.0, 1.1],             # [Low, Mid, High] ゲイン
-                'directivity': [1.0, 2.0, 3.5],       # 指向性のシャープさ
-                'wall_absorption': 0.35,              # 壁面吸音（クリア）
-            },
-            # 2. シアター用スピーカー（重低音・ワイドサラウンド・包み込む響き）
-            'theater': {
-                'gains': [1.4, 0.9, 0.9],
-                'directivity': [0.5, 1.2, 2.0],       # 広がりを持たせる
-                'wall_absorption': 0.20,              # 反射音を多く残す
-            },
-            # 3. PAスピーカー（高音圧・直進性高・ライブ感）
-            'pa': {
-                'gains': [1.1, 1.2, 1.3],
-                'directivity': [2.0, 3.5, 6.0],       # 非常に強い指向性
-                'wall_absorption': 0.45,
-            },
-            # 4. 小型スモールスピーカー（低音控えめ・コンパクト）
-            'small': {
-                'gains': [0.4, 1.1, 1.0],
-                'directivity': [1.0, 1.5, 2.0],
-                'wall_absorption': 0.30,
-            }
+            'studio': {'gains': [1.0, 1.0, 1.1], 'directivity': [1.0, 2.0, 3.5], 'wall_absorption': 0.35},
+            'theater': {'gains': [1.4, 0.9, 0.9], 'directivity': [0.5, 1.2, 2.0], 'wall_absorption': 0.20},
+            'pa':      {'gains': [1.1, 1.2, 1.3], 'directivity': [2.0, 3.5, 6.0], 'wall_absorption': 0.45},
+            'small':   {'gains': [0.4, 1.1, 1.0], 'directivity': [1.0, 1.5, 2.0], 'wall_absorption': 0.30}
         }
 
-        # --- [4] 壁面吸音特性付きディレイ＆立体リバーブ回路 ---
-        self.delay_len_l = int(0.06 * self.sr)  # 60ms
-        self.delay_len_r = int(0.075 * self.sr) # 75ms
+        # --- [4] リバーブ回路 ---
+        self.delay_len_l = int(0.06 * self.sr)
+        self.delay_len_r = int(0.075 * self.sr)
         self.delay_buf_l = np.zeros(self.delay_len_l, dtype=np.float32)
         self.delay_buf_r = np.zeros(self.delay_len_r, dtype=np.float32)
         self.delay_idx_l = 0
@@ -210,27 +189,25 @@ class PythonSpatialAudioSource(discord.AudioSource):
             mono_in = (in_data[0::2] + in_data[1::2]) * 0.5
             n_samples = len(mono_in)
 
-            # 動的パラメータの読み込み
             global_distance = max(0.1, float(self.state.get('spatial_distance', 2.0)))
             reverb_mix = float(self.state.get('spatial_room_size', 0.3))
             is_rotating = self.state.get('is_rotating', True)
             
-            # スピーカー特性の選択 ('studio', 'theater', 'pa', 'small')
             speaker_type = self.state.get('spatial_speaker', 'studio')
             preset = self.speaker_presets.get(speaker_type, self.speaker_presets['studio'])
 
-            # --- A. 3帯域分割 ---
+            # A. 帯域分割
             band_low, self.zi_low = signal.sosfilt(self.sos_low, mono_in, zi=self.zi_low)
             band_mid, self.zi_mid = signal.sosfilt(self.sos_mid, mono_in, zi=self.zi_mid)
             band_high, self.zi_high = signal.sosfilt(self.sos_high, mono_in, zi=self.zi_high)
             band_signals = [band_low, band_mid, band_high]
 
-            spatial_out_l = np.zeros(n_samples, dtype=np.float32)
-            spatial_out_r = np.zeros(n_samples, dtype=np.float32)
+            # 畳み込み結果保持バッファ (n_samples + hrir_len - 1)
+            full_out_l = np.zeros(n_samples + self.hrir_len - 1, dtype=np.float32)
+            full_out_r = np.zeros(n_samples + self.hrir_len - 1, dtype=np.float32)
 
-            # --- B. 帯域ごとの独立回転 ＆ スピーカー特性の適用 ---
+            # B. 帯域ごとの回転 ＆ 畳み込み
             for i, config in enumerate(self.band_configs):
-                # 1. 帯域ごとに異なる速度で回転
                 if is_rotating:
                     config['angle'] += 0.015 * config['speed']
 
@@ -240,7 +217,6 @@ class PythonSpatialAudioSource(discord.AudioSource):
 
                 dir_idx = int((angle_deg / 360.0) * self.num_directions) % self.num_directions
                 
-                # 2. スピーカーの指向特性（Directivity）とゲインを計算
                 directivity_power = preset['directivity'][i]
                 band_gain = preset['gains'][i]
 
@@ -253,43 +229,41 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 dist_atten = (1.0 / max(0.5, global_distance)) * speaker_gain
                 band_sig = band_signals[i] * dist_atten
 
-                conv_l = signal.oaconvolve(band_sig, hrir_l, mode='full')[:n_samples]
-                conv_r = signal.oaconvolve(band_sig, hrir_r, mode='full')[:n_samples]
+                full_out_l += signal.oaconvolve(band_sig, hrir_l, mode='full')
+                full_out_r += signal.oaconvolve(band_sig, hrir_r, mode='full')
 
-                spatial_out_l += conv_l
-                spatial_out_r += conv_r
+            # Overlap-Add 処理（バッファサイズ安全適用）
+            full_out_l[:self.hrir_len - 1] += self.conv_overlap_l
+            full_out_r[:self.hrir_len - 1] += self.conv_overlap_r
 
-            spatial_out_l[:self.hrir_len - 1] += self.conv_overlap_l
-            spatial_out_r[:self.hrir_len - 1] += self.conv_overlap_r
-            self.conv_overlap_l = spatial_out_l[n_samples:n_samples + self.hrir_len - 1]
-            self.conv_overlap_r = spatial_out_r[n_samples:n_samples + self.hrir_len - 1]
+            self.conv_overlap_l = full_out_l[n_samples:].copy()
+            self.conv_overlap_r = full_out_r[n_samples:].copy()
 
-            # --- C. スピーカーの壁面吸音・部屋の反射特性 ＆ ディレイリバーブ ---
+            spatial_out_l = full_out_l[:n_samples]
+            spatial_out_r = full_out_r[:n_samples]
+
+            # C. 壁面吸音 ＆ リバーブ
             rev_out_l = np.zeros(n_samples, dtype=np.float32)
             rev_out_r = np.zeros(n_samples, dtype=np.float32)
             feedback_gain = 0.4
             wall_absorption = preset['wall_absorption']
 
             for s in range(n_samples):
-                # 壁面での高域吸収
                 self.wall_lp_l += wall_absorption * (spatial_out_l[s] - self.wall_lp_l)
                 self.wall_lp_r += wall_absorption * (spatial_out_r[s] - self.wall_lp_r)
 
-                # Delay L
                 dl_val = self.delay_buf_l[self.delay_idx_l]
                 self.delay_buf_l[self.delay_idx_l] = self.wall_lp_l + dl_val * feedback_gain
                 self.delay_idx_l = (self.delay_idx_l + 1) % self.delay_len_l
 
-                # Delay R
                 dr_val = self.delay_buf_r[self.delay_idx_r]
                 self.delay_buf_r[self.delay_idx_r] = self.wall_lp_r + dr_val * feedback_gain
                 self.delay_idx_r = (self.delay_idx_r + 1) % self.delay_len_r
 
-                # 左右後方からの反射合成
                 rev_out_l[s] = dl_val * 0.85 + dr_val * 0.15
                 rev_out_r[s] = dl_val * 0.15 + dr_val * 0.85
 
-            # --- D. 最終ミックス ---
+            # D. 最終出力
             final_l = np.clip((spatial_out_l + rev_out_l * reverb_mix) * 0.7, -1.0, 1.0)
             final_r = np.clip((spatial_out_r + rev_out_r * reverb_mix) * 0.7, -1.0, 1.0)
 
