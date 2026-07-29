@@ -291,32 +291,29 @@ class PythonSpatialAudioSource(discord.AudioSource):
             return struct.pack(fmt, *out_samples.tolist())
 
       # ==================================================
-        # 10. wfs モード（Rayleigh 2.5D 波面合成: 正円等速回転モデル）
+        # 10. wfs モード（Rayleigh 2.5D 波面合成: 超軽量・正円等速回転モデル）
         # ==================================================
         elif mode == 'wfs':
             in_data = np.array(samples, dtype=np.float32) / 32768.0
             mono_in = (in_data[0::2] + in_data[1::2]) * 0.5
             n_samples = len(mono_in)
             
-            # --- 【修正】UIからの動的制御パラメータを読み込み ---
+            # --- UIからの動的制御パラメータを読み込み ---
             dist = self.state.get('spatial_distance', 1.0)
             room = self.state.get('spatial_room_size', 0.5)
 
-            # 1. 2.5D WFS プリフィルター処理 (+3dB/oct 傾斜補正)
-            filtered_mono = np.zeros_like(mono_in)
-            pf_state = self.wfs_prefilter_state
-            for i in range(n_samples):
-                pf_out = mono_in[i] - 0.68 * pf_state
-                pf_state = mono_in[i]
-                filtered_mono[i] = pf_out
-            self.wfs_prefilter_state = pf_state
+            # 1. 2.5D WFS プリフィルター処理 (+3dB/oct 傾斜補正: ベクトル化)
+            if not hasattr(self, 'wfs_prefilter_state'):
+                self.wfs_prefilter_state = 0.0
+            pf_in = np.concatenate(([self.wfs_prefilter_state], mono_in))
+            filtered_mono = mono_in - 0.68 * pf_in[:-1]
+            self.wfs_prefilter_state = mono_in[-1]
 
             # リングバッファ書き込み
             write_idxs = (self.wfs_write_idx + np.arange(n_samples)) % self.wfs_buf_len
             self.wfs_buffer[write_idxs] = filtered_mono
             
-            # --- 【正円等速回転】聴取者を中心とした一定距離の回転 ---
-            # UIの音像距離(dist)の倍率を考慮した一定の半径 (基本1.8m * dist)
+            # --- 【正円等速回転】聴取者 (0,0) を中心とした一定距離の回転 ---
             radius = 1.8 * dist
             wfs_angle = (self.count / 200.0) * 2.0 * np.pi
             source_pos = np.array([
@@ -330,14 +327,24 @@ class PythonSpatialAudioSource(discord.AudioSource):
             c_sound = 340.0  # 音速 (m/s)
             y_ref = 1.5      # 基準聴取距離 (m)
 
-            # 16基の二次音源アレイによる波面合成 & バイノーラル伝送計算
-            for j in range(self.wfs_speakers):
-                sp_pos = self.speaker_coords[j]
-                taper = self.wfs_tapering[j]
+            # 2. 仮想スピーカーアレイ設定（大幅な軽量化のため6基に最適化）
+            n_speakers = 6
+            speaker_xs = np.linspace(-1.5, 1.5, n_speakers)
+            tapering = 0.5 * (1.0 - np.cos(2.0 * np.pi * (np.arange(n_speakers) + 0.5) / n_speakers))
+
+            # フィルター状態の安全な初期化
+            if not hasattr(self, 'wfs_lp_l') or len(self.wfs_lp_l) != n_speakers:
+                self.wfs_lp_l = np.zeros(n_speakers, dtype=np.float32)
+                self.wfs_lp_r = np.zeros(n_speakers, dtype=np.float32)
+
+            # 6基の二次音源アレイによる波面合成 & バイノーラル伝送計算（SciPyで超高速化）
+            for j in range(n_speakers):
+                sp_pos = np.array([speaker_xs[j], 1.0], dtype=np.float32)
+                taper = tapering[j]
                 
                 # --- A. 仮想音源 -> 二次音源 (2.5D WFS Driving Function) ---
                 vec_src_sp = sp_pos - source_pos
-                d_src_sp = max(0.1, np.linalg.norm(vec_src_sp))
+                d_src_sp = max(0.1, float(np.linalg.norm(vec_src_sp)))
                 
                 delay_src_sp = int((d_src_sp / c_sound) * self.sr)
                 cos_theta = max(0.1, vec_src_sp[1] / d_src_sp)
@@ -347,8 +354,8 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 vec_sp_l = self.ear_l - sp_pos
                 vec_sp_r = self.ear_r - sp_pos
                 
-                d_sp_l = max(0.2, np.linalg.norm(vec_sp_l))
-                d_sp_r = max(0.2, np.linalg.norm(vec_sp_r))
+                d_sp_l = max(0.2, float(np.linalg.norm(vec_sp_l)))
+                d_sp_r = max(0.2, float(np.linalg.norm(vec_sp_r)))
                 
                 delay_sp_l = int((d_sp_l / c_sound) * self.sr)
                 delay_sp_r = int((d_sp_r / c_sound) * self.sr)
@@ -365,45 +372,37 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 sig_l = self.wfs_buffer[read_idxs_l] * atten_l
                 sig_r = self.wfs_buffer[read_idxs_r] * atten_r
 
-                # --- C. 頭部遮蔽効果 ---
+                # --- C. 頭部遮蔽効果（SciPyの signal.lfilter によるC言語レベルの超高速IIR処理） ---
                 azimuth_l = np.arctan2(vec_sp_l[0], vec_sp_l[1])
                 azimuth_r = np.arctan2(vec_sp_r[0], vec_sp_r[1])
 
                 shadow_l = np.clip(0.5 * (1.0 - np.sin(azimuth_l)), 0.0, 1.0)
                 shadow_r = np.clip(0.5 * (1.0 + np.sin(azimuth_r)), 0.0, 1.0)
 
-                alpha_l = 0.08 + 0.87 * (1.0 - shadow_l * 0.75)
-                alpha_r = 0.08 + 0.87 * (1.0 - shadow_r * 0.75)
+                alpha_l = float(0.08 + 0.87 * (1.0 - shadow_l * 0.75))
+                alpha_r = float(0.08 + 0.87 * (1.0 - shadow_r * 0.75))
 
-                lp_l = self.wfs_lp_l[j]
-                lp_r = self.wfs_lp_r[j]
-                filt_l = np.zeros(n_samples, dtype=np.float32)
-                filt_r = np.zeros(n_samples, dtype=np.float32)
+                filt_l, zi_l = signal.lfilter([alpha_l], [1.0, alpha_l - 1.0], sig_l, zi=[self.wfs_lp_l[j]])
+                filt_r, zi_r = signal.lfilter([alpha_r], [1.0, alpha_r - 1.0], sig_r, zi=[self.wfs_lp_r[j]])
 
-                for idx in range(n_samples):
-                    lp_l += alpha_l * (sig_l[idx] - lp_l)
-                    lp_r += alpha_r * (sig_r[idx] - lp_r)
-                    filt_l[idx] = lp_l
-                    filt_r[idx] = lp_r
-                
-                self.wfs_lp_l[j] = lp_l
-                self.wfs_lp_r[j] = lp_r
+                self.wfs_lp_l[j] = zi_l[0]
+                self.wfs_lp_r[j] = zi_r[0]
 
                 out_l += filt_l
                 out_r += filt_r
 
             # --- D. 部屋サイズ (room) に応じたアンビエンス付加 ---
             if room > 0.05:
-                rev_l = np.array([self.rev_buf_l[(self.rev_idx - 1400 - k) % 12000] for k in range(n_samples)])
-                rev_r = np.array([self.rev_buf_r[(self.rev_idx - 2100 - k) % 12000] for k in range(n_samples)])
+                rev_l = np.array([self.rev_buf_l[(self.rev_idx - 1400 - k) % 12000] for k in range(n_samples)], dtype=np.float32)
+                rev_r = np.array([self.rev_buf_r[(self.rev_idx - 2100 - k) % 12000] for k in range(n_samples)], dtype=np.float32)
                 out_l += rev_l * (room * 0.18)
                 out_r += rev_r * (room * 0.18)
 
             self.wfs_write_idx = (self.wfs_write_idx + n_samples) % self.wfs_buf_len
             
             # ゲイン調整と安全なクリッピング
-            out_l = np.clip(out_l * 0.38, -1.0, 1.0)
-            out_r = np.clip(out_r * 0.38, -1.0, 1.0)
+            out_l = np.clip(out_l * 0.42, -1.0, 1.0)
+            out_r = np.clip(out_r * 0.42, -1.0, 1.0)
             
             out_samples = np.empty(len(samples), dtype=np.int16)
             out_samples[0::2] = (out_l * 32767).astype(np.int16)
