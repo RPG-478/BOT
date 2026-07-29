@@ -1668,12 +1668,13 @@ class VoiceCog(commands.Cog):
         embed = discord.Embed(
             title="🎧 立体音響 (3D Spatial Audio) 設定パネル",
             description=(
-                "リアルタイムHRTFおよび空間音響パラメータを個別設定できます。\n\n"
+                "リアルタイムHRTFおよび空間音響パラメータを個別設定できます。\n"
+                "下のメニュー操作は再生中の音声へ即座に反映されます。\n\n"
                 f"現在のモード: **{current_eq}**\n"
-                f"音像の距離: **{dist}x**\n"
-                f"部屋のリバーブ: **{room}**\n"
+                f"音像の距離 (Distance): **{dist}x**\n"
+                f"部屋のリバーブ (Reverb Mix): **{room}**\n"
                 f"スピーカー特性: **{speaker_names.get(speaker, speaker)}**\n"
-                f"最大音量引き上げ幅: **{agc_max}x** (+{round(20*math.log10(agc_max), 1)}dB)\n"
+                f"最大音量引き上げ幅 (AGC): **{agc_max}x** (+{round(20*math.log10(agc_max), 1)}dB)\n"
                 f"3帯域立体回転: **{is_rotating}**"
             ),
             color=0x3498DB
