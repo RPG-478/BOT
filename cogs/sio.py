@@ -291,36 +291,27 @@ class PythonSpatialAudioSource(discord.AudioSource):
             return struct.pack(fmt, *out_samples.tolist())
 
        # ==================================================
-        # 10. wfs モード（Rayleigh 2.5D 波面合成 + バイノーラルレンダリング）
+        # 10. wfs モード（バイノーラル波面合成: Wave Field Synthesis）
         # ==================================================
         elif mode == 'wfs':
+            # 入力波形をnumpy配列に変換してモノラル化
             in_data = np.array(samples, dtype=np.float32) / 32768.0
             mono_in = (in_data[0::2] + in_data[1::2]) * 0.5
             n_samples = len(mono_in)
             
-            # UIからの動的制御パラメータ
-            dist = self.state.get('spatial_distance', 1.0)
-            room = self.state.get('spatial_room_size', 0.5)
-
-            # 1. 2.5D WFS プリフィルター処理 (+3dB/oct 傾斜補正)
-            # 1次元アレイ特有の低域濁りと高域位相のボケを補正
-            filtered_mono = np.zeros_like(mono_in)
-            pf_state = self.wfs_prefilter_state
-            for i in range(n_samples):
-                pf_out = mono_in[i] - 0.68 * pf_state
-                pf_state = mono_in[i]
-                filtered_mono[i] = pf_out
-            self.wfs_prefilter_state = pf_state
-
-            # リングバッファ書き込み
+            # 入力信号をリングバッファに格納
             write_idxs = (self.wfs_write_idx + np.arange(n_samples)) % self.wfs_buf_len
-            self.wfs_buffer[write_idxs] = filtered_mono
+            self.wfs_buffer[write_idxs] = mono_in
             
-            # 仮想点音源位置 xs(t) (空間を滑らかに旋回・遠近運動する軌道)
-            wfs_angle = (self.count / 220.0) * 2.0 * np.pi
+            # --- 【修正ポイント】聴取者を中心とした一定距離（正円軌道）の回転 ---
+            radius = 1.8  # 音源までの一定距離（1.8メートル）
+            # 回転スピード（200.0 で約4秒で1周、250.0 で約5秒で1周）
+            wfs_angle = (self.count / 200.0) * 2.0 * np.pi
+            
+            # 聴取者 (0, 0) を中心に一定距離 radius で正円回転
             source_pos = np.array([
-                2.4 * dist * np.sin(wfs_angle),
-                (1.6 + 0.6 * np.cos(wfs_angle)) * dist
+                radius * np.sin(wfs_angle),
+                radius * np.cos(wfs_angle)
             ], dtype=np.float32)
             
             out_l = np.zeros(n_samples, dtype=np.float32)
