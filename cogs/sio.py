@@ -695,7 +695,7 @@ class VoiceControlView(discord.ui.View):
             await interaction.response.send_message("❌ ボイスチャンネルに接続していません。", ephemeral=True)
 
 
-class Voice(commands.Cog):
+class VoiceCog(commands.Cog):
     # (中略: get_state, join, leave などの基本メソッドは既存のまま維持)
 
     @commands.command()
@@ -1656,5 +1656,4 @@ class Voice(commands.Cog):
 
 
 async def setup(bot):
-    await bot.add_cog(Voice(bot))
-    await bot.add_cog(Timer(bot))
+    await bot.add_cog(VoiceCog(bot))
