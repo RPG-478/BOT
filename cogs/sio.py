@@ -89,7 +89,7 @@ def we(description: str = None, title: str = None) -> discord.Embed:
 
 class PythonSpatialAudioSource(discord.AudioSource):
     """
-    バッファエラー修復済み：3帯域独立回転 × スピーカー特性切り替え × 壁面吸音リバーブ統合エンジン
+    自動音量引き上げ（AGC）搭載：3帯域独立回転 × スピーカー特性切り替え × 壁面吸音リバーブ統合エンジン
     """
     def __init__(self, source, state):
         self.source = source
@@ -97,7 +97,7 @@ class PythonSpatialAudioSource(discord.AudioSource):
         self.count = 0
         self.sr = 48000
         
-        # --- [1] HRTF テーブル構築 ---
+        # --- [1] HRTF (頭部伝達関数) テーブル構築 ---
         self.num_directions = 36  # 10度刻み
         self.hrir_len = 96
         self.hrir_table_l = {}
@@ -149,7 +149,6 @@ class PythonSpatialAudioSource(discord.AudioSource):
             {'type': 'high', 'y':  4.0, 'speed': 2.5, 'angle': 0.0},
         ]
 
-        # 畳み込みオーバーラップバッファの初期化
         self.conv_overlap_l = np.zeros(self.hrir_len - 1, dtype=np.float32)
         self.conv_overlap_r = np.zeros(self.hrir_len - 1, dtype=np.float32)
 
@@ -171,6 +170,10 @@ class PythonSpatialAudioSource(discord.AudioSource):
 
         self.wall_lp_l = 0.0
         self.wall_lp_r = 0.0
+
+        # --- [5] 自動音量引き上げ（AGC）用状態変数 ---
+        self.agc_gain = 1.0         # 現在の自動ブースト倍率
+        self.target_peak = 0.85      # 目標とする最大ピーク値（85%）
 
     def read(self):
         raw_data = self.source.read()
@@ -202,7 +205,6 @@ class PythonSpatialAudioSource(discord.AudioSource):
             band_high, self.zi_high = signal.sosfilt(self.sos_high, mono_in, zi=self.zi_high)
             band_signals = [band_low, band_mid, band_high]
 
-            # 畳み込み結果保持バッファ (n_samples + hrir_len - 1)
             full_out_l = np.zeros(n_samples + self.hrir_len - 1, dtype=np.float32)
             full_out_r = np.zeros(n_samples + self.hrir_len - 1, dtype=np.float32)
 
@@ -232,7 +234,7 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 full_out_l += signal.oaconvolve(band_sig, hrir_l, mode='full')
                 full_out_r += signal.oaconvolve(band_sig, hrir_r, mode='full')
 
-            # Overlap-Add 処理（バッファサイズ安全適用）
+            # Overlap-Add 処理
             full_out_l[:self.hrir_len - 1] += self.conv_overlap_l
             full_out_r[:self.hrir_len - 1] += self.conv_overlap_r
 
@@ -263,9 +265,28 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 rev_out_l[s] = dl_val * 0.85 + dr_val * 0.15
                 rev_out_r[s] = dl_val * 0.15 + dr_val * 0.85
 
-            # D. 最終出力
-            final_l = np.clip((spatial_out_l + rev_out_l * reverb_mix) * 0.7, -1.0, 1.0)
-            final_r = np.clip((spatial_out_r + rev_out_r * reverb_mix) * 0.7, -1.0, 1.0)
+            # D. ミックス処理
+            mix_l = spatial_out_l + rev_out_l * reverb_mix
+            mix_r = spatial_out_r + rev_out_r * reverb_mix
+
+            # --- E. 自動音量引き上げ（AGC: Automatic Gain Control）処理 ---
+            # 1. 現在のブロック内のピーク音量を検出
+            current_peak = max(np.max(np.abs(mix_l)), np.max(np.abs(mix_r)), 1e-5)
+            
+            # 2. ピーク音量に応じた目標ゲイン（音量が小さければ大きく引き上げる、最大4倍まで）
+            desired_gain = np.clip(self.target_peak / current_peak, 0.8, 4.0)
+
+            # 3. 音量が急激に変化してノイズ（プチプチ音）にならないよう滑らかに追従（スムージング）
+            if desired_gain < self.agc_gain:
+                # アタック（音量が大きくなった時は素早く下げる）
+                self.agc_gain = self.agc_gain * 0.8 + desired_gain * 0.2
+            else:
+                # リリース（音量が小さい時は自然に引き上げる）
+                self.agc_gain = self.agc_gain * 0.98 + desired_gain * 0.02
+
+            # 4. ゲイン適用＆最終クリッピング保護
+            final_l = np.clip(mix_l * self.agc_gain, -1.0, 1.0)
+            final_r = np.clip(mix_r * self.agc_gain, -1.0, 1.0)
 
             out_samples = np.empty(len(samples), dtype=np.int16)
             out_samples[0::2] = (final_l * 32767).astype(np.int16)
