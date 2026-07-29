@@ -291,24 +291,34 @@ class PythonSpatialAudioSource(discord.AudioSource):
             return struct.pack(fmt, *out_samples.tolist())
 
        # ==================================================
-        # 10. wfs モード（バイノーラル波面合成: Wave Field Synthesis）
+        # 10. wfs モード（Rayleigh 2.5D 波面合成: 正円等速回転モデル）
         # ==================================================
         elif mode == 'wfs':
-            # 入力波形をnumpy配列に変換してモノラル化
             in_data = np.array(samples, dtype=np.float32) / 32768.0
             mono_in = (in_data[0::2] + in_data[1::2]) * 0.5
             n_samples = len(mono_in)
             
-            # 入力信号をリングバッファに格納
+            # --- 【修正】UIからの動的制御パラメータを読み込み ---
+            dist = self.state.get('spatial_distance', 1.0)
+            room = self.state.get('spatial_room_size', 0.5)
+
+            # 1. 2.5D WFS プリフィルター処理 (+3dB/oct 傾斜補正)
+            filtered_mono = np.zeros_like(mono_in)
+            pf_state = self.wfs_prefilter_state
+            for i in range(n_samples):
+                pf_out = mono_in[i] - 0.68 * pf_state
+                pf_state = mono_in[i]
+                filtered_mono[i] = pf_out
+            self.wfs_prefilter_state = pf_state
+
+            # リングバッファ書き込み
             write_idxs = (self.wfs_write_idx + np.arange(n_samples)) % self.wfs_buf_len
-            self.wfs_buffer[write_idxs] = mono_in
+            self.wfs_buffer[write_idxs] = filtered_mono
             
-            # --- 【修正ポイント】聴取者を中心とした一定距離（正円軌道）の回転 ---
-            radius = 1.8  # 音源までの一定距離（1.8メートル）
-            # 回転スピード（200.0 で約4秒で1周、250.0 で約5秒で1周）
+            # --- 【正円等速回転】聴取者を中心とした一定距離の回転 ---
+            # UIの音像距離(dist)の倍率を考慮した一定の半径 (基本1.8m * dist)
+            radius = 1.8 * dist
             wfs_angle = (self.count / 200.0) * 2.0 * np.pi
-            
-            # 聴取者 (0, 0) を中心に一定距離 radius で正円回転
             source_pos = np.array([
                 radius * np.sin(wfs_angle),
                 radius * np.cos(wfs_angle)
@@ -329,13 +339,8 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 vec_src_sp = sp_pos - source_pos
                 d_src_sp = max(0.1, np.linalg.norm(vec_src_sp))
                 
-                # 到達遅延 (サンプリング単位)
                 delay_src_sp = int((d_src_sp / c_sound) * self.sr)
-                
-                # 斜角因子 (cos theta: アレイ法線方向(0,1)との角度)
                 cos_theta = max(0.1, vec_src_sp[1] / d_src_sp)
-                
-                # 2.5D 駆動関数振幅振幅係数
                 amp_wfs = taper * (cos_theta / np.sqrt(d_src_sp)) * np.sqrt(y_ref / (y_ref + d_src_sp))
 
                 # --- B. 二次音源 -> 左右の耳 (Binaural Propagation) ---
@@ -348,11 +353,9 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 delay_sp_l = int((d_sp_l / c_sound) * self.sr)
                 delay_sp_r = int((d_sp_r / c_sound) * self.sr)
                 
-                # 距離減衰の乗算
                 atten_l = amp_wfs * (1.0 / d_sp_l)
                 atten_r = amp_wfs * (1.0 / d_sp_r)
                 
-                # 合計遅延計算 (音源 -> スピーカー -> 耳)
                 tot_delay_l = delay_src_sp + delay_sp_l
                 tot_delay_r = delay_src_sp + delay_sp_r
                 
@@ -362,15 +365,13 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 sig_l = self.wfs_buffer[read_idxs_l] * atten_l
                 sig_r = self.wfs_buffer[read_idxs_r] * atten_r
 
-                # --- C. 頭部遮蔽効果 (Woodworth球面モデルに基づくローパスフィルタ) ---
-                azimuth_l = np.arctan2(vec_sp_l[0], vec_sp_l[1])  # 左耳アジマス角
-                azimuth_r = np.arctan2(vec_sp_r[0], vec_sp_r[1])  # 右耳アジマス角
+                # --- C. 頭部遮蔽効果 ---
+                azimuth_l = np.arctan2(vec_sp_l[0], vec_sp_l[1])
+                azimuth_r = np.arctan2(vec_sp_r[0], vec_sp_r[1])
 
-                # 影になる耳側の遮蔽度 (0: 直接到達, 1: 完全な陰)
                 shadow_l = np.clip(0.5 * (1.0 - np.sin(azimuth_l)), 0.0, 1.0)
                 shadow_r = np.clip(0.5 * (1.0 + np.sin(azimuth_r)), 0.0, 1.0)
 
-                # 遮蔽に応じたローパスフィルター追従率
                 alpha_l = 0.08 + 0.87 * (1.0 - shadow_l * 0.75)
                 alpha_r = 0.08 + 0.87 * (1.0 - shadow_r * 0.75)
 
@@ -388,11 +389,10 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 self.wfs_lp_l[j] = lp_l
                 self.wfs_lp_r[j] = lp_r
 
-                # 全二次音源の波面重ね合わせ (干渉)
                 out_l += filt_l
                 out_r += filt_r
 
-            # 4. 部屋サイズに応じた初期反射・室内アンビエンス成分の付加
+            # --- D. 部屋サイズ (room) に応じたアンビエンス付加 ---
             if room > 0.05:
                 rev_l = np.array([self.rev_buf_l[(self.rev_idx - 1400 - k) % 12000] for k in range(n_samples)])
                 rev_r = np.array([self.rev_buf_r[(self.rev_idx - 2100 - k) % 12000] for k in range(n_samples)])
@@ -405,7 +405,6 @@ class PythonSpatialAudioSource(discord.AudioSource):
             out_l = np.clip(out_l * 0.38, -1.0, 1.0)
             out_r = np.clip(out_r * 0.38, -1.0, 1.0)
             
-            # ステレオ16bit PCMバイナリ出力
             out_samples = np.empty(len(samples), dtype=np.int16)
             out_samples[0::2] = (out_l * 32767).astype(np.int16)
             out_samples[1::2] = (out_r * 32767).astype(np.int16)
