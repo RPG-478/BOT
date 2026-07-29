@@ -89,7 +89,7 @@ def we(description: str = None, title: str = None) -> discord.Embed:
 
 class PythonSpatialAudioSource(discord.AudioSource):
     """
-    自動音量引き上げ（AGC）搭載：3帯域独立回転 × スピーカー特性切り替え × 壁面吸音リバーブ統合エンジン
+    可変自動音量引き上げ（AGC）搭載：3帯域独立回転 × スピーカー特性切り替え × 壁面吸音リバーブ統合エンジン
     """
     def __init__(self, source, state):
         self.source = source
@@ -172,8 +172,8 @@ class PythonSpatialAudioSource(discord.AudioSource):
         self.wall_lp_r = 0.0
 
         # --- [5] 自動音量引き上げ（AGC）用状態変数 ---
-        self.agc_gain = 1.0         # 現在の自動ブースト倍率
-        self.target_peak = 0.85      # 目標とする最大ピーク値（85%）
+        self.agc_gain = 1.0         # 現在のブースト倍率
+        self.target_peak = 0.85      # 目標ピーク値 (85%)
 
     def read(self):
         raw_data = self.source.read()
@@ -198,6 +198,9 @@ class PythonSpatialAudioSource(discord.AudioSource):
             
             speaker_type = self.state.get('spatial_speaker', 'studio')
             preset = self.speaker_presets.get(speaker_type, self.speaker_presets['studio'])
+
+            # 引き上げ幅の上限値（1.0〜8.0倍、デフォルトは4.0倍）
+            max_boost = max(1.0, float(self.state.get('spatial_agc_max', 4.0)))
 
             # A. 帯域分割
             band_low, self.zi_low = signal.sosfilt(self.sos_low, mono_in, zi=self.zi_low)
@@ -269,22 +272,17 @@ class PythonSpatialAudioSource(discord.AudioSource):
             mix_l = spatial_out_l + rev_out_l * reverb_mix
             mix_r = spatial_out_r + rev_out_r * reverb_mix
 
-            # --- E. 自動音量引き上げ（AGC: Automatic Gain Control）処理 ---
-            # 1. 現在のブロック内のピーク音量を検出
+            # --- E. 可変自動音量引き上げ（AGC）処理 ---
             current_peak = max(np.max(np.abs(mix_l)), np.max(np.abs(mix_r)), 1e-5)
             
-            # 2. ピーク音量に応じた目標ゲイン（音量が小さければ大きく引き上げる、最大4倍まで）
-            desired_gain = np.clip(self.target_peak / current_peak, 0.8, 4.0)
+            # 設定された max_boost（引き上げ幅上限）までゲインをブースト
+            desired_gain = np.clip(self.target_peak / current_peak, 0.8, max_boost)
 
-            # 3. 音量が急激に変化してノイズ（プチプチ音）にならないよう滑らかに追従（スムージング）
             if desired_gain < self.agc_gain:
-                # アタック（音量が大きくなった時は素早く下げる）
                 self.agc_gain = self.agc_gain * 0.8 + desired_gain * 0.2
             else:
-                # リリース（音量が小さい時は自然に引き上げる）
                 self.agc_gain = self.agc_gain * 0.98 + desired_gain * 0.02
 
-            # 4. ゲイン適用＆最終クリッピング保護
             final_l = np.clip(mix_l * self.agc_gain, -1.0, 1.0)
             final_r = np.clip(mix_r * self.agc_gain, -1.0, 1.0)
 
