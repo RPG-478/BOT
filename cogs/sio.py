@@ -502,6 +502,23 @@ class SpatialControlView(discord.ui.View):
         state['spatial_distance'] = float(select.values[0])
         await self.update_panel(interaction)
 
+    # 4. リバーブ量 (Reverb Mix) 選択メニュー
+    @discord.ui.select(
+        placeholder="壁面反射・リバーブ量 (Reverb Mix) を選択...",
+        options=[
+            discord.SelectOption(label="リバーブ OFF (0.0)", value="0.0"),
+            discord.SelectOption(label="控えめ (0.15)", value="0.15"),
+            discord.SelectOption(label="標準 (0.3)", value="0.3", default=True),
+            discord.SelectOption(label="深い残響 (0.5)", value="0.5"),
+            discord.SelectOption(label="大空間ホール (0.75)", value="0.75"),
+        ],
+        row=2
+    )
+    async def select_reverb(self, interaction: discord.Interaction, select: discord.ui.Select):
+        state = self.cog.get_state(self.guild_id)
+        state['spatial_room_size'] = float(select.values[0])
+        await self.update_panel(interaction)
+
     @discord.ui.select(
         placeholder="スピーカー特性を選択...",
         options=[
