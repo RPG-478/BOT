@@ -695,22 +695,6 @@ class VoiceControlView(discord.ui.View):
             await interaction.response.send_message("❌ ボイスチャンネルに接続していません。", ephemeral=True)
 
 
-class VoiceCog(commands.Cog):
-    # (中略: get_state, join, leave などの基本メソッドは既存のまま維持)
-
-    @commands.command()
-    async def eq(self, ctx, *, mode: str = "flat"):
-        state = self.get_state(ctx.guild.id)
-        if mode in EQ_SETTINGS:
-            state['eq'] = mode
-            state['custom_eq_filter'] = None
-            await ctx.send(embed=we(f"🎬 エフェクトをプリセット `{mode}` に変更しました。"))
-        else:
-            state['eq'] = "custom"
-            state['custom_eq_filter'] = mode
-            await ctx.send(embed=we(f"⚙️ カスタムEQフィルターを設定しました:\n`{mode}`"))
-        # ❌ apply_immediate_setting を排除してシームレス化
-        await self.update_panel(ctx.guild.id)
 # =====================
 # Search & Custom EQ Modals
 # =====================
@@ -946,7 +930,7 @@ class VoiceControlView(discord.ui.View):
 # =====================
 # Main Voice Cog (Updated)
 # =====================
-class Voice(commands.Cog):
+class VoiceCog(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
