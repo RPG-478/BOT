@@ -421,88 +421,118 @@ class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルタ�
         # ❌ apply_immediate_settingを排除し、音楽を止めずにパネルだけ更新
         await self.cog.update_panel(self.guild_id)
 
-# ==========================================
-# 🆕 立体音響（Spatial Audio）専用コンポーネント & View
-# ==========================================
-class SpatialModeSelect(discord.ui.Select):
-    """立体音響のモード（Spatial / WFS / OFF）を切り替えるセレクト"""
-    def __init__(self, cog, guild_id: int, row: int = 0):
-        self.cog = cog
-        self.guild_id = guild_id
-        state = cog.get_state(guild_id)
-        current = state.get('eq', 'flat')
-        options = [
-            discord.SelectOption(label="Spatial (リアルHRTF立体音響)", value="spatial", description="頭部伝達関数による高度な3D音響", default=(current == "spatial")),
-            discord.SelectOption(label="WFS (波面合成立体音響)", value="wfs", description="マルチスピーカー波面合成", default=(current == "wfs")),
-            discord.SelectOption(label="OFF / Flat (標準ステレオ)", value="flat", description="立体音響を無効化します", default=(current not in ["spatial", "wfs"])),
-        ]
-        super().__init__(placeholder=f"🎧 立体音響モード (現在: {current})", min_values=1, max_values=1, options=options, row=row)
-
-    async def callback(self, interaction: discord.Interaction):
-        state = self.cog.get_state(self.guild_id)
-        state['eq'] = self.values[0]
-        state['custom_eq_filter'] = None
-        await interaction.response.send_message(f"🎧 立体音響モードを `{state['eq']}` に切り替えました。", ephemeral=True)
-        await self.cog.update_panel(self.guild_id)
-
-
-class SpatialDistanceSelect(discord.ui.Select):
-    """音像の距離を動的に制御するスライダー代替UI"""
-    def __init__(self, cog, guild_id: int, row: int = 1):
-        self.cog = cog
-        self.guild_id = guild_id
-        state = cog.get_state(guild_id)
-        current = state.get('spatial_distance', 1.0)
-        options = [
-            discord.SelectOption(label="超至近距離 (0.2x)", value="0.2", description="耳元ギリギリで鳴らします", default=(current == 0.2)),
-            discord.SelectOption(label="近め (0.6x)", value="0.6", default=(current == 0.6)),
-            discord.SelectOption(label="標準距離 (1.0x)", value="1.0", default=(current == 1.0)),
-            discord.SelectOption(label="遠め (1.8x)", value="1.8", description="空気吸収による高域減衰が始まります", default=(current == 1.8)),
-            discord.SelectOption(label="超遠距離 (3.0x)", value="3.0", description="かなり遠くの広場から響きます", default=(current == 3.0)),
-        ]
-        super().__init__(placeholder=f"📏 音源の距離 (現在: {current}x)", min_values=1, max_values=1, options=options, row=row)
-
-    async def callback(self, interaction: discord.Interaction):
-        state = self.cog.get_state(self.guild_id)
-        state['spatial_distance'] = float(self.values[0])
-        await interaction.response.send_message(f"📏 立体音響の音像距離を `{state['spatial_distance']}x` に変更しました（リアルタイム反映）。", ephemeral=True)
-        await self.cog.update_panel(self.guild_id)
-
-
-class SpatialRoomSizeSelect(discord.ui.Select):
-    """部屋の大きさ（残響時間）を動的に制御するUI"""
-    def __init__(self, cog, guild_id: int, row: int = 2):
-        self.cog = cog
-        self.guild_id = guild_id
-        state = cog.get_state(guild_id)
-        current = state.get('spatial_room_size', 0.5)
-        options = [
-            discord.SelectOption(label="無響室 / 反射なし (0.1)", value="0.1", description="スタジオのようなデッドな響き", default=(current == 0.1)),
-            discord.SelectOption(label="小さな部屋 (0.3)", value="0.3", default=(current == 0.3)),
-            discord.SelectOption(label="標準の部屋 (0.5)", value="0.5", default=(current == 0.5)),
-            discord.SelectOption(label="大きなホール (0.8)", value="0.8", description="リバーブテイルが長く伸びます", default=(current == 0.8)),
-            discord.SelectOption(label="巨大な大聖堂 (0.95)", value="0.95", description="最大級の空間反射", default=(current == 0.95)),
-        ]
-        super().__init__(placeholder=f"🏠 部屋の大きさ (現在: {current})", min_values=1, max_values=1, options=options, row=row)
-
-    async def callback(self, interaction: discord.Interaction):
-        state = self.cog.get_state(self.guild_id)
-        state['spatial_room_size'] = float(self.values[0])
-        await interaction.response.send_message(f"🏠 空間の部屋のサイズ（残響係数）を `{state['spatial_room_size']}` に変更しました（リアルタイム反映）。", ephemeral=True)
-        await self.cog.update_panel(self.guild_id)
-
-
+# ==================================================
+# UI: 立体音響（Spatial）設定パネル・コントロール View
+# ==================================================
 class SpatialControlView(discord.ui.View):
-    """独立して呼び出せる立体音響専用コントロールView"""
-    def __init__(self, cog, guild_id: int):
-        super().__init__(timeout=None)
+    def __init__(self, cog, guild_id):
+        super().__init__(timeout=180)
         self.cog = cog
         self.guild_id = guild_id
+        
+        state = self.cog.get_state(self.guild_id)
+        # 回転モード切替ボタンのラベル初期化
+        is_rotating = state.get('is_rotating', True)
+        self.toggle_rotate.label = "🌀 回転: ON" if is_rotating else "⏸️ 回転: OFF"
+        self.toggle_rotate.style = discord.ButtonStyle.green if is_rotating else discord.ButtonStyle.secondary
 
-        # 各コントロールコンポーネントを配置
-        self.add_item(SpatialModeSelect(cog, guild_id, row=0))
-        self.add_item(SpatialDistanceSelect(cog, guild_id, row=1))
-        self.add_item(SpatialRoomSizeSelect(cog, guild_id, row=2))
+    async def update_panel(self, interaction: discord.Interaction):
+        """パネルのEmbed表示を最新の状態に更新"""
+        state = self.cog.get_state(self.guild_id)
+        current_eq = state.get('eq', 'flat')
+        dist = state.get('spatial_distance', 2.0)
+        room = state.get('spatial_room_size', 0.3)
+        speaker = state.get('spatial_speaker', 'studio')
+        is_rotating = "ON" if state.get('is_rotating', True) else "OFF"
+
+        speaker_names = {
+            'studio': '🎙️ スタジオモニター (高解像度・フラット)',
+            'theater': '🎬 シアター (重低音・ワイドサラウンド)',
+            'pa': '🔊 PAスピーカー (高音圧・指向性強)',
+            'small': '📻 小型スピーカー (コンパクト)'
+        }
+
+        embed = discord.Embed(
+            title="🎧 立体音響 (3D Spatial Audio) 設定パネル",
+            description=(
+                "リアルタイムHRTF（頭部伝達関数）および空間音響パラメータを個別設定できます。\n"
+                "下のメニュー操作は再生中の音声へ即座に反映されます。\n\n"
+                f"現在のモード: **{current_eq}**\n"
+                f"音像の距離 (Distance): **{dist}x**\n"
+                f"部屋のリバーブ (Reverb Mix): **{room}**\n"
+                f"スピーカー特性: **{speaker_names.get(speaker, speaker)}**\n"
+                f"3帯域立体回転: **{is_rotating}**"
+            ),
+            color=0x3498DB
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    # 1. オン / オフ （Spatialモード切り替え）
+    @discord.ui.button(label="🎧 Spatial ON", style=discord.ButtonStyle.primary, row=0)
+    async def toggle_spatial(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state = self.cog.get_state(self.guild_id)
+        state['eq'] = 'spatial'
+        await self.update_panel(interaction)
+
+    # 2. 3帯域回転の ON/OFF 切替ボタン
+    @discord.ui.button(label="🌀 回転: ON", style=discord.ButtonStyle.green, row=0)
+    async def toggle_rotate(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state = self.cog.get_state(self.guild_id)
+        current = state.get('is_rotating', True)
+        state['is_rotating'] = not current
+        
+        button.label = "🌀 回転: ON" if not current else "⏸️ 回転: OFF"
+        button.style = discord.ButtonStyle.green if not current else discord.ButtonStyle.secondary
+        await self.update_panel(interaction)
+
+    # 3. 距離 (Distance) 選択メニュー
+    @discord.ui.select(
+        placeholder="音像の距離 (Distance) を選択...",
+        options=[
+            discord.SelectOption(label="近距離 (1.0x)", value="1.0"),
+            discord.SelectOption(label="標準 (2.0x)", value="2.0", default=True),
+            discord.SelectOption(label="遠距離 (3.5x)", value="3.5"),
+            discord.SelectOption(label="超遠距離 (5.0x)", value="5.0"),
+        ],
+        row=1
+    )
+    async def select_distance(self, interaction: discord.Interaction, select: discord.ui.Select):
+        state = self.cog.get_state(self.guild_id)
+        state['spatial_distance'] = float(select.values[0])
+        await self.update_panel(interaction)
+
+    # 4. リバーブ量 (Reverb Mix) 選択メニュー
+    @discord.ui.select(
+        placeholder="壁面反射・リバーブ量 (Reverb Mix) を選択...",
+        options=[
+            discord.SelectOption(label="リバーブ OFF (0.0)", value="0.0"),
+            discord.SelectOption(label="控えめ (0.15)", value="0.15"),
+            discord.SelectOption(label="標準 (0.3)", value="0.3", default=True),
+            discord.SelectOption(label="深い残響 (0.5)", value="0.5"),
+            discord.SelectOption(label="大空間ホール (0.75)", value="0.75"),
+        ],
+        row=2
+    )
+    async def select_reverb(self, interaction: discord.Interaction, select: discord.ui.Select):
+        state = self.cog.get_state(self.guild_id)
+        state['spatial_room_size'] = float(select.values[0])
+        await self.update_panel(interaction)
+
+    # 5. スピーカー特性 選択メニュー
+    @discord.ui.select(
+        placeholder="スピーカー特性 (Speaker Type) を選択...",
+        options=[
+            discord.SelectOption(label="スタジオモニター (高解像度・フラット)", value="studio", description="クリアな音像分離と定位", default=True),
+            discord.SelectOption(label="シアター用 (重低音・サラウンド)", value="theater", description="広大な空間と重低音の臨場感"),
+            discord.SelectOption(label="PAスピーカー (ライブハウス風)", value="pa", description="強指向性・高い音圧と直進性"),
+            discord.SelectOption(label="小型スピーカー (スモール)", value="small", description="低域カット・タイトな音像"),
+        ],
+        row=3
+    )
+    async def select_speaker(self, interaction: discord.Interaction, select: discord.ui.Select):
+        state = self.cog.get_state(self.guild_id)
+        state['spatial_speaker'] = select.values[0]
+        await self.update_panel(interaction)
 # =====================
 # UI Panel Component
 # =====================
@@ -1627,8 +1657,17 @@ class VoiceCog(commands.Cog):
         """立体音響（リアルHRTF / 空間音響）の独立設定パネルを呼び出します"""
         state = self.get_state(ctx.guild.id)
         current_eq = state.get('eq', 'flat')
-        dist = state.get('spatial_distance', 1.0)
-        room = state.get('spatial_room_size', 0.5)
+        dist = state.get('spatial_distance', 2.0)
+        room = state.get('spatial_room_size', 0.3)
+        speaker = state.get('spatial_speaker', 'studio')
+        is_rotating = "ON" if state.get('is_rotating', True) else "OFF"
+
+        speaker_names = {
+            'studio': '🎙️ スタジオモニター (高解像度・フラット)',
+            'theater': '🎬 シアター (重低音・ワイドサラウンド)',
+            'pa': '🔊 PAスピーカー (高音圧・指向性強)',
+            'small': '📻 小型スピーカー (コンパクト)'
+        }
 
         embed = discord.Embed(
             title="🎧 立体音響 (3D Spatial Audio) 設定パネル",
@@ -1636,10 +1675,12 @@ class VoiceCog(commands.Cog):
                 "リアルタイムHRTF（頭部伝達関数）および空間音響パラメータを個別設定できます。\n"
                 "下のメニュー操作は再生中の音声へ即座に反映されます。\n\n"
                 f"現在のモード: **{current_eq}**\n"
-                f"音像の距離: **{dist}x**\n"
-                f"部屋のサイズ (残響): **{room}**"
+                f"音像の距離 (Distance): **{dist}x**\n"
+                f"部屋のリバーブ (Reverb Mix): **{room}**\n"
+                f"スピーカー特性: **{speaker_names.get(speaker, speaker)}**\n"
+                f"3帯域立体回転: **{is_rotating}**"
             ),
-            color=0xFFFFFF
+            color=0x3498DB
         )
         view = SpatialControlView(self, ctx.guild.id)
         await ctx.send(embed=embed, view=view)
