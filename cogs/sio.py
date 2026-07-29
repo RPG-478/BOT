@@ -1643,24 +1643,25 @@ class VoiceCog(commands.Cog):
         dist = state.get('spatial_distance', 2.0)
         room = state.get('spatial_room_size', 0.3)
         speaker = state.get('spatial_speaker', 'studio')
+        agc_max = state.get('spatial_agc_max', 4.0)
         is_rotating = "ON" if state.get('is_rotating', True) else "OFF"
 
         speaker_names = {
-            'studio': '🎙️ スタジオモニター (高解像度・フラット)',
-            'theater': '🎬 シアター (重低音・ワイドサラウンド)',
-            'pa': '🔊 PAスピーカー (高音圧・指向性強)',
-            'small': '📻 小型スピーカー (コンパクト)'
+            'studio': '🎙️ スタジオモニター',
+            'theater': '🎬 シアター',
+            'pa': '🔊 PAスピーカー',
+            'small': '📻 小型スピーカー'
         }
 
         embed = discord.Embed(
             title="🎧 立体音響 (3D Spatial Audio) 設定パネル",
             description=(
-                "リアルタイムHRTF（頭部伝達関数）および空間音響パラメータを個別設定できます。\n"
-                "下のメニュー操作は再生中の音声へ即座に反映されます。\n\n"
+                "リアルタイムHRTFおよび空間音響パラメータを個別設定できます。\n\n"
                 f"現在のモード: **{current_eq}**\n"
-                f"音像の距離 (Distance): **{dist}x**\n"
-                f"部屋のリバーブ (Reverb Mix): **{room}**\n"
+                f"音像の距離: **{dist}x**\n"
+                f"部屋のリバーブ: **{room}**\n"
                 f"スピーカー特性: **{speaker_names.get(speaker, speaker)}**\n"
+                f"最大音量引き上げ幅: **{agc_max}x** (+{round(20*math.log10(agc_max), 1)}dB)\n"
                 f"3帯域立体回転: **{is_rotating}**"
             ),
             color=0x3498DB
