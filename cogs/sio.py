@@ -414,9 +414,6 @@ class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルタ�
         # ❌ apply_immediate_settingを排除し、音楽を止めずにパネルだけ更新
         await self.cog.update_panel(self.guild_id)
 
-# ==================================================
-# UI: 立体音響（Spatial）設定パネル・コントロール View
-# ==================================================
 class SpatialControlView(discord.ui.View):
     def __init__(self, cog, guild_id):
         super().__init__(timeout=180)
@@ -424,50 +421,47 @@ class SpatialControlView(discord.ui.View):
         self.guild_id = guild_id
         
         state = self.cog.get_state(self.guild_id)
-        # 回転モード切替ボタンのラベル初期化
         is_rotating = state.get('is_rotating', True)
         self.toggle_rotate.label = "🌀 回転: ON" if is_rotating else "⏸️ 回転: OFF"
         self.toggle_rotate.style = discord.ButtonStyle.green if is_rotating else discord.ButtonStyle.secondary
 
     async def update_panel(self, interaction: discord.Interaction):
-        """パネルのEmbed表示を最新の状態に更新"""
         state = self.cog.get_state(self.guild_id)
         current_eq = state.get('eq', 'flat')
         dist = state.get('spatial_distance', 2.0)
         room = state.get('spatial_room_size', 0.3)
         speaker = state.get('spatial_speaker', 'studio')
+        agc_max = state.get('spatial_agc_max', 4.0)
         is_rotating = "ON" if state.get('is_rotating', True) else "OFF"
 
         speaker_names = {
-            'studio': '🎙️ スタジオモニター (高解像度・フラット)',
-            'theater': '🎬 シアター (重低音・ワイドサラウンド)',
-            'pa': '🔊 PAスピーカー (高音圧・指向性強)',
-            'small': '📻 小型スピーカー (コンパクト)'
+            'studio': '🎙️ スタジオモニター',
+            'theater': '🎬 シアター',
+            'pa': '🔊 PAスピーカー',
+            'small': '📻 小型スピーカー'
         }
 
         embed = discord.Embed(
             title="🎧 立体音響 (3D Spatial Audio) 設定パネル",
             description=(
-                "リアルタイムHRTF（頭部伝達関数）および空間音響パラメータを個別設定できます。\n"
-                "下のメニュー操作は再生中の音声へ即座に反映されます。\n\n"
+                "リアルタイムHRTFおよび空間音響パラメータを個別設定できます。\n\n"
                 f"現在のモード: **{current_eq}**\n"
-                f"音像の距離 (Distance): **{dist}x**\n"
-                f"部屋のリバーブ (Reverb Mix): **{room}**\n"
+                f"音像の距離: **{dist}x**\n"
+                f"部屋のリバーブ: **{room}**\n"
                 f"スピーカー特性: **{speaker_names.get(speaker, speaker)}**\n"
+                f"最大音量引き上げ幅: **{agc_max}x** (+{round(20*math.log10(agc_max), 1)}dB)\n"
                 f"3帯域立体回転: **{is_rotating}**"
             ),
             color=0x3498DB
         )
         await interaction.response.edit_message(embed=embed, view=self)
 
-    # 1. オン / オフ （Spatialモード切り替え）
     @discord.ui.button(label="🎧 Spatial ON", style=discord.ButtonStyle.primary, row=0)
     async def toggle_spatial(self, interaction: discord.Interaction, button: discord.ui.Button):
         state = self.cog.get_state(self.guild_id)
         state['eq'] = 'spatial'
         await self.update_panel(interaction)
 
-    # 2. 3帯域回転の ON/OFF 切替ボタン
     @discord.ui.button(label="🌀 回転: ON", style=discord.ButtonStyle.green, row=0)
     async def toggle_rotate(self, interaction: discord.Interaction, button: discord.ui.Button):
         state = self.cog.get_state(self.guild_id)
@@ -478,7 +472,21 @@ class SpatialControlView(discord.ui.View):
         button.style = discord.ButtonStyle.green if not current else discord.ButtonStyle.secondary
         await self.update_panel(interaction)
 
-    # 3. 距離 (Distance) 選択メニュー
+    @discord.ui.select(
+        placeholder="音量引き上げ幅 (Boost Limit) を選択...",
+        options=[
+            discord.SelectOption(label="引き上げなし (1.0x / 0dB)", value="1.0"),
+            discord.SelectOption(label="控えめ (2.0x / +6dB)", value="2.0"),
+            discord.SelectOption(label="標準 (4.0x / +12dB)", value="4.0", default=True),
+            discord.SelectOption(label="強力 (6.0x / +15.5dB)", value="6.0"),
+        ],
+        row=1
+    )
+    async def select_agc(self, interaction: discord.Interaction, select: discord.ui.Select):
+        state = self.cog.get_state(self.guild_id)
+        state['spatial_agc_max'] = float(select.values[0])
+        await self.update_panel(interaction)
+
     @discord.ui.select(
         placeholder="音像の距離 (Distance) を選択...",
         options=[
@@ -487,38 +495,20 @@ class SpatialControlView(discord.ui.View):
             discord.SelectOption(label="遠距離 (3.5x)", value="3.5"),
             discord.SelectOption(label="超遠距離 (5.0x)", value="5.0"),
         ],
-        row=1
+        row=2
     )
     async def select_distance(self, interaction: discord.Interaction, select: discord.ui.Select):
         state = self.cog.get_state(self.guild_id)
         state['spatial_distance'] = float(select.values[0])
         await self.update_panel(interaction)
 
-    # 4. リバーブ量 (Reverb Mix) 選択メニュー
     @discord.ui.select(
-        placeholder="壁面反射・リバーブ量 (Reverb Mix) を選択...",
+        placeholder="スピーカー特性を選択...",
         options=[
-            discord.SelectOption(label="リバーブ OFF (0.0)", value="0.0"),
-            discord.SelectOption(label="控えめ (0.15)", value="0.15"),
-            discord.SelectOption(label="標準 (0.3)", value="0.3", default=True),
-            discord.SelectOption(label="深い残響 (0.5)", value="0.5"),
-            discord.SelectOption(label="大空間ホール (0.75)", value="0.75"),
-        ],
-        row=2
-    )
-    async def select_reverb(self, interaction: discord.Interaction, select: discord.ui.Select):
-        state = self.cog.get_state(self.guild_id)
-        state['spatial_room_size'] = float(select.values[0])
-        await self.update_panel(interaction)
-
-    # 5. スピーカー特性 選択メニュー
-    @discord.ui.select(
-        placeholder="スピーカー特性 (Speaker Type) を選択...",
-        options=[
-            discord.SelectOption(label="スタジオモニター (高解像度・フラット)", value="studio", description="クリアな音像分離と定位", default=True),
-            discord.SelectOption(label="シアター用 (重低音・サラウンド)", value="theater", description="広大な空間と重低音の臨場感"),
-            discord.SelectOption(label="PAスピーカー (ライブハウス風)", value="pa", description="強指向性・高い音圧と直進性"),
-            discord.SelectOption(label="小型スピーカー (スモール)", value="small", description="低域カット・タイトな音像"),
+            discord.SelectOption(label="スタジオモニター (高解像度・フラット)", value="studio", default=True),
+            discord.SelectOption(label="シアター用 (重低音・サラウンド)", value="theater"),
+            discord.SelectOption(label="PAスピーカー (ライブハウス風)", value="pa"),
+            discord.SelectOption(label="小型スピーカー (スモール)", value="small"),
         ],
         row=3
     )
