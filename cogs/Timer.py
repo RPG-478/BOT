@@ -125,3 +125,7 @@ class Timer(commands.Cog):
         
         status = " (現在計測中)" if 'last_start' in data else ""
         await ctx.send(embed=we(f"📊 {ctx.author.display_name} さんの累計作業時間: `{total_str}`{status}"))
+
+
+async def setup(bot):
+    await bot.add_cog(Timer(bot))
