@@ -1040,6 +1040,7 @@ class VoiceCog(commands.Cog):
 
     @commands.command()
     async def join(self, ctx):
+        """このBotを今いるボイスチャットへ参加させます"""
         if ctx.author.voice is None:
             return await ctx.send(embed=we("ボイスチャンネルに接続してください。"))
         vc = ctx.voice_client
@@ -1052,6 +1053,7 @@ class VoiceCog(commands.Cog):
 
     @commands.command()
     async def leave(self, ctx):
+        """このBOTが今参加しているボイスチャットから退出させます"""
         vc = ctx.voice_client
         if vc:
             state = self.get_state(ctx.guild.id)
@@ -1175,6 +1177,7 @@ class VoiceCog(commands.Cog):
 
     @commands.command()
     async def eq(self, ctx, *, mode: str = "flat"):
+        """イコライザを設定します"""
         state = self.get_state(ctx.guild.id)
         if mode in EQ_SETTINGS:
             state['eq'] = mode
@@ -1189,6 +1192,7 @@ class VoiceCog(commands.Cog):
         
     @commands.command()
     async def volume(self, ctx, vol: float):
+        """音量を調整します"""
         if not 0.1 <= vol <= 2.0: return await ctx.send(embed=we("音量は 0.1 から 2.0 の間で指定してください。"))
         state = self.get_state(ctx.guild.id)
         state['volume'] = vol
@@ -1197,6 +1201,7 @@ class VoiceCog(commands.Cog):
 
     @commands.command()
     async def speed(self, ctx, speed: float):
+        """再生速度を変更します"""
         if not 0.5 <= speed <= 2.0: return await ctx.send(embed=we("速度は 0.5 から 2.0 の間で指定してください。"))
         state = self.get_state(ctx.guild.id)
         state['speed'] = speed
@@ -1262,6 +1267,7 @@ class VoiceCog(commands.Cog):
 
     @commands.command()
     async def search(self, ctx, *, keyword: str = None):
+        """Youtubeから検索した結果を10件表示します"""
         if not ctx.voice_client: return await ctx.send("先に `!join` してください。")
         if not keyword: return await ctx.send("検索キーワードを入力してください。")
         await ctx.send(f"🔎 YouTubeで「{keyword}」の上位10件を検索中...")
@@ -1290,6 +1296,7 @@ class VoiceCog(commands.Cog):
 
     @commands.command()
     async def panel(self, ctx):
+        """ボイスコントロールパネルを表示します"""
         if not ctx.voice_client: return await ctx.send(embed=we("先に `!join` で接続してください。"))
         state = self.get_state(ctx.guild.id)
         state['current_ctx'] = ctx
@@ -1409,6 +1416,7 @@ class VoiceCog(commands.Cog):
             
     @commands.command()
     async def play(self, ctx, *, input_str: str = None):
+        """添付されたファイルやユニバーサルIDまたはYoutubeのリンクなどを再生します"""
         if not ctx.voice_client: 
             return await ctx.send("先に !join してください。")
 
@@ -1468,6 +1476,7 @@ class VoiceCog(commands.Cog):
 
     @commands.command()
     async def stop_all(self, ctx):
+        """今流れている音楽をすべて停止しキューをクリアします"""
         vc = ctx.voice_client
         state = self.get_state(ctx.guild.id)
         if vc:
@@ -1482,6 +1491,7 @@ class VoiceCog(commands.Cog):
 
     @commands.command()
     async def pause(self, ctx):
+        """今流れている音楽を一時停止します"""
         vc = ctx.voice_client
         state = self.get_state(ctx.guild.id)
         if vc and vc.is_playing():
@@ -1496,6 +1506,7 @@ class VoiceCog(commands.Cog):
 
     @commands.command()
     async def resume(self, ctx):
+        """今一時停止されている音楽の音楽の再生を再開します"""
         vc = ctx.voice_client
         state = self.get_state(ctx.guild.id)
         if vc and state['is_paused'] and state['current_track']:
@@ -1507,6 +1518,7 @@ class VoiceCog(commands.Cog):
 
     @commands.command()
     async def skip(self, ctx):
+        """今流れている音楽をスキップしてキューにある次の音楽を再生します"""
         vc = ctx.voice_client
         state = self.get_state(ctx.guild.id)
         if vc and (vc.is_playing() or state['is_paused']):
@@ -1520,6 +1532,7 @@ class VoiceCog(commands.Cog):
 
     @commands.command()
     async def list(self, ctx, limit: int = 20):
+        """このチャンネル内にアップロードされた音声のユニバーサルIDを20件表示します"""
         embed = we(title="チャンネル内音声リスト")
         desc = "ユニバーサルID（全サーバー共通）\n" + "─" * 20 + "\n"
         async for msg in ctx.channel.history(limit=limit):
@@ -1530,17 +1543,8 @@ class VoiceCog(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command()
-    async def id(self, ctx):
-        async for msg in ctx.channel.history(limit=10):
-            if msg.attachments:
-                b62 = encode_full_id(ctx.guild.id, ctx.channel.id, msg.id)
-                embed = we(title="ユニバーサルID発行")
-                embed.add_field(name="ファイル", value=msg.attachments[0].filename)
-                embed.add_field(name="ID", value=f"`{b62}`")
-                return await ctx.send(embed=embed)
-
-    @commands.command()
     async def plist(self, ctx, *, input_data: str = None):
+        """JSONで作ったプレイリストを再生することができます。"""
         if not ctx.voice_client: 
             return await ctx.send("先に !join してください。")
 
@@ -1590,21 +1594,10 @@ class VoiceCog(commands.Cog):
         else:
             await ctx.send("有効なIDが見つかりませんでした。")
             
-    @commands.command()
-    async def save_plist(self, ctx, name: str):
-        if not self.bot.supabase: return await ctx.send("DB未設定です。")
-        if not ctx.message.attachments: return await ctx.send("JSONファイルを添付してください。")
-
-        try:
-            content = await ctx.message.attachments[0].read()
-            ids = json.loads(content.decode('utf-8'))
-            self.bot.supabase.table("playlists").upsert({"name": name, "ids": ids}).execute()
-            await ctx.send(f"✅ DBにプレイリスト `{name}` を保存しました。")
-        except Exception as e:
-            await ctx.send(f"エラー: {e}")
 
     @commands.command()
     async def save_current(self, ctx, name: str):
+        """今のキューをJSONとして保存します。"""
         if not self.bot.supabase: return await ctx.send("DB未設定です。")
         
         state = self.get_state(ctx.guild.id)
