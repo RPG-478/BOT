@@ -18,6 +18,10 @@ import numpy as np
 from scipy import signal
 import numpy as np
 
+def we(description: str = None, title: str = None) -> discord.Embed:
+  """白色embedを生成するヘルパー"""
+  return discord.Embed(title=title, description=description, color=0xFFFFFF)
+
 class DebugCog(commands.Cog):
   def __init__(self, bot):
     self.bot = bot
@@ -49,9 +53,7 @@ class DebugCog(commands.Cog):
           return (used / total) * 100, used, total
       except: return 0, 0, 0
 
-  def we(description: str = None, title: str = None) -> discord.Embed:
-    """白色embedを生成するヘルパー"""
-    return discord.Embed(title=title, description=description, color=0xFFFFFF)
+
 
   @commands.command()
   async def logs(self, ctx, lines: int = 10):
