@@ -1012,28 +1012,31 @@ class VoiceCog(commands.Cog):
             logging.debug(f"Universal ID format match but lookup failed ({b62_id}): {e}")
         return None, None
 
-    @commands.command()
-    async def join(self, ctx):
-        """このBotを今いるボイスチャットへ参加させます"""
-        if ctx.author.voice is None:
-            return await ctx.send(embed=we("ボイスチャンネルに接続してください。"))
-        vc = ctx.voice_client
-        if vc is None:
-            await ctx.author.voice.channel.connect(timeout=20.0, reconnect=True)
-            await ctx.send(embed=we("接続しました。"))
-        else:
-            await vc.move_to(ctx.author.voice.channel)
-            await ctx.send(embed=we("移動しました。"))
+    @app_commands.command(name="join", description="ボイスチャンネルに参加します")
+    async def join_cmd(self, interaction: discord.Interaction):
+        if not interaction.user.voice:
+            await interaction.response.send_message("先にボイスチャンネルに入ってください。", ephemeral=True)
+            return
 
-    @commands.command()
-    async def leave(self, ctx):
-        """このBOTが今参加しているボイスチャットから退出させます"""
-        vc = ctx.voice_client
-        if vc:
-            state = self.get_state(ctx.guild.id)
-            while not state['queue'].empty(): state['queue'].get_nowait()
-            await vc.disconnect()
-            await ctx.send(embed=we("切断しました。"))
+        channel = interaction.user.voice.channel
+        if interaction.guild.voice_client:
+            await interaction.guild.voice_client.move_to(channel)
+        else:
+            await channel.connect(cls=voice_recv.VoiceRecvClient)
+
+        await interaction.response.send_message(f"🔊 **{channel.name}** に参加しました。")
+
+    @app_commands.command(name="leave", description="ボイスチャンネルから退出します")
+    async def leave_cmd(self, interaction: discord.Interaction):
+        voice_client = interaction.guild.voice_client
+        if voice_client:
+            await voice_client.disconnect()
+            state = self.get_state(interaction.guild_id)
+            state['queue'].clear()
+            state['now_playing'] = None
+            await interaction.response.send_message("👋 退出しました。")
+        else:
+            await interaction.response.send_message("ボットはボイスチャンネルに参加していません。", ephemeral=True)
 
 
     @commands.command()
@@ -1388,65 +1391,84 @@ class VoiceCog(commands.Cog):
             state['retry_count'] = 0
             asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), self.bot.loop)
             
-    @commands.command()
-    async def play(self, ctx, *, input_str: str = None):
-        """添付されたファイルやユニバーサルIDまたはYoutubeのリンクなどを再生します"""
-        if not ctx.voice_client: 
-            return await ctx.send("先に !join してください。")
+    @app_commands.command(name="play", description="添付ファイル、ユニバーサルID、YouTubeのURL/キーワードで音楽を再生します")
+    @app_commands.describe(
+        input_str="YouTube URL / 検索キーワード / ユニバーサルID",
+        file="音声/動画ファイルの添付（ファイル再生時）"
+    )
+    async def play(
+        self, 
+        interaction: discord.Interaction, 
+        input_str: str = None, 
+        file: discord.Attachment = None
+    ):
+        # ボイスチャンネル接続チェック
+        if not interaction.guild.voice_client: 
+            return await interaction.response.send_message("先に `/join` してください。", ephemeral=True)
 
-        state = self.get_state(ctx.guild.id)
-        state['current_ctx'] = ctx
-        
+        # 処理時間がかかる可能性があるため defer 実行
+        await interaction.response.defer()
+
+        state = self.get_state(interaction.guild_id)
+        # 後続の通知処理等で interaction や channel を利用できるように保持
+        state['current_interaction'] = interaction
+
         is_yt = False
         url, filename, final_id = None, None, None
 
+        # 1. YouTube URLが直接指定された場合
         if input_str and ("youtube.com" in input_str or "youtu.be" in input_str):
-            await ctx.send("⏳ YouTubeを解析中...")
+            await interaction.followup.send("⏳ YouTubeを解析中...")
             try:
                 info = await self.get_yt_info(input_str)
                 url, filename, is_yt = input_str, info['title'], True
             except Exception as e:
-                return await ctx.send(f"❌ 解析失敗: {e}")
+                return await interaction.followup.send(f"❌ 解析失敗: {e}")
 
-        elif ctx.message.attachments:
-            attachment = ctx.message.attachments[0]
-            url, filename = attachment.url, attachment.filename
-            final_id = encode_full_id(ctx.guild.id, ctx.channel.id, ctx.message.id)
-        
+        # 2. ファイルが添付されている場合
+        elif file:
+            url, filename = file.url, file.filename
+            final_id = encode_full_id(interaction.guild_id, interaction.channel_id, interaction.id)
+
+        # 3. BASE62 のユニバーサルID指定（または検索へのフォールバック）
         elif input_str and len(input_str.split()) == 1 and all(c in BASE62 for c in input_str):
             url, filename = await self.get_attachment_info(input_str)
             final_id = input_str
             
             if not url:
-                await ctx.send(f"🔎 YouTubeで「{input_str}」を検索中...")
+                await interaction.followup.send(f"🔎 YouTubeで「{input_str}」を検索中...")
                 try:
                     info = await self.get_yt_info(f"ytsearch:{input_str}")
                     url, filename, is_yt = info['url'], info['title'], True
                     final_id = None
                 except Exception as e:
-                    return await ctx.send(f"❌ 検索失敗: {e}")
+                    return await interaction.followup.send(f"❌ 検索失敗: {e}")
 
+        # 4. 検索キーワード指定
         elif input_str:
-            await ctx.send(f"🔎 YouTubeで「{input_str}」を検索中...")
+            await interaction.followup.send(f"🔎 YouTubeで「{input_str}」を検索中...")
             try:
                 info = await self.get_yt_info(f"ytsearch:{input_str}")
                 url, filename, is_yt = info['url'], info['title'], True
             except Exception as e:
-                return await ctx.send(f"❌ 検索失敗: {e}")
-        
+                return await interaction.followup.send(f"❌ 検索失敗: {e}")
+
+        # 5. 引数が何もない場合
         else:
-            return await ctx.send(embed=we("ファイル添付、ID、YouTube URL、または検索キーワードを指定してください。"))
+            return await interaction.followup.send(embed=self.we("ファイル添付、ID、YouTube URL、または検索キーワードを指定してください。"))
 
         if not url:
-            return await ctx.send(embed=we("情報の取得に失敗しました。"))
+            return await interaction.followup.send(embed=self.we("情報の取得に失敗しました。"))
 
+        # キューに追加
         await state['queue'].put((url, filename, final_id, is_yt))
 
-        if not ctx.voice_client.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
-            await self.check_queue(ctx.guild.id)
+        # 再生中でなければ再生開始
+        if not interaction.guild.voice_client.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
+            await self.check_queue(interaction.guild_id)
         else:
-            await ctx.send(f"✅ キューに追加: **{filename}**")
-            await self.update_panel(ctx.guild.id)
+            await interaction.followup.send(f"✅ キューに追加: **{filename}**")
+            await self.update_panel(interaction.guild_id)
 
     @commands.command()
     async def stop_all(self, ctx):
@@ -1463,46 +1485,50 @@ class VoiceCog(commands.Cog):
             await ctx.send(embed=we("完全に停止し、キューをクリアしました。"))
             await self.update_panel(ctx.guild.id)
 
-    @commands.command()
-    async def pause(self, ctx):
-        """今流れている音楽を一時停止します"""
-        vc = ctx.voice_client
-        state = self.get_state(ctx.guild.id)
-        if vc and vc.is_playing():
+    @app_commands.command(name="pause", description="音楽の再生／一時停止を切り替えます（トグル）")
+    async def pause(self, interaction: discord.Interaction):
+        vc = interaction.guild.voice_client
+        state = self.get_state(interaction.guild_id)
+
+        if not vc:
+            return await interaction.response.send_message(embed=self.we("ボットがボイスチャンネルに入っていません。"), ephemeral=True)
+
+        # 1. 再生中の場合 -> 一時停止処理
+        if vc.is_playing():
             actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
             state['elapsed_offset'] += actual_played
             state['is_paused'] = True
             vc.stop()
-            await ctx.send(embed=we(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)\n`!resume` で再開できます。"))
-            await self.update_panel(ctx.guild.id)
-        else:
-            await ctx.send(embed=we("現在楽曲を再生していません。"))
+            
+            await interaction.response.send_message(
+                embed=self.we(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)\nもう一度 `/pause` で再開できます。")
+            )
+            await self.update_panel(interaction.guild_id)
 
-    @commands.command()
-    async def resume(self, ctx):
-        """今一時停止されている音楽の音楽の再生を再開します"""
-        vc = ctx.voice_client
-        state = self.get_state(ctx.guild.id)
-        if vc and state['is_paused'] and state['current_track']:
+        # 2. 一時停止中の場合 -> 再生再開処理
+        elif state['is_paused'] and state['current_track']:
             state['is_paused'] = False
-            await self.check_queue(ctx.guild.id)
-            await ctx.send(embed=we(f"▶️ 一時停止位置から再生を再開しました。"))
-        else:
-            await ctx.send(embed=we("一時停止中のトラックがありません。"))
+            await self.check_queue(interaction.guild_id)
+            await interaction.response.send_message(embed=self.we("▶️ 一時停止位置から再生を再開しました。"))
 
-    @commands.command()
-    async def skip(self, ctx):
-        """今流れている音楽をスキップしてキューにある次の音楽を再生します"""
-        vc = ctx.voice_client
-        state = self.get_state(ctx.guild.id)
+        # 3. どちらでもない場合
+        else:
+            await interaction.response.send_message(embed=self.we("現在再生中・一時停止中のトラックがありません。"), ephemeral=True)
+
+
+    @app_commands.command(name="skip", description="今流れている音楽をスキップしてキューにある次の音楽を再生します")
+    async def skip(self, interaction: discord.Interaction):
+        vc = interaction.guild.voice_client
+        state = self.get_state(interaction.guild_id)
+
         if vc and (vc.is_playing() or state['is_paused']):
             state['current_track'] = None
             state['elapsed_offset'] = 0
             state['is_paused'] = False
             vc.stop()
-            await ctx.send(embed=we("スキップしました。"))
+            await interaction.response.send_message(embed=self.we("スキップしました。"))
         else:
-            await ctx.send(embed=we("現在再生中の楽曲がありません。"))
+            await interaction.response.send_message(embed=self.we("現在再生中の楽曲がありません。"))
 
     @commands.command()
     async def list(self, ctx, limit: int = 20):
