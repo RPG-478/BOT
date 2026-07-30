@@ -20,4 +20,4 @@ import numpy as np
 
 class DebugCog(commands.Cog):
       def __init__(self, bot):
-        
+        self.log_buffer = bot.log_buffer
