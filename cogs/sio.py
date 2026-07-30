@@ -1474,7 +1474,7 @@ class VoiceCog(commands.Cog):
     async def play(
         self, 
         interaction: discord.Interaction, 
-        input_str: str = None, 
+        query: str = None, 
         file: discord.Attachment = None
     ):
         # ボイスチャンネル接続チェック
