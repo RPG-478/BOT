@@ -1697,5 +1697,5 @@ class VoiceCog(commands.Cog):
 
 
 async def setup(bot):
-    await bot.add_cog(MusicCog(bot))
+    await bot.add_cog(VoiceCog(bot))
     await bot.tree.sync()
