@@ -18,6 +18,7 @@ import random
 import numpy as np
 from scipy import signal
 import numpy as np
+import re
 
 # yt-dlpの設定（ストリーミング再生用および検索用）
 YTDL_OPTIONS = {
@@ -1468,8 +1469,13 @@ class VoiceCog(commands.Cog):
         is_yt = False
         url, filename, final_id = None, None, None
 
-        # 1. YouTube URLが直接指定された場合
-        if input_str and ("youtube.com" in input_str or "youtu.be" in input_str):
+        # メソッド内の判定部分
+        input_str = self.keyword_input.value.strip()
+
+        # YouTube関連ドメイン判定（youtube.com, youtu.be, m.youtube.com, music.youtube.com など全て網羅）
+        yt_pattern = re.compile(r'https?://(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)/', re.IGNORECASE)
+
+        if input_str and yt_pattern.search(input_str):
             await interaction.followup.send("⏳ YouTubeを解析中...")
             try:
                 info = await self.get_yt_info(input_str)
