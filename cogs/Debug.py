@@ -48,3 +48,15 @@ class DebugCog(commands.Cog):
           used = total - mem.get("MemAvailable", mem.get("MemFree", 0))
           return (used / total) * 100, used, total
       except: return 0, 0, 0
+
+  @commands.command()
+  async def logs(self, ctx, lines: int = 10):
+      log_buffer = self.bot.log_buffer
+      logs = list(log_buffer.logs)[-lines:]
+      if not logs:
+          await ctx.send("表示するログがありません。")
+          return
+      text = "\n".join(logs)
+      if len(text) > 1900:
+          text = text[-1900:]
+      await ctx.send(f"```\n{text}\n```")
