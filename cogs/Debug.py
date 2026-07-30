@@ -67,3 +67,6 @@ class DebugCog(commands.Cog):
       m_p, used, total = self.get_mem_usage()
       desc = f"CPU: `{cpu:.1f}%` / Mem: `{m_p:.1f}%` ({used/1024:.0f}/{total/1024:.0f}MB)"
       await ctx.send(embed=we(desc))
+
+async def setup(bot):
+    await bot.add_cog(DebugCog(bot))
