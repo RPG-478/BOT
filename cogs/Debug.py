@@ -69,7 +69,7 @@ class DebugCog(commands.Cog):
 
   @commands.command()
   async def sysinfo(self, ctx):
-      cpu = self.get_cpu_usage()
+      cpu = await self.get_cpu_usage()
       m_p, used, total = await self.get_mem_usage()
       desc = f"CPU: `{cpu:.1f}%` / Mem: `{m_p:.1f}%` ({used/1024:.0f}/{total/1024:.0f}MB)"
       await ctx.send(embed=we(desc))
