@@ -17,3 +17,5 @@ import random
 import numpy as np
 from scipy import signal
 import numpy as np
+
+class DebugCog(commands.Cog
