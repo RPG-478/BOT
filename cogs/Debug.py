@@ -27,7 +27,7 @@ class DebugCog(commands.Cog):
     self.bot = bot
     self.log_buffer = bot.log_buffer
 
-  def get_cpu_usage(self):
+  async def get_cpu_usage(self):
       def read_cpu():
           try:
               with open("/proc/stat", "r") as f:
@@ -41,7 +41,7 @@ class DebugCog(commands.Cog):
       if t2 - t1 == 0: return 0
       return 100 * (1 - (i2 - i1) / (t2 - t1))
 
-  def get_mem_usage(self):
+  async def get_mem_usage(self):
       try:
           mem = {}
           with open("/proc/meminfo") as f:
