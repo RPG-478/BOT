@@ -1552,8 +1552,11 @@ class VoiceCog(commands.Cog):
         is_yt = False
         url, filename, final_id = None, None, None
 
-        # 💡 [修正] query が None の場合に備えて安全に strip 処理
+        # query が None の場合に備えて安全に strip 処理
         input_str = query.strip() if query else ""
+
+        # ⏱️ タイムアウト秒数の設定 (15秒)
+        TIMEOUT_SECONDS = 15.0
 
         # YouTube関連ドメイン判定（youtube.com, youtu.be, m.youtube.com, music.youtube.com など全て網羅）
         yt_pattern = re.compile(r'https?://(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)/', re.IGNORECASE)
@@ -1562,8 +1565,11 @@ class VoiceCog(commands.Cog):
         if input_str and yt_pattern.search(input_str):
             await interaction.followup.send("⏳ YouTubeを解析中...")
             try:
-                info = await self.get_yt_info(input_str)
+                # ⏱️ タイムアウト付きで解析実行
+                info = await asyncio.wait_for(self.get_yt_info(input_str), timeout=TIMEOUT_SECONDS)
                 url, filename, is_yt = input_str, info['title'], True
+            except asyncio.TimeoutError:
+                return await interaction.followup.send("⏱️ タイムアウト: YouTube情報の解析に時間がかかりすぎたため中断しました。")
             except Exception as e:
                 return await interaction.followup.send(f"❌ 解析失敗: {e}")
 
@@ -1574,15 +1580,23 @@ class VoiceCog(commands.Cog):
 
         # 3. BASE62 のユニバーサルID指定（または検索へのフォールバック）
         elif input_str and len(input_str.split()) == 1 and all(c in BASE62 for c in input_str):
-            url, filename = await self.get_attachment_info(input_str)
+            try:
+                # ⏱️ 添付情報取得のタイムアウト保護
+                url, filename = await asyncio.wait_for(self.get_attachment_info(input_str), timeout=TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                return await interaction.followup.send("⏱️ タイムアウト: ID情報の取得に時間がかかりすぎました。")
+            
             final_id = input_str
             
             if not url:
                 await interaction.followup.send(f"🔎 YouTubeで「{input_str}」を検索中...")
                 try:
-                    info = await self.get_yt_info(f"ytsearch:{input_str}")
+                    # ⏱️ 検索処理のタイムアウト保護
+                    info = await asyncio.wait_for(self.get_yt_info(f"ytsearch:{input_str}"), timeout=TIMEOUT_SECONDS)
                     url, filename, is_yt = info['url'], info['title'], True
                     final_id = None
+                except asyncio.TimeoutError:
+                    return await interaction.followup.send("⏱️ タイムアウト: YouTube検索応答時間が超過しました。")
                 except Exception as e:
                     return await interaction.followup.send(f"❌ 検索失敗: {e}")
 
@@ -1590,8 +1604,11 @@ class VoiceCog(commands.Cog):
         elif input_str:
             await interaction.followup.send(f"🔎 YouTubeで「{input_str}」を検索中...")
             try:
-                info = await self.get_yt_info(f"ytsearch:{input_str}")
+                # ⏱️ 検索処理のタイムアウト保護
+                info = await asyncio.wait_for(self.get_yt_info(f"ytsearch:{input_str}"), timeout=TIMEOUT_SECONDS)
                 url, filename, is_yt = info['url'], info['title'], True
+            except asyncio.TimeoutError:
+                return await interaction.followup.send("⏱️ タイムアウト: YouTube検索応答時間が超過しました。")
             except Exception as e:
                 return await interaction.followup.send(f"❌ 検索失敗: {e}")
 
