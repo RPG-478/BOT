@@ -498,16 +498,40 @@ class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルタ�
 # UI: 立体音響（Spatial）設定パネル・コントロール View
 # ==================================================
 class SpatialControlView(discord.ui.View):
-    def __init__(self, cog, guild_id):
-        super().__init__(timeout=180)
+    def __init__(self, cog, guild_id: int):
+        super().__init__(timeout=None)
         self.cog = cog
         self.guild_id = guild_id
+
+        state = cog.get_state(guild_id)
         
+        # 💡 [修正点] 参照するボタン名を実際のメソッド名 (toggle_rot_mode または toggle_rotate) に合わせます
+        rot_mode = state.get('spatial_rot_mode', 'standard')
+        rot_labels = {
+            'off': '⏸️ 回転: OFF',
+            'standard': '🌀 回転: 通常',
+            '3d': '🪐 回転: 3D'
+        }
+        # toggle_rot_mode ボタンのラベルを更新する場合：
+        if hasattr(self, 'toggle_rot_mode'):
+            self.toggle_rot_mode.label = rot_labels.get(rot_mode, '🌀 回転')
+        # もし toggle_rotate のまま使用している場合：
+        elif hasattr(self, 'toggle_rotate'):
+            is_rotating = state.get('is_rotating', True)
+            self.toggle_rotate.label = "🌀 回転: ON" if is_rotating else "⏸️ 回転: OFF"
+
+    # 💡 ボタンの定義（デコレータで定義されたメソッド）
+    @discord.ui.button(label="🔄 回転モード切替", style=discord.ButtonStyle.primary, row=0)
+    async def toggle_rot_mode(self, interaction: discord.Interaction, button: discord.ui.Button):
         state = self.cog.get_state(self.guild_id)
-        # 3帯域回転ボタンの初期状態表示
-        is_rotating = state.get('is_rotating', True)
-        self.toggle_rotate.label = "🌀 回転: ON" if is_rotating else "⏸️ 回転: OFF"
-        self.toggle_rotate.style = discord.ButtonStyle.green if is_rotating else discord.ButtonStyle.secondary
+        current = state.get('spatial_rot_mode', 'standard')
+        
+        # モードの順繰り切替: standard -> 3d -> off -> standard
+        next_mode = {'standard': '3d', '3d': 'off', 'off': 'standard'}[current]
+        state['spatial_rot_mode'] = next_mode
+        state['is_rotating'] = (next_mode != 'off')
+        
+        await self.update_panel(interaction)
 
     async def update_panel(self, interaction: discord.Interaction):
         """パネルのEmbed表示を最新状態に更新"""
@@ -549,20 +573,7 @@ class SpatialControlView(discord.ui.View):
         state['eq'] = 'spatial'
         await self.update_panel(interaction)
 
-    # 回転モード切替ボタン
-    @discord.ui.button(label="🔄 回転モード切替", style=discord.ButtonStyle.primary, row=0)
-    async def toggle_rot_mode(self, interaction: discord.Interaction, button: discord.ui.Button):
-        state = self.cog.get_state(self.guild_id)
-        current = state.get('spatial_rot_mode', 'standard')
-        
-        # モードの順繰り切替: standard -> 3d -> off -> standard
-        next_mode = {'standard': '3d', '3d': 'off', 'off': 'standard'}[current]
-        state['spatial_rot_mode'] = next_mode
-        
-        # フラグ同期
-        state['is_rotating'] = (next_mode != 'off')
-        
-        await self.update_panel(interaction)
+
 
     # 3. 部屋のリバーブ量 (Reverb Mix) 選択メニュー
     @discord.ui.select(
