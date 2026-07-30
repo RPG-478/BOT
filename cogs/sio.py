@@ -1875,5 +1875,5 @@ class VoiceCog(commands.Cog):
 
 
 #↓落ちた原因これね
-#async def setup(bot):
-    #await bot.add_cog(VoiceCog(bot))
+async def setup(bot):
+    await bot.add_cog(VoiceCog(bot))
