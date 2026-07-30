@@ -1535,10 +1535,10 @@ class VoiceCog(commands.Cog):
 
         # 5. 引数が何もない場合
         else:
-            return await interaction.followup.send(embed=self.we("ファイル添付、ID、YouTube URL、または検索キーワードを指定してください。"))
+            return await interaction.followup.send(embed=we("ファイル添付、ID、YouTube URL、または検索キーワードを指定してください。"))
 
         if not url:
-            return await interaction.followup.send(embed=self.we("情報の取得に失敗しました。"))
+            return await interaction.followup.send(embed=we("情報の取得に失敗しました。"))
 
         # キューに追加
         await state['queue'].put((url, filename, final_id, is_yt))
