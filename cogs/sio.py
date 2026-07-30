@@ -1660,19 +1660,24 @@ class VoiceCog(commands.Cog):
     @app_commands.command(name="queue", description="現在の再生キューを表示します")
     async def queue_cmd(self, interaction: discord.Interaction):
         state = self.get_state(interaction.guild_id)
-        now_playing = state.get('now_playing')
-        queue_list = state.get('queue', [])
+        current_track = state.get('current_track')
+        
+        # asyncio.Queue の内部リスト(_queue)を取得
+        queue_items = list(state['queue']._queue)
 
         embed = discord.Embed(title="🎶 再生キュー", color=0x3498DB)
-        if now_playing:
-            embed.add_field(name="再生中", value=f"**{now_playing['title']}**", inline=False)
+        
+        if current_track:
+            # current_track は tuple: (url, filename, duration, b62_id, is_yt)
+            embed.add_field(name="再生中", value=f"**{current_track[1]}**", inline=False)
         else:
             embed.add_field(name="再生中", value="なし", inline=False)
 
-        if queue_list:
-            q_desc = "\n".join([f"{i+1}. {t['title']}" for i, t in enumerate(queue_list[:10])])
-            if len(queue_list) > 10:
-                q_desc += f"\n...他 {len(queue_list) - 10} 曲"
+        if queue_items:
+            # queue のアイテム構造: (target_input, filename, b62_id, is_yt)
+            q_desc = "\n".join([f"{i+1}. {item[1]}" for i, item in enumerate(queue_items[:10])])
+            if len(queue_items) > 10:
+                q_desc += f"\n...他 {len(queue_items) - 10} 曲"
             embed.add_field(name="待機中", value=q_desc, inline=False)
         else:
             embed.add_field(name="待機中", value="キューは空です", inline=False)
