@@ -32,7 +32,7 @@ class DebugCog(commands.Cog):
                   return values[3], sum(values)
           except: return 0, 1
       i1, t1 = read_cpu()
-       time.sleep(0.5)
+      time.sleep(0.5)
       i2, t2 = read_cpu()
       if t2 - t1 == 0: return 0
       return 100 * (1 - (i2 - i1) / (t2 - t1))
