@@ -49,6 +49,10 @@ class DebugCog(commands.Cog):
           return (used / total) * 100, used, total
       except: return 0, 0, 0
 
+  def we(description: str = None, title: str = None) -> discord.Embed:
+    """白色embedを生成するヘルパー"""
+    return discord.Embed(title=title, description=description, color=0xFFFFFF)
+
   @commands.command()
   async def logs(self, ctx, lines: int = 10):
       log_buffer = self.bot.log_buffer
