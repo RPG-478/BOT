@@ -1178,20 +1178,43 @@ class VoiceCog(commands.Cog):
         else:
             await self.update_panel(guild.id)
 
-    @commands.command()
-    async def eq(self, ctx, *, mode: str = "flat"):
-        """イコライザを設定します"""
-        state = self.get_state(ctx.guild.id)
+    @app_commands.command(name="eq", description="イコライザ（EQ）や音響エフェクトを設定します")
+    @app_commands.describe(mode="プリセット選択、または直接 FFmpeg フィルター文字列を入力")
+    async def eq(self, interaction: discord.Interaction, mode: str = "flat"):
+        state = self.get_state(interaction.guild_id)
+        
         if mode in EQ_SETTINGS:
             state['eq'] = mode
             state['custom_eq_filter'] = None
-            await ctx.send(embed=we(f"🎬 エフェクトをプリセット `{mode}` に変更しました。"))
+            msg = f"🎬 エフェクトをプリセット `{mode}` に変更しました。"
         else:
             state['eq'] = "custom"
             state['custom_eq_filter'] = mode
-            await ctx.send(embed=we(f"⚙️ カスタムEQフィルターを設定しました:\n`{mode}`"))
+            msg = f"⚙️ カスタムEQフィルターを設定しました:\n`{mode}`"
+
+        await interaction.response.send_message(embed=we(msg))
         # 曲を止めずにパネルだけ更新
-        await self.update_panel(ctx.guild.id)
+        await self.update_panel(interaction.guild_id)
+
+    # --------------------------------------------------
+    # mode引数の入力時に EQ_SETTINGS の全プリセット候補を自動補完表示
+    # --------------------------------------------------
+    @eq.autocomplete("mode")
+    async def eq_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str
+    ) -> list[app_commands.Choice[str]]:
+        # EQ_SETTINGS に登録されているすべてのキーを候補として作成
+        choices = [
+            app_commands.Choice(name=f"プリセット: {key}", value=key)
+            for key in EQ_SETTINGS.keys()
+        ]
+        # ユーザーが入力途中のテキストでフィルタリングして返却（最大25件）
+        return [
+            choice for choice in choices 
+            if current.lower() in choice.name.lower() or current.lower() in choice.value.lower()
+        ][:25]
         
     @commands.command()
     async def volume(self, ctx, vol: float):
