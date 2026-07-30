@@ -950,7 +950,6 @@ class VoiceCog(commands.Cog):
         self.reaction_enabled = {}
         self.emoji_sounds = {}
         self.states = {} 
-        self.log_buffer = bot.log_buffer
         self.supabase = getattr(bot, "supabase", None)
         self.ir_l_id = "d424KTRkAlaetACCuFZOCjUtFNjho1t5" 
         self.ir_r_id = "d424KTRkAlaetACCuFZOCjUtFO0p0TMN"
@@ -997,32 +996,6 @@ class VoiceCog(commands.Cog):
             return float(data['format']['duration'])
         except Exception:
             return 0
-
-    def get_cpu_usage(self):
-        def read_cpu():
-            try:
-                with open("/proc/stat", "r") as f:
-                    line = f.readline()
-                    values = list(map(int, line.split()[1:]))
-                    return values[3], sum(values)
-            except: return 0, 1
-        i1, t1 = read_cpu()
-        time.sleep(0.5)
-        i2, t2 = read_cpu()
-        if t2 - t1 == 0: return 0
-        return 100 * (1 - (i2 - i1) / (t2 - t1))
-
-    def get_mem_usage(self):
-        try:
-            mem = {}
-            with open("/proc/meminfo") as f:
-                for line_str in f:
-                    parts = line_str.split(":")
-                    if len(parts) == 2: mem[parts[0]] = int(parts[1].split()[0])
-            total = mem.get("MemTotal", 1)
-            used = total - mem.get("MemAvailable", mem.get("MemFree", 0))
-            return (used / total) * 100, used, total
-        except: return 0, 0, 0
             
     async def get_attachment_info(self, b62_id: str):
         try:
@@ -1621,24 +1594,6 @@ class VoiceCog(commands.Cog):
         except Exception as e:
             await ctx.send(f"エラー: {e}")
             
-    @commands.command()
-    async def logs(self, ctx, lines: int = 10):
-        log_buffer = self.bot.log_buffer
-        logs = list(log_buffer.logs)[-lines:]
-        if not logs:
-            await ctx.send("表示するログがありません。")
-            return
-        text = "\n".join(logs)
-        if len(text) > 1900:
-            text = text[-1900:]
-        await ctx.send(f"```\n{text}\n```")
-
-    @commands.command()
-    async def sysinfo(self, ctx):
-        cpu = self.get_cpu_usage()
-        m_p, used, total = self.get_mem_usage()
-        desc = f"CPU: `{cpu:.1f}%` / Mem: `{m_p:.1f}%` ({used/1024:.0f}/{total/1024:.0f}MB)"
-        await ctx.send(embed=we(desc))
 
     @commands.command(name="spatial", aliases=["3d", "立体音響"])
     async def spatial_cmd(self, ctx):
