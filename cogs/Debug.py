@@ -60,3 +60,10 @@ class DebugCog(commands.Cog):
       if len(text) > 1900:
           text = text[-1900:]
       await ctx.send(f"```\n{text}\n```")
+
+  @commands.command()
+  async def sysinfo(self, ctx):
+      cpu = self.get_cpu_usage()
+      m_p, used, total = self.get_mem_usage()
+      desc = f"CPU: `{cpu:.1f}%` / Mem: `{m_p:.1f}%` ({used/1024:.0f}/{total/1024:.0f}MB)"
+      await ctx.send(embed=we(desc))
