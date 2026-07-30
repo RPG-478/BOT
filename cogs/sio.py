@@ -1703,7 +1703,7 @@ class VoiceCog(commands.Cog):
             await ctx.send(f"エラー: {e}")
             
 
-    @app_commands.command(name="spatial", description="立体音響（リアルHRTF / 空間音響）の設定パネルを呼び出します")
+    @app_commands.command(name="spatial", description="立体音響（リアルHRTF / FDN空間音響）の設定パネルを呼び出します")
     async def spatial_cmd(self, interaction: discord.Interaction):
         state = self.get_state(interaction.guild_id)
         current_eq = state.get('eq', 'flat')
@@ -1711,7 +1711,14 @@ class VoiceCog(commands.Cog):
         room = state.get('spatial_room_size', 0.3)
         speaker = state.get('spatial_speaker', 'studio')
         agc_max = state.get('spatial_agc_max', 4.0)
-        is_rotating = "ON" if state.get('is_rotating', True) else "OFF"
+        
+        # 💡 モード判定（3軸回転 / 通常回転 / 回転OFF）
+        rot_mode = state.get('spatial_rot_mode', 'standard')  # 'off', 'standard', '3d'
+        rot_labels = {
+            'off': '⏸️ 静止 (OFF)',
+            'standard': '🌀 通常水平回転 (Azimuth)',
+            '3d': '🪐 3軸立体回転 (3D Pitch/Yaw/Roll)'
+        }
 
         speaker_names = {
             'studio': '🎙️ スタジオモニター',
@@ -1723,14 +1730,14 @@ class VoiceCog(commands.Cog):
         embed = discord.Embed(
             title="🎧 立体音響 (3D Spatial Audio) 設定パネル",
             description=(
-                "リアルタイムHRTFおよび空間音響パラメータを個別設定できます。\n"
+                "リアルタイムHRTFおよびFDN空間音響パラメータを個別設定できます。\n"
                 "下のメニュー操作は再生中の音声へ即座に反映されます。\n\n"
                 f"現在のモード: **{current_eq}**\n"
                 f"音像の距離 (Distance): **{dist}x**\n"
-                f"部屋のリバーブ (Reverb Mix): **{room}**\n"
+                f"部屋のリバーブ (FDN Mix): **{room}**\n"
                 f"スピーカー特性: **{speaker_names.get(speaker, speaker)}**\n"
                 f"最大音量引き上げ幅 (AGC): **{agc_max}x** (+{round(20*math.log10(agc_max), 1)}dB)\n"
-                f"3帯域立体回転: **{is_rotating}**"
+                f"回転モード: **{rot_labels.get(rot_mode, rot_mode)}**"
             ),
             color=0x3498DB
         )
