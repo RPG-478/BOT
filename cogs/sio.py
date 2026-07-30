@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands  # ← 追加
 from discord.ext import commands
 import asyncio
 import time
