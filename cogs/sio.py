@@ -1622,10 +1622,9 @@ class VoiceCog(commands.Cog):
             await ctx.send(f"エラー: {e}")
             
 
-    @commands.command(name="spatial", aliases=["3d", "立体音響"])
-    async def spatial_cmd(self, ctx):
-        """立体音響（リアルHRTF / 空間音響）の独立設定パネルを呼び出します"""
-        state = self.get_state(ctx.guild.id)
+    @app_commands.command(name="spatial", description="立体音響（リアルHRTF / 空間音響）の設定パネルを呼び出します")
+    async def spatial_cmd(self, interaction: discord.Interaction):
+        state = self.get_state(interaction.guild_id)
         current_eq = state.get('eq', 'flat')
         dist = state.get('spatial_distance', 2.0)
         room = state.get('spatial_room_size', 0.3)
@@ -1654,13 +1653,36 @@ class VoiceCog(commands.Cog):
             ),
             color=0x3498DB
         )
-        view = SpatialControlView(self, ctx.guild.id)
-        await ctx.send(embed=embed, view=view)
+        view = SpatialControlView(self, interaction.guild_id)
+        await interaction.response.send_message(embed=embed, view=view)
 
+    
+    @app_commands.command(name="queue", description="現在の再生キューを表示します")
+    async def queue_cmd(self, interaction: discord.Interaction):
+        state = self.get_state(interaction.guild_id)
+        now_playing = state.get('now_playing')
+        queue_list = state.get('queue', [])
+
+        embed = discord.Embed(title="🎶 再生キュー", color=0x3498DB)
+        if now_playing:
+            embed.add_field(name="再生中", value=f"**{now_playing['title']}**", inline=False)
+        else:
+            embed.add_field(name="再生中", value="なし", inline=False)
+
+        if queue_list:
+            q_desc = "\n".join([f"{i+1}. {t['title']}" for i, t in enumerate(queue_list[:10])])
+            if len(queue_list) > 10:
+                q_desc += f"\n...他 {len(queue_list) - 10} 曲"
+            embed.add_field(name="待機中", value=q_desc, inline=False)
+        else:
+            embed.add_field(name="待機中", value="キューは空です", inline=False)
+
+        await interaction.response.send_message(embed=embed)
 
 
 
 
 
 async def setup(bot):
-    await bot.add_cog(VoiceCog(bot))
+    await bot.add_cog(MusicCog(bot))
+    await bot.tree.sync()
