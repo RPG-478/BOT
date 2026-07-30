@@ -1101,14 +1101,35 @@ class VoiceCog(commands.Cog):
             await interaction.response.send_message("先にボイスチャンネルに入ってください。", ephemeral=True)
             return
 
+        # 接続処理が長引く可能性があるため defer（応答保留）を実行
+        await interaction.response.defer()
+
         channel = interaction.user.voice.channel
-        if interaction.guild.voice_client:
-            await interaction.guild.voice_client.move_to(channel)
-        else:
-            await channel.connect(cls=voice_recv.VoiceRecvClient)
+        
+        # ⏱️ タイムアウト秒数の設定 (10秒)
+        TIMEOUT_SECONDS = 10.0
 
-        await interaction.response.send_message(f"🔊 **{channel.name}** に参加しました。")
+        try:
+            if interaction.guild.voice_client:
+                # ⏱️ 移動処理のタイムアウト保護
+                await asyncio.wait_for(
+                    interaction.guild.voice_client.move_to(channel), 
+                    timeout=TIMEOUT_SECONDS
+                )
+            else:
+                # ⏱️ 新規接続処理のタイムアウト保護
+                await asyncio.wait_for(
+                    channel.connect(cls=voice_recv.VoiceRecvClient), 
+                    timeout=TIMEOUT_SECONDS
+                )
 
+            await interaction.followup.send(f"🔊 **{channel.name}** に参加しました。")
+
+        except asyncio.TimeoutError:
+            await interaction.followup.send("⏱️ タイムアウト: ボイスチャンネルへの接続応答時間が超過しました。Botの権限やネットワーク状態をご確認ください。")
+        except Exception as e:
+            await interaction.followup.send(f"❌ 接続失敗: {e}")
+            
     @app_commands.command(name="leave", description="ボイスチャンネルから退出します")
     async def leave_cmd(self, interaction: discord.Interaction):
         voice_client = interaction.guild.voice_client
