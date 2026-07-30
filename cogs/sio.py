@@ -1559,8 +1559,8 @@ class VoiceCog(commands.Cog):
         query: str = None, 
         file: discord.Attachment = None
     ):
-        # ボイスチャンネル接続チェック
-        if not interaction.guild.voice_client: 
+        # Guild / VoiceClient チェック
+        if not interaction.guild or not interaction.guild.voice_client: 
             return await interaction.response.send_message("先に `/join` してください。", ephemeral=True)
 
         # 処理時間がかかる可能性があるため defer 実行
@@ -1597,7 +1597,13 @@ class VoiceCog(commands.Cog):
         # 2. ファイルが添付されている場合
         elif file:
             url, filename = file.url, file.filename
-            final_id = encode_full_id(interaction.guild_id, interaction.channel_id, interaction.id)
+            # ID生成関数がグローバルかクラス内かに応じた呼び出し（フォールバック付き）
+            if hasattr(self, 'encode_full_id'):
+                final_id = self.encode_full_id(interaction.guild_id, interaction.channel_id, interaction.id)
+            elif 'encode_full_id' in globals():
+                final_id = encode_full_id(interaction.guild_id, interaction.channel_id, interaction.id)
+            else:
+                final_id = str(interaction.id)
 
         # 3. BASE62 のユニバーサルID指定（または検索へのフォールバック）
         elif input_str and len(input_str.split()) == 1 and all(c in BASE62 for c in input_str):
@@ -1606,6 +1612,8 @@ class VoiceCog(commands.Cog):
                 url, filename = await asyncio.wait_for(self.get_attachment_info(input_str), timeout=TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
                 return await interaction.followup.send("⏱️ タイムアウト: ID情報の取得に時間がかかりすぎました。")
+            except Exception:
+                url, filename = None, None
             
             final_id = input_str
             
@@ -1635,21 +1643,32 @@ class VoiceCog(commands.Cog):
 
         # 5. 引数が何もない場合
         else:
-            return await interaction.followup.send(embed=we("ファイル添付、ID、YouTube URL、または検索キーワードを指定してください。"))
+            msg = "ファイル添付、ID、YouTube URL、または検索キーワードを指定してください。"
+            # we関数の存在チェック
+            embed = self.we(msg) if hasattr(self, 'we') else (we(msg) if 'we' in globals() else discord.Embed(description=msg, color=0xFF0000))
+            return await interaction.followup.send(embed=embed)
 
         if not url:
-            return await interaction.followup.send(embed=we("情報の取得に失敗しました。"))
+            msg = "情報の取得に失敗しました。"
+            embed = self.we(msg) if hasattr(self, 'we') else (we(msg) if 'we' in globals() else discord.Embed(description=msg, color=0xFF0000))
+            return await interaction.followup.send(embed=embed)
 
         # キューに追加
         await state['queue'].put((url, filename, final_id, is_yt))
 
+        # 再生状態の安全確認
+        vc = interaction.guild.voice_client
+        is_playing = vc.is_playing() if vc else False
+        is_processing = state.get('is_processing_queue', False)
+        is_paused = state.get('is_paused', False)
+
         # 再生中でなければ再生開始
-        if not interaction.guild.voice_client.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
+        if not is_playing and not is_processing and not is_paused:
             await self.check_queue(interaction.guild_id)
         else:
             await interaction.followup.send(f"✅ キューに追加: **{filename}**")
             await self.update_panel(interaction.guild_id)
-
+            
     @commands.command()
     async def stop_all(self, ctx):
         """今流れている音楽をすべて停止しキューをクリアします"""
