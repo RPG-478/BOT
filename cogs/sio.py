@@ -1468,7 +1468,7 @@ class VoiceCog(commands.Cog):
             
     @app_commands.command(name="play", description="添付ファイル、ユニバーサルID、YouTubeのURL/キーワードで音楽を再生します")
     @app_commands.describe(
-        input_str="YouTube URL / 検索キーワード / ユニバーサルID",
+        query="YouTube URL / 検索キーワード / ユニバーサルID",
         file="音声/動画ファイルの添付（ファイル再生時）"
     )
     async def play(
@@ -1491,12 +1491,13 @@ class VoiceCog(commands.Cog):
         is_yt = False
         url, filename, final_id = None, None, None
 
-        # メソッド内の判定部分
-        input_str = query.strip()
+        # 💡 [修正] query が None の場合に備えて安全に strip 処理
+        input_str = query.strip() if query else ""
 
         # YouTube関連ドメイン判定（youtube.com, youtu.be, m.youtube.com, music.youtube.com など全て網羅）
         yt_pattern = re.compile(r'https?://(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)/', re.IGNORECASE)
 
+        # 1. YouTube URLが直接指定された場合
         if input_str and yt_pattern.search(input_str):
             await interaction.followup.send("⏳ YouTubeを解析中...")
             try:
