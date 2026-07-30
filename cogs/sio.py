@@ -176,6 +176,27 @@ class PythonSpatialAudioSource(discord.AudioSource):
         self.agc_gain = 1.0         # 現在のブースト倍率
         self.target_peak = 0.85      # 目標ピーク値 (85%)
 
+        # --- [6] 従来エフェクト（Bass / Echo / Vocal / Live / Reverb）用状態変数の初期化 ---
+        self.bass_lp_l = 0.0
+        self.bass_lp_r = 0.0
+
+        self.echo_buf_l = np.zeros(9600, dtype=np.float32)
+        self.echo_buf_r = np.zeros(9600, dtype=np.float32)
+        self.echo_idx = 0
+
+        self.vocal_lp_l = 0.0
+        self.vocal_lp_r = 0.0
+
+        self.live_buf_l = np.zeros(2880, dtype=np.float32)
+        self.live_buf_r = np.zeros(2880, dtype=np.float32)
+        self.live_idx = 0
+        self.live_lp_l = 0.0
+        self.live_lp_r = 0.0
+
+        self.rev_buf_l = np.zeros(12000, dtype=np.float32)
+        self.rev_buf_r = np.zeros(12000, dtype=np.float32)
+        self.rev_idx = 0
+
     def read(self):
         raw_data = self.source.read()
         if not raw_data:
