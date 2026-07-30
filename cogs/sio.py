@@ -1138,9 +1138,14 @@ class VoiceCog(commands.Cog):
         except Exception as e:
             logging.error(f"Panel update failed: {e}")
 
-    async def apply_immediate_setting(self, ctx):
-        vc = ctx.voice_client if hasattr(ctx, 'voice_client') else ctx.guild.voice_client
-        state = self.get_state(ctx.guild.id)
+    async def apply_immediate_setting(self, ctx_or_interaction):
+        guild = getattr(ctx_or_interaction, 'guild', None)
+        if not guild:
+            return
+        
+        vc = guild.voice_client
+        state = self.get_state(guild.id)
+        
         if vc and vc.is_playing() and state['current_track']:
             actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
             state['elapsed_offset'] += actual_played
@@ -1148,9 +1153,9 @@ class VoiceCog(commands.Cog):
             vc.stop()
             await asyncio.sleep(0.2)
             state['is_changing_setting'] = False
-            await self.check_queue(ctx.guild.id)
+            await self.check_queue(guild.id)
         else:
-            await self.update_panel(ctx.guild.id)
+            await self.update_panel(guild.id)
 
     @commands.command()
     async def eq(self, ctx, *, mode: str = "flat"):
@@ -1382,14 +1387,17 @@ class VoiceCog(commands.Cog):
         
         state['is_processing_queue'] = False
 
+        # 安全なイベントループ取得
+        loop = self.bot.loop if hasattr(self.bot, 'loop') else asyncio.get_event_loop()
+
         if is_interrupted and state['retry_count'] < 3 and state['current_track']:
             state['retry_count'] += 1
-            asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), self.bot.loop)
+            asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), loop)
         else:
             state['current_track'] = None
             state['elapsed_offset'] = 0
             state['retry_count'] = 0
-            asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), self.bot.loop)
+            asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), loop)
             
     @app_commands.command(name="play", description="添付ファイル、ユニバーサルID、YouTubeのURL/キーワードで音楽を再生します")
     @app_commands.describe(
