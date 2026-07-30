@@ -1236,18 +1236,40 @@ class VoiceCog(commands.Cog):
         await self.apply_immediate_setting(ctx)
 
     async def get_yt_info(self, url_or_search):
-        loop = asyncio.get_event_loop()
-        with yt_dlp.YoutubeDL(YTDL_OPTIONS) as ydl:
-            data = await loop.run_in_executor(None, lambda: ydl.extract_info(url_or_search, download=False))
-            if 'entries' in data:
-                if not data['entries']: raise Exception("検索結果が見つかりませんでした。")
-                data = data['entries'][0]
-            return {
-                'url': data.get('webpage_url') or data.get('url'),
-                'stream_url': data.get('url'),
-                'title': data.get('title'),
-                'duration': data.get('duration', 0)
-            }
+        loop = asyncio.get_running_loop()
+        
+        # 検索キーワードかURLかを判定
+        if not url_or_search.startswith(('http://', 'https://')):
+            target = f"ytsearch1:{url_or_search}"  # 最初の1件だけ取得するように明示
+        else:
+            target = url_or_search
+
+        def _extract():
+            with yt_dlp.YoutubeDL(YTDL_OPTIONS) as ydl:
+                return ydl.extract_info(target, download=False)
+
+        try:
+            data = await loop.run_in_executor(None, _extract)
+        except Exception as e:
+            logging.error(f"yt-dlp extract error: {e}")
+            raise Exception(f"YouTubeからの情報取得に失敗しました: {e}")
+
+        if not data:
+            raise Exception("データを得られませんでした。")
+
+        # 検索結果（entries）の場合
+        if 'entries' in data:
+            entries = [e for e in data['entries'] if e is not None]
+            if not entries:
+                raise Exception("検索結果が見つかりませんでした。")
+            data = entries[0]
+
+        return {
+            'url': data.get('webpage_url') or data.get('url'),
+            'stream_url': data.get('url'),
+            'title': data.get('title', 'Unknown Title'),
+            'duration': data.get('duration', 0)
+        }
 
     class SearchView(discord.ui.View):
         def __init__(self, cog, guild_id, ctx, tracks):
