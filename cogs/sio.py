@@ -1492,7 +1492,7 @@ class VoiceCog(commands.Cog):
         url, filename, final_id = None, None, None
 
         # メソッド内の判定部分
-        input_str = self.keyword_input.value.strip()
+        input_str = query.strip()
 
         # YouTube関連ドメイン判定（youtube.com, youtu.be, m.youtube.com, music.youtube.com など全て網羅）
         yt_pattern = re.compile(r'https?://(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)/', re.IGNORECASE)
