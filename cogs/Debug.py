@@ -18,4 +18,4 @@ import numpy as np
 from scipy import signal
 import numpy as np
 
-class DebugCog(commands.Cog
+class DebugCog(commands.Cog):
