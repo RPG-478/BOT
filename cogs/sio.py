@@ -2078,23 +2078,30 @@ class VoiceCog(commands.Cog):
 
     
     async def generate_voicevox_wav(self, text: str, speaker: int = 1) -> bytes | None:
-        """VOICEVOX APIを呼び出してWAVバイトデータを取得する"""
+        """軽量化パラメータを適用してVOICEVOXでWAVを作成"""
         async with aiohttp.ClientSession() as session:
             try:
-                # 1. 音声合成クエリ作成
+                # 1. 音声合成クエリを作成
                 async with session.post(
                     f"{self.vv_host}/audio_query",
-                    params={"text": text, "speaker": speaker}
+                    params={"text": text, "speaker": speaker},
+                    timeout=aiohttp.ClientTimeout(total=5)
                 ) as resp:
                     if resp.status != 200:
                         return None
                     query_json = await resp.json()
 
-                # 2. 音声データ生成
+                # --- ⚡ 負荷削減（軽量化）設定 ---
+                query_json["outputSamplingRate"] = 16000  # サンプリングレートを下げてVOICEVOXの計算量を大幅カット(24000→16000)
+                query_json["prePhonemeLength"] = 0.05     # 前の無音時間を短縮して無駄な生成をカット
+                query_json["postPhonemeLength"] = 0.05    # 後ろの無音時間を短縮して無駄な生成をカット
+
+                # 2. 軽量化したクエリで音声データ(WAV)を生成
                 async with session.post(
                     f"{self.vv_host}/synthesis",
                     params={"speaker": speaker},
-                    json=query_json
+                    json=query_json,
+                    timeout=aiohttp.ClientTimeout(total=10)
                 ) as resp:
                     if resp.status != 200:
                         return None
