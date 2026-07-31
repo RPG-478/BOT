@@ -295,36 +295,55 @@ class PythonSpatialAudioSource(discord.AudioSource):
             spatial_out_l = full_out_l[:n_samples]
             spatial_out_r = full_out_r[:n_samples]
 
-            # C. 高速・ベクトル化FDN風マルチタップ残響（処理を軽いままで反響感をしっかり復活）
-            if not hasattr(self, 'rev_delay_l'):
-                # 素数サンプル数（約23ms, 28ms, 33ms, 38ms）のディレイバッファ
-                self.rev_delay_l = [np.zeros(1117, dtype=np.float32), np.zeros(1597, dtype=np.float32)]
-                self.rev_delay_r = [np.zeros(1357, dtype=np.float32), np.zeros(1861, dtype=np.float32)]
+            # C. 高速ベクトル化 4x4 FDN (Feedback Delay Network) 室内残響
+            # 初期化（クラスの __init__ ではなく実行時に安全に行う場合）
+            if not hasattr(self, 'fdn_delay_bufs'):
+                self.fdn_delay_lens = [1117, 1357, 1597, 1861]
+                self.fdn_delay_bufs = [np.zeros(l, dtype=np.float32) for l in self.fdn_delay_lens]
+                self.fdn_lp_states = [0.0, 0.0, 0.0, 0.0]
 
-            # リングバッファを使わずに、アレイの結合・シフトで一括計算
-            rev_l = np.zeros(n_samples, dtype=np.float32)
-            rev_r = np.zeros(n_samples, dtype=np.float32)
+            wall_absorption = preset['wall_absorption']
+            # FDN フィードバック行列 (Hadamard 行列)
+            fb_matrix = 0.38 * np.array([
+                [ 1,  1,  1,  1],
+                [ 1, -1,  1, -1],
+                [ 1,  1, -1, -1],
+                [ 1, -1, -1,  1]
+            ], dtype=np.float32)
 
-            # 4つのタップ（遅延線）を重ね合わせて重厚な残響を作る
-            delays = [1117, 1357, 1597, 1861]
-            gains = [0.4, 0.3, 0.25, 0.2]
+            # 遅延・フィードバックを一括ブロック処理
+            rev_channels = []
+            inputs = [spatial_out_l, spatial_out_r, spatial_out_l * 0.6, spatial_out_r * 0.6]
 
-            for idx, (d_len, g) in enumerate(zip(delays, gains)):
-                # Lチャンネル残響成分
-                buf_l = self.rev_delay_l[idx % 2]
-                concat_l = np.concatenate([buf_l, spatial_out_l])
-                rev_l += concat_l[:n_samples] * g
-                self.rev_delay_l[idx % 2] = concat_l[n_samples:]
+            for ch in range(4):
+                d_len = self.fdn_delay_lens[ch]
+                buf = self.fdn_delay_bufs[ch]
+                
+                # ディレイバッファの連結と一括読み出し
+                concatenated = np.concatenate([buf, inputs[ch]])
+                delay_out = concatenated[:n_samples]
+                
+                # 壁面高域吸収（ローパスフィルタ）
+                lp_out, self.fdn_lp_states[ch] = signal.sosfilt(
+                    signal.butter(1, max(0.1, 1.0 - wall_absorption), 'low', output='sos'),
+                    delay_out, zi=[self.fdn_lp_states[ch]]
+                )
+                
+                rev_channels.append(lp_out)
+                # 次回のフレーム用に末尾を更新
+                self.fdn_delay_bufs[ch] = concatenated[n_samples:]
 
-                # Rチャンネル残響成分
-                buf_r = self.rev_delay_r[idx % 2]
-                concat_r = np.concatenate([buf_r, spatial_out_r])
-                rev_r += concat_r[:n_samples] * g
-                self.rev_delay_r[idx % 2] = concat_r[n_samples:]
+            # 4チャネルのフィードバック混合 (Hadamard拡散)
+            rev_stacked = np.vstack(rev_channels)  # Shape: (4, n_samples)
+            fb_out = np.dot(fb_matrix, rev_stacked)
+
+            # L/R ステレオ出力へマッピング
+            rev_out_l = (fb_out[0] + fb_out[2]) * 0.5
+            rev_out_r = (fb_out[1] + fb_out[3]) * 0.5
 
             # D. ミックス処理
-            mix_l = spatial_out_l + rev_l * reverb_mix
-            mix_r = spatial_out_r + rev_r * reverb_mix
+            mix_l = spatial_out_l + rev_out_l * reverb_mix
+            mix_r = spatial_out_r + rev_out_r * reverb_mix
             # E. AGC (自動音量調整)
             current_peak = max(np.max(np.abs(mix_l)), np.max(np.abs(mix_r)), 1e-5)
             desired_gain = np.clip(self.target_peak / current_peak, 0.8, max_boost)
