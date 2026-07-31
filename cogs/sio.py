@@ -1328,11 +1328,11 @@ class VoiceCog(commands.Cog):
         await ctx.send(embed=we(f"⚡ 再生速度を `{speed}` 倍に設定しました。"))
         await self.apply_immediate_setting(ctx)
 
-    async def get_yt_info(self, url_or_search):
+async def get_yt_info(self, url_or_search):
         loop = asyncio.get_running_loop()
         
-        # 検索キーワードかURLかを判定
-        if not url_or_search.startswith(('http://', 'https://')):
+        # 検索キーワードかURLかを判定（すでに ytsearch: 等がついている場合も考慮）
+        if not url_or_search.startswith(('http://', 'https://', 'ytsearch:')) and not url_or_search.startswith('ytsearch1:'):
             target = f"ytsearch1:{url_or_search}"  # 最初の1件だけ取得するように明示
         else:
             target = url_or_search
@@ -1357,9 +1357,14 @@ class VoiceCog(commands.Cog):
                 raise Exception("検索結果が見つかりませんでした。")
             data = entries[0]
 
+        # 💡 [重要] 直接再生に使用する音声ストリームURL（stream_url / url）を優先取得
+        play_url = data.get('url') or data.get('webpage_url')
+        webpage_url = data.get('webpage_url') or data.get('url')
+
         return {
-            'url': data.get('webpage_url') or data.get('url'),
-            'stream_url': data.get('url'),
+            'url': play_url,             # 再生で使うストリームURL
+            'stream_url': play_url,      # 互換用
+            'webpage_url': webpage_url,  # YouTube動画ページのURL
             'title': data.get('title', 'Unknown Title'),
             'duration': data.get('duration', 0)
         }
