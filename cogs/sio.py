@@ -295,12 +295,13 @@ class PythonSpatialAudioSource(discord.AudioSource):
             spatial_out_l = full_out_l[:n_samples]
             spatial_out_r = full_out_r[:n_samples]
 
-            # C. 高速ベクトル化 4x4 FDN (Feedback Delay Network) 室内残響
-            # 初期化（クラスの __init__ ではなく実行時に安全に行う場合）
+           # C. 高速ベクトル化 4x4 FDN (Feedback Delay Network) 室内残響
+            # 初期化（1次SOSフィルタの zi は shape(1, 2) が必要）
             if not hasattr(self, 'fdn_delay_bufs'):
                 self.fdn_delay_lens = [1117, 1357, 1597, 1861]
                 self.fdn_delay_bufs = [np.zeros(l, dtype=np.float32) for l in self.fdn_delay_lens]
-                self.fdn_lp_states = [0.0, 0.0, 0.0, 0.0]
+                # 💡 各チャンネルのローパスフィルタ用の zi を (1, 2) で初期化
+                self.fdn_lp_zi = [np.zeros((1, 2), dtype=np.float32) for _ in range(4)]
 
             wall_absorption = preset['wall_absorption']
             # FDN フィードバック行列 (Hadamard 行列)
@@ -311,9 +312,11 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 [ 1, -1, -1,  1]
             ], dtype=np.float32)
 
-            # 遅延・フィードバックを一括ブロック処理
             rev_channels = []
             inputs = [spatial_out_l, spatial_out_r, spatial_out_l * 0.6, spatial_out_r * 0.6]
+
+            # 💡 ループの外でフィルタのSOS係数を作成（毎回作成するコストを削減）
+            sos_lp = signal.butter(1, max(0.1, 1.0 - wall_absorption), 'low', output='sos')
 
             for ch in range(4):
                 d_len = self.fdn_delay_lens[ch]
@@ -323,10 +326,11 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 concatenated = np.concatenate([buf, inputs[ch]])
                 delay_out = concatenated[:n_samples]
                 
-                # 壁面高域吸収（ローパスフィルタ）
-                lp_out, self.fdn_lp_states[ch] = signal.sosfilt(
-                    signal.butter(1, max(0.1, 1.0 - wall_absorption), 'low', output='sos'),
-                    delay_out, zi=[self.fdn_lp_states[ch]]
+                # 💡 zi に (1, 2) の配列を渡し、戻り値でそのまま更新
+                lp_out, self.fdn_lp_zi[ch] = signal.sosfilt(
+                    sos_lp,
+                    delay_out, 
+                    zi=self.fdn_lp_zi[ch]
                 )
                 
                 rev_channels.append(lp_out)
