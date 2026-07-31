@@ -1328,7 +1328,7 @@ class VoiceCog(commands.Cog):
         await ctx.send(embed=we(f"⚡ 再生速度を `{speed}` 倍に設定しました。"))
         await self.apply_immediate_setting(ctx)
 
-async def get_yt_info(self, url_or_search):
+    async def get_yt_info(self, url_or_search):
         loop = asyncio.get_running_loop()
         
         # 検索キーワードかURLかを判定（すでに ytsearch: 等がついている場合も考慮）
