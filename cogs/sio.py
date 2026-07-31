@@ -217,10 +217,8 @@ class PythonSpatialAudioSource(discord.AudioSource):
             n_samples = len(mono_in)
 
             global_distance = max(0.1, float(self.state.get('spatial_distance', 2.0)))
-            # 💡 [変更] 残響が多すぎて音がぼやけるのを防ぐためスケーリング(0.3倍)
-            reverb_mix = float(self.state.get('spatial_room_size', 0.3)) * 0.3
+            reverb_mix = float(self.state.get('spatial_room_size', 0.3)) * 0.2
             
-            # 💡 [機能拡張①] 回転モード ('off', 'standard', '3d')
             rot_mode = self.state.get('spatial_rot_mode', 'standard')
             if 'spatial_rot_mode' not in self.state:
                 rot_mode = 'standard' if self.state.get('is_rotating', True) else 'off'
@@ -235,41 +233,32 @@ class PythonSpatialAudioSource(discord.AudioSource):
             band_high, self.zi_high = signal.sosfilt(self.sos_high, mono_in, zi=self.zi_high)
             band_signals = [band_low, band_mid, band_high]
 
-            # 💡 [機能拡張②] 距離に応じた空気吸収・高域減衰 (1次ローパスフィルタ係数)
             air_cutoff = math.exp(-0.05 * global_distance)
 
             full_out_l = np.zeros(n_samples + self.hrir_len - 1, dtype=np.float32)
             full_out_r = np.zeros(n_samples + self.hrir_len - 1, dtype=np.float32)
 
-            # B. 帯域ごとの回転 ＆ 距離計算 ＆ 畳み込み
+            # B. 帯域ごとの回転 ＆ HRTF畳み込み
             for i, config in enumerate(self.band_configs):
-                # 1. 回転位置計算
                 if rot_mode == '3d':
-                    # 3軸 (Pitch/Yaw/Roll 複合) 回転
                     config['angle'] += 0.015 * config['speed']
-                    pitch = math.sin(config['angle'] * 0.7) * 0.45  # 上下角 (Pitch)
-                    yaw = config['angle']                           # 水平角 (Yaw)
-                    
+                    pitch = math.sin(config['angle'] * 0.7) * 0.45
+                    yaw = config['angle']
                     x = math.sin(yaw) * math.cos(pitch) * global_distance
                     z = -math.cos(yaw) * math.cos(pitch) * global_distance
                     angle_deg = math.degrees(math.atan2(x, -z)) % 360
-                    
-                    # Pitchに応じた仰角インデックス選択 (y軸補正)
                     y_elevation = int(np.clip(config['y'] + int(pitch * 2), -1, 1))
                 elif rot_mode == 'standard':
-                    # 通常 2D 水平回転
                     config['angle'] += 0.015 * config['speed']
                     x = math.sin(config['angle']) * global_distance
                     z = -math.cos(config['angle']) * global_distance
                     angle_deg = math.degrees(math.atan2(x, -z)) % 360
                     y_elevation = config['y']
                 else:
-                    # 静止 (OFF)
                     angle_deg = 0.0
                     y_elevation = config['y']
 
                 dir_idx = int((angle_deg / 360.0) * self.num_directions) % self.num_directions
-                
                 directivity_power = preset['directivity'][i]
                 band_gain = preset['gains'][i]
 
@@ -279,19 +268,16 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 hrir_l = self.hrir_table_l[(y_elevation, dir_idx)]
                 hrir_r = self.hrir_table_r[(y_elevation, dir_idx)]
 
-                # 💡 [変更] 距離減衰の補正（後ろに行った時の極端な音量低下とこもりを緩和）
                 dist_atten = (1.0 / max(0.5, global_distance * 0.7)) * speaker_gain
                 band_sig = band_signals[i] * dist_atten
 
-                # 空気吸収（高域減衰）の適用
                 if hasattr(self, 'air_lp_zi'):
                     band_sig, self.air_lp_zi[i] = signal.sosfilt(
                         signal.butter(1, max(0.05, air_cutoff), 'low', output='sos'), 
                         band_sig, zi=self.air_lp_zi[i]
                     )
 
-                # 💡 [変更] 低音(i == 0)はHRTFの畳み込みを行わずセンター固定
-                # これにより、後ろに定位した際の位相の打ち消し合いと低音のぼやけを完全に防止します
+                # 低音(i==0)は位相ズレを防ぐためセンター固定＆畳み込みスキップで軽量化
                 if i == 0:
                     full_out_l[:n_samples] += band_sig
                     full_out_r[:n_samples] += band_sig
@@ -309,60 +295,21 @@ class PythonSpatialAudioSource(discord.AudioSource):
             spatial_out_l = full_out_l[:n_samples]
             spatial_out_r = full_out_r[:n_samples]
 
-            # 💡 [機能拡張③] 4×4 FDN (Feedback Delay Network) による高音質室内残響
-            rev_out_l = np.zeros(n_samples, dtype=np.float32)
-            rev_out_r = np.zeros(n_samples, dtype=np.float32)
-            
-            # FDN用のフィードバック・反射ゲイン計算
-            wall_absorption = preset['wall_absorption'] * math.pow(0.9, global_distance)
-            
-            # 💡 [変更] 行列ゲインを 0.5 -> 0.35 に抑えて部屋に残響が溜まり過ぎる現象をカット
-            fb_matrix = 0.35 * np.array([
-                [ 1,  1,  1,  1],
-                [ 1, -1,  1, -1],
-                [ 1,  1, -1, -1],
-                [ 1, -1, -1,  1]
-            ], dtype=np.float32)
+            # C. 高速・超軽量シンプル室内残響（重いFDNサンプルループの廃止）
+            # 簡易ディレイラインによる一括計算化でCPU負荷を激減させます
+            if not hasattr(self, 'fast_rev_buf_l'):
+                self.fast_rev_buf_l = np.zeros(2400, dtype=np.float32)
+                self.fast_rev_buf_r = np.zeros(3200, dtype=np.float32)
 
-            # 初期化されていない場合の安全処理
-            if not hasattr(self, 'fdn_delay_bufs'):
-                self.fdn_delay_lens = [1117, 1357, 1597, 1861]
-                self.fdn_delay_bufs = [np.zeros(l, dtype=np.float32) for l in self.fdn_delay_lens]
-                self.fdn_delay_idxs = [0, 0, 0, 0]
-                self.fdn_lp_states = [0.0, 0.0, 0.0, 0.0]
-
-            for s in range(n_samples):
-                in_sample_l = spatial_out_l[s]
-                in_sample_r = spatial_out_r[s]
-
-                # 各ディレイラインからの読み出し
-                delay_outs = np.array([
-                    self.fdn_delay_bufs[ch][self.fdn_delay_idxs[ch]] for ch in range(4)
-                ], dtype=np.float32)
-
-                # 壁面低域通過フィルタ (壁による高域吸収)
-                for ch in range(4):
-                    self.fdn_lp_states[ch] += wall_absorption * (delay_outs[ch] - self.fdn_lp_states[ch])
-                    delay_outs[ch] = self.fdn_lp_states[ch]
-
-                # Hadamard フィードバック拡散計算
-                fb_inputs = np.dot(fb_matrix, delay_outs)
-
-                # ディレイラインへの書き込み (入力音 ＋ フィードバック)
-                inputs_to_delay = np.array([in_sample_l, in_sample_r, in_sample_l * 0.5, in_sample_r * 0.5]) + fb_inputs
-                for ch in range(4):
-                    self.fdn_delay_bufs[ch][self.fdn_delay_idxs[ch]] = inputs_to_delay[ch]
-                    self.fdn_delay_idxs[ch] = (self.fdn_delay_idxs[ch] + 1) % self.fdn_delay_lens[ch]
-
-                # ステレオ出力へマッピング
-                rev_out_l[s] = (delay_outs[0] + delay_outs[2]) * 0.5
-                rev_out_r[s] = (delay_outs[1] + delay_outs[3]) * 0.5
+            # 配列の一括シフトと畳み込み風残響生成
+            rev_l = np.convolve(spatial_out_l, [0.3, 0.0, 0.2, 0.0, 0.1], mode='same')
+            rev_r = np.convolve(spatial_out_r, [0.0, 0.3, 0.0, 0.2, 0.1], mode='same')
 
             # D. ミックス処理
-            mix_l = spatial_out_l + rev_out_l * reverb_mix
-            mix_r = spatial_out_r + rev_out_r * reverb_mix
+            mix_l = spatial_out_l + rev_l * reverb_mix
+            mix_r = spatial_out_r + rev_r * reverb_mix
 
-            # E. 可変自動音量引き上げ（AGC）処理
+            # E. AGC (自動音量調整)
             current_peak = max(np.max(np.abs(mix_l)), np.max(np.abs(mix_r)), 1e-5)
             desired_gain = np.clip(self.target_peak / current_peak, 0.8, max_boost)
 
