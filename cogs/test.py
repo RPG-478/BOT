@@ -12,18 +12,30 @@ class VideoConvertCog(commands.Cog):
 
     @commands.command(name="clip")
     async def clip_youtube(self, ctx: commands.Context, url: str):
-        status_msg = await ctx.send("動画を処理中...")
+        status_msg = await ctx.send("動画・音声を処理中...")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             input_video = os.path.join(tmpdir, "input.mp4")
+            input_audio = os.path.join(tmpdir, "input.m4a")
             output_webp = os.path.join(tmpdir, "output.webp")
 
-            ydl_opts = {
-                "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            ydl_opts_video = {
+                "format": "bestvideo[height<=720][ext=mp4]/bestvideo[ext=mp4]/best[ext=mp4]",
                 "outtmpl": input_video,
                 "download_ranges": yt_dlp.utils.download_range_func(
                     None, [(0, 60)]
                 ),
+                "force_keyframes_at_cuts": True,
+                "quiet": True,
+            }
+
+            ydl_opts_audio = {
+                "format": "bestaudio[ext=m4a]/bestaudio/best",
+                "outtmpl": input_audio,
+                "download_ranges": yt_dlp.utils.download_range_func(
+                    None, [(0, 60)]
+                ),
+                "force_keyframes_at_cuts": True,
                 "quiet": True,
             }
 
@@ -31,7 +43,11 @@ class VideoConvertCog(commands.Cog):
             try:
                 await loop.run_in_executor(
                     None,
-                    lambda: yt_dlp.YoutubeDL(ydl_opts).download([url]),
+                    lambda: yt_dlp.YoutubeDL(ydl_opts_video).download([url]),
+                )
+                await loop.run_in_executor(
+                    None,
+                    lambda: yt_dlp.YoutubeDL(ydl_opts_audio).download([url]),
                 )
             except Exception as e:
                 await status_msg.edit(content=f"ダウンロードに失敗しました: {e}")
@@ -85,6 +101,17 @@ class VideoConvertCog(commands.Cog):
 
             await status_msg.delete()
             await ctx.send(embed=embed, file=file)
+
+            if (
+                ctx.voice_client
+                and ctx.voice_client.is_connected()
+                and os.path.exists(input_audio)
+            ):
+                if ctx.voice_client.is_playing():
+                    ctx.voice_client.stop()
+
+                audio_source = discord.FFmpegPCMAudio(input_audio)
+                ctx.voice_client.play(audio_source)
 
 
 async def setup(bot):
