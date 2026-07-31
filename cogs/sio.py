@@ -19,6 +19,7 @@ import numpy as np
 from scipy import signal
 import numpy as np
 import re
+import aiohttp
 
 # yt-dlpの設定（ストリーミング再生用および検索用）
 YTDL_OPTIONS = {
@@ -1202,6 +1203,7 @@ class VoiceCog(commands.Cog):
         self.default_volume = 1.0
         self.default_speed = 1.0
         self.default_eq = "flat"
+        self.vv_host = "http://localhost:50021"
 
     def get_state(self, guild_id: int):
         if guild_id not in self.states:
@@ -2074,6 +2076,69 @@ class VoiceCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed)
 
+    
+    async def generate_voicevox_wav(self, text: str, speaker: int = 1) -> bytes | None:
+        """VOICEVOX APIを呼び出してWAVバイトデータを取得する"""
+        async with aiohttp.ClientSession() as session:
+            try:
+                # 1. 音声合成クエリ作成
+                async with session.post(
+                    f"{self.vv_host}/audio_query",
+                    params={"text": text, "speaker": speaker}
+                ) as resp:
+                    if resp.status != 200:
+                        return None
+                    query_json = await resp.json()
+
+                # 2. 音声データ生成
+                async with session.post(
+                    f"{self.vv_host}/synthesis",
+                    params={"speaker": speaker},
+                    json=query_json
+                ) as resp:
+                    if resp.status != 200:
+                        return None
+                    return await resp.read()
+            except Exception as e:
+                print(f"VOICEVOX Connection Error: {e}")
+                return None
+
+    @app_commands.command(name="speak", description="VOICEVOXで指定したテキストをボイスチャンネルで再生します")
+    @app_commands.describe(text="喋らせたいテキスト", speaker="話者ID（1:四国めたん, 3:ずんだもん 等）")
+    async def speak_cmd(self, interaction: discord.Interaction, text: str, speaker: int = 1):
+        await interaction.response.defer()
+
+        # VOICEVOXから音声データを取得
+        wav_bytes = await self.generate_voicevox_wav(text, speaker)
+        if not wav_bytes:
+            await interaction.followup.send("⚠️ VOICEVOXからの音声生成に失敗しました。Dockerコンテナが起動しているか確認してください。")
+            return
+
+        # ユーザーがVCに接続しているか確認
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            # VCにいない場合は作成したWAVファイルを添付して送信
+            file = discord.File(io.BytesIO(wav_bytes), filename="voicevox.wav")
+            await interaction.followup.send(content="🔊 VCに入っていないため音声ファイルを出力しました：", file=file)
+            return
+
+        # VC接続・再生処理
+        vc = interaction.guild.voice_client
+        target_channel = interaction.user.voice.channel
+
+        if vc is None:
+            vc = await target_channel.connect()
+        elif vc.channel != target_channel:
+            await vc.move_to(target_channel)
+
+        # メモリ上のWAVデータをFFmpegで再生
+        audio_stream = io.BytesIO(wav_bytes)
+        source = discord.FFmpegPCMAudio(audio_stream, pipe=True)
+
+        if vc.is_playing():
+            vc.stop()
+
+        vc.play(source)
+        await interaction.followup.send(f"🗣️ **再生中:** `{text}` (話者ID: {speaker})")
 
 
 
