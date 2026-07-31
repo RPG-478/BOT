@@ -323,39 +323,63 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 [ 1, -1, -1,  1]
             ], dtype=np.float32)  # Hadamard 行列によるエネルギー保存拡散
 
-            # 初期化されていない場合の安全処理
-            # --- 既存の初期化処理の中に追加・修正 ---
-            # サンプリングレートの保持（未定義の場合は 48000 など適切な値を設定）
-            # C. 4×4 FDN (Feedback Delay Network) 室内残響（壁面反射フィルタ改良・ベクトル化）
-            if not hasattr(self, 'fdn_delay_bufs'):
-                self.fdn_delay_lens = [1117, 1357, 1597, 1861]
-                self.fdn_delay_bufs = [np.zeros(l, dtype=np.float32) for l in self.fdn_delay_lens]
-                self.fdn_lp_zi = [np.zeros((1, 2), dtype=np.float32) for _ in range(4)]
+            # C. FDN 室内残響（fdn_feedback, fdn_wet, fdn_resolution 完全対応版）
+            res_mode = self.state.get('fdn_resolution', 4)
+            n_ch = 8 if res_mode == 8 else 4
 
-            # 💡 壁の吸音率に応じたカットオフ周波数計算 (1kHz〜12kHz)
+            # 1. チャンネル数に応じたディレイバッファとフィルタ状態の動的初期化
+            if not hasattr(self, 'fdn_delay_bufs') or len(self.fdn_delay_bufs) != n_ch:
+                if n_ch == 8:
+                    # 8次元用素数ディレイ長
+                    self.fdn_delay_lens = [1117, 1357, 1597, 1861, 2111, 2399, 2671, 2999]
+                else:
+                    # 4次元用素数ディレイ長
+                    self.fdn_delay_lens = [1117, 1357, 1597, 1861]
+                
+                self.fdn_delay_bufs = [np.zeros(l, dtype=np.float32) for l in self.fdn_delay_lens]
+                self.fdn_lp_zi = [np.zeros((1, 2), dtype=np.float32) for _ in range(n_ch)]
+
+            # 2. コマンド値の取得
+            fb_val = float(self.state.get('fdn_feedback', 0.4))
+            wet_val = float(self.state.get('fdn_wet', reverb_mix))  # wet指定がなければreverb_mixを使用
+
+            # 3. 壁面吸音（ローパスフィルタ）の作成
             wall_abs = np.clip(preset['wall_absorption'], 0.1, 0.8)
             cutoff_freq = max(1000.0, 12000.0 * (1.0 - wall_abs))
             sos_wall = signal.butter(1, cutoff_freq / (self.sr / 2), 'low', output='sos')
 
-            # Hadamard 拡散行列 (適度な残響感に調整)
-            fb_matrix = 0.38 * np.array([
-                [ 1,  1,  1,  1],
-                [ 1, -1,  1, -1],
-                [ 1,  1, -1, -1],
-                [ 1, -1, -1,  1]
-            ], dtype=np.float32)
+            # 4. 4次元 / 8次元 拡散行列（Householder/Hadamard）の構築
+            if n_ch == 8:
+                # 8次元 Householder 拡散行列
+                u = np.ones((8, 1), dtype=np.float32)
+                matrix_base = np.eye(8, dtype=np.float32) - (2.0 / 8.0) * np.dot(u, u.T)
+                # L/R音源を8チャンネルへ分配
+                inputs = [
+                    spatial_out_l, spatial_out_r, 
+                    spatial_out_l * 0.7, spatial_out_r * 0.7,
+                    spatial_out_l * 0.5, spatial_out_r * 0.5,
+                    spatial_out_l * 0.3, spatial_out_r * 0.3
+                ]
+            else:
+                # 4次元 Hadamard 拡散行列
+                matrix_base = 0.5 * np.array([
+                    [ 1,  1,  1,  1],
+                    [ 1, -1,  1, -1],
+                    [ 1,  1, -1, -1],
+                    [ 1, -1, -1,  1]
+                ], dtype=np.float32)
+                inputs = [spatial_out_l, spatial_out_r, spatial_out_l * 0.6, spatial_out_r * 0.6]
 
+            fb_matrix = fb_val * matrix_base
+
+            # 5. ベクトル一括遅延 ＆ 壁面吸音フィルタ処理
             rev_channels = []
-            inputs = [spatial_out_l, spatial_out_r, spatial_out_l * 0.5, spatial_out_r * 0.5]
-
-            for ch in range(4):
+            for ch in range(n_ch):
                 buf = self.fdn_delay_bufs[ch]
-                
-                # 遅延ラインの一括読み出し
                 concatenated = np.concatenate([buf, inputs[ch]])
                 delay_out = concatenated[:n_samples]
-                
-                # 💡 自然な壁面高域吸収 (IIRフィルタ処理)
+
+                # 壁面吸音ローパス
                 lp_out, self.fdn_lp_zi[ch] = signal.sosfilt(
                     sos_wall,
                     delay_out, 
@@ -365,17 +389,20 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 rev_channels.append(lp_out)
                 self.fdn_delay_bufs[ch] = concatenated[n_samples:]
 
-            # 4チャネルの Hadamard 混合拡散
+            # 6. フィードバック混合と L/R マッピング
             rev_stacked = np.vstack(rev_channels)
             fb_out = np.dot(fb_matrix, rev_stacked)
 
-            # L/R 出力へのマッピング
-            rev_out_l = (fb_out[0] + fb_out[2]) * 0.5
-            rev_out_r = (fb_out[1] + fb_out[3]) * 0.5
+            if n_ch == 8:
+                rev_out_l = (fb_out[0] + fb_out[2] + fb_out[4] + fb_out[6]) * 0.25
+                rev_out_r = (fb_out[1] + fb_out[3] + fb_out[5] + fb_out[7]) * 0.25
+            else:
+                rev_out_l = (fb_out[0] + fb_out[2]) * 0.5
+                rev_out_r = (fb_out[1] + fb_out[3]) * 0.5
 
-            # D. ミックス処理
-            mix_l = spatial_out_l + rev_out_l * reverb_mix
-            mix_r = spatial_out_r + rev_out_r * reverb_mix
+            # D. ミックス処理 (ウェット量 wet_val を使用)
+            mix_l = spatial_out_l + rev_out_l * wet_val
+            mix_r = spatial_out_r + rev_out_r * wet_val
 
             # E. 可変自動音量引き上げ（AGC）処理
             current_peak = max(np.max(np.abs(mix_l)), np.max(np.abs(mix_r)), 1e-5)
