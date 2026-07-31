@@ -3,6 +3,7 @@ import os
 import tempfile
 import discord
 from discord.ext import commands
+import yt_dlp
 
 
 class VideoConvertCog(commands.Cog):
@@ -17,28 +18,23 @@ class VideoConvertCog(commands.Cog):
             input_video = os.path.join(tmpdir, "input.mp4")
             output_webp = os.path.join(tmpdir, "output.webp")
 
-            ytdlp_cmd = [
-                "yt-dlp",
-                "-f",
-                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                "--download-sections",
-                "*00:00-01:00",
-                "-o",
-                input_video,
-                url,
-            ]
+            ydl_opts = {
+                "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "outtmpl": input_video,
+                "download_ranges": yt_dlp.utils.download_range_func(
+                    None, [(0, 60)]
+                ),
+                "quiet": True,
+            }
 
-            process_ytdlp = await asyncio.create_subprocess_exec(
-                *ytdlp_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr_ytdlp = await process_ytdlp.communicate()
-
-            if process_ytdlp.returncode != 0:
-                await status_msg.edit(
-                    content=f"ダウンロードに失敗しました: {stderr_ytdlp.decode()[:100]}"
+            loop = asyncio.get_running_loop()
+            try:
+                await loop.run_in_executor(
+                    None,
+                    lambda: yt_dlp.YoutubeDL(ydl_opts).download([url]),
                 )
+            except Exception as e:
+                await status_msg.edit(content=f"ダウンロードに失敗しました: {e}")
                 return
 
             ffmpeg_cmd = [
