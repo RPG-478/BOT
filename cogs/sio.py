@@ -316,12 +316,15 @@ class PythonSpatialAudioSource(discord.AudioSource):
             ], dtype=np.float32)  # Hadamard 行列によるエネルギー保存拡散
 
             # 初期化されていない場合の安全処理
-            if not hasattr(self, 'fdn_delay_bufs'):
-                # 素数長のディレイラインで共振周波数の重複を極小化
-                self.fdn_delay_lens = [1117, 1357, 1597, 1861]
-                self.fdn_delay_bufs = [np.zeros(l, dtype=np.float32) for l in self.fdn_delay_lens]
-                self.fdn_delay_idxs = [0, 0, 0, 0]
-                self.fdn_lp_states = [0.0, 0.0, 0.0, 0.0]
+            # --- 既存の初期化処理の中に追加・修正 ---
+            # サンプリングレートの保持（未定義の場合は 48000 など適切な値を設定）
+            if not hasattr(self, 'sr'):
+                self.sr = 48000
+
+            # FDNディレイラインと壁面反射フィルタ用 zi の初期化 (shape: (1, 2))
+            self.fdn_delay_lens = [1117, 1357, 1597, 1861]
+            self.fdn_delay_bufs = [np.zeros(l, dtype=np.float32) for l in self.fdn_delay_lens]
+            self.fdn_lp_zi = [np.zeros((1, 2), dtype=np.float32) for _ in range(4)]
 
             for s in range(n_samples):
                 in_sample_l = spatial_out_l[s]
