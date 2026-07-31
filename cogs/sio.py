@@ -155,11 +155,12 @@ class PythonSpatialAudioSource(discord.AudioSource):
         self.conv_overlap_r = np.zeros(self.hrir_len - 1, dtype=np.float32)
 
         # --- [3] スピーカー特性プリセット ---
+        # 💡 wall_absorption を高め（0.35〜0.65）に設定して低音のこもり・ブーミーさをカット
         self.speaker_presets = {
-            'studio': {'gains': [1.0, 1.0, 1.1], 'directivity': [1.0, 2.0, 3.5], 'wall_absorption': 0.35},
-            'theater': {'gains': [1.4, 0.9, 0.9], 'directivity': [0.5, 1.2, 2.0], 'wall_absorption': 0.20},
-            'pa':      {'gains': [1.1, 1.2, 1.3], 'directivity': [2.0, 3.5, 6.0], 'wall_absorption': 0.45},
-            'small':   {'gains': [0.4, 1.1, 1.0], 'directivity': [1.0, 1.5, 2.0], 'wall_absorption': 0.30}
+            'studio':  {'gains': [1.0, 1.0, 1.1], 'directivity': [1.0, 2.0, 3.5], 'wall_absorption': 0.55},
+            'theater': {'gains': [1.3, 0.9, 0.9], 'directivity': [0.5, 1.2, 2.0], 'wall_absorption': 0.35},
+            'pa':      {'gains': [1.1, 1.2, 1.3], 'directivity': [2.0, 3.5, 6.0], 'wall_absorption': 0.65},
+            'small':   {'gains': [0.4, 1.1, 1.0], 'directivity': [1.0, 1.5, 2.0], 'wall_absorption': 0.45}
         }
 
         # --- [4] リバーブ回路 ---
@@ -216,7 +217,8 @@ class PythonSpatialAudioSource(discord.AudioSource):
             n_samples = len(mono_in)
 
             global_distance = max(0.1, float(self.state.get('spatial_distance', 2.0)))
-            reverb_mix = float(self.state.get('spatial_room_size', 0.3))
+            # 💡 [変更] 残響が多すぎて音がぼやけるのを防ぐためスケーリング(0.3倍)
+            reverb_mix = float(self.state.get('spatial_room_size', 0.3)) * 0.3
             
             # 💡 [機能拡張①] 回転モード ('off', 'standard', '3d')
             rot_mode = self.state.get('spatial_rot_mode', 'standard')
@@ -233,9 +235,8 @@ class PythonSpatialAudioSource(discord.AudioSource):
             band_high, self.zi_high = signal.sosfilt(self.sos_high, mono_in, zi=self.zi_high)
             band_signals = [band_low, band_mid, band_high]
 
-            # 💡 [機能拡張②] 距離に応じた空気吸収・高域減衰 (Low-Pass Filter 係数)
-            # 距離が遠いほど高音が空気に吸収され、マイルドな音質になります
-            air_absorption_coeff = math.exp(-0.08 * global_distance)
+            # 💡 [機能拡張②] 距離に応じた空気吸収・高域減衰 (1次ローパスフィルタ係数)
+            air_cutoff = math.exp(-0.05 * global_distance)
 
             full_out_l = np.zeros(n_samples + self.hrir_len - 1, dtype=np.float32)
             full_out_r = np.zeros(n_samples + self.hrir_len - 1, dtype=np.float32)
@@ -247,7 +248,7 @@ class PythonSpatialAudioSource(discord.AudioSource):
                     # 3軸 (Pitch/Yaw/Roll 複合) 回転
                     config['angle'] += 0.015 * config['speed']
                     pitch = math.sin(config['angle'] * 0.7) * 0.45  # 上下角 (Pitch)
-                    yaw = config['angle']                         # 水平角 (Yaw)
+                    yaw = config['angle']                           # 水平角 (Yaw)
                     
                     x = math.sin(yaw) * math.cos(pitch) * global_distance
                     z = -math.cos(yaw) * math.cos(pitch) * global_distance
@@ -278,19 +279,25 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 hrir_l = self.hrir_table_l[(y_elevation, dir_idx)]
                 hrir_r = self.hrir_table_r[(y_elevation, dir_idx)]
 
-                # 距離減衰 ＋ 指向性ゲイン
-                dist_atten = (1.0 / max(0.5, global_distance)) * speaker_gain
+                # 💡 [変更] 距離減衰の補正（後ろに行った時の極端な音量低下とこもりを緩和）
+                dist_atten = (1.0 / max(0.5, global_distance * 0.7)) * speaker_gain
                 band_sig = band_signals[i] * dist_atten
 
                 # 空気吸収（高域減衰）の適用
                 if hasattr(self, 'air_lp_zi'):
                     band_sig, self.air_lp_zi[i] = signal.sosfilt(
-                        signal.butter(1, air_absorption_coeff, 'low', output='sos'), 
+                        signal.butter(1, max(0.05, air_cutoff), 'low', output='sos'), 
                         band_sig, zi=self.air_lp_zi[i]
                     )
 
-                full_out_l += signal.oaconvolve(band_sig, hrir_l, mode='full')
-                full_out_r += signal.oaconvolve(band_sig, hrir_r, mode='full')
+                # 💡 [変更] 低音(i == 0)はHRTFの畳み込みを行わずセンター固定
+                # これにより、後ろに定位した際の位相の打ち消し合いと低音のぼやけを完全に防止します
+                if i == 0:
+                    full_out_l[:n_samples] += band_sig
+                    full_out_r[:n_samples] += band_sig
+                else:
+                    full_out_l += signal.oaconvolve(band_sig, hrir_l, mode='full')
+                    full_out_r += signal.oaconvolve(band_sig, hrir_r, mode='full')
 
             # Overlap-Add 処理
             full_out_l[:self.hrir_len - 1] += self.conv_overlap_l
@@ -306,18 +313,19 @@ class PythonSpatialAudioSource(discord.AudioSource):
             rev_out_l = np.zeros(n_samples, dtype=np.float32)
             rev_out_r = np.zeros(n_samples, dtype=np.float32)
             
-            # FDN用のフィードバック・反射ゲイン計算（距離に応じて初期反射の遅延と壁吸収率が可変）
+            # FDN用のフィードバック・反射ゲイン計算
             wall_absorption = preset['wall_absorption'] * math.pow(0.9, global_distance)
-            fb_matrix = 0.5 * np.array([
+            
+            # 💡 [変更] 行列ゲインを 0.5 -> 0.35 に抑えて部屋に残響が溜まり過ぎる現象をカット
+            fb_matrix = 0.35 * np.array([
                 [ 1,  1,  1,  1],
                 [ 1, -1,  1, -1],
                 [ 1,  1, -1, -1],
                 [ 1, -1, -1,  1]
-            ], dtype=np.float32)  # Hadamard 行列によるエネルギー保存拡散
+            ], dtype=np.float32)
 
             # 初期化されていない場合の安全処理
             if not hasattr(self, 'fdn_delay_bufs'):
-                # 素数長のディレイラインで共振周波数の重複を極小化
                 self.fdn_delay_lens = [1117, 1357, 1597, 1861]
                 self.fdn_delay_bufs = [np.zeros(l, dtype=np.float32) for l in self.fdn_delay_lens]
                 self.fdn_delay_idxs = [0, 0, 0, 0]
@@ -341,7 +349,7 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 fb_inputs = np.dot(fb_matrix, delay_outs)
 
                 # ディレイラインへの書き込み (入力音 ＋ フィードバック)
-                inputs_to_delay = np.array([in_sample_l, in_sample_r, in_sample_l * 0.7, in_sample_r * 0.7]) + fb_inputs
+                inputs_to_delay = np.array([in_sample_l, in_sample_r, in_sample_l * 0.5, in_sample_r * 0.5]) + fb_inputs
                 for ch in range(4):
                     self.fdn_delay_bufs[ch][self.fdn_delay_idxs[ch]] = inputs_to_delay[ch]
                     self.fdn_delay_idxs[ch] = (self.fdn_delay_idxs[ch] + 1) % self.fdn_delay_lens[ch]
