@@ -1456,16 +1456,21 @@ class VoiceCog(commands.Cog):
     async def check_queue(self, guild_id: int):
         state = self.get_state(guild_id)
         
-        if state['is_processing_queue'] or state['current_ctx'] is None:
+        # 💡 [修正点1] ctx または interaction のどちらかが入っていれば通過させる
+        ctx_or_interaction = state.get('current_ctx') or state.get('current_interaction')
+
+        if state.get('is_processing_queue') or ctx_or_interaction is None:
             return
         
-        ctx = state['current_ctx']
-        vc = ctx.voice_client if hasattr(ctx, 'voice_client') else ctx.guild.voice_client
+        # ボイスクライアントの取得（Guild経由で取得するのが一番安全）
+        guild = self.bot.get_guild(guild_id)
+        vc = guild.voice_client if guild else None
+
         if vc is None or not vc.is_connected():
             state['is_processing_queue'] = False
             return
 
-        if state['current_track'] is None:
+        if state.get('current_track') is None:
             if state['queue'].empty():
                 state['is_processing_queue'] = False
                 await self.update_panel(guild_id)
@@ -1479,8 +1484,8 @@ class VoiceCog(commands.Cog):
                     state['current_track'] = (info['stream_url'], info['title'], info['duration'], b62_id, is_yt)
                 except Exception as e:
                     logging.error(f"YouTube解析失敗: {e}")
-                    if hasattr(ctx, "send"):
-                        await ctx.send(embed=we(f"❌ 解析失敗: {e}"))
+                    # 💡 安全なメッセージ送信ハンドラ
+                    await self._send_message(ctx_or_interaction, embed=we(f"❌ 解析失敗: {e}"))
                     state['is_processing_queue'] = False
                     return await self.check_queue(guild_id)
             else:
@@ -1489,7 +1494,7 @@ class VoiceCog(commands.Cog):
 
         url, filename, duration, b62_id, is_yt = state['current_track']
         
-        if state['elapsed_offset'] > 0 and is_yt:
+        if state.get('elapsed_offset', 0) > 0 and is_yt:
             try:
                 info = await self.get_yt_info(url)
                 url = info['stream_url']
@@ -1498,23 +1503,21 @@ class VoiceCog(commands.Cog):
 
         state['is_processing_queue'] = True
 
-        # --- 【FFmpeg基本設定（フィルターは一切通さない）】 ---
+        # --- 【FFmpeg基本設定】 ---
         before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
         if b62_id:
-            before_options += f' -headers "User-Agent: Mozilla/5.0\r\n"'
+            before_options += ' -headers "User-Agent: Mozilla/5.0\r\n"'
         
-        # シーク位置が指定されている場合のみオプションに追加
-        if state['elapsed_offset'] > 0:
+        if state.get('elapsed_offset', 0) > 0:
             before_options += f" -ss {state['elapsed_offset']}"
 
-        # 音声展開の設定（常にフラット。48kHz/ステレオPCMで出力させる）
         options = "-vn -ar 48000 -ac 2"
 
         try:
-            # 1. FFmpegには純粋なPCMデコードだけを任せる
+            # 1. FFmpegPCMAudio
             raw_source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
             
-            # 2. 統合された全EQ対応のPythonオーディオエンジン（速度や音量の適用もこちらに集約）でラップ
+            # 2. PythonSpatialAudioSource でラップ
             source = PythonSpatialAudioSource(raw_source, state)
             
             state['start_time'] = time.time()
@@ -1522,17 +1525,32 @@ class VoiceCog(commands.Cog):
             
             await self.update_panel(guild_id)
             
-            if state['elapsed_offset'] < 1 and hasattr(ctx, "send"):
+            if state.get('elapsed_offset', 0) < 1:
                 current_eq_mode = state.get('eq', 'flat')
                 eq_label = "custom" if current_eq_mode == "custom" else current_eq_mode
-                status = f"Speed: {state['speed']}x / Vol: {state['volume']} / EQ: {eq_label}"
-                await ctx.send(embed=we(f"🎵 再生中: **{filename}**\n`{status}`"))
+                status = f"Speed: {state.get('speed', 1.0)}x / Vol: {state.get('volume', 1.0)} / EQ: {eq_label}"
+                
+                # 💡 メッセージ通知
+                await self._send_message(ctx_or_interaction, embed=we(f"🎵 再生中: **{filename}**\n`{status}`"))
         
         except Exception as e:
             logging.error(f"Playback error: {e}")
             state['is_processing_queue'] = False
             state['current_track'] = None
             await self.check_queue(guild_id)
+
+    # 💡 ContextとInteractionのどちらからでも送信できる補助メソッド
+    async def _send_message(self, ctx_or_interaction, text=None, embed=None):
+        try:
+            if isinstance(ctx_or_interaction, discord.Interaction):
+                if ctx_or_interaction.response.is_done():
+                    await ctx_or_interaction.followup.send(content=text, embed=embed)
+                else:
+                    await ctx_or_interaction.response.send_message(content=text, embed=embed)
+            elif hasattr(ctx_or_interaction, 'send'):
+                await ctx_or_interaction.send(content=text, embed=embed)
+        except Exception as e:
+            logging.error(f"送信エラー: {e}")
             
     def play_next(self, guild_id: int, error=None):
         state = self.get_state(guild_id)
