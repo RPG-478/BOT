@@ -1570,15 +1570,14 @@ class VoiceCog(commands.Cog):
         query: str = None, 
         file: discord.Attachment = None
     ):
-        # Guild / VoiceClient チェック
-        if not interaction.guild or not interaction.guild.voice_client: 
-            return await interaction.response.send_message("先に `/join` してください。", ephemeral=True)
-
-        # 処理時間がかかる可能性があるため defer 実行
+        # 💡 1. 処理に時間がかかる可能性があるので、一番最初に defer() を実行
         await interaction.response.defer()
 
+        # 💡 2. ボイスチャンネル接続チェック (defer済みなので followup で返す)
+        if not interaction.guild or not interaction.guild.voice_client: 
+            return await interaction.followup.send("先に `/join` してください。", ephemeral=True)
+
         state = self.get_state(interaction.guild_id)
-        # 後続の通知処理等で interaction や channel を利用できるように保持
         state['current_interaction'] = interaction
 
         is_yt = False
