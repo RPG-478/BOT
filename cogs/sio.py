@@ -328,7 +328,12 @@ class PythonSpatialAudioSource(discord.AudioSource):
             n_ch = 8 if res_mode == 8 else 4
 
             # 1. チャンネル数に応じたディレイバッファとフィルタ状態の動的初期化
-            if not hasattr(self, 'fdn_delay_bufs') or len(self.fdn_delay_bufs) != n_ch:
+            # 💡 fdn_prev_fb の有無も条件に追加して安全に初期化させます
+            if (not hasattr(self, 'fdn_delay_bufs') or 
+                len(self.fdn_delay_bufs) != n_ch or 
+                not hasattr(self, 'fdn_prev_fb') or 
+                len(self.fdn_prev_fb) != n_ch):
+                
                 if n_ch == 8:
                     self.fdn_delay_lens = [1117, 1357, 1597, 1861, 2111, 2399, 2671, 2999]
                 else:
@@ -336,7 +341,7 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 
                 self.fdn_delay_bufs = [np.zeros(l, dtype=np.float32) for l in self.fdn_delay_lens]
                 self.fdn_lp_zi = [np.zeros((1, 2), dtype=np.float32) for _ in range(n_ch)]
-                # 前回のフィードバック出力を保持するバッファ
+                # 前回のフィードバック出力を保持するバッファを初期化
                 self.fdn_prev_fb = np.zeros(n_ch, dtype=np.float32)
 
             # 2. コマンド値の取得（デフォルトのウェット量を強化）
