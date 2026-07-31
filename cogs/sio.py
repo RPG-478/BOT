@@ -295,20 +295,36 @@ class PythonSpatialAudioSource(discord.AudioSource):
             spatial_out_l = full_out_l[:n_samples]
             spatial_out_r = full_out_r[:n_samples]
 
-            # C. 高速・超軽量シンプル室内残響（重いFDNサンプルループの廃止）
-            # 簡易ディレイラインによる一括計算化でCPU負荷を激減させます
-            if not hasattr(self, 'fast_rev_buf_l'):
-                self.fast_rev_buf_l = np.zeros(2400, dtype=np.float32)
-                self.fast_rev_buf_r = np.zeros(3200, dtype=np.float32)
+            # C. 高速・ベクトル化FDN風マルチタップ残響（処理を軽いままで反響感をしっかり復活）
+            if not hasattr(self, 'rev_delay_l'):
+                # 素数サンプル数（約23ms, 28ms, 33ms, 38ms）のディレイバッファ
+                self.rev_delay_l = [np.zeros(1117, dtype=np.float32), np.zeros(1597, dtype=np.float32)]
+                self.rev_delay_r = [np.zeros(1357, dtype=np.float32), np.zeros(1861, dtype=np.float32)]
 
-            # 配列の一括シフトと畳み込み風残響生成
-            rev_l = np.convolve(spatial_out_l, [0.3, 0.0, 0.2, 0.0, 0.1], mode='same')
-            rev_r = np.convolve(spatial_out_r, [0.0, 0.3, 0.0, 0.2, 0.1], mode='same')
+            # リングバッファを使わずに、アレイの結合・シフトで一括計算
+            rev_l = np.zeros(n_samples, dtype=np.float32)
+            rev_r = np.zeros(n_samples, dtype=np.float32)
+
+            # 4つのタップ（遅延線）を重ね合わせて重厚な残響を作る
+            delays = [1117, 1357, 1597, 1861]
+            gains = [0.4, 0.3, 0.25, 0.2]
+
+            for idx, (d_len, g) in enumerate(zip(delays, gains)):
+                # Lチャンネル残響成分
+                buf_l = self.rev_delay_l[idx % 2]
+                concat_l = np.concatenate([buf_l, spatial_out_l])
+                rev_l += concat_l[:n_samples] * g
+                self.rev_delay_l[idx % 2] = concat_l[n_samples:]
+
+                # Rチャンネル残響成分
+                buf_r = self.rev_delay_r[idx % 2]
+                concat_r = np.concatenate([buf_r, spatial_out_r])
+                rev_r += concat_r[:n_samples] * g
+                self.rev_delay_r[idx % 2] = concat_r[n_samples:]
 
             # D. ミックス処理
             mix_l = spatial_out_l + rev_l * reverb_mix
             mix_r = spatial_out_r + rev_r * reverb_mix
-
             # E. AGC (自動音量調整)
             current_peak = max(np.max(np.abs(mix_l)), np.max(np.abs(mix_r)), 1e-5)
             desired_gain = np.clip(self.target_peak / current_peak, 0.8, max_boost)
