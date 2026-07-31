@@ -1594,7 +1594,7 @@ class VoiceCog(commands.Cog):
         # ⏱️ タイムアウト秒数の設定 (15秒)
         TIMEOUT_SECONDS = 15.0
 
-        # YouTube関連ドメイン判定（youtube.com, youtu.be, m.youtube.com, music.youtube.com など全て網羅）
+        # YouTube関連ドメイン判定
         yt_pattern = re.compile(r'https?://(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)/', re.IGNORECASE)
 
         # 1. YouTube URLが直接指定された場合
@@ -1603,7 +1603,8 @@ class VoiceCog(commands.Cog):
             try:
                 # ⏱️ タイムアウト付きで解析実行
                 info = await asyncio.wait_for(self.get_yt_info(input_str), timeout=TIMEOUT_SECONDS)
-                url, filename, is_yt = input_str, info['title'], True
+                # 💡【重要修正】url には ページURL(input_str) ではなく抽出された info['url'] を代入
+                url, filename, is_yt = info['url'], info['title'], True
             except asyncio.TimeoutError:
                 return await interaction.followup.send("⏱️ タイムアウト: YouTube情報の解析に時間がかかりすぎたため中断しました。")
             except Exception as e:
@@ -1612,7 +1613,6 @@ class VoiceCog(commands.Cog):
         # 2. ファイルが添付されている場合
         elif file:
             url, filename = file.url, file.filename
-            # ID生成関数がグローバルかクラス内かに応じた呼び出し（フォールバック付き）
             if hasattr(self, 'encode_full_id'):
                 final_id = self.encode_full_id(interaction.guild_id, interaction.channel_id, interaction.id)
             elif 'encode_full_id' in globals():
@@ -1623,7 +1623,6 @@ class VoiceCog(commands.Cog):
         # 3. BASE62 のユニバーサルID指定（または検索へのフォールバック）
         elif input_str and len(input_str.split()) == 1 and all(c in BASE62 for c in input_str):
             try:
-                # ⏱️ 添付情報取得のタイムアウト保護
                 url, filename = await asyncio.wait_for(self.get_attachment_info(input_str), timeout=TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
                 return await interaction.followup.send("⏱️ タイムアウト: ID情報の取得に時間がかかりすぎました。")
@@ -1635,7 +1634,6 @@ class VoiceCog(commands.Cog):
             if not url:
                 await interaction.followup.send(f"🔎 YouTubeで「{input_str}」を検索中...")
                 try:
-                    # ⏱️ 検索処理のタイムアウト保護
                     info = await asyncio.wait_for(self.get_yt_info(f"ytsearch:{input_str}"), timeout=TIMEOUT_SECONDS)
                     url, filename, is_yt = info['url'], info['title'], True
                     final_id = None
@@ -1648,7 +1646,6 @@ class VoiceCog(commands.Cog):
         elif input_str:
             await interaction.followup.send(f"🔎 YouTubeで「{input_str}」を検索中...")
             try:
-                # ⏱️ 検索処理のタイムアウト保護
                 info = await asyncio.wait_for(self.get_yt_info(f"ytsearch:{input_str}"), timeout=TIMEOUT_SECONDS)
                 url, filename, is_yt = info['url'], info['title'], True
             except asyncio.TimeoutError:
@@ -1659,7 +1656,6 @@ class VoiceCog(commands.Cog):
         # 5. 引数が何もない場合
         else:
             msg = "ファイル添付、ID、YouTube URL、または検索キーワードを指定してください。"
-            # we関数の存在チェック
             embed = self.we(msg) if hasattr(self, 'we') else (we(msg) if 'we' in globals() else discord.Embed(description=msg, color=0xFF0000))
             return await interaction.followup.send(embed=embed)
 
@@ -1677,12 +1673,16 @@ class VoiceCog(commands.Cog):
         is_processing = state.get('is_processing_queue', False)
         is_paused = state.get('is_paused', False)
 
-        # 再生中でなければ再生開始
-        if not is_playing and not is_processing and not is_paused:
-            await self.check_queue(interaction.guild_id)
-        else:
-            await interaction.followup.send(f"✅ キューに追加: **{filename}**")
-            await self.update_panel(interaction.guild_id)
+        # 💡 再生処理呼び出しとレスポンスの明確化
+        try:
+            if not is_playing and not is_processing and not is_paused:
+                await interaction.followup.send(f"▶️ 再生を開始します: **{filename}**")
+                await self.check_queue(interaction.guild_id)
+            else:
+                await interaction.followup.send(f"✅ キューに追加: **{filename}**")
+                await self.update_panel(interaction.guild_id)
+        except Exception as e:
+            await interaction.followup.send(f"❌ 再生開始処理でエラーが発生しました: `{e}`")
             
     @commands.command()
     async def stop_all(self, ctx):
