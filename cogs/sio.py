@@ -98,7 +98,15 @@ class PythonSpatialAudioSource(discord.AudioSource):
         self.state = state
         self.count = 0
         self.sr = 48000
-        
+        # --- 既存の初期化処理の中に追加・修正 ---
+        # サンプリングレートの保持（未定義の場合は 48000 など適切な値を設定）
+        if not hasattr(self, 'sr'):
+            self.sr = 48000
+
+        # FDNディレイラインと壁面反射フィルタ用 zi の初期化 (shape: (1, 2))
+        self.fdn_delay_lens = [1117, 1357, 1597, 1861]
+        self.fdn_delay_bufs = [np.zeros(l, dtype=np.float32) for l in self.fdn_delay_lens]
+        self.fdn_lp_zi = [np.zeros((1, 2), dtype=np.float32) for _ in range(4)]
         # --- [1] HRTF (頭部伝達関数) テーブル構築 ---
         self.num_directions = 36  # 10度刻み
         self.hrir_len = 96
@@ -318,40 +326,52 @@ class PythonSpatialAudioSource(discord.AudioSource):
             # 初期化されていない場合の安全処理
             # --- 既存の初期化処理の中に追加・修正 ---
             # サンプリングレートの保持（未定義の場合は 48000 など適切な値を設定）
-            if not hasattr(self, 'sr'):
-                self.sr = 48000
+            # C. 4×4 FDN (Feedback Delay Network) 室内残響（壁面反射フィルタ改良・ベクトル化）
+            if not hasattr(self, 'fdn_delay_bufs'):
+                self.fdn_delay_lens = [1117, 1357, 1597, 1861]
+                self.fdn_delay_bufs = [np.zeros(l, dtype=np.float32) for l in self.fdn_delay_lens]
+                self.fdn_lp_zi = [np.zeros((1, 2), dtype=np.float32) for _ in range(4)]
 
-            # FDNディレイラインと壁面反射フィルタ用 zi の初期化 (shape: (1, 2))
-            self.fdn_delay_lens = [1117, 1357, 1597, 1861]
-            self.fdn_delay_bufs = [np.zeros(l, dtype=np.float32) for l in self.fdn_delay_lens]
-            self.fdn_lp_zi = [np.zeros((1, 2), dtype=np.float32) for _ in range(4)]
+            # 💡 壁の吸音率に応じたカットオフ周波数計算 (1kHz〜12kHz)
+            wall_abs = np.clip(preset['wall_absorption'], 0.1, 0.8)
+            cutoff_freq = max(1000.0, 12000.0 * (1.0 - wall_abs))
+            sos_wall = signal.butter(1, cutoff_freq / (self.sr / 2), 'low', output='sos')
 
-            for s in range(n_samples):
-                in_sample_l = spatial_out_l[s]
-                in_sample_r = spatial_out_r[s]
+            # Hadamard 拡散行列 (適度な残響感に調整)
+            fb_matrix = 0.38 * np.array([
+                [ 1,  1,  1,  1],
+                [ 1, -1,  1, -1],
+                [ 1,  1, -1, -1],
+                [ 1, -1, -1,  1]
+            ], dtype=np.float32)
 
-                # 各ディレイラインからの読み出し
-                delay_outs = np.array([
-                    self.fdn_delay_bufs[ch][self.fdn_delay_idxs[ch]] for ch in range(4)
-                ], dtype=np.float32)
+            rev_channels = []
+            inputs = [spatial_out_l, spatial_out_r, spatial_out_l * 0.5, spatial_out_r * 0.5]
 
-                # 壁面低域通過フィルタ (壁による高域吸収)
-                for ch in range(4):
-                    self.fdn_lp_states[ch] += wall_absorption * (delay_outs[ch] - self.fdn_lp_states[ch])
-                    delay_outs[ch] = self.fdn_lp_states[ch]
+            for ch in range(4):
+                buf = self.fdn_delay_bufs[ch]
+                
+                # 遅延ラインの一括読み出し
+                concatenated = np.concatenate([buf, inputs[ch]])
+                delay_out = concatenated[:n_samples]
+                
+                # 💡 自然な壁面高域吸収 (IIRフィルタ処理)
+                lp_out, self.fdn_lp_zi[ch] = signal.sosfilt(
+                    sos_wall,
+                    delay_out, 
+                    zi=self.fdn_lp_zi[ch]
+                )
+                
+                rev_channels.append(lp_out)
+                self.fdn_delay_bufs[ch] = concatenated[n_samples:]
 
-                # Hadamard フィードバック拡散計算
-                fb_inputs = np.dot(fb_matrix, delay_outs)
+            # 4チャネルの Hadamard 混合拡散
+            rev_stacked = np.vstack(rev_channels)
+            fb_out = np.dot(fb_matrix, rev_stacked)
 
-                # ディレイラインへの書き込み (入力音 ＋ フィードバック)
-                inputs_to_delay = np.array([in_sample_l, in_sample_r, in_sample_l * 0.7, in_sample_r * 0.7]) + fb_inputs
-                for ch in range(4):
-                    self.fdn_delay_bufs[ch][self.fdn_delay_idxs[ch]] = inputs_to_delay[ch]
-                    self.fdn_delay_idxs[ch] = (self.fdn_delay_idxs[ch] + 1) % self.fdn_delay_lens[ch]
-
-                # ステレオ出力へマッピング
-                rev_out_l[s] = (delay_outs[0] + delay_outs[2]) * 0.5
-                rev_out_r[s] = (delay_outs[1] + delay_outs[3]) * 0.5
+            # L/R 出力へのマッピング
+            rev_out_l = (fb_out[0] + fb_out[2]) * 0.5
+            rev_out_r = (fb_out[1] + fb_out[3]) * 0.5
 
             # D. ミックス処理
             mix_l = spatial_out_l + rev_out_l * reverb_mix
