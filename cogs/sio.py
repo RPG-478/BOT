@@ -323,12 +323,11 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 [ 1, -1, -1,  1]
             ], dtype=np.float32)  # Hadamard 行列によるエネルギー保存拡散
 
-            # C. FDN 室内残響（フィードバック巡回構造を修正してリバーブ感を強化）
+            # C. FDN 室内残響（プツプツ音ノイズ対策・平滑化版）
             res_mode = self.state.get('fdn_resolution', 4)
             n_ch = 8 if res_mode == 8 else 4
 
-            # 1. チャンネル数に応じたディレイバッファとフィルタ状態の動的初期化
-            # 💡 fdn_prev_fb の有無も条件に追加して安全に初期化させます
+            # 1. バッファ等の動的初期化
             if (not hasattr(self, 'fdn_delay_bufs') or 
                 len(self.fdn_delay_bufs) != n_ch or 
                 not hasattr(self, 'fdn_prev_fb') or 
@@ -341,64 +340,68 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 
                 self.fdn_delay_bufs = [np.zeros(l, dtype=np.float32) for l in self.fdn_delay_lens]
                 self.fdn_lp_zi = [np.zeros((1, 2), dtype=np.float32) for _ in range(n_ch)]
-                # 前回のフィードバック出力を保持するバッファを初期化
                 self.fdn_prev_fb = np.zeros(n_ch, dtype=np.float32)
 
-            # 2. コマンド値の取得（デフォルトのウェット量を強化）
-            fb_val = float(self.state.get('fdn_feedback', 0.6))  # 0.4 -> 0.6 に引き上げて残響時間を確保
-            wet_val = float(self.state.get('fdn_wet', reverb_mix * 1.5))  # ウェット感を強調
+            # 2. コマンド値の取得（発振によるノイズを防ぐため fb_val を安全値に上限ガード）
+            fb_val = np.clip(float(self.state.get('fdn_feedback', 0.5)), 0.0, 0.85)
+            wet_val = float(self.state.get('fdn_wet', reverb_mix * 1.2))
 
-            # 3. 壁面吸音（ローパスフィルタ）の作成
+            # 3. 壁面吸音（ローパスフィルタ）
             wall_abs = np.clip(preset['wall_absorption'], 0.1, 0.8)
-            cutoff_freq = max(1500.0, 14000.0 * (1.0 - wall_abs))  # 高域を残して明るく響かせる
+            cutoff_freq = max(1000.0, 12000.0 * (1.0 - wall_abs))
             sos_wall = signal.butter(1, cutoff_freq / (self.sr / 2), 'low', output='sos')
 
-            # 4. 4次元 / 8次元 拡散行列の構築
+            # 4. 拡散行列の構築
             if n_ch == 8:
                 u = np.ones((8, 1), dtype=np.float32)
                 matrix_base = np.eye(8, dtype=np.float32) - (2.0 / 8.0) * np.dot(u, u.T)
-                dry_in = np.array([
+                dry_in = [
                     spatial_out_l, spatial_out_r, 
                     spatial_out_l * 0.7, spatial_out_r * 0.7,
                     spatial_out_l * 0.5, spatial_out_r * 0.5,
                     spatial_out_l * 0.3, spatial_out_r * 0.3
-                ])
+                ]
             else:
                 matrix_base = 0.5 * np.array([
                     [ 1,  1,  1,  1],
                     [ 1, -1,  1, -1],
-                    [ 1,  1, -1, -1],
-                    [ 1, -1, -1,  1]
+                    [ 1, -1, -1,  1],
+                    [-1,  1, -1,  1]
                 ], dtype=np.float32)
-                dry_in = np.array([spatial_out_l, spatial_out_r, spatial_out_l * 0.7, spatial_out_r * 0.7])
+                dry_in = [spatial_out_l, spatial_out_r, spatial_out_l * 0.7, spatial_out_r * 0.7]
 
             fb_matrix = fb_val * matrix_base
 
-            # 5. 前回のフィードバック成分を加算してフィードバックループを形成
-            # (1フレーム前の最後のサンプル値をループ入力に反映)
-            prev_fb_expanded = self.fdn_prev_fb[:, np.newaxis]
-            inputs = dry_in + prev_fb_expanded
-
+            # 5. 各チャンネルのループ・ディレイ処理（クリックノイズ解消処理）
             rev_channels = []
             for ch in range(n_ch):
                 buf = self.fdn_delay_bufs[ch]
-                concatenated = np.concatenate([buf, inputs[ch]])
+                
+                # 入力信号に前回のフィードバック(単一値ではなく滑らかにフェード接続)を加算
+                fb_smooth = np.linspace(self.fdn_prev_fb[ch], 0.0, n_samples, dtype=np.float32)
+                in_sig = dry_in[ch] + fb_smooth
+                
+                # ディレイバッファと入力をスムーズに結合
+                concatenated = np.concatenate([buf, in_sig])
                 delay_out = concatenated[:n_samples]
+                
+                # 次回用バッファの更新
+                self.fdn_delay_bufs[ch] = concatenated[n_samples:]
 
-                # 壁面吸音ローパス
+                # 壁面吸音フィルタを通す
                 lp_out, self.fdn_lp_zi[ch] = signal.sosfilt(
                     sos_wall,
                     delay_out, 
                     zi=self.fdn_lp_zi[ch]
                 )
-                
                 rev_channels.append(lp_out)
-                self.fdn_delay_bufs[ch] = concatenated[n_samples:]
 
-            # 6. 行列演算によるフィードバック計算と次回フレームへの保存
+            # 6. 行列演算とフィードバック保持
             rev_stacked = np.vstack(rev_channels)
             fb_out = np.dot(fb_matrix, rev_stacked)
-            self.fdn_prev_fb = fb_out[:, -1]  # ループ接続用
+            
+            # フレーム間の境界ノイズを防ぐため、末尾のフィードバック音を滑らかに更新
+            self.fdn_prev_fb = fb_out[:, -1]
 
             if n_ch == 8:
                 rev_out_l = (fb_out[0] + fb_out[2] + fb_out[4] + fb_out[6]) * 0.25
