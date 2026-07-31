@@ -155,12 +155,11 @@ class PythonSpatialAudioSource(discord.AudioSource):
         self.conv_overlap_r = np.zeros(self.hrir_len - 1, dtype=np.float32)
 
         # --- [3] スピーカー特性プリセット ---
-        # 💡 wall_absorption を高め（0.35〜0.65）に設定して低音のこもり・ブーミーさをカット
         self.speaker_presets = {
-            'studio':  {'gains': [1.0, 1.0, 1.1], 'directivity': [1.0, 2.0, 3.5], 'wall_absorption': 0.55},
-            'theater': {'gains': [1.3, 0.9, 0.9], 'directivity': [0.5, 1.2, 2.0], 'wall_absorption': 0.35},
-            'pa':      {'gains': [1.1, 1.2, 1.3], 'directivity': [2.0, 3.5, 6.0], 'wall_absorption': 0.65},
-            'small':   {'gains': [0.4, 1.1, 1.0], 'directivity': [1.0, 1.5, 2.0], 'wall_absorption': 0.45}
+            'studio': {'gains': [1.0, 1.0, 1.1], 'directivity': [1.0, 2.0, 3.5], 'wall_absorption': 0.35},
+            'theater': {'gains': [1.4, 0.9, 0.9], 'directivity': [0.5, 1.2, 2.0], 'wall_absorption': 0.20},
+            'pa':      {'gains': [1.1, 1.2, 1.3], 'directivity': [2.0, 3.5, 6.0], 'wall_absorption': 0.45},
+            'small':   {'gains': [0.4, 1.1, 1.0], 'directivity': [1.0, 1.5, 2.0], 'wall_absorption': 0.30}
         }
 
         # --- [4] リバーブ回路 ---
@@ -217,8 +216,9 @@ class PythonSpatialAudioSource(discord.AudioSource):
             n_samples = len(mono_in)
 
             global_distance = max(0.1, float(self.state.get('spatial_distance', 2.0)))
-            reverb_mix = float(self.state.get('spatial_room_size', 0.3)) * 0.2
+            reverb_mix = float(self.state.get('spatial_room_size', 0.3))
             
+            # 💡 [機能拡張①] 回転モード ('off', 'standard', '3d')
             rot_mode = self.state.get('spatial_rot_mode', 'standard')
             if 'spatial_rot_mode' not in self.state:
                 rot_mode = 'standard' if self.state.get('is_rotating', True) else 'off'
@@ -233,32 +233,42 @@ class PythonSpatialAudioSource(discord.AudioSource):
             band_high, self.zi_high = signal.sosfilt(self.sos_high, mono_in, zi=self.zi_high)
             band_signals = [band_low, band_mid, band_high]
 
-            air_cutoff = math.exp(-0.05 * global_distance)
+            # 💡 [機能拡張②] 距離に応じた空気吸収・高域減衰 (Low-Pass Filter 係数)
+            # 距離が遠いほど高音が空気に吸収され、マイルドな音質になります
+            air_absorption_coeff = math.exp(-0.08 * global_distance)
 
             full_out_l = np.zeros(n_samples + self.hrir_len - 1, dtype=np.float32)
             full_out_r = np.zeros(n_samples + self.hrir_len - 1, dtype=np.float32)
 
-            # B. 帯域ごとの回転 ＆ HRTF畳み込み
+            # B. 帯域ごとの回転 ＆ 距離計算 ＆ 畳み込み
             for i, config in enumerate(self.band_configs):
+                # 1. 回転位置計算
                 if rot_mode == '3d':
+                    # 3軸 (Pitch/Yaw/Roll 複合) 回転
                     config['angle'] += 0.015 * config['speed']
-                    pitch = math.sin(config['angle'] * 0.7) * 0.45
-                    yaw = config['angle']
+                    pitch = math.sin(config['angle'] * 0.7) * 0.45  # 上下角 (Pitch)
+                    yaw = config['angle']                         # 水平角 (Yaw)
+                    
                     x = math.sin(yaw) * math.cos(pitch) * global_distance
                     z = -math.cos(yaw) * math.cos(pitch) * global_distance
                     angle_deg = math.degrees(math.atan2(x, -z)) % 360
+                    
+                    # Pitchに応じた仰角インデックス選択 (y軸補正)
                     y_elevation = int(np.clip(config['y'] + int(pitch * 2), -1, 1))
                 elif rot_mode == 'standard':
+                    # 通常 2D 水平回転
                     config['angle'] += 0.015 * config['speed']
                     x = math.sin(config['angle']) * global_distance
                     z = -math.cos(config['angle']) * global_distance
                     angle_deg = math.degrees(math.atan2(x, -z)) % 360
                     y_elevation = config['y']
                 else:
+                    # 静止 (OFF)
                     angle_deg = 0.0
                     y_elevation = config['y']
 
                 dir_idx = int((angle_deg / 360.0) * self.num_directions) % self.num_directions
+                
                 directivity_power = preset['directivity'][i]
                 band_gain = preset['gains'][i]
 
@@ -268,22 +278,19 @@ class PythonSpatialAudioSource(discord.AudioSource):
                 hrir_l = self.hrir_table_l[(y_elevation, dir_idx)]
                 hrir_r = self.hrir_table_r[(y_elevation, dir_idx)]
 
-                dist_atten = (1.0 / max(0.5, global_distance * 0.7)) * speaker_gain
+                # 距離減衰 ＋ 指向性ゲイン
+                dist_atten = (1.0 / max(0.5, global_distance)) * speaker_gain
                 band_sig = band_signals[i] * dist_atten
 
+                # 空気吸収（高域減衰）の適用
                 if hasattr(self, 'air_lp_zi'):
                     band_sig, self.air_lp_zi[i] = signal.sosfilt(
-                        signal.butter(1, max(0.05, air_cutoff), 'low', output='sos'), 
+                        signal.butter(1, air_absorption_coeff, 'low', output='sos'), 
                         band_sig, zi=self.air_lp_zi[i]
                     )
 
-                # 低音(i==0)は位相ズレを防ぐためセンター固定＆畳み込みスキップで軽量化
-                if i == 0:
-                    full_out_l[:n_samples] += band_sig
-                    full_out_r[:n_samples] += band_sig
-                else:
-                    full_out_l += signal.oaconvolve(band_sig, hrir_l, mode='full')
-                    full_out_r += signal.oaconvolve(band_sig, hrir_r, mode='full')
+                full_out_l += signal.oaconvolve(band_sig, hrir_l, mode='full')
+                full_out_r += signal.oaconvolve(band_sig, hrir_r, mode='full')
 
             # Overlap-Add 処理
             full_out_l[:self.hrir_len - 1] += self.conv_overlap_l
@@ -295,60 +302,59 @@ class PythonSpatialAudioSource(discord.AudioSource):
             spatial_out_l = full_out_l[:n_samples]
             spatial_out_r = full_out_r[:n_samples]
 
-           # C. 高速ベクトル化 4x4 FDN (Feedback Delay Network) 室内残響
-            # 初期化（1次SOSフィルタの zi は shape(1, 2) が必要）
-            if not hasattr(self, 'fdn_delay_bufs'):
-                self.fdn_delay_lens = [1117, 1357, 1597, 1861]
-                self.fdn_delay_bufs = [np.zeros(l, dtype=np.float32) for l in self.fdn_delay_lens]
-                # 💡 各チャンネルのローパスフィルタ用の zi を (1, 2) で初期化
-                self.fdn_lp_zi = [np.zeros((1, 2), dtype=np.float32) for _ in range(4)]
-
-            wall_absorption = preset['wall_absorption']
-            # FDN フィードバック行列 (Hadamard 行列)
-            fb_matrix = 0.38 * np.array([
+            # 💡 [機能拡張③] 4×4 FDN (Feedback Delay Network) による高音質室内残響
+            rev_out_l = np.zeros(n_samples, dtype=np.float32)
+            rev_out_r = np.zeros(n_samples, dtype=np.float32)
+            
+            # FDN用のフィードバック・反射ゲイン計算（距離に応じて初期反射の遅延と壁吸収率が可変）
+            wall_absorption = preset['wall_absorption'] * math.pow(0.9, global_distance)
+            fb_matrix = 0.5 * np.array([
                 [ 1,  1,  1,  1],
                 [ 1, -1,  1, -1],
                 [ 1,  1, -1, -1],
                 [ 1, -1, -1,  1]
-            ], dtype=np.float32)
+            ], dtype=np.float32)  # Hadamard 行列によるエネルギー保存拡散
 
-            rev_channels = []
-            inputs = [spatial_out_l, spatial_out_r, spatial_out_l * 0.6, spatial_out_r * 0.6]
+            # 初期化されていない場合の安全処理
+            if not hasattr(self, 'fdn_delay_bufs'):
+                # 素数長のディレイラインで共振周波数の重複を極小化
+                self.fdn_delay_lens = [1117, 1357, 1597, 1861]
+                self.fdn_delay_bufs = [np.zeros(l, dtype=np.float32) for l in self.fdn_delay_lens]
+                self.fdn_delay_idxs = [0, 0, 0, 0]
+                self.fdn_lp_states = [0.0, 0.0, 0.0, 0.0]
 
-            # 💡 ループの外でフィルタのSOS係数を作成（毎回作成するコストを削減）
-            sos_lp = signal.butter(1, max(0.1, 1.0 - wall_absorption), 'low', output='sos')
+            for s in range(n_samples):
+                in_sample_l = spatial_out_l[s]
+                in_sample_r = spatial_out_r[s]
 
-            for ch in range(4):
-                d_len = self.fdn_delay_lens[ch]
-                buf = self.fdn_delay_bufs[ch]
-                
-                # ディレイバッファの連結と一括読み出し
-                concatenated = np.concatenate([buf, inputs[ch]])
-                delay_out = concatenated[:n_samples]
-                
-                # 💡 zi に (1, 2) の配列を渡し、戻り値でそのまま更新
-                lp_out, self.fdn_lp_zi[ch] = signal.sosfilt(
-                    sos_lp,
-                    delay_out, 
-                    zi=self.fdn_lp_zi[ch]
-                )
-                
-                rev_channels.append(lp_out)
-                # 次回のフレーム用に末尾を更新
-                self.fdn_delay_bufs[ch] = concatenated[n_samples:]
+                # 各ディレイラインからの読み出し
+                delay_outs = np.array([
+                    self.fdn_delay_bufs[ch][self.fdn_delay_idxs[ch]] for ch in range(4)
+                ], dtype=np.float32)
 
-            # 4チャネルのフィードバック混合 (Hadamard拡散)
-            rev_stacked = np.vstack(rev_channels)  # Shape: (4, n_samples)
-            fb_out = np.dot(fb_matrix, rev_stacked)
+                # 壁面低域通過フィルタ (壁による高域吸収)
+                for ch in range(4):
+                    self.fdn_lp_states[ch] += wall_absorption * (delay_outs[ch] - self.fdn_lp_states[ch])
+                    delay_outs[ch] = self.fdn_lp_states[ch]
 
-            # L/R ステレオ出力へマッピング
-            rev_out_l = (fb_out[0] + fb_out[2]) * 0.5
-            rev_out_r = (fb_out[1] + fb_out[3]) * 0.5
+                # Hadamard フィードバック拡散計算
+                fb_inputs = np.dot(fb_matrix, delay_outs)
+
+                # ディレイラインへの書き込み (入力音 ＋ フィードバック)
+                inputs_to_delay = np.array([in_sample_l, in_sample_r, in_sample_l * 0.7, in_sample_r * 0.7]) + fb_inputs
+                for ch in range(4):
+                    self.fdn_delay_bufs[ch][self.fdn_delay_idxs[ch]] = inputs_to_delay[ch]
+                    self.fdn_delay_idxs[ch] = (self.fdn_delay_idxs[ch] + 1) % self.fdn_delay_lens[ch]
+
+                # ステレオ出力へマッピング
+                rev_out_l[s] = (delay_outs[0] + delay_outs[2]) * 0.5
+                rev_out_r[s] = (delay_outs[1] + delay_outs[3]) * 0.5
 
             # D. ミックス処理
             mix_l = spatial_out_l + rev_out_l * reverb_mix
             mix_r = spatial_out_r + rev_out_r * reverb_mix
-            # E. AGC (自動音量調整)
+
+            # E. 可変自動音量引き上げ（AGC）処理
             current_peak = max(np.max(np.abs(mix_l)), np.max(np.abs(mix_r)), 1e-5)
             desired_gain = np.clip(self.target_peak / current_peak, 0.8, max_boost)
 
@@ -365,6 +371,97 @@ class PythonSpatialAudioSource(discord.AudioSource):
             out_samples[1::2] = (final_r * 32767).astype(np.int16)
 
             return struct.pack(fmt, *out_samples.tolist())
+            
+        # ==================================================
+        # それ以外のモード（従来のサンプル単位処理）
+        # ==================================================
+        out_samples = []
+
+        # rotate用の事前計算
+        rot_angle = (self.count / 400.0) * 2.0 * math.pi
+        rot_l = 0.5 + 0.5 * math.sin(rot_angle)
+        rot_r = 1.0 - rot_l
+
+        for i in range(num_samples):
+            in_l = samples[i * 2] / 32768.0
+            in_r = samples[i * 2 + 1] / 32768.0
+
+            if mode == 'flat':
+                out_l, out_r = in_l, in_r
+
+            elif mode in ('bass', 'superbass'):
+                boost = 2.8 if mode == 'superbass' else 1.8
+                self.bass_lp_l = self.bass_lp_l + 0.06 * (in_l - self.bass_lp_l)
+                self.bass_lp_r = self.bass_lp_r + 0.06 * (in_r - self.bass_lp_r)
+                out_l = in_l + self.bass_lp_l * boost
+                out_r = in_r + self.bass_lp_r * boost
+                out_l = out_l / (1.0 + abs(out_l) * 0.2)
+                out_r = out_r / (1.0 + abs(out_r) * 0.2)
+
+            elif mode == 'echo':
+                el = self.echo_buf_l[self.echo_idx]
+                er = self.echo_buf_r[self.echo_idx]
+                out_l = in_l + el * 0.4
+                out_r = in_r + er * 0.4
+                self.echo_buf_l[self.echo_idx] = in_l
+                self.echo_buf_r[self.echo_idx] = in_r
+                self.echo_idx = (self.echo_idx + 1) % 9600
+
+            elif mode == 'hall':
+                diff = in_l - in_r
+                out_l = in_l + diff * 0.75
+                out_r = in_r - diff * 0.75
+
+            elif mode == 'vocal':
+                self.vocal_lp_l = self.vocal_lp_l + 0.35 * (in_l - self.vocal_lp_l)
+                self.vocal_lp_r = self.vocal_lp_r + 0.35 * (in_r - self.vocal_lp_r)
+                out_l = self.vocal_lp_l * 1.4
+                out_r = self.vocal_lp_r * 1.4
+
+            elif mode == 'live':
+                ll = self.live_buf_l[self.live_idx]
+                lr = self.live_buf_r[self.live_idx]
+                mix_l = in_l + ll * 0.4
+                mix_r = in_r + lr * 0.4
+                self.live_buf_l[self.live_idx] = in_l
+                self.live_buf_r[self.live_idx] = in_r
+                self.live_idx = (self.live_idx + 1) % 2880
+                
+                self.live_lp_l = self.live_lp_l + 0.85 * (mix_l - self.live_lp_l)
+                self.live_lp_r = self.live_lp_r + 0.85 * (mix_r - self.live_lp_r)
+                
+                diff = self.live_lp_l - self.live_lp_r
+                out_l = self.live_lp_l + diff * 0.3
+                out_r = self.live_lp_r - diff * 0.3
+
+            elif mode == 'rotate':
+                out_l = in_l * rot_l
+                out_r = in_r * rot_r
+
+            elif mode == 'reverb':
+                r1 = self.rev_buf_l[(self.rev_idx - 5771) % 12000]
+                r2 = self.rev_buf_l[(self.rev_idx - 8641) % 12000]
+                r3 = self.rev_buf_r[(self.rev_idx - 11549) % 12000]
+                
+                out_l = in_l + (r1 * 0.25 + r2 * 0.15)
+                out_r = in_r + (r3 * 0.25 + r2 * 0.15)
+                
+                self.rev_buf_l[self.rev_idx] = in_l + r3 * 0.3
+                self.rev_buf_r[self.rev_idx] = in_r + r1 * 0.3
+                self.rev_idx = (self.rev_idx + 1) % 12000
+            else:
+                out_l, out_r = in_l, in_r
+
+            out_l = max(-1.0, min(1.0, out_l))
+            out_r = max(-1.0, min(1.0, out_r))
+            
+            out_samples.append(int(out_l * 32767))
+            out_samples.append(int(out_r * 32767))
+            
+        return struct.pack(fmt, *out_samples)
+
+    def cleanup(self):
+        self.source.cleanup()
             
         # ==================================================
         # それ以外のモード（従来のサンプル単位処理）
