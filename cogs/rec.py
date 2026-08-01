@@ -257,39 +257,58 @@ class RecordingSink(voice_recv.AudioSink):
         self.update_callback = update_callback
         self.is_echo = is_echo
         self.echo_delay = float(echo_delay)
-
         self.buffers: dict[str, bytearray] = {}
         self.packet_queue: list[tuple[float, bytes]] = []
         self.packet_count = 0
         self._running = True
 
-        # やまびこ再生用のバックグラウンドタスクを起動 (write メソッドを止めないため)
+        # ↓ここから追加
+        self._lock = threading.Lock()
+        self.labels: dict = {}
+        self.decoders: dict = {}
+        self.opus_available = discord.opus.is_loaded()
+        self.manual_decode = True
+        self.dave_error_count = 0
+        self.opus_error_count = 0
+        self.total_frame_count = 0
+        self.write_call_count = 0
+        # ↑ここまで追加
+
         if self.is_echo:
             self.bot.loop.create_task(self._echo_loop())
-
     def set_echo_delay(self, delay: float) -> None:
         self.echo_delay = float(delay)
 
     def wants_opus(self) -> bool:
-        # PCMで受け取ることで DAVE 手動復号の重い処理を回避
-        return False
+        # DAVE(E2EE)環境下では voice_recv の自動PCMデコードが機能しないため、
+        # 生のOpusを受け取り、DAVE復号 → Opusデコードを自前で行う
+        return True
 
     def write(self, user, data: voice_recv.VoiceData) -> None:
         """高速に処理を終わらせる (絶対ブロックしない)"""
-        if not hasattr(data, 'pcm') or not data.pcm:
+        raw_opus = getattr(data, 'opus', None)
+        if not raw_opus:
+            return
+        raw_opus = bytes(raw_opus)
+
+        self.write_call_count += 1
+
+        user_id = getattr(user, 'id', 0) if user else 0
+        user_key = getattr(user, 'name', None) or f"Speaker_{user_id}"
+
+        pcm = self._decode_opus(user_key, user_id, raw_opus)
+        if not pcm:
             return
 
-        pcm = bytes(data.pcm)
+        self.total_frame_count += 1
         now = time.time()
         self.packet_count += 1
 
-        # 1. 録音バッファへ追記
-        user_key = getattr(user, 'name', 'Unknown') if user else "Speaker"
-        if user_key not in self.buffers:
-            self.buffers[user_key] = bytearray()
-        self.buffers[user_key].extend(pcm)
+        with self._lock:
+            if user_key not in self.buffers:
+                self.buffers[user_key] = bytearray()
+            self.buffers[user_key].extend(pcm)
 
-        # 2. やまびこ用キューへの追加のみ行う
         if self.is_echo:
             self.packet_queue.append((now + self.echo_delay, pcm))
 
