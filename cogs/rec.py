@@ -624,13 +624,20 @@ class RecordingCog(commands.Cog):
 
         target_channel = ctx.author.voice.channel
 
+        # ⭕ 修正後: 残っている接続を強制切断してからクリーンに再接続する
         try:
             vc = ctx.voice_client
-            if vc is None or not isinstance(vc, voice_recv.VoiceRecvClient):
-                if vc: await vc.disconnect(force=True)
-                vc = await target_channel.connect(cls=voice_recv.VoiceRecvClient)
-            elif vc.channel != target_channel:
-                await vc.move_to(target_channel)
+            # 既存のVC接続があれば、一度完全に強制切断する（セッション4006エラー防止）
+            if vc is not None:
+                await vc.disconnect(force=True)
+                await asyncio.sleep(0.5)
+
+            # タイムアウトを15秒に伸ばしてクリーンに再接続
+            vc = await target_channel.connect(
+                cls=voice_recv.VoiceRecvClient, 
+                timeout=15.0, 
+                reconnect=True
+            )
         except Exception as e:
             return await ctx.send(embed=we(f"❌ VC接続失敗: `{e}`"))
 
