@@ -1205,24 +1205,27 @@ class VoiceControlView(discord.ui.View):
         else:
             await interaction.response.send_message("❌ ボイスチャンネルに接続していません。", ephemeral=True)
 
+import asyncio
+
 class AudioSink(voice_recv.AudioSink):
     """
-    ユーザーごとの音声(PCM)をバッファリングする堅牢なSinkクラス
+    10パケット受信ごとに進行状況を通知するSink
     """
-    def __init__(self):
+    def __init__(self, bot, update_callback=None):
         super().__init__()
+        self.bot = bot
         self.buffers = {}
+        self.packet_count = 0
+        self.update_callback = update_callback  # メッセージ更新用の関数
 
     def wants_opus(self) -> bool:
-        return False  # PCMとして受信する
+        return False
 
     def write(self, user, data: voice_recv.VoiceData):
-        # 1. データの安全確認 (pcm属性が存在し、データが入っているか)
         if not hasattr(data, 'pcm') or not data.pcm:
             return
 
-        # 2. ユーザー識別キーの取得
-        # Discordからuserオブジェクトが渡らない場合は SSRC や Fallback 名で保存
+        # ユーザー識別キーの決定
         if user is not None:
             user_key = f"{user.name}_{user.id}"
         elif hasattr(data, 'ssrc') and data.ssrc:
@@ -1230,11 +1233,20 @@ class AudioSink(voice_recv.AudioSink):
         else:
             user_key = "Unknown_Speaker"
 
-        # 3. バッファ初期化と追記
         if user_key not in self.buffers:
             self.buffers[user_key] = bytearray()
 
         self.buffers[user_key].extend(data.pcm)
+
+        # パケット受信カウントをインクリメント
+        self.packet_count += 1
+
+        # 10パケットごとにメッセージ更新処理を非同期呼び出し
+        if self.packet_count % 10 == 0 and self.update_callback:
+            asyncio.run_coroutine_threadsafe(
+                self.update_callback(self.packet_count),
+                self.bot.loop
+            )
 
     def cleanup(self):
         self.buffers.clear()
@@ -2254,8 +2266,7 @@ class RecordingCog(commands.Cog):
 
     @rec_group.command(name="start")
     async def rec_start(self, ctx: commands.Context):
-        """!rec start : 録音を開始します"""
-        # 1. ユーザーがVCに入っているかチェック
+        """!rec start : 録音を開始"""
         if not ctx.author.voice or not ctx.author.voice.channel:
             return await ctx.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"))
 
@@ -2264,33 +2275,50 @@ class RecordingCog(commands.Cog):
         state = self.get_state(guild_id)
         vc = ctx.voice_client
 
-        # 2. すでに録音中か確認
         if state.get('is_recording'):
             return await ctx.send(embed=we("⚠️ 既にこのサーバーで録音処理が実行中です。"))
 
-        # 3. VoiceClientの接続制御 (voice_recv 互換クライアントとして接続)
+        # VC接続の制御
         try:
             if vc is None:
                 vc = await target_channel.connect(cls=voice_recv.VoiceRecvClient)
             elif not isinstance(vc, voice_recv.VoiceRecvClient):
-                # 通常のVoiceClientが繋がっている場合は切断して再接続
                 await vc.disconnect(force=True)
                 vc = await target_channel.connect(cls=voice_recv.VoiceRecvClient)
             elif vc.channel != target_channel:
                 await vc.move_to(target_channel)
         except Exception as e:
-            logger.error(f"VC Connection Error during recording start: {e}")
             return await ctx.send(embed=we(f"❌ ボイスチャンネルへの接続に失敗しました: `{e}`"))
 
-        # 4. Sinkの生成とリスニングの開始
-        sink = AudioSink()
+        # 最初のお知らせメッセージを送信（これを後で編集します）
+        status_msg = await ctx.send(
+            embed=we(f"🎙️ **{target_channel.name}** で録音を開始しました。\n"
+                     f"📦 受信パケット数: `0` 個\n"
+                     f"停止するには `!rec stop` を実行してください。")
+        )
+
+        # 10パケットごとにメッセージを更新する非同期関数
+        async def on_packet_update(count: int):
+            try:
+                # パケット数に応じてアイコンを交互に変更させて動作中であることを分かりやすく表現
+                indicator = "🔴 録音中..." if (count // 10) % 2 == 0 else "⭕ 録音中..."
+                await status_msg.edit(
+                    embed=we(f"{indicator}\n"
+                             f"🎙️ チャンネル: **{target_channel.name}**\n"
+                             f"📦 受信パケット数: `{count}` 個 (10パケットごとに更新)")
+                )
+            except Exception:
+                pass  # メッセージ削除時などのエラー対策
+
+        # Sink に bot とコールバックを渡して開始
+        sink = AudioSink(bot=self.bot, update_callback=on_packet_update)
         vc.listen(sink)
 
-        # 5. ステートの更新
+        # ステート更新
         state['is_recording'] = True
         state['rec_start_time'] = time.time()
         state['sink'] = sink
-        state['current_ctx'] = ctx
+        state['status_msg'] = status_msg
 
         await ctx.send(
             embed=we(f"🎙️ **{target_channel.name}** で録音を開始しました。\n停止するには `!rec stop` を実行してください。")
