@@ -33,82 +33,65 @@ def we(description: str | None = None, title: str | None = None) -> discord.Embe
     return discord.Embed(title=title, description=description, color=0x3498DB)
 
 # ============================================================
-# 軽量・高速ピッチ変換処理 (多項式リサンプリング)
+# 軽量ピッチ変換処理
 # ============================================================
 def pitch_shift_pcm(pcm_bytes: bytes, semitones: float) -> bytes:
-    """
-    リサンプリングによる超軽量ピッチチェンジ。
-    `scipy.signal.resample_poly` を使用して計算負荷を削減し、
-    バッファの途切れを回避します。
-    """
     if semitones == 0 or len(pcm_bytes) == 0:
         return pcm_bytes
 
-    # ピッチ倍率の計算 (例: +12半音で2.0倍、-12半音で0.5倍)
     factor = 2.0 ** (semitones / 12.0)
 
-    # 近似分数表現に変換して高速リサンプリング (up/down)
-    # 例: factor 1.25 -> up=5, down=4
     from fractions import Fraction
     frac = Fraction(factor).limit_denominator(20)
     up, down = frac.numerator, frac.denominator
 
-    # PCM bytes -> float32 (-1.0 ~ 1.0)
     audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
     audio_stereo = audio.reshape(-1, CHANNELS)
 
-    # チャンネルごとに高速ポリフェーズリサンプリング
-    # 音質維持と軽量化を両立
     shifted_ch0 = scipy.signal.resample_poly(audio_stereo[:, 0], down, up)
     shifted_ch1 = scipy.signal.resample_poly(audio_stereo[:, 1], down, up)
 
     shifted_audio = np.column_stack((shifted_ch0, shifted_ch1))
-    
-    # int16 にクリッピング変換
     int16_audio = (shifted_audio * 32767.0).clip(-32768, 32767).astype(np.int16)
     return int16_audio.tobytes()
 
-
 # ============================================================
-# ジッターバッファ付きリアルタイム再生ソース
+# ジッターバッファ & 遅延計測付き再生ソース
 # ============================================================
 class VoiceChangerAudioSource(discord.AudioSource):
-    """
-    受信データの揺らぎ（ジッター）を吸収するためのジッターバッファを備えたソース。
-    一定量のデータが溜まるまで再生開始を調整することでプチプチ音を大幅に軽減します。
-    """
     def __init__(self, buffer_ms: int = 100) -> None:
         self._buffer = bytearray()
         self._lock = threading.Lock()
-        # 初期ジッターバッファ量 (100ms分)
         self.target_prebuffer_bytes = int((buffer_ms / 1000.0) * BYTES_PER_SECOND)
         self.is_buffering = True
 
     def feed(self, pcm: bytes) -> None:
         with self._lock:
             self._buffer.extend(pcm)
-            # 初回または枯渇後はバッファが一定量溜まるまで待機解除しない
             if self.is_buffering and len(self._buffer) >= self.target_prebuffer_bytes:
                 self.is_buffering = False
 
     def read(self) -> bytes:
         with self._lock:
-            # バッファリング中、またはデータが足りない場合
             if self.is_buffering or len(self._buffer) < CHUNK_BYTES:
                 self.is_buffering = True
-                # 無音（ゼロ埋め）を出力して再生ストリームの維持とバッファ確保を行う
                 return b"\x00" * CHUNK_BYTES
 
             chunk = bytes(self._buffer[:CHUNK_BYTES])
             del self._buffer[:CHUNK_BYTES]
             return chunk
 
+    @property
+    def buffered_ms(self) -> float:
+        """現在バッファ内に溜まっている音声データの時間(ms)"""
+        with self._lock:
+            return (len(self._buffer) / BYTES_PER_SECOND) * 1000.0
+
     def is_opus(self) -> bool:
         return False
 
-
 # ============================================================
-# 音声受信・ピッチ変換 Sink
+# 音声受信 & パフォーマンス計測 Sink
 # ============================================================
 class VoiceChangerSink(voice_recv.AudioSink):
     def __init__(self, bot: commands.Bot, vc: voice_recv.VoiceRecvClient, semitones: float = 0.0):
@@ -121,7 +104,11 @@ class VoiceChangerSink(voice_recv.AudioSink):
         self.opus_available = discord.opus.is_loaded()
         self._running = True
 
-        # ジッターバッファ(100ms)を持たせた再生ソースを生成
+        # 遅延計測用フィールド (ms)
+        self.last_proc_time_ms: float = 0.0
+        self.avg_proc_time_ms: float = 0.0
+        self.proc_count: int = 0
+
         self.audio_source = VoiceChangerAudioSource(buffer_ms=100)
         if self.vc and self.vc.is_connected():
             try:
@@ -137,7 +124,8 @@ class VoiceChangerSink(voice_recv.AudioSink):
         return True
 
     def write(self, user, data: voice_recv.VoiceData) -> None:
-        """受信パケットを復号・ピッチ変換しバッファへ供給"""
+        start_time = time.perf_counter()
+
         raw_opus = getattr(data, 'opus', None)
         if not raw_opus:
             return
@@ -151,17 +139,21 @@ class VoiceChangerSink(voice_recv.AudioSink):
         with self._lock:
             current_pitch = self.semitones
 
-        # 高速ピッチシフト適用
         processed_pcm = pitch_shift_pcm(pcm, current_pitch)
-
-        # 再生バッファへ投入
         self.audio_source.feed(processed_pcm)
+
+        # 処理時間(レイテンシ)の計測
+        proc_time = (time.perf_counter() - start_time) * 1000.0
+        self.last_proc_time_ms = proc_time
+        
+        # 移動平均の算出
+        self.proc_count += 1
+        self.avg_proc_time_ms += (proc_time - self.avg_proc_time_ms) / min(self.proc_count, 50)
 
     def _decode_opus(self, user_id: int, raw_opus: bytes) -> bytes | None:
         if not self.opus_available:
             return None
 
-        # DAVE(E2EE) 復号
         if raw_opus != OPUS_SILENCE and hasattr(self.vc, "dave_decrypt"):
             try:
                 payload = self.vc.dave_decrypt(user_id, raw_opus)
@@ -186,7 +178,6 @@ class VoiceChangerSink(voice_recv.AudioSink):
     def cleanup(self) -> None:
         self._running = False
 
-
 # ============================================================
 # ボイスチェンジャー Cog 本体
 # ============================================================
@@ -198,14 +189,25 @@ class VoiceChangerCog(commands.Cog):
     @commands.group(name="vc", invoke_without_command=True)
     @commands.guild_only()
     async def vc_group(self, ctx: commands.Context):
+        """!vc : 遅延状況を含むステータスを表示"""
         session = self.vc_sessions.get(ctx.guild.id)
         if session:
             sink: VoiceChangerSink = session["sink"]
+            
+            # 各種数値データの取得
+            proc_ms = sink.last_proc_time_ms
+            avg_ms = sink.avg_proc_time_ms
+            buf_ms = sink.audio_source.buffered_ms
+            total_est_delay = avg_ms + buf_ms + 20.0  # 概算トータル遅延 (処理時間 + バッファ量 + パケット周期)
+
             await ctx.send(embed=we(
                 f"🎙️ **ボイスチェンジャー動作中**\n"
                 f"🎵 設定ピッチ: `{sink.semitones:+.1f}` 半音\n\n"
+                f"📊 **遅延ステータス (数値)**\n"
+                f"├ ⚡ 変換処理時間: `{proc_ms:.2f} ms` (平均: `{avg_ms:.2f} ms`)\n"
+                f"├ 📦 バッファ滞留量: `{buf_ms:.1f} ms`\n"
+                f"└ ⏱️ **推定トータル遅延**: `~{total_est_delay:.1f} ms`\n\n"
                 f"・ピッチ変更: `{ctx.prefix}vc pitch <半音数>`\n"
-                f"・女声風: `{ctx.prefix}vc female` | 男声風: `{ctx.prefix}vc male`\n"
                 f"・停止: `{ctx.prefix}vc stop`"
             ))
         else:
@@ -242,9 +244,9 @@ class VoiceChangerCog(commands.Cog):
 
         self.vc_sessions[guild_id] = {"sink": sink, "vc": vc}
         await ctx.send(embed=we(
-            f"🎙️ **{target_channel.name}** でボイスチェンジャーを開始しました！\n"
+            f"🎙️ **{target_channel.name}** で開始しました！\n"
             f"🎵 ピッチ: `{pitch:+.1f}` 半音\n"
-            f"ピッチ変更: `{ctx.prefix}vc pitch 3.0` | 停止: `{ctx.prefix}vc stop`"
+            f"📊 `!vc` でリアルタイムの遅延数値を確認できます。"
         ))
 
     @vc_group.command(name="pitch")
@@ -257,16 +259,6 @@ class VoiceChangerCog(commands.Cog):
         sink: VoiceChangerSink = session["sink"]
         sink.set_semitones(semitones)
         await ctx.send(embed=we(f"🎵 ピッチを `{semitones:+.1f}` 半音に変更しました。"))
-
-    @vc_group.command(name="female")
-    @commands.guild_only()
-    async def vc_female(self, ctx: commands.Context):
-        await self.vc_pitch(ctx, 3.0)
-
-    @vc_group.command(name="male")
-    @commands.guild_only()
-    async def vc_male(self, ctx: commands.Context):
-        await self.vc_pitch(ctx, -3.0)
 
     @vc_group.command(name="stop")
     @commands.guild_only()
