@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 import wave
+import ctypes.util
 
 import discord
 import discord.opus
@@ -690,8 +691,39 @@ class RecordingCog(commands.Cog):
         return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
-# ============================================================
-# Extension 登録用エントリーポイント
-# ============================================================
+# ラズパイ等で Opus が手動ロードされていない場合に自動検出・読み込みを行う関数
+def ensure_opus():
+    if discord.opus.is_loaded():
+        return True
+
+    # 1. OS標準のライブラリ検索
+    opus_path = ctypes.util.find_library("opus")
+    if opus_path:
+        try:
+            discord.opus.load_opus(opus_path)
+            return True
+        except Exception:
+            pass
+
+    # 2. ラズパイOS (ARM64 / ARM32 / x86_64) の一般的なパスを順番に試す
+    possible_paths = [
+        "libopus.so.0",
+        "libopus.so",
+        "/usr/lib/aarch64-linux-gnu/libopus.so.0",  # Raspberry Pi OS 64-bit
+        "/usr/lib/arm-linux-gnueabihf/libopus.so.0", # Raspberry Pi OS 32-bit
+        "/usr/lib/x86_64-linux-gnu/libopus.so.0",
+    ]
+
+    for path in possible_paths:
+        try:
+            discord.opus.load_opus(path)
+            return True
+        except Exception:
+            continue
+
+    return False
+
+# Cog登録時の setup 関数で実行
 async def setup(bot: commands.Bot):
+    ensure_opus()  # Cog追加前に Opus をロード
     await bot.add_cog(RecordingCog(bot))
