@@ -2298,7 +2298,7 @@ class RecordingCog(commands.Cog):
 
     @rec_group.command(name="stop")
     async def rec_stop(self, ctx: commands.Context):
-        """!rec stop : 録音を停止してWAVファイルを送信します"""
+        """!rec stop : 録音を停止してWAVファイルを送信"""
         guild_id = ctx.guild.id
         state = self.get_state(guild_id)
         vc = ctx.voice_client
@@ -2313,31 +2313,29 @@ class RecordingCog(commands.Cog):
         except Exception as e:
             logger.error(f"Stop listening error: {e}")
 
-        # 2. ステートの初期化
+        # ステートの解除
         state['is_recording'] = False
         state['sink'] = None
 
-        await ctx.send(embed=we("💾 録音を停止しました。音声データを書き出し中です..."))
+        await ctx.send(embed=we("💾 録音を停止しました。ファイルを生成中です..."))
 
+        # 2. データの存在確認（デバッグ用ログ出し）
         if not sink.buffers:
-            await ctx.send(embed=we("✅ 録音データが検出されなかったか、発言がありませんでした。"))
             sink.cleanup()
-            return
+            return await ctx.send(embed=we("❌ 音声バッファが空でした。（発言が検知されなかったかパケットが届いていません）"))
 
-        # 3. ユーザーごとにWAVファイルを書き出し
         files_to_send = []
-        for user_id, pcm_data in sink.buffers.items():
-            if not pcm_data:
+        
+        # 3. ユーザー/SSRCごとにWAV化
+        for user_key, pcm_data in sink.buffers.items():
+            # あまりにデータが短い場合（1KB未満≒数ミリ秒）はノイズとみなしてスキップ
+            if len(pcm_data) < 1920:
                 continue
 
-            user = self.bot.get_user(user_id)
-            username = user.name if user else f"User_{user_id}"
-
-            # WAV フォーマット作成 (48kHz, 16-bit, Stereo)
             wav_buf = io.BytesIO()
             with wave.open(wav_buf, 'wb') as wf:
-                wf.setnchannels(2)        # 2ch
-                wf.setsampwidth(2)        # 16bit
+                wf.setnchannels(2)        # 2ch ステレオ
+                wf.setsampwidth(2)        # 16-bit (2 byte)
                 wf.setframerate(48000)    # 48kHz
                 wf.writeframes(pcm_data)
 
@@ -2345,20 +2343,19 @@ class RecordingCog(commands.Cog):
             
             file_item = discord.File(
                 fp=wav_buf, 
-                filename=f"rec_{username}_{int(time.time())}.wav"
+                filename=f"rec_{user_key}_{int(time.time())}.wav"
             )
             files_to_send.append(file_item)
 
-        # 4. メモリクリア
         sink.cleanup()
 
         if not files_to_send:
-            await ctx.send(embed=we("✅ 音声データが見つかりませんでした。"))
-            return
+            return await ctx.send(embed=we("⚠️ 送信可能な長さの録音データがありませんでした。"))
 
-        # 5. Discordの添付ファイル制限(最大10個)に合わせて送信
-        for chunk_idx in range(0, len(files_to_send), 10):
-            chunk = files_to_send[chunk_idx:chunk_idx + 10]
+        # 4. 添付ファイル上限(10個ずつ)に分けて送信
+        for i in range(0, len(files_to_send), 10):
+            chunk = files_to_send[i:i + 10]
+            await ctx.send(content=f"🎵 **録音データ ({i+1}〜{i+len(chunk)}件)**", files=chunk)
             await ctx.send(
                 content=f"🎵 **録音データ出力 ({chunk_idx + 1}〜{chunk_idx + len(chunk)}件)**:", 
                 files=chunk
