@@ -559,7 +559,96 @@ class RecordingCog(commands.Cog):
             embed.description = "現在明確なピッチ（音階）は検出されませんでした。"
 
         await ctx.send(embed=embed)
+
     
+    # --------------------------------------------------
+    # やまびこコマンドグループ: !echo
+    # --------------------------------------------------
+    @commands.group(name="echo", invoke_without_command=True)
+    @commands.guild_only()
+    async def echo_group(self, ctx: commands.Context):
+        """!echo 単体で実行された場合の状態表示"""
+        session = self.echo_sessions.get(ctx.guild.id)
+        if session:
+            sink: RecordingSink = session["sink"]
+            await ctx.send(embed=we(
+                f"🗣️ **やまびこ動作中**\n"
+                f"⏱️ 遅延時間: `{sink.echo_delay}`秒\n"
+                f"遅延変更: `{ctx.prefix}echo delay <秒数>`\n"
+                f"停止: `{ctx.prefix}echo stop`"
+            ))
+        else:
+            await ctx.send(embed=we(f"⏸️ やまびこ停止中 (`{ctx.prefix}echo start` で開始)"))
+
+    @echo_group.command(name="start")
+    @commands.guild_only()
+    async def echo_start(self, ctx: commands.Context, delay: float = 2.0):
+        """!echo start [秒数] : やまびこを開始"""
+        if not ctx.author.voice or not ctx.author.voice.channel:
+            return await ctx.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"))
+
+        guild_id = ctx.guild.id
+        if guild_id in self.sessions or guild_id in self.echo_sessions:
+            return await ctx.send(embed=we("⚠️ 既に録音またはやまびこが実行中です。"))
+
+        target_channel = ctx.author.voice.channel
+
+        try:
+            vc = ctx.voice_client
+            if vc is None or not isinstance(vc, voice_recv.VoiceRecvClient):
+                if vc: await vc.disconnect(force=True)
+                vc = await target_channel.connect(cls=voice_recv.VoiceRecvClient)
+            elif vc.channel != target_channel:
+                await vc.move_to(target_channel)
+        except Exception as e:
+            return await ctx.send(embed=we(f"❌ VC接続失敗: `{e}`"))
+
+        # 統合 RecordingSink を is_echo=True でインスタンス化
+        sink = RecordingSink(bot=self.bot, vc=vc, is_echo=True, echo_delay=delay)
+        vc.listen(sink)
+
+        self.echo_sessions[guild_id] = {
+            "sink": sink, "vc": vc, "start": time.time()
+        }
+        await ctx.send(embed=we(
+            f"🗣️ **{target_channel.name}** でやまびこを開始しました！\n"
+            f"⏱️ 遅延時間: `{delay}`秒\n"
+            f"遅延変更: `{ctx.prefix}echo delay 3.0` | 停止: `{ctx.prefix}echo stop`"
+        ))
+
+    @echo_group.command(name="delay")
+    @commands.guild_only()
+    async def echo_delay(self, ctx: commands.Context, delay: float):
+        """!echo delay <秒数> : 動作中にリアルタイムで遅延時間を変更"""
+        session = self.echo_sessions.get(ctx.guild.id)
+        if not session:
+            return await ctx.send(embed=we("⚠️ 現在やまびこは実行されていません。"))
+
+        if delay <= 0:
+            return await ctx.send(embed=we("⚠️ 遅延時間は 0 秒より大きく設定してください。"))
+
+        sink: RecordingSink = session["sink"]
+        sink.set_echo_delay(delay)
+
+        await ctx.send(embed=we(f"⏱️ やまびこの遅延時間を `{delay}` 秒に変更しました。"))
+
+    @echo_group.command(name="stop")
+    @commands.guild_only()
+    async def echo_stop(self, ctx: commands.Context):
+        """!echo stop : やまびこを停止"""
+        session = self.echo_sessions.pop(ctx.guild.id, None)
+        if not session:
+            return await ctx.send(embed=we("⚠️ 現在やまびこは実行されていません。"))
+
+        vc: voice_recv.VoiceRecvClient = session["vc"]
+        sink: RecordingSink = session["sink"]
+
+        try:
+            vc.stop_listening()
+        except Exception:
+            pass
+
+        await ctx.send(embed=we("🛑 やまびこを停止しました。"))
     # --------------------------------------------------
     # コマンド処理の実装
     # --------------------------------------------------
