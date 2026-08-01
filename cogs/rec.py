@@ -475,6 +475,7 @@ class RecordingCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.sessions: dict[int, dict] = {}
+        self.echo_sessions: dict[int, dict] = {}
         self._ffmpeg_available: bool | None = None
 
     async def cog_unload(self) -> None:
