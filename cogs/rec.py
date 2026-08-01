@@ -241,13 +241,18 @@ def synthesize_piano_chord(midi_list: list[int], duration_sec: float = 0.25) -> 
 # 録音 Sink
 # ============================================================
 class RecordingSink(voice_recv.AudioSink):
-    """ユーザーごとに PCM を累積する Sink"""
+    """録音とやまびこ（Echo）再生を1つのクラスで両立するSink"""
 
-    def __init__(self, bot: commands.Bot, vc: voice_recv.VoiceRecvClient, update_callback=None):
+    def __init__(self, bot: commands.Bot, vc: voice_recv.VoiceRecvClient, update_callback=None, is_echo: bool = False, echo_delay: float = 2.0):
         super().__init__()
         self.bot = bot
         self.vc = vc
         self.update_callback = update_callback
+
+        # やまびこ用設定
+        self.is_echo = is_echo
+        self.echo_delay = echo_delay
+        self.packet_queue: list[tuple[float, bytes]] = []
 
         try:
             self.manual_decode = bool(vc.dave_is_active())
@@ -269,10 +274,7 @@ class RecordingSink(voice_recv.AudioSink):
         self.packet_count = 0
         self.dave_error_count = 0
         self.opus_error_count = 0
-
         self._last_update_time = 0.0
-        self.last_detected_notes: list[str] = []
-        self._last_synth_time = 0.0
 
     def wants_opus(self) -> bool:
         return self.manual_decode
@@ -285,6 +287,7 @@ class RecordingSink(voice_recv.AudioSink):
 
     def cleanup(self) -> None:
         self.decoders.clear()
+        self.packet_queue.clear()
 
     def _write_inner(self, user, data) -> None:
         self.write_call_count += 1
@@ -308,39 +311,28 @@ class RecordingSink(voice_recv.AudioSink):
         self._store(key, label, position, pcm)
 
         self.packet_count += 1
+
+        # ★ やまびこモードが有効な場合はキューに追加して再生処理
+        if self.is_echo:
+            play_at = time.time() + self.echo_delay
+            self.packet_queue.append((play_at, pcm))
+            self._process_echo()
+
         self._maybe_notify(now)
 
-        # --------------------------------------------------
-        # Sink クラスの write() 内部（または _write_inner() の末尾）に追加
-        # --------------------------------------------------
-        now = time.perf_counter()
+    def _process_echo(self) -> None:
+        """再生予定時刻（遅延時間）を過ぎたパケットを VC へ再生"""
+        if not self.packet_queue:
+            return
 
-        # 0.25秒ごとに直近の音声からピッチ検出 ＆ ピアノ音生成して即座にVCへ鳴らす
-        if now - self._last_synth_time >= 0.25:
-            self._last_synth_time = now
-    
-            # 全ユーザーの直近のPCMバッファを取得
-            recent_pcm = bytes(buf[-48000:]) if len(buf) >= 48000 else bytes(buf)
-            detected = analyze_pitch_layers(recent_pcm, top_k=4)
-    
-            if detected:
-                # シャープ / フラット 表記の作成 (例: "C♯4(D♭4)")
-                self.last_detected_notes = [f"{sh}" if sh == fl else f"{sh}({fl})" for sh, fl, _ in detected]
-                
-                # 検出された音階をピアノ音としてボイスチャンネルにリアルタイム再生
-                midi_nums = [m for _, _, m in detected]
-                piano_pcm = synthesize_piano_chord(midi_nums, duration_sec=0.25)
-        
-                if self.vc and self.vc.is_connected() and not self.vc.is_playing():
-                    self.vc.play(discord.PCMAudio(io.BytesIO(piano_pcm)))
+        now = time.time()
+        play_at, pcm_to_play = self.packet_queue[0]
 
-        # メッセージ更新時に検出音階(self.last_detected_notes)も渡すように更新
-        if self.update_callback and (now - self._last_update_time >= 3.0):
-            self._last_update_time = now
-            asyncio.run_coroutine_threadsafe(
-                self.update_callback(self.packet_count, self.last_detected_notes), 
-                self.bot.loop
-            )
+        if now >= play_at:
+            self.packet_queue.pop(0)
+            if self.vc and self.vc.is_connected() and not self.vc.is_playing():
+                audio_source = discord.PCMAudio(io.BytesIO(pcm_to_play))
+                self.vc.play(audio_source)
 
     def _identify(self, user, data) -> tuple[int, str, int]:
         if user is not None:
