@@ -626,20 +626,21 @@ class RecordingCog(commands.Cog):
 
         # ⭕ 修正後: 残っている接続を強制切断してからクリーンに再接続する
         try:
-            vc = ctx.voice_client
-            # 既存のVC接続があれば、一度完全に強制切断する（セッション4006エラー防止）
-            if vc is not None:
-                await vc.disconnect(force=True)
-                await asyncio.sleep(0.5)
+            # 1. すでにボイスチャンネルに接続している場合は強制的に切断・クリーンアップ
+            if ctx.voice_client is not None:
+                await ctx.voice_client.disconnect(force=True)
+                await asyncio.sleep(1.0) # ハンドシェイクのリセット待ち
 
-            # タイムアウトを15秒に伸ばしてクリーンに再接続
+            # 2. voice_recv 拡張を使用した明示的な接続 (cls=voice_recv.VoiceRecvClient)
             vc = await target_channel.connect(
-                cls=voice_recv.VoiceRecvClient, 
-                timeout=15.0, 
-                reconnect=True
+                cls=voice_recv.VoiceRecvClient,
+                timeout=30.0,      # DAVE暗号化応答待ちのためタイムアウトを延長
+                reconnect=True,    # 自動再接続を有効化
+                self_deaf=False    # 音声受信のためミュート解除を明示
             )
         except Exception as e:
-            return await ctx.send(embed=we(f"❌ VC接続失敗: `{e}`"))
+            logger.error(f"VC Connection Error: {e}", exc_info=True)
+            return await ctx.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
 
         # 統合 RecordingSink を is_echo=True でインスタンス化
         sink = RecordingSink(bot=self.bot, vc=vc, is_echo=True, echo_delay=delay)
@@ -708,16 +709,21 @@ class RecordingCog(commands.Cog):
         target_channel = ctx.author.voice.channel
 
         try:
-            vc = ctx.voice_client
-            if vc is None:
-                vc = await target_channel.connect(cls=voice_recv.VoiceRecvClient)
-            elif not isinstance(vc, voice_recv.VoiceRecvClient):
-                await vc.disconnect(force=True)
-                vc = await target_channel.connect(cls=voice_recv.VoiceRecvClient)
-            elif vc.channel != target_channel:
-                await vc.move_to(target_channel)
+            # 1. すでにボイスチャンネルに接続している場合は強制的に切断・クリーンアップ
+            if ctx.voice_client is not None:
+                await ctx.voice_client.disconnect(force=True)
+                await asyncio.sleep(1.0) # ハンドシェイクのリセット待ち
+
+            # 2. voice_recv 拡張を使用した明示的な接続 (cls=voice_recv.VoiceRecvClient)
+            vc = await target_channel.connect(
+                cls=voice_recv.VoiceRecvClient,
+                timeout=30.0,      # DAVE暗号化応答待ちのためタイムアウトを延長
+                reconnect=True,    # 自動再接続を有効化
+                self_deaf=False    # 音声受信のためミュート解除を明示
+            )
         except Exception as e:
-            return await ctx.send(embed=we(f"❌ ボイスチャンネルへの接続に失敗しました: `{e}`"))
+            logger.error(f"VC Connection Error: {e}", exc_info=True)
+            return await ctx.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
 
         try:
             if vc.is_listening():
