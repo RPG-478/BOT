@@ -241,58 +241,84 @@ def synthesize_piano_chord(midi_list: list[int], duration_sec: float = 0.25) -> 
 # 録音 Sink
 # ============================================================
 class RecordingSink(voice_recv.AudioSink):
-    """録音とやまびこ（Echo）再生を1つのクラスで両立するSink"""
+    """途切れ・勝手な退出を防止した軽量統合 AudioSink"""
 
-    def __init__(self, bot: commands.Bot, vc: voice_recv.VoiceRecvClient, update_callback=None, is_echo: bool = False, echo_delay: float = 2.0):
+    def __init__(
+        self,
+        bot: commands.Bot,
+        vc: voice_recv.VoiceRecvClient,
+        update_callback=None,
+        is_echo: bool = False,
+        echo_delay: float = 2.0
+    ):
         super().__init__()
         self.bot = bot
         self.vc = vc
         self.update_callback = update_callback
-
-        # やまびこ用設定
         self.is_echo = is_echo
-        self.echo_delay = echo_delay
+        self.echo_delay = float(echo_delay)
+
+        self.buffers: dict[str, bytearray] = {}
         self.packet_queue: list[tuple[float, bytes]] = []
-
-        try:
-            self.manual_decode = bool(vc.dave_is_active())
-        except Exception:
-            self.manual_decode = False
-
-        self.opus_available = discord.opus.is_loaded()
-        self.start_time = time.perf_counter()
-        self._lock = threading.Lock()
-
-        self.buffers: dict[int, bytearray] = {}
-        self.labels: dict[int, str] = {}
-        self.decoders: dict[int, discord.opus.Decoder] = {}
-        self._first_ts: dict[int, int | None] = {}
-        self._base_offset: dict[int, int] = {}
-
-        self.write_call_count = 0
-        self.total_frame_count = 0
         self.packet_count = 0
-        self.dave_error_count = 0
-        self.opus_error_count = 0
-        self._last_update_time = 0.0
+        self._running = True
+
+        # やまびこ再生用のバックグラウンドタスクを起動 (write メソッドを止めないため)
+        if self.is_echo:
+            self.bot.loop.create_task(self._echo_loop())
 
     def set_echo_delay(self, delay: float) -> None:
-        """動的に遅延時間を変更する"""
         self.echo_delay = float(delay)
-    
-    def wants_opus(self) -> bool:
-        return self.manual_decode
 
-    def write(self, user, data) -> None:
-        try:
-            self._write_inner(user, data)
-        except Exception as e:
-            logger.error("[REC] AudioSink.write() エラー: %r", e, exc_info=True)
+    def wants_opus(self) -> bool:
+        # PCMで受け取ることで DAVE 手動復号の重い処理を回避
+        return False
+
+    def write(self, user, data: voice_recv.VoiceData) -> None:
+        """高速に処理を終わらせる (絶対ブロックしない)"""
+        if not hasattr(data, 'pcm') or not data.pcm:
+            return
+
+        pcm = bytes(data.pcm)
+        now = time.time()
+        self.packet_count += 1
+
+        # 1. 録音バッファへ追記
+        user_key = getattr(user, 'name', 'Unknown') if user else "Speaker"
+        if user_key not in self.buffers:
+            self.buffers[user_key] = bytearray()
+        self.buffers[user_key].extend(pcm)
+
+        # 2. やまびこ用キューへの追加のみ行う
+        if self.is_echo:
+            self.packet_queue.append((now + self.echo_delay, pcm))
+
+    async def _echo_loop(self) -> None:
+        """音声再生処理を独立したループで行う"""
+        while self._running:
+            await asyncio.sleep(0.01)  # イベントループに処理を譲る
+            if not self.packet_queue:
+                continue
+
+            now = time.time()
+            play_at, pcm_to_play = self.packet_queue[0]
+
+            if now >= play_at:
+                self.packet_queue.pop(0)
+                if self.vc and self.vc.is_connected() and not self.vc.is_playing():
+                    try:
+                        audio_source = discord.PCMAudio(io.BytesIO(pcm_to_play))
+                        self.vc.play(audio_source)
+                    except Exception:
+                        pass
 
     def cleanup(self) -> None:
-        self.decoders.clear()
+        self._running = False
+        self.buffers.clear()
         self.packet_queue.clear()
 
+    def snapshot(self) -> dict[str, bytes]:
+        return {k: bytes(v) for k, v in self.buffers.items()}
     def _write_inner(self, user, data) -> None:
         self.write_call_count += 1
         key, label, user_id = self._identify(user, data)
