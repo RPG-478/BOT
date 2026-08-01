@@ -552,7 +552,7 @@ class RecordingCog(commands.Cog):
             recent_pcm = pcm[-96000:] if len(pcm) > 96000 else pcm
             
             # 周波数解析を行って音階群を取得
-            detected = analyze_pitch_layers(recent_pcm, sample_rate=48000, top_k=6)
+            detected = analyze_pitch_layers(recent_pcm, top_k=4)
 
             if detected_notes:
                 found_any = True
