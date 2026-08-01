@@ -4,7 +4,11 @@ import pty
 import discord
 from discord.ext import commands
 
-ALLOWED_USER_ID = 1320705325686587408
+# 単一のIDから、許可するIDの集合(set)に変更
+ALLOWED_USER_IDS = {
+    1320705325686587408,
+    1000302102473613373,  # 追加したい2人目のユーザーID
+}
 TARGET_DIR = os.path.expanduser("~/BOT")
 
 async def run_interactive_terminal(bot, thread, cmd):
@@ -27,7 +31,7 @@ async def run_interactive_terminal(bot, thread, cmd):
         input_queue = asyncio.Queue()
 
         def check_message(m):
-            return m.channel.id == thread.id and m.author.id == ALLOWED_USER_ID
+            return m.channel.id == thread.id and m.author.id in ALLOWED_USER_IDS
 
         async def listen_messages():
             while True:
@@ -112,7 +116,7 @@ class TerminalModal(discord.ui.Modal, title="対話ターミナル実行"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        if interaction.user.id != ALLOWED_USER_ID:
+        if interaction.user.id not in ALLOWED_USER_IDS:
             await interaction.response.send_message("実行権限がありません。", ephemeral=True)
             return
 
@@ -137,7 +141,7 @@ class TerminalView(discord.ui.View):
 
     @discord.ui.button(label="コマンド送信", style=discord.ButtonStyle.primary, custom_id="terminal_send_button")
     async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != ALLOWED_USER_ID:
+        if interaction.user.id not in ALLOWED_USER_IDS:
             await interaction.response.send_message("実行権限がありません。", ephemeral=True)
             return
         await interaction.response.send_modal(TerminalModal())
@@ -148,7 +152,7 @@ class TerminalCog(commands.Cog):
 
     @commands.command(name="terminal")
     async def send_panel(self, ctx):
-        if ctx.author.id != ALLOWED_USER_ID:
+        if ctx.author.id not in ALLOWED_USER_IDS:
             return
         
         embed = discord.Embed(
