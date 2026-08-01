@@ -2182,7 +2182,7 @@ class VoiceCog(commands.Cog):
 
 class RecordingCog(commands.Cog):
     """
-    ボイスチャンネル録音機能を管理するCog
+    ボイスチャンネル録音機能を管理するCog（! プレフィックスコマンド版）
     """
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -2219,24 +2219,29 @@ class RecordingCog(commands.Cog):
             }
         return self.bot.states[guild_id]
 
-    record_group = app_commands.Group(name="record", description="ボイスチャンネルの録音コマンド")
+    # --------------------------------------------------
+    # コマンドグループ: !rec [start|stop|status]
+    # --------------------------------------------------
+    @commands.group(name="rec", invoke_without_command=True)
+    async def rec_group(self, ctx: commands.Context):
+        """!rec 単体で実行された場合はステータスを表示"""
+        await self.rec_status(ctx)
 
-    @record_group.command(name="start", description="ボイスチャンネルの録音を開始します")
-    async def record_start(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
+    @rec_group.command(name="start")
+    async def rec_start(self, ctx: commands.Context):
+        """!rec start : 録音を開始します"""
         # 1. ユーザーがVCに入っているかチェック
-        if not interaction.user.voice or not interaction.user.voice.channel:
-            return await interaction.followup.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"))
+        if not ctx.author.voice or not ctx.author.voice.channel:
+            return await ctx.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"))
 
-        target_channel = interaction.user.voice.channel
-        guild_id = interaction.guild_id
+        target_channel = ctx.author.voice.channel
+        guild_id = ctx.guild.id
         state = self.get_state(guild_id)
-        vc = interaction.guild.voice_client
+        vc = ctx.voice_client
 
         # 2. すでに録音中か確認
         if state.get('is_recording'):
-            return await interaction.followup.send(embed=we("⚠️ 既にこのサーバーで録音処理が実行中です。"))
+            return await ctx.send(embed=we("⚠️ 既にこのサーバーで録音処理が実行中です。"))
 
         # 3. VoiceClientの接続制御 (voice_recv 互換クライアントとして接続)
         try:
@@ -2250,7 +2255,7 @@ class RecordingCog(commands.Cog):
                 await vc.move_to(target_channel)
         except Exception as e:
             logger.error(f"VC Connection Error during recording start: {e}")
-            return await interaction.followup.send(embed=we(f"❌ ボイスチャンネルへの接続に失敗しました: `{e}`"))
+            return await ctx.send(embed=we(f"❌ ボイスチャンネルへの接続に失敗しました: `{e}`"))
 
         # 4. Sinkの生成とリスニングの開始
         sink = AudioSink()
@@ -2260,23 +2265,22 @@ class RecordingCog(commands.Cog):
         state['is_recording'] = True
         state['rec_start_time'] = time.time()
         state['sink'] = sink
-        state['current_interaction'] = interaction
+        state['current_ctx'] = ctx
 
-        await interaction.followup.send(
-            embed=we(f"🎙️ **{target_channel.name}** で録音を開始しました。\n停止するには `/record stop` を実行してください。")
+        await ctx.send(
+            embed=we(f"🎙️ **{target_channel.name}** で録音を開始しました。\n停止するには `!rec stop` を実行してください。")
         )
 
-    @record_group.command(name="stop", description="録音を停止し、音声ファイルを保存・送信します")
-    async def record_stop(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
-        guild_id = interaction.guild_id
+    @rec_group.command(name="stop")
+    async def rec_stop(self, ctx: commands.Context):
+        """!rec stop : 録音を停止してWAVファイルを送信します"""
+        guild_id = ctx.guild.id
         state = self.get_state(guild_id)
-        vc = interaction.guild.voice_client
+        vc = ctx.voice_client
         sink: AudioSink = state.get('sink')
 
         if not state.get('is_recording') or not vc or not isinstance(vc, voice_recv.VoiceRecvClient) or not sink:
-            return await interaction.followup.send(embed=we("⚠️ 現在録音は行われていません。"))
+            return await ctx.send(embed=we("⚠️ 現在録音は行われていません。"))
 
         # 1. 録音停止
         try:
@@ -2288,10 +2292,10 @@ class RecordingCog(commands.Cog):
         state['is_recording'] = False
         state['sink'] = None
 
-        await interaction.followup.send(embed=we("💾 録音を停止しました。音声データを書き出し中です..."))
+        await ctx.send(embed=we("💾 録音を停止しました。音声データを書き出し中です..."))
 
         if not sink.buffers:
-            await interaction.channel.send(embed=we("✅ 録音データが検出されなかったか、発言がありませんでした。"))
+            await ctx.send(embed=we("✅ 録音データが検出されなかったか、発言がありませんでした。"))
             sink.cleanup()
             return
 
@@ -2324,20 +2328,21 @@ class RecordingCog(commands.Cog):
         sink.cleanup()
 
         if not files_to_send:
-            await interaction.channel.send(embed=we("✅ 音声データが見つかりませんでした。"))
+            await ctx.send(embed=we("✅ 音声データが見つかりませんでした。"))
             return
 
         # 5. Discordの添付ファイル制限(最大10個)に合わせて送信
         for chunk_idx in range(0, len(files_to_send), 10):
             chunk = files_to_send[chunk_idx:chunk_idx + 10]
-            await interaction.channel.send(
+            await ctx.send(
                 content=f"🎵 **録音データ出力 ({chunk_idx + 1}〜{chunk_idx + len(chunk)}件)**:", 
                 files=chunk
             )
 
-    @record_group.command(name="status", description="現在の録音状況を確認します")
-    async def record_status(self, interaction: discord.Interaction):
-        guild_id = interaction.guild_id
+    @rec_group.command(name="status")
+    async def rec_status(self, ctx: commands.Context):
+        """!rec status : 現在の録音状況を確認します"""
+        guild_id = ctx.guild.id
         state = self.get_state(guild_id)
         is_rec = state.get('is_recording', False)
 
@@ -2359,7 +2364,7 @@ class RecordingCog(commands.Cog):
                 color=0x95A5A6
             )
 
-        await interaction.response.send_message(embed=embed)
+        await ctx.send(embed=embed)
 
 
 #↓落ちた原因これね
