@@ -7,7 +7,7 @@ import logging
 import threading
 import time
 import numpy as np
-import scipy.ndimage
+import scipy.signal
 
 import discord
 import discord.opus
@@ -33,73 +33,79 @@ def we(description: str | None = None, title: str | None = None) -> discord.Embe
     return discord.Embed(title=title, description=description, color=0x3498DB)
 
 # ============================================================
-# ピッチ変換処理 (リサンプリング方式)
+# 軽量・高速ピッチ変換処理 (多項式リサンプリング)
 # ============================================================
 def pitch_shift_pcm(pcm_bytes: bytes, semitones: float) -> bytes:
     """
-    PCM (16bit stereo 48kHz) のピッチ（半音単位）を変更する。
-    1. リサンプリングで伸縮
-    2. 元の長さ(20ms分)に合わせて切り詰め・パディング
+    リサンプリングによる超軽量ピッチチェンジ。
+    `scipy.signal.resample_poly` を使用して計算負荷を削減し、
+    バッファの途切れを回避します。
     """
     if semitones == 0 or len(pcm_bytes) == 0:
         return pcm_bytes
 
-    # ピッチ倍率計算 (例: +12半音で2.0倍、-12半音で0.5倍)
+    # ピッチ倍率の計算 (例: +12半音で2.0倍、-12半音で0.5倍)
     factor = 2.0 ** (semitones / 12.0)
 
-    # PCM bytes -> int16 (2ch)
-    audio = np.frombuffer(pcm_bytes, dtype=np.int16).reshape(-1, CHANNELS)
-    num_samples = audio.shape[0]
+    # 近似分数表現に変換して高速リサンプリング (up/down)
+    # 例: factor 1.25 -> up=5, down=4
+    from fractions import Fraction
+    frac = Fraction(factor).limit_denominator(20)
+    up, down = frac.numerator, frac.denominator
 
-    # 時間軸（軸0）に沿ってリサンプリング（線形補間: order=1）
-    # factor > 1.0 (高音) -> サンプル数が減る（再生速度が速くなる）
-    # factor < 1.0 (低音) -> サンプル数が増える（再生速度が遅くなる）
-    new_length = int(num_samples / factor)
-    if new_length <= 0:
-        return pcm_bytes
+    # PCM bytes -> float32 (-1.0 ~ 1.0)
+    audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+    audio_stereo = audio.reshape(-1, CHANNELS)
 
-    # チップごとに補間処理
-    shifted_ch0 = scipy.ndimage.zoom(audio[:, 0], 1.0 / factor, order=1)
-    shifted_ch1 = scipy.ndimage.zoom(audio[:, 1], 1.0 / factor, order=1)
-    shifted_audio = np.column_stack((shifted_ch0, shifted_ch1)).astype(np.int16)
+    # チャンネルごとに高速ポリフェーズリサンプリング
+    # 音質維持と軽量化を両立
+    shifted_ch0 = scipy.signal.resample_poly(audio_stereo[:, 0], down, up)
+    shifted_ch1 = scipy.signal.resample_poly(audio_stereo[:, 1], down, up)
 
-    # リアルタイム再生の周期を保つため元のサンプル数に整える
-    current_length = shifted_audio.shape[0]
-    if current_length > num_samples:
-        shifted_audio = shifted_audio[:num_samples]
-    elif current_length < num_samples:
-        pad_width = num_samples - current_length
-        shifted_audio = np.pad(shifted_audio, ((0, pad_width), (0, 0)), mode='constant')
+    shifted_audio = np.column_stack((shifted_ch0, shifted_ch1))
+    
+    # int16 にクリッピング変換
+    int16_audio = (shifted_audio * 32767.0).clip(-32768, 32767).astype(np.int16)
+    return int16_audio.tobytes()
 
-    return shifted_audio.tobytes()
 
 # ============================================================
-# リアルタイム再生ソース (EchoAudioSource の発展形)
+# ジッターバッファ付きリアルタイム再生ソース
 # ============================================================
 class VoiceChangerAudioSource(discord.AudioSource):
     """
-    20ms毎にポーリングされ、バッファされた変換後PCMを出力するソース。
-    バッファが切れても無音を返すことで再生ストリームを停止させない。
+    受信データの揺らぎ（ジッター）を吸収するためのジッターバッファを備えたソース。
+    一定量のデータが溜まるまで再生開始を調整することでプチプチ音を大幅に軽減します。
     """
-    def __init__(self) -> None:
+    def __init__(self, buffer_ms: int = 100) -> None:
         self._buffer = bytearray()
         self._lock = threading.Lock()
+        # 初期ジッターバッファ量 (100ms分)
+        self.target_prebuffer_bytes = int((buffer_ms / 1000.0) * BYTES_PER_SECOND)
+        self.is_buffering = True
 
     def feed(self, pcm: bytes) -> None:
         with self._lock:
             self._buffer.extend(pcm)
+            # 初回または枯渇後はバッファが一定量溜まるまで待機解除しない
+            if self.is_buffering and len(self._buffer) >= self.target_prebuffer_bytes:
+                self.is_buffering = False
 
     def read(self) -> bytes:
         with self._lock:
-            if len(self._buffer) >= CHUNK_BYTES:
-                chunk = bytes(self._buffer[:CHUNK_BYTES])
-                del self._buffer[:CHUNK_BYTES]
-                return chunk
-        # データ不足時は無音を出力してストリームを維持
-        return b"\x00" * CHUNK_BYTES
+            # バッファリング中、またはデータが足りない場合
+            if self.is_buffering or len(self._buffer) < CHUNK_BYTES:
+                self.is_buffering = True
+                # 無音（ゼロ埋め）を出力して再生ストリームの維持とバッファ確保を行う
+                return b"\x00" * CHUNK_BYTES
+
+            chunk = bytes(self._buffer[:CHUNK_BYTES])
+            del self._buffer[:CHUNK_BYTES]
+            return chunk
 
     def is_opus(self) -> bool:
         return False
+
 
 # ============================================================
 # 音声受信・ピッチ変換 Sink
@@ -115,8 +121,8 @@ class VoiceChangerSink(voice_recv.AudioSink):
         self.opus_available = discord.opus.is_loaded()
         self._running = True
 
-        # 再生ソースの生成と初期化
-        self.audio_source = VoiceChangerAudioSource()
+        # ジッターバッファ(100ms)を持たせた再生ソースを生成
+        self.audio_source = VoiceChangerAudioSource(buffer_ms=100)
         if self.vc and self.vc.is_connected():
             try:
                 self.vc.play(self.audio_source)
@@ -142,13 +148,13 @@ class VoiceChangerSink(voice_recv.AudioSink):
         if not pcm:
             return
 
-        # ピッチシフト適用
         with self._lock:
             current_pitch = self.semitones
 
+        # 高速ピッチシフト適用
         processed_pcm = pitch_shift_pcm(pcm, current_pitch)
 
-        # リアルタイム再生バッファへ投入
+        # 再生バッファへ投入
         self.audio_source.feed(processed_pcm)
 
     def _decode_opus(self, user_id: int, raw_opus: bytes) -> bytes | None:
@@ -180,6 +186,7 @@ class VoiceChangerSink(voice_recv.AudioSink):
     def cleanup(self) -> None:
         self._running = False
 
+
 # ============================================================
 # ボイスチェンジャー Cog 本体
 # ============================================================
@@ -191,14 +198,13 @@ class VoiceChangerCog(commands.Cog):
     @commands.group(name="vc", invoke_without_command=True)
     @commands.guild_only()
     async def vc_group(self, ctx: commands.Context):
-        """!vc ステータスを表示"""
         session = self.vc_sessions.get(ctx.guild.id)
         if session:
             sink: VoiceChangerSink = session["sink"]
             await ctx.send(embed=we(
                 f"🎙️ **ボイスチェンジャー動作中**\n"
                 f"🎵 設定ピッチ: `{sink.semitones:+.1f}` 半音\n\n"
-                f"・ピッチ変更: `{ctx.prefix}vc pitch <半音数>` (例: +4, -3)\n"
+                f"・ピッチ変更: `{ctx.prefix}vc pitch <半音数>`\n"
                 f"・女声風: `{ctx.prefix}vc female` | 男声風: `{ctx.prefix}vc male`\n"
                 f"・停止: `{ctx.prefix}vc stop`"
             ))
@@ -208,7 +214,6 @@ class VoiceChangerCog(commands.Cog):
     @vc_group.command(name="start")
     @commands.guild_only()
     async def vc_start(self, ctx: commands.Context, pitch: float = 0.0):
-        """!vc start [半音数] : ボイスチェンジャーを開始"""
         if not ctx.author.voice or not ctx.author.voice.channel:
             return await ctx.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"))
 
@@ -245,7 +250,6 @@ class VoiceChangerCog(commands.Cog):
     @vc_group.command(name="pitch")
     @commands.guild_only()
     async def vc_pitch(self, ctx: commands.Context, semitones: float):
-        """!vc pitch <半音数> : ピッチをリアルタイム変更 (+12で1オクターブ上、-12で1オクターブ下)"""
         session = self.vc_sessions.get(ctx.guild.id)
         if not session:
             return await ctx.send(embed=we("⚠️ ボイスチェンジャーが開始されていません。"))
@@ -257,19 +261,16 @@ class VoiceChangerCog(commands.Cog):
     @vc_group.command(name="female")
     @commands.guild_only()
     async def vc_female(self, ctx: commands.Context):
-        """!vc female : 高音化プリセット (+3.5半音)"""
-        await self.vc_pitch(ctx, 3.5)
+        await self.vc_pitch(ctx, 3.0)
 
     @vc_group.command(name="male")
     @commands.guild_only()
     async def vc_male(self, ctx: commands.Context):
-        """!vc male : 低音化プリセット (-3.5半音)"""
-        await self.vc_pitch(ctx, -3.5)
+        await self.vc_pitch(ctx, -3.0)
 
     @vc_group.command(name="stop")
     @commands.guild_only()
     async def vc_stop(self, ctx: commands.Context):
-        """!vc stop : ボイスチェンジャーを停止"""
         session = self.vc_sessions.pop(ctx.guild.id, None)
         if not session:
             return await ctx.send(embed=we("⚠️ ボイスチェンジャーは実行されていません。"))
