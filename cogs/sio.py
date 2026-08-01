@@ -1206,29 +1206,35 @@ class VoiceControlView(discord.ui.View):
             await interaction.response.send_message("❌ ボイスチャンネルに接続していません。", ephemeral=True)
 
 class AudioSink(voice_recv.AudioSink):
+    """
+    ユーザーごとの音声(PCM)をバッファリングする堅牢なSinkクラス
+    """
     def __init__(self):
         super().__init__()
         self.buffers = {}
 
     def wants_opus(self) -> bool:
-        return False
+        return False  # PCMとして受信する
 
     def write(self, user, data: voice_recv.VoiceData):
+        # 1. データの安全確認 (pcm属性が存在し、データが入っているか)
         if not hasattr(data, 'pcm') or not data.pcm:
             return
 
-        # ユーザー識別名の決定
+        # 2. ユーザー識別キーの取得
+        # Discordからuserオブジェクトが渡らない場合は SSRC や Fallback 名で保存
         if user is not None:
-            key = user.name
+            user_key = f"{user.name}_{user.id}"
         elif hasattr(data, 'ssrc') and data.ssrc:
-            key = f"Speaker_{data.ssrc}"
+            user_key = f"Speaker_{data.ssrc}"
         else:
-            key = "Unknown"
+            user_key = "Unknown_Speaker"
 
-        if key not in self.buffers:
-            self.buffers[key] = bytearray()
+        # 3. バッファ初期化と追記
+        if user_key not in self.buffers:
+            self.buffers[user_key] = bytearray()
 
-        self.buffers[key].extend(data.pcm)
+        self.buffers[user_key].extend(data.pcm)
 
     def cleanup(self):
         self.buffers.clear()
