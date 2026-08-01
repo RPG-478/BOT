@@ -26,6 +26,7 @@ import ctypes.util
 import math
 import numpy as np
 from scipy.signal import find_peaks
+import collections
 
 import discord
 import discord.opus
@@ -258,10 +259,21 @@ class RecordingSink(voice_recv.AudioSink):
         self.is_echo = is_echo
         self.echo_delay = float(echo_delay)
         self.buffers: dict[str, bytearray] = {}
-        self.packet_queue: list[tuple[float, bytes]] = []
+        self.packet_queue: collections.deque = collections.deque()
         self.packet_count = 0
         self._running = True
 
+        # (前回追加した _lock, labels, decoders 等はそのまま維持)
+
+        self.echo_source: _EchoAudioSource | None = None
+        if self.is_echo:
+            self.echo_source = _EchoAudioSource()
+            if self.vc and self.vc.is_connected():
+                try:
+                    self.vc.play(self.echo_source)
+                except Exception as e:
+                    logger.error("[ECHO] play() 開始失敗: %r", e)
+            self.bot.loop.create_task(self._echo_loop())
         # ↓ここから追加
         self._lock = threading.Lock()
         self.labels: dict = {}
@@ -313,23 +325,16 @@ class RecordingSink(voice_recv.AudioSink):
             self.packet_queue.append((now + self.echo_delay, pcm))
 
     async def _echo_loop(self) -> None:
-        """音声再生処理を独立したループで行う"""
+        """時間が来た音声データを連続再生ソースへ供給するだけのループ"""
         while self._running:
-            await asyncio.sleep(0.01)  # イベントループに処理を譲る
+            await asyncio.sleep(0.01)
             if not self.packet_queue:
                 continue
-
             now = time.time()
-            play_at, pcm_to_play = self.packet_queue[0]
-
-            if now >= play_at:
-                self.packet_queue.pop(0)
-                if self.vc and self.vc.is_connected() and not self.vc.is_playing():
-                    try:
-                        audio_source = discord.PCMAudio(io.BytesIO(pcm_to_play))
-                        self.vc.play(audio_source)
-                    except Exception:
-                        pass
+            while self.packet_queue and self.packet_queue[0][0] <= now:
+                _, pcm_to_play = self.packet_queue.popleft()
+                if self.echo_source is not None:
+                    self.echo_source.feed(pcm_to_play)
 
     def cleanup(self) -> None:
         self._running = False
@@ -513,6 +518,32 @@ def _pcm_to_wav(pcm: bytes) -> bytes:
         wf.writeframes(pcm)
     return buf.getvalue()
 
+class _EchoAudioSource(discord.AudioSource):
+    """やまびこ用の連続再生ソース。
+    パケット単位でplay()を呼び直すのではなく、これを一度だけplay()し、
+    read()が20msごとにポーリングされ続ける形にすることで音切れを防ぐ。"""
+
+    CHUNK_BYTES = int(0.02 * BYTES_PER_SECOND)  # 20ms分 = 3840byte
+
+    def __init__(self) -> None:
+        self._buffer = bytearray()
+        self._lock = threading.Lock()
+
+    def feed(self, pcm: bytes) -> None:
+        with self._lock:
+            self._buffer.extend(pcm)
+
+    def read(self) -> bytes:
+        with self._lock:
+            if len(self._buffer) >= self.CHUNK_BYTES:
+                chunk = bytes(self._buffer[:self.CHUNK_BYTES])
+                del self._buffer[:self.CHUNK_BYTES]
+                return chunk
+        # データが足りなくても無音を返して再生ループ自体は止めない(EOF扱いにしない)
+        return b"\x00" * self.CHUNK_BYTES
+
+    def is_opus(self) -> bool:
+        return False
 
 # ============================================================
 # 録音 Cog 本体
@@ -702,6 +733,10 @@ class RecordingCog(commands.Cog):
 
         try:
             vc.stop_listening()
+        except Exception:
+            pass
+        try:
+            vc.stop()
         except Exception:
             pass
 
