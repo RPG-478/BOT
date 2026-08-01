@@ -276,6 +276,10 @@ class RecordingSink(voice_recv.AudioSink):
         self.opus_error_count = 0
         self._last_update_time = 0.0
 
+    def set_echo_delay(self, delay: float) -> None:
+        """動的に遅延時間を変更する"""
+        self.echo_delay = float(delay)
+    
     def wants_opus(self) -> bool:
         return self.manual_decode
 
