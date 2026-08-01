@@ -626,14 +626,17 @@ class RecordingCog(commands.Cog):
 
         prefix = ctx.prefix
 
-        async def on_packet_update(count: int) -> None:
+        # --------------------------------------------------
+        # rec_start 内の on_packet_update (コールバック) を差し替え
+        # --------------------------------------------------
+        async def on_packet_update(count: int, notes: list[str]) -> None:
             try:
-                indicator = "🔴 録音中..." if (count // 50) % 2 == 0 else "⭕ 録音中..."
+                notes_str = " / ".join([f"`{n}`" for n in notes]) if notes else "`解析中/発聲待機...`"
                 await status_msg.edit(embed=we(
-                    f"{indicator}\n"
+                    f"🔴 **リアルタイム音階演奏中...**\n"
                     f"🎙️ チャンネル: **{target_channel.name}**\n"
-                    f"📦 受信パケット数: `{count}` 個\n"
-                    f"停止するには `{prefix}rec stop`"
+                    f"🎹 リアルタイム検出音階: {notes_str}\n"
+                    f"📦 パケット数: `{count}` | 停止: `{prefix}rec stop`"
                 ))
             except Exception:
                 pass
