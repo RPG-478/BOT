@@ -333,7 +333,6 @@ class RecordingSink(voice_recv.AudioSink):
 
     def cleanup(self) -> None:
         self._running = False
-        self.buffers.clear()
         self.packet_queue.clear()
 
     def snapshot(self) -> dict[str, bytes]:
