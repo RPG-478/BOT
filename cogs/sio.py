@@ -23,6 +23,8 @@ import aiohttp
 import wave
 import discord.opus
 
+logger = logging.getLogger(__name__)
+
 # OpusError(corrupted stream)が発生してもバックグラウンドスレッドを止めないように補正
 _original_decode = discord.opus.Decoder.decode
 
