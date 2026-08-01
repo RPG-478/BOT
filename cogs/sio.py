@@ -25,34 +25,67 @@ import discord.opus
  
 logger = logging.getLogger(__name__)
  
-# --- 診断用カウンタ ---
-# Opusデコードの総試行回数と失敗(OpusError)回数を記録する。
-# 失敗率が異常に高い場合(目安: 数%を大きく超える)、ネットワークの
-# パケットロスではなく、暗号化方式(RTP復号)とライブラリのバージョン
-# 不整合が原因である可能性が高い。
-_opus_decode_stats = {'total': 0, 'errors': 0}
-_opus_decode_lock = threading.Lock()
- 
-# OpusError(corrupted stream)が発生してもバックグラウンドスレッドを止めないように補正
-_original_decode = discord.opus.Decoder.decode
- 
- 
-def safe_decode(self, data, *, fec=False):
-    with _opus_decode_lock:
-        _opus_decode_stats['total'] += 1
-    try:
-        return _original_decode(self, data, fec=fec)
-    except discord.opus.OpusError as e:
-        with _opus_decode_lock:
-            _opus_decode_stats['errors'] += 1
-        # corrupted stream (-4) などのエラーが発生した場合は空データ（無音）を返す
-        logger.debug(f"Opus decode skipped corrupted packet: {e}")
-        # 48kHz, 2ch, 16bit, 20ms の場合の標準フレームサイズは 960サンプル = 3840バイト
-        return b'\x00' * 3840
+# ============================================================
+# DAVE (Discord E2EE) 対応パッチ
+# ============================================================
+# 2026年3月1日以降、Discordはボイスチャンネルでの完全End-to-End暗号化
+# (DAVEプロトコル)を必須化しました。discord.py はこれに対応済みですが、
+# discord-ext-voice-recv (本コードが使用しているライブラリ) はまだ
+# DAVEで暗号化されたOpusフレームの復号に対応しておらず、暗号化された
+# ままのバイト列をそのままOpusとしてデコードしようとしてしまいます。
+# これが「録音した音声がノイズにしか聞こえない」の直接の原因です。
+# (voice_recv公式リポジトリでも既知の未解決issueとして報告されています:
+#  https://github.com/imayhaveborkedit/discord-ext-voice-recv/issues/53 )
+#
+# 対処として、voice_recv標準のPCMデコード経路(wants_opus=False)を使わず、
+# 生のOpusフレーム(まだDAVE暗号化されたまま)を受け取り、discord.py が
+# 内部に保持しているDAVE復号セッション(VoiceClient._connection.dave_session)
+# を直接呼び出して復号してからOpusデコードを行います。
+#
+# ⚠️ 注意: これは discord.py の非公開の内部実装(_connection.dave_session)
+# に依存する非公式の回避策です。discord.py や davey パッケージの将来の
+# バージョンアップで動作しなくなる可能性があります。voice_recv側の
+# 正式な対応が入り次第、そちらに乗り換えることを推奨します。
+# ============================================================
  
  
-# safe_decode に差し替え
-discord.opus.Decoder.decode = safe_decode
+def _patch_voice_client_dave():
+    """VoiceRecvClient に DAVE 復号用のヘルパーメソッドを追加する(冪等)"""
+    vc_cls = voice_recv.VoiceRecvClient
+ 
+    if getattr(vc_cls, '_dave_patch_applied', False):
+        return
+    vc_cls._dave_patch_applied = True
+ 
+    def dave_decrypt(self, user_id: int, data: bytes):
+        """
+        DAVEセッションが有効な場合、暗号化されたOpusフレームを復号する。
+        セッションが存在しない(DAVE未確立/移行期間中/Stageチャンネル等)場合は
+        データをそのまま返す(=DAVEなしの従来どおりの平文Opusとして扱う)。
+        """
+        connection = getattr(self, '_connection', None)
+        session = getattr(connection, 'dave_session', None) if connection else None
+        if session is None:
+            return data
+ 
+        # MediaType Enum の所在はライブラリ実装依存のため、
+        # dave_session が定義されているモジュールから動的に取得する
+        mod = sys.modules.get(type(session).__module__)
+        media_type_cls = getattr(mod, 'MediaType', None)
+        media_type = getattr(media_type_cls, 'audio', 0) if media_type_cls else 0
+ 
+        return session.decrypt(user_id, media_type, data)
+ 
+    def dave_is_active(self) -> bool:
+        connection = getattr(self, '_connection', None)
+        session = getattr(connection, 'dave_session', None) if connection else None
+        return session is not None
+ 
+    vc_cls.dave_decrypt = dave_decrypt
+    vc_cls.dave_is_active = dave_is_active
+ 
+ 
+_patch_voice_client_dave()
  
 # 48kHz / 2ch / 16bit の1秒あたりのバイト数（無音補正の計算に使用）
 BYTES_PER_SECOND = 48000 * 2 * 2
@@ -1229,60 +1262,91 @@ class VoiceControlView(discord.ui.View):
 
 
 class AudioSink(voice_recv.AudioSink):
-    def __init__(self, bot, update_callback=None):
+    def __init__(self, bot, vc, update_callback=None):
         super().__init__()
         self.bot = bot
+        self.vc = vc  # DAVE復号のためVoiceRecvClientへの参照を保持
         self.buffers = {}
         self.user_start_time = {}  # ユーザーごとの録音開始時刻(壁時計基準)
+        # Opusはステートフル(フレーム間の予測)なコーデックのため、
+        # ユーザー(SSRC)ごとにデコーダーインスタンスを使い回して継続性を保つ
+        self.decoders = {}
         self.packet_count = 0
         self.update_callback = update_callback
-        self.last_update_time = 0  # 最後に更新した時間を保持
+        self.last_update_time = 0
+ 
+        # --- 診断用カウンタ ---
+        self.dave_error_count = 0
+        self.opus_error_count = 0
+        self.total_frame_count = 0
  
     def wants_opus(self) -> bool:
-        return False
+        # voice_recv標準のPCMデコード経路(DAVE非対応)は使わず、
+        # 生のOpusフレームを受け取って自前で DAVE復号 → Opusデコードする
+        return True
  
     def write(self, user, data: voice_recv.VoiceData):
-        if not hasattr(data, 'pcm') or not data.pcm:
+        raw_opus = getattr(data, 'opus', None)
+        if not raw_opus:
             return
  
         if user is not None:
             user_key = f"{user.name}_{user.id}"
+            user_id = user.id
         elif hasattr(data, 'ssrc') and data.ssrc:
             user_key = f"Speaker_{data.ssrc}"
+            user_id = data.ssrc
         else:
             user_key = "Unknown_Speaker"
+            user_id = 0
+ 
+        self.total_frame_count += 1
+ 
+        # --- 1. DAVE(E2EE)復号 ---
+        try:
+            payload = self.vc.dave_decrypt(user_id, bytes(raw_opus))
+        except Exception as e:
+            self.dave_error_count += 1
+            logger.debug(f"DAVE decrypt failed for {user_key}: {e}")
+            return
+ 
+        # --- 2. Opusデコード(ユーザーごとにデコーダーを使い回す) ---
+        if user_key not in self.decoders:
+            self.decoders[user_key] = discord.opus.Decoder()
+        try:
+            pcm = self.decoders[user_key].decode(payload, fec=False)
+        except discord.opus.OpusError as e:
+            self.opus_error_count += 1
+            logger.debug(f"Opus decode skipped corrupted packet: {e}")
+            return
+ 
+        if not pcm:
+            return
  
         now = time.time()
- 
         if user_key not in self.buffers:
             self.buffers[user_key] = bytearray()
             self.user_start_time[user_key] = now
  
-        # --- ★重要な修正★ ---
+        # --- 3. 無音区間のゼロ埋め補正 ---
         # Discordは無音区間(VAD/DTX)ではパケットを送信しないため、
-        # 受信したPCMをただ連結するだけだと「喋っていない時間」が
-        # データから消え、離れたタイミングの発話同士が押し詰められて
-        # くっついてしまう。これが再生時に「ノイズ/ガビガビ」に
-        # 聞こえる主な原因。
-        # ここでは壁時計(実時間)を基準に「本来あるべきバッファ長」を
-        # 計算し、実際のバッファがそれより短い場合は無音(ゼロ)で
-        # 埋めてから新しいPCMを追加することで、時間軸のズレを補正する。
+        # 受信したPCMをただ連結するだけだと発話同士が押し詰められて
+        # しまう。壁時計を基準に本来あるべきバッファ長を計算し、
+        # 不足分を無音(ゼロ)で埋めてから新しいPCMを追加する。
         elapsed = now - self.user_start_time[user_key]
         expected_len = int(elapsed * BYTES_PER_SECOND)
-        expected_len -= expected_len % FRAME_SIZE  # フレーム境界に丸める
+        expected_len -= expected_len % FRAME_SIZE
  
         current_len = len(self.buffers[user_key])
         if expected_len > current_len:
             gap = expected_len - current_len
             max_gap_bytes = int(MAX_GAP_SECONDS * BYTES_PER_SECOND)
             if gap > max_gap_bytes:
-                # 異常に長いギャップ(再接続直後など)は上限でクリップし、
-                # 基準時刻もその分ずらしておく
                 gap = max_gap_bytes
                 self.user_start_time[user_key] = now - (current_len + gap) / BYTES_PER_SECOND
             self.buffers[user_key].extend(b'\x00' * gap)
  
-        self.buffers[user_key].extend(data.pcm)
+        self.buffers[user_key].extend(pcm)
         self.packet_count += 1
  
         # 3秒以上経過した場合のみメッセージ編集を呼び出す（レートリミット回避）
@@ -1299,6 +1363,7 @@ class AudioSink(voice_recv.AudioSink):
         # そのため stop_listening() を呼んだ後では buffers はすでに空になっている。
         self.buffers.clear()
         self.user_start_time.clear()
+        self.decoders.clear()
 
 
 
@@ -2341,21 +2406,17 @@ class RecordingCog(commands.Cog):
         except Exception as e:
             return await ctx.send(embed=we(f"❌ ボイスチャンネルへの接続に失敗しました: `{e}`"))
  
-        # --- 診断: 現在ネゴシエートされている暗号化モードをログ出力 ---
-        # 新方式(aead_xchacha20_poly1305_rtpsize / aead_aes256_gcm_rtpsize)以外や、
-        # ライブラリのバージョン不整合が疑われる場合はここで確認できる。
+        # --- 診断: 暗号化モード・DAVE(E2EE)有効状況をログ出力 ---
         negotiated_mode = getattr(vc, 'mode', '不明')
-        logger.info(f"[REC] Voice encryption mode: {negotiated_mode}")
- 
-        # このセッション用にOpusデコードの成功/失敗カウンタをリセット
-        with _opus_decode_lock:
-            _opus_decode_stats['total'] = 0
-            _opus_decode_stats['errors'] = 0
+        # DAVEセッションの確立には少し時間がかかることがあるため少し待ってから確認
+        await asyncio.sleep(1.0)
+        dave_active = vc.dave_is_active() if hasattr(vc, 'dave_is_active') else False
+        logger.info(f"[REC] Voice encryption mode: {negotiated_mode} / DAVE(E2EE) active: {dave_active}")
  
         # 最初のお知らせメッセージを送信（これを後で編集します）
         status_msg = await ctx.send(
             embed=we(f"🎙️ **{target_channel.name}** で録音を開始しました。\n"
-                     f"🔐 暗号化モード: `{negotiated_mode}`\n"
+                     f"🔐 暗号化モード: `{negotiated_mode}` / DAVE(E2EE): `{'有効' if dave_active else '無効'}`\n"
                      f"📦 受信パケット数: `0` 個\n"
                      f"停止するには `!rec stop` を実行してください。")
         )
@@ -2373,8 +2434,8 @@ class RecordingCog(commands.Cog):
             except Exception:
                 pass  # メッセージ削除時などのエラー対策
  
-        # Sink に bot とコールバックを渡して開始
-        sink = AudioSink(bot=self.bot, update_callback=on_packet_update)
+        # Sink に bot / vc とコールバックを渡して開始
+        sink = AudioSink(bot=self.bot, vc=vc, update_callback=on_packet_update)
         vc.listen(sink)
  
         # ステート更新
@@ -2403,6 +2464,10 @@ class RecordingCog(commands.Cog):
         # 録音データを別変数へ複製(退避)しておく。
         captured_buffers = {key: bytes(pcm) for key, pcm in sink.buffers.items()}
         captured_packet_count = sink.packet_count
+        # 診断用カウンタも退避
+        dave_errors = sink.dave_error_count
+        opus_errors = sink.opus_error_count
+        total_frames = sink.total_frame_count
  
         # 1. 録音停止
         try:
@@ -2421,19 +2486,13 @@ class RecordingCog(commands.Cog):
         state['is_recording'] = False
         state['sink'] = None
  
-        # --- 診断: Opusデコードの失敗率を表示 ---
-        # ここが数%を大きく超えて高い(例: 20%以上)場合、ネットワークの
-        # 単純なパケットロスというより、暗号化方式/ライブラリのバージョン
-        # 不整合でデコードが機能していない可能性が高い。
-        with _opus_decode_lock:
-            total = _opus_decode_stats['total']
-            errors = _opus_decode_stats['errors']
-        error_rate = (errors / total * 100) if total else 0
- 
+        # --- 診断結果を表示 ---
+        dave_rate = (dave_errors / total_frames * 100) if total_frames else 0
+        opus_rate = (opus_errors / total_frames * 100) if total_frames else 0
         await ctx.send(embed=we(
             "💾 録音を停止しました。ファイルを生成中です...\n"
-            f"🩺 診断: Opusデコード試行 `{total}` 回中 失敗 `{errors}` 回 "
-            f"(失敗率 `{error_rate:.1f}%`)"
+            f"🩺 診断: 総フレーム `{total_frames}` / DAVE復号失敗 `{dave_errors}` (`{dave_rate:.1f}%`) "
+            f"/ Opusデコード失敗 `{opus_errors}` (`{opus_rate:.1f}%`)"
         ))
  
         # 2. データの存在確認
