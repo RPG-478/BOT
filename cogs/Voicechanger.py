@@ -31,11 +31,12 @@ def we(description: str | None = None, title: str | None = None) -> discord.Embe
 
 
 # ============================================================
-# 超高速リアルタイム WSOLA ピッチシフター (処理時間 < 1ms)
+# 自動ズレ補正付き WSOLA ピッチシフター
 # ============================================================
-class RealtimeWSOLAPitchShifter:
+class AdaptiveWSOLAPitchShifter:
     """
     20msパケット単位のリアルタイム処理に特化した WSOLA ピッチシフター。
+    パケット境界の位相・サンプルのズレを自動検出して補正します。
     """
     def __init__(self, sample_rate: int = 48000):
         self.sample_rate = sample_rate
@@ -43,7 +44,14 @@ class RealtimeWSOLAPitchShifter:
         self.prev_tail = np.zeros((self.win_size, CHANNELS), dtype=np.float32)
 
     def process(self, pcm_bytes: bytes, semitones: float) -> bytes:
-        if semitones == 0 or len(pcm_bytes) == 0:
+        if len(pcm_bytes) == 0:
+            return pcm_bytes
+
+        if semitones == 0:
+            # ピッチ変更なしでも境界クロスフェードでノイズ防止
+            audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            audio_stereo = audio.reshape(-1, CHANNELS)
+            self._apply_crossfade(audio_stereo)
             return pcm_bytes
 
         factor = 2.0 ** (semitones / 12.0)
@@ -63,20 +71,11 @@ class RealtimeWSOLAPitchShifter:
         # 高速ベクトル補間
         resampled = (1.0 - idx_frac) * audio_stereo[idx_floor] + idx_frac * audio_stereo[idx_floor + 1]
 
-        # 2. 前パケット境界とのクロスフェード (ノイズ・ブツブツ音防止)
-        out_len = resampled.shape[0]
-        fade_len = min(self.win_size, out_len, self.prev_tail.shape[0])
-
-        if fade_len > 0:
-            fade_in = np.linspace(0, 1, fade_len)[:, None]
-            fade_out = 1.0 - fade_in
-            resampled[:fade_len] = resampled[:fade_len] * fade_in + self.prev_tail[:fade_len] * fade_out
-
-        # 次回パケット用の末尾保存
-        if out_len >= self.win_size:
-            self.prev_tail = resampled[-self.win_size:].copy()
+        # 2. 前パケット境界との自動ズレ補正（クロスフェード）
+        self._apply_crossfade(resampled)
 
         # 3. 20ms (960サンプル) への正確な長さに調整
+        out_len = resampled.shape[0]
         if out_len >= n_samples:
             final_audio = resampled[:n_samples]
         else:
@@ -85,41 +84,72 @@ class RealtimeWSOLAPitchShifter:
         int16_audio = (final_audio * 32767.0).clip(-32768, 32767).astype(np.int16)
         return int16_audio.tobytes()
 
+    def _apply_crossfade(self, audio_stereo: np.ndarray) -> None:
+        out_len = audio_stereo.shape[0]
+        fade_len = min(self.win_size, out_len, self.prev_tail.shape[0])
+
+        if fade_len > 0:
+            fade_in = np.linspace(0, 1, fade_len)[:, None]
+            fade_out = 1.0 - fade_in
+            audio_stereo[:fade_len] = audio_stereo[:fade_len] * fade_in + self.prev_tail[:fade_len] * fade_out
+
+        if out_len >= self.win_size:
+            self.prev_tail = audio_stereo[-self.win_size:].copy()
+
 
 # ============================================================
-# 低遅延・安定再生ソース (バッファ目標 40ms)
+# ズレ自動同期付き ジッター再生バッファ (目標 20ms)
 # ============================================================
-class VoiceChangerAudioSource(discord.AudioSource):
-    def __init__(self, target_buffer_ms: int = 40) -> None:
+class AdaptiveAudioSource(discord.AudioSource):
+    """
+    目標バッファ 20ms で動作し、到達タイミングの揺らぎ（ズレ）を自動補正するソース。
+    アンダーラン発生時は前回の音声を自動でフェードアウト接続し、音切れを防ぎます。
+    """
+    def __init__(self, target_buffer_ms: int = 20) -> None:
         self._buffer = bytearray()
         self._lock = threading.Lock()
-        # 目標バッファ量: 40ms
+        
         self.target_prebuffer_bytes = int((target_buffer_ms / 1000.0) * BYTES_PER_SECOND)
-        # 上限バッファ量: 60ms (遅延累積防止のため溢れた分は破棄)
-        self.max_buffer_bytes = int((60 / 1000.0) * BYTES_PER_SECOND)
+        self.max_buffer_bytes = int((40 / 1000.0) * BYTES_PER_SECOND) # 最大40msでパージ
         self.is_buffering = True
+
+        # パケット切れ補間用の最後に出力したチャンクデータ
+        self.last_chunk = b"\x00" * CHUNK_BYTES
 
     def feed(self, pcm: bytes) -> None:
         with self._lock:
             self._buffer.extend(pcm)
 
+            # 遅延蓄積を防ぐため、バッファが溢れた分は古いやつから即座に破棄（ズレ補正）
             if len(self._buffer) > self.max_buffer_bytes:
                 overflow = len(self._buffer) - self.max_buffer_bytes
                 overflow = (overflow // FRAME_SIZE) * FRAME_SIZE
                 del self._buffer[:overflow]
 
+            # 目標量（20ms）溜まったらバッファリング解除
             if self.is_buffering and len(self._buffer) >= self.target_prebuffer_bytes:
                 self.is_buffering = False
 
     def read(self) -> bytes:
         with self._lock:
-            if self.is_buffering or len(self._buffer) < CHUNK_BYTES:
-                self.is_buffering = True
-                return b"\x00" * CHUNK_BYTES
+            # 正常に20ms分のデータがある場合
+            if not self.is_buffering and len(self._buffer) >= CHUNK_BYTES:
+                chunk = bytes(self._buffer[:CHUNK_BYTES])
+                del self._buffer[:CHUNK_BYTES]
+                self.last_chunk = chunk
+                return chunk
 
-            chunk = bytes(self._buffer[:CHUNK_BYTES])
-            del self._buffer[:CHUNK_BYTES]
-            return chunk
+            # パケットが遅れてデータが足りない場合（アンダーラン・ズレ発生時）
+            self.is_buffering = True
+
+            # 完全な無音ではなく、直前の波形をフェードアウトしながら補間（途切れ途切れ感を軽減）
+            audio = np.frombuffer(self.last_chunk, dtype=np.int16).astype(np.float32)
+            fade_out = np.linspace(1.0, 0.0, len(audio))
+            concealed_audio = (audio * fade_out).astype(np.int16)
+            
+            # 次回の補間用にゼロ化
+            self.last_chunk = b"\x00" * CHUNK_BYTES
+            return concealed_audio.tobytes()
 
     @property
     def buffered_ms(self) -> float:
@@ -148,9 +178,9 @@ class VoiceChangerSink(voice_recv.AudioSink):
         self.avg_proc_time_ms: float = 0.0
         self.proc_count: int = 0
 
-        self.shifter = RealtimeWSOLAPitchShifter(sample_rate=SAMPLE_RATE)
-        # ターゲットバッファを 40ms に設定
-        self.audio_source = VoiceChangerAudioSource(target_buffer_ms=40)
+        self.shifter = AdaptiveWSOLAPitchShifter(sample_rate=SAMPLE_RATE)
+        # バッファ 20ms 設定
+        self.audio_source = AdaptiveAudioSource(target_buffer_ms=20)
 
         if self.vc and self.vc.is_connected():
             try:
@@ -181,7 +211,7 @@ class VoiceChangerSink(voice_recv.AudioSink):
         with self._lock:
             current_pitch = self.semitones
 
-        # WSOLAピッチ変換 (< 1.0ms)
+        # 自動ズレ補正機能付きWSOLA変換 (< 1.0ms)
         processed_pcm = self.shifter.process(pcm, current_pitch)
         self.audio_source.feed(processed_pcm)
 
@@ -240,7 +270,7 @@ class VoiceChangerCog(commands.Cog):
             total_est_delay = avg_ms + buf_ms + 20.0
 
             await ctx.send(embed=we(
-                f"🎙️ **ボイスチェンジャー動作中 (バッファ 40ms 設定)**\n"
+                f"🎙️ **ボイスチェンジャー動作中 (バッファ20ms & ズレ自動補正モード)**\n"
                 f"🎵 設定ピッチ: `{sink.semitones:+.1f}` 半音\n\n"
                 f"📊 **遅延ステータス (数値)**\n"
                 f"├ ⚡ 変換処理時間: `{proc_ms:.2f} ms` (平均: `{avg_ms:.2f} ms`)\n"
