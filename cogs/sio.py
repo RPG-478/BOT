@@ -41,6 +41,14 @@ def safe_decode(self, data, *, fec=False):
  
 # safe_decode に差し替え
 discord.opus.Decoder.decode = safe_decode
+ 
+# 48kHz / 2ch / 16bit の1秒あたりのバイト数（無音補正の計算に使用）
+BYTES_PER_SECOND = 48000 * 2 * 2
+# フレーム単位(1サンプルフレーム = 2ch * 2byte = 4byte)
+FRAME_SIZE = 4
+# 無音ギャップが異常に長くなった場合(切断・長時間退席など)にファイルが
+# 膨張しすぎないよう上限を設ける
+MAX_GAP_SECONDS = 10
 
 # yt-dlpの設定（ストリーミング再生用および検索用）
 YTDL_OPTIONS = {
@@ -1213,6 +1221,7 @@ class AudioSink(voice_recv.AudioSink):
         super().__init__()
         self.bot = bot
         self.buffers = {}
+        self.user_start_time = {}  # ユーザーごとの録音開始時刻(壁時計基準)
         self.packet_count = 0
         self.update_callback = update_callback
         self.last_update_time = 0  # 最後に更新した時間を保持
@@ -1231,14 +1240,40 @@ class AudioSink(voice_recv.AudioSink):
         else:
             user_key = "Unknown_Speaker"
  
+        now = time.time()
+ 
         if user_key not in self.buffers:
             self.buffers[user_key] = bytearray()
+            self.user_start_time[user_key] = now
+ 
+        # --- ★重要な修正★ ---
+        # Discordは無音区間(VAD/DTX)ではパケットを送信しないため、
+        # 受信したPCMをただ連結するだけだと「喋っていない時間」が
+        # データから消え、離れたタイミングの発話同士が押し詰められて
+        # くっついてしまう。これが再生時に「ノイズ/ガビガビ」に
+        # 聞こえる主な原因。
+        # ここでは壁時計(実時間)を基準に「本来あるべきバッファ長」を
+        # 計算し、実際のバッファがそれより短い場合は無音(ゼロ)で
+        # 埋めてから新しいPCMを追加することで、時間軸のズレを補正する。
+        elapsed = now - self.user_start_time[user_key]
+        expected_len = int(elapsed * BYTES_PER_SECOND)
+        expected_len -= expected_len % FRAME_SIZE  # フレーム境界に丸める
+ 
+        current_len = len(self.buffers[user_key])
+        if expected_len > current_len:
+            gap = expected_len - current_len
+            max_gap_bytes = int(MAX_GAP_SECONDS * BYTES_PER_SECOND)
+            if gap > max_gap_bytes:
+                # 異常に長いギャップ(再接続直後など)は上限でクリップし、
+                # 基準時刻もその分ずらしておく
+                gap = max_gap_bytes
+                self.user_start_time[user_key] = now - (current_len + gap) / BYTES_PER_SECOND
+            self.buffers[user_key].extend(b'\x00' * gap)
  
         self.buffers[user_key].extend(data.pcm)
         self.packet_count += 1
  
         # 3秒以上経過した場合のみメッセージ編集を呼び出す（レートリミット回避）
-        now = time.time()
         if now - self.last_update_time >= 3.0 and self.update_callback:
             self.last_update_time = now
             asyncio.run_coroutine_threadsafe(
@@ -1251,6 +1286,7 @@ class AudioSink(voice_recv.AudioSink):
         # ファイナライザとして自動的に呼び出す(AudioSource.cleanup()と同様の仕様)。
         # そのため stop_listening() を呼んだ後では buffers はすでに空になっている。
         self.buffers.clear()
+        self.user_start_time.clear()
 
 
 # =====================
