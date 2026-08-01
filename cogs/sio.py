@@ -1211,25 +1211,25 @@ class AudioSink(voice_recv.AudioSink):
         self.buffers = {}
 
     def wants_opus(self) -> bool:
-        return False  # PCMとして受け取る
+        return False
 
     def write(self, user, data: voice_recv.VoiceData):
-        if not hasattr(data, 'pcm') or data.pcm is None:
+        if not hasattr(data, 'pcm') or not data.pcm:
             return
 
-        # user が取得できている場合は user.id、取れない場合は ssrc や "unknown" をキーにする
+        # ユーザー識別名の決定
         if user is not None:
-            user_key = f"User_{user.name}_{user.id}"
-        elif hasattr(data, 'ssrc') and data.ssrc is not None:
-            user_key = f"SSRC_{data.ssrc}"
+            key = user.name
+        elif hasattr(data, 'ssrc') and data.ssrc:
+            key = f"Speaker_{data.ssrc}"
         else:
-            user_key = "Unknown_User"
+            key = "Unknown"
 
-        if user_key not in self.buffers:
-            self.buffers[user_key] = bytearray()
+        if key not in self.buffers:
+            self.buffers[key] = bytearray()
 
-        self.buffers[user_key].extend(data.pcm)
-        
+        self.buffers[key].extend(data.pcm)
+
     def cleanup(self):
         self.buffers.clear()
 
