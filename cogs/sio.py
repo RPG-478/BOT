@@ -21,6 +21,22 @@ import numpy as np
 import re
 import aiohttp
 import wave
+import discord.opus
+
+# OpusError(corrupted stream)が発生してもバックグラウンドスレッドを止めないように補正
+_original_decode = discord.opus.Decoder.decode
+
+def safe_decode(self, data, *, fec=False):
+    try:
+        return _original_decode(self, data, fec=fec)
+    except discord.opus.OpusError as e:
+        # corrupted stream (-4) などのエラーが発生した場合は空データ（無音）を返す
+        logger.debug(f"Opus decode skipped corrupted packet: {e}")
+        # 48kHz, 2ch, 20ms の場合の標準フレームサイズは 960 サンプル (1920 バイト)
+        return b'\x00' * 3840
+
+# safe_decode に差し替え
+discord.opus.Decoder.decode = safe_decode
 
 # yt-dlpの設定（ストリーミング再生用および検索用）
 YTDL_OPTIONS = {
@@ -1189,27 +1205,31 @@ class VoiceControlView(discord.ui.View):
 
 class AudioSink(voice_recv.AudioSink):
     """
-    受信した音声データ（PCM）をユーザーごとにメモリ上にバッファリングするSinkクラス
+    受信した音声データ(PCM)をユーザーごとにメモリ上にバッファリングするSinkクラス
+    （Corrupted stream 対策版）
     """
     def __init__(self):
         super().__init__()
-        # {user_id: bytearray()} でPCMデータを蓄積
         self.buffers = {}
 
     def wants_opus(self) -> bool:
-        # デコード済みのPCM形式 (48kHz, 16bit, 2ch) で受け取る
+        # デコード済みのPCM形式で受け取る
         return False
 
     def write(self, user, data: voice_recv.VoiceData):
-        if user is None:
+        if user is None or not hasattr(data, 'pcm') or data.pcm is None:
             return
         
-        user_id = user.id
-        if user_id not in self.buffers:
-            self.buffers[user_id] = bytearray()
-        
-        # PCM データをバッファに追加
-        self.buffers[user_id].extend(data.pcm)
+        try:
+            user_id = user.id
+            if user_id not in self.buffers:
+                self.buffers[user_id] = bytearray()
+            
+            # PCMデータをバッファに追加
+            self.buffers[user_id].extend(data.pcm)
+        except Exception as e:
+            # 個別のパケット書き込みエラーは無視してログ出力にとどめる
+            logger.warning(f"Voice write error for user {user}: {e}")
 
     def cleanup(self):
         self.buffers.clear()
