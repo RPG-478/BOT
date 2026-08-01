@@ -36,7 +36,6 @@ def we(description: str | None = None, title: str | None = None) -> discord.Embe
 class RealtimeWSOLAPitchShifter:
     """
     20msパケット単位のリアルタイム処理に特化した WSOLA ピッチシフター。
-    内部オーバーヘッドがなく、変換時間 0.5ms 前後で動作します。
     """
     def __init__(self, sample_rate: int = 48000):
         self.sample_rate = sample_rate
@@ -47,7 +46,6 @@ class RealtimeWSOLAPitchShifter:
         if semitones == 0 or len(pcm_bytes) == 0:
             return pcm_bytes
 
-        # ピッチ変換倍率 (2^(半音/12))
         factor = 2.0 ** (semitones / 12.0)
 
         # 16bit PCM -> float32
@@ -56,7 +54,6 @@ class RealtimeWSOLAPitchShifter:
         n_samples = audio_stereo.shape[0]  # 通常960サンプル
 
         # 1. 時間軸のリサンプリング (伸縮)
-        orig_indices = np.arange(n_samples)
         new_indices = np.arange(0, n_samples, factor)
         new_indices = new_indices[new_indices < n_samples - 1]
 
@@ -85,20 +82,21 @@ class RealtimeWSOLAPitchShifter:
         else:
             final_audio = np.pad(resampled, ((0, n_samples - out_len), (0, 0)), mode='constant')
 
-        # int16 へ変換して出力
         int16_audio = (final_audio * 32767.0).clip(-32768, 32767).astype(np.int16)
         return int16_audio.tobytes()
 
 
 # ============================================================
-# 超低遅延・安定再生ソース
+# 低遅延・安定再生ソース (バッファ目標 40ms)
 # ============================================================
 class VoiceChangerAudioSource(discord.AudioSource):
-    def __init__(self, target_buffer_ms: int = 15) -> None:
+    def __init__(self, target_buffer_ms: int = 40) -> None:
         self._buffer = bytearray()
         self._lock = threading.Lock()
+        # 目標バッファ量: 40ms
         self.target_prebuffer_bytes = int((target_buffer_ms / 1000.0) * BYTES_PER_SECOND)
-        self.max_buffer_bytes = int((35 / 1000.0) * BYTES_PER_SECOND)
+        # 上限バッファ量: 60ms (遅延累積防止のため溢れた分は破棄)
+        self.max_buffer_bytes = int((60 / 1000.0) * BYTES_PER_SECOND)
         self.is_buffering = True
 
     def feed(self, pcm: bytes) -> None:
@@ -151,7 +149,8 @@ class VoiceChangerSink(voice_recv.AudioSink):
         self.proc_count: int = 0
 
         self.shifter = RealtimeWSOLAPitchShifter(sample_rate=SAMPLE_RATE)
-        self.audio_source = VoiceChangerAudioSource(target_buffer_ms=15)
+        # ターゲットバッファを 40ms に設定
+        self.audio_source = VoiceChangerAudioSource(target_buffer_ms=40)
 
         if self.vc and self.vc.is_connected():
             try:
@@ -241,7 +240,7 @@ class VoiceChangerCog(commands.Cog):
             total_est_delay = avg_ms + buf_ms + 20.0
 
             await ctx.send(embed=we(
-                f"🎙️ **ボイスチェンジャー動作中 (リアルタイム WSOLA モード)**\n"
+                f"🎙️ **ボイスチェンジャー動作中 (バッファ 40ms 設定)**\n"
                 f"🎵 設定ピッチ: `{sink.semitones:+.1f}` 半音\n\n"
                 f"📊 **遅延ステータス (数値)**\n"
                 f"├ ⚡ 変換処理時間: `{proc_ms:.2f} ms` (平均: `{avg_ms:.2f} ms`)\n"
