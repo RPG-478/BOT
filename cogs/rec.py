@@ -271,6 +271,8 @@ class RecordingSink(voice_recv.AudioSink):
         self.opus_error_count = 0
 
         self._last_update_time = 0.0
+        self.last_detected_notes: list[str] = []
+        self._last_synth_time = 0.0
 
     def wants_opus(self) -> bool:
         return self.manual_decode
