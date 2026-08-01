@@ -310,6 +310,38 @@ class RecordingSink(voice_recv.AudioSink):
         self.packet_count += 1
         self._maybe_notify(now)
 
+        # --------------------------------------------------
+        # Sink クラスの write() 内部（または _write_inner() の末尾）に追加
+        # --------------------------------------------------
+        now = time.perf_counter()
+
+        # 0.25秒ごとに直近の音声からピッチ検出 ＆ ピアノ音生成して即座にVCへ鳴らす
+        if now - self._last_synth_time >= 0.25:
+            self._last_synth_time = now
+    
+            # 全ユーザーの直近のPCMバッファを取得
+            recent_pcm = bytes(buf[-48000:]) if len(buf) >= 48000 else bytes(buf)
+            detected = analyze_pitch_layers(recent_pcm, top_k=4)
+    
+            if detected:
+                # シャープ / フラット 表記の作成 (例: "C♯4(D♭4)")
+                self.last_detected_notes = [f"{sh}" if sh == fl else f"{sh}({fl})" for sh, fl, _ in detected]
+                
+                # 検出された音階をピアノ音としてボイスチャンネルにリアルタイム再生
+                midi_nums = [m for _, _, m in detected]
+                piano_pcm = synthesize_piano_chord(midi_nums, duration_sec=0.25)
+        
+                if self.vc and self.vc.is_connected() and not self.vc.is_playing():
+                    self.vc.play(discord.PCMAudio(io.BytesIO(piano_pcm)))
+
+        # メッセージ更新時に検出音階(self.last_detected_notes)も渡すように更新
+        if self.update_callback and (now - self._last_update_time >= 3.0):
+            self._last_update_time = now
+            asyncio.run_coroutine_threadsafe(
+                self.update_callback(self.packet_count, self.last_detected_notes), 
+                self.bot.loop
+            )
+
     def _identify(self, user, data) -> tuple[int, str, int]:
         if user is not None:
             name = getattr(user, "display_name", None) or getattr(user, "name", "user")
