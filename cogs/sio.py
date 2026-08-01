@@ -1205,18 +1205,15 @@ class VoiceControlView(discord.ui.View):
         else:
             await interaction.response.send_message("❌ ボイスチャンネルに接続していません。", ephemeral=True)
 
-import asyncio
 
 class AudioSink(voice_recv.AudioSink):
-    """
-    10パケット受信ごとに進行状況を通知するSink
-    """
     def __init__(self, bot, update_callback=None):
         super().__init__()
         self.bot = bot
         self.buffers = {}
         self.packet_count = 0
-        self.update_callback = update_callback  # メッセージ更新用の関数
+        self.update_callback = update_callback
+        self.last_update_time = 0  # 最後に更新した時間を保持
 
     def wants_opus(self) -> bool:
         return False
@@ -1225,7 +1222,6 @@ class AudioSink(voice_recv.AudioSink):
         if not hasattr(data, 'pcm') or not data.pcm:
             return
 
-        # ユーザー識別キーの決定
         if user is not None:
             user_key = f"{user.name}_{user.id}"
         elif hasattr(data, 'ssrc') and data.ssrc:
@@ -1237,12 +1233,12 @@ class AudioSink(voice_recv.AudioSink):
             self.buffers[user_key] = bytearray()
 
         self.buffers[user_key].extend(data.pcm)
-
-        # パケット受信カウントをインクリメント
         self.packet_count += 1
 
-        # 10パケットごとにメッセージ更新処理を非同期呼び出し
-        if self.packet_count % 10 == 0 and self.update_callback:
+        # 3秒以上経過した場合のみメッセージ編集を呼び出す（レートリミット回避）
+        now = time.time()
+        if now - self.last_update_time >= 3.0 and self.update_callback:
+            self.last_update_time = now
             asyncio.run_coroutine_threadsafe(
                 self.update_callback(self.packet_count),
                 self.bot.loop
