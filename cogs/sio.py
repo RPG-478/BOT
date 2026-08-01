@@ -24,19 +24,21 @@ import wave
 import discord.opus
 
 logger = logging.getLogger(__name__)
-
+ 
 # OpusError(corrupted stream)が発生してもバックグラウンドスレッドを止めないように補正
 _original_decode = discord.opus.Decoder.decode
-
+ 
+ 
 def safe_decode(self, data, *, fec=False):
     try:
         return _original_decode(self, data, fec=fec)
     except discord.opus.OpusError as e:
         # corrupted stream (-4) などのエラーが発生した場合は空データ（無音）を返す
         logger.debug(f"Opus decode skipped corrupted packet: {e}")
-        # 48kHz, 2ch, 20ms の場合の標準フレームサイズは 960 サンプル (1920 バイト)
+        # 48kHz, 2ch, 16bit, 20ms の場合の標準フレームサイズは 960サンプル = 3840バイト
         return b'\x00' * 3840
-
+ 
+ 
 # safe_decode に差し替え
 discord.opus.Decoder.decode = safe_decode
 
@@ -1214,27 +1216,27 @@ class AudioSink(voice_recv.AudioSink):
         self.packet_count = 0
         self.update_callback = update_callback
         self.last_update_time = 0  # 最後に更新した時間を保持
-
+ 
     def wants_opus(self) -> bool:
         return False
-
+ 
     def write(self, user, data: voice_recv.VoiceData):
         if not hasattr(data, 'pcm') or not data.pcm:
             return
-
+ 
         if user is not None:
             user_key = f"{user.name}_{user.id}"
         elif hasattr(data, 'ssrc') and data.ssrc:
             user_key = f"Speaker_{data.ssrc}"
         else:
             user_key = "Unknown_Speaker"
-
+ 
         if user_key not in self.buffers:
             self.buffers[user_key] = bytearray()
-
+ 
         self.buffers[user_key].extend(data.pcm)
         self.packet_count += 1
-
+ 
         # 3秒以上経過した場合のみメッセージ編集を呼び出す（レートリミット回避）
         now = time.time()
         if now - self.last_update_time >= 3.0 and self.update_callback:
@@ -1243,8 +1245,11 @@ class AudioSink(voice_recv.AudioSink):
                 self.update_callback(self.packet_count),
                 self.bot.loop
             )
-
+ 
     def cleanup(self):
+        # 注意: voice_recv は listen 終了時にこの cleanup() を
+        # ファイナライザとして自動的に呼び出す(AudioSource.cleanup()と同様の仕様)。
+        # そのため stop_listening() を呼んだ後では buffers はすでに空になっている。
         self.buffers.clear()
 
 # =====================
@@ -2219,14 +2224,14 @@ class RecordingCog(commands.Cog):
     """
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-
+ 
     def get_state(self, guild_id: int) -> dict:
         """
         メインCog/Bot側の get_state と互換性を持つステート管理
         """
         if hasattr(self.bot, 'get_state'):
             return self.bot.get_state(guild_id)
-        
+ 
         if not hasattr(self.bot, 'states'):
             self.bot.states = {}
         if guild_id not in self.bot.states:
@@ -2251,7 +2256,7 @@ class RecordingCog(commands.Cog):
                 'sink': None
             }
         return self.bot.states[guild_id]
-
+ 
     # --------------------------------------------------
     # コマンドグループ: !rec [start|stop|status]
     # --------------------------------------------------
@@ -2259,21 +2264,21 @@ class RecordingCog(commands.Cog):
     async def rec_group(self, ctx: commands.Context):
         """!rec 単体で実行された場合はステータスを表示"""
         await self.rec_status(ctx)
-
+ 
     @rec_group.command(name="start")
     async def rec_start(self, ctx: commands.Context):
         """!rec start : 録音を開始"""
         if not ctx.author.voice or not ctx.author.voice.channel:
             return await ctx.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"))
-
+ 
         target_channel = ctx.author.voice.channel
         guild_id = ctx.guild.id
         state = self.get_state(guild_id)
         vc = ctx.voice_client
-
+ 
         if state.get('is_recording'):
             return await ctx.send(embed=we("⚠️ 既にこのサーバーで録音処理が実行中です。"))
-
+ 
         # VC接続の制御
         try:
             if vc is None:
@@ -2285,15 +2290,15 @@ class RecordingCog(commands.Cog):
                 await vc.move_to(target_channel)
         except Exception as e:
             return await ctx.send(embed=we(f"❌ ボイスチャンネルへの接続に失敗しました: `{e}`"))
-
+ 
         # 最初のお知らせメッセージを送信（これを後で編集します）
         status_msg = await ctx.send(
             embed=we(f"🎙️ **{target_channel.name}** で録音を開始しました。\n"
                      f"📦 受信パケット数: `0` 個\n"
                      f"停止するには `!rec stop` を実行してください。")
         )
-
-        # 10パケットごとにメッセージを更新する非同期関数
+ 
+        # 一定時間(3秒)ごとにメッセージを更新する非同期関数(レートリミット回避)
         async def on_packet_update(count: int):
             try:
                 # パケット数に応じてアイコンを交互に変更させて動作中であることを分かりやすく表現
@@ -2301,25 +2306,22 @@ class RecordingCog(commands.Cog):
                 await status_msg.edit(
                     embed=we(f"{indicator}\n"
                              f"🎙️ チャンネル: **{target_channel.name}**\n"
-                             f"📦 受信パケット数: `{count}` 個 (10パケットごとに更新)")
+                             f"📦 受信パケット数: `{count}` 個")
                 )
             except Exception:
                 pass  # メッセージ削除時などのエラー対策
-
+ 
         # Sink に bot とコールバックを渡して開始
         sink = AudioSink(bot=self.bot, update_callback=on_packet_update)
         vc.listen(sink)
-
+ 
         # ステート更新
         state['is_recording'] = True
         state['rec_start_time'] = time.time()
         state['sink'] = sink
         state['status_msg'] = status_msg
-
-        await ctx.send(
-            embed=we(f"🎙️ **{target_channel.name}** で録音を開始しました。\n停止するには `!rec stop` を実行してください。")
-        )
-
+        # ※ 開始通知は status_msg 1通のみ。以前あった重複送信(2通目)は削除しました。
+ 
     @rec_group.command(name="stop")
     async def rec_stop(self, ctx: commands.Context):
         """!rec stop : 録音を停止してWAVファイルを送信"""
@@ -2327,89 +2329,106 @@ class RecordingCog(commands.Cog):
         state = self.get_state(guild_id)
         vc = ctx.voice_client
         sink: AudioSink = state.get('sink')
-
+ 
         if not state.get('is_recording') or not vc or not isinstance(vc, voice_recv.VoiceRecvClient) or not sink:
             return await ctx.send(embed=we("⚠️ 現在録音は行われていません。"))
-
+ 
+        # ★最重要修正★
+        # voice_recv は stop_listening() (リスニング終了)のタイミングで
+        # sink.cleanup() をファイナライザとして自動的に呼び出す仕様のため、
+        # 何もしないと stop_listening() 実行後には sink.buffers が
+        # 空になってしまう。そのため「停止処理を呼ぶ前」に
+        # 録音データを別変数へ複製(退避)しておく。
+        captured_buffers = {key: bytes(pcm) for key, pcm in sink.buffers.items()}
+        captured_packet_count = sink.packet_count
+ 
         # 1. 録音停止
         try:
             vc.stop_listening()
         except Exception as e:
             logger.error(f"Stop listening error: {e}")
-
+ 
+        # 明示的にもクリーンアップを呼んでおく(ライブラリ側で既に呼ばれていても
+        # self.buffers.clear() は冪等なので二重に呼んでも問題ない)
+        try:
+            sink.cleanup()
+        except Exception:
+            pass
+ 
         # ステートの解除
         state['is_recording'] = False
         state['sink'] = None
-
+ 
         await ctx.send(embed=we("💾 録音を停止しました。ファイルを生成中です..."))
-
-        # 2. データの存在確認（デバッグ用ログ出し）
-        if not sink.buffers:
-            sink.cleanup()
-            return await ctx.send(embed=we("❌ 音声バッファが空でした。（発言が検知されなかったかパケットが届いていません）"))
-
+ 
+        # 2. データの存在確認
+        if not captured_buffers:
+            return await ctx.send(embed=we(
+                f"❌ 音声バッファが空でした。（発言が検知されなかったかパケットが届いていません。受信パケット数: `{captured_packet_count}`）"
+            ))
+ 
         files_to_send = []
-        
+ 
         # 3. ユーザー/SSRCごとにWAV化
-        for user_key, pcm_data in sink.buffers.items():
-            # あまりにデータが短い場合（1KB未満≒数ミリ秒）はノイズとみなしてスキップ
+        for user_key, pcm_data in captured_buffers.items():
+            # あまりにデータが短い場合（1920バイト未満）はノイズとみなしてスキップ
             if len(pcm_data) < 1920:
                 continue
-
+ 
             wav_buf = io.BytesIO()
             with wave.open(wav_buf, 'wb') as wf:
                 wf.setnchannels(2)        # 2ch ステレオ
                 wf.setsampwidth(2)        # 16-bit (2 byte)
                 wf.setframerate(48000)    # 48kHz
                 wf.writeframes(pcm_data)
-
+ 
             wav_buf.seek(0)
-            
+ 
+            # ファイル名に使えない記号を除去しておく(念のため)
+            safe_key = re.sub(r'[\\/*?:"<>|]', '_', user_key)
             file_item = discord.File(
-                fp=wav_buf, 
-                filename=f"rec_{user_key}_{int(time.time())}.wav"
+                fp=wav_buf,
+                filename=f"rec_{safe_key}_{int(time.time())}.wav"
             )
             files_to_send.append(file_item)
-
-        sink.cleanup()
-
+ 
         if not files_to_send:
             return await ctx.send(embed=we("⚠️ 送信可能な長さの録音データがありませんでした。"))
-
+ 
         # 4. 添付ファイル上限(10個ずつ)に分けて送信
+        #    ※ 以前あった「未定義の chunk_idx を使った二重送信」のバグを削除・修正済み
         for i in range(0, len(files_to_send), 10):
             chunk = files_to_send[i:i + 10]
-            await ctx.send(content=f"🎵 **録音データ ({i+1}〜{i+len(chunk)}件)**", files=chunk)
             await ctx.send(
-                content=f"🎵 **録音データ出力 ({chunk_idx + 1}〜{chunk_idx + len(chunk)}件)**:", 
+                content=f"🎵 **録音データ出力 ({i + 1}〜{i + len(chunk)}件)**",
                 files=chunk
             )
-
+ 
     @rec_group.command(name="status")
     async def rec_status(self, ctx: commands.Context):
         """!rec status : 現在の録音状況を確認します"""
         guild_id = ctx.guild.id
         state = self.get_state(guild_id)
         is_rec = state.get('is_recording', False)
-
+ 
         if is_rec:
             elapsed = int(time.time() - state.get('rec_start_time', time.time()))
             m, s = divmod(elapsed, 60)
             h, m = divmod(m, 60)
             time_str = f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
-
+ 
             embed = discord.Embed(
-                title="🎙️ 録音中", 
-                description=f"現在の経過時間: **{time_str}**", 
+                title="🎙️ 録音中",
+                description=f"現在の経過時間: **{time_str}**",
                 color=0x2ECC71
             )
         else:
             embed = discord.Embed(
-                title="⏸️ 待機中", 
-                description="現在このサーバーで録音は行われていません。", 
+                title="⏸️ 待機中",
+                description="現在このサーバーで録音は行われていません。",
                 color=0x95A5A6
             )
-
+ 
         await ctx.send(embed=embed)
 
 
