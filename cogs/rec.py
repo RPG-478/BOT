@@ -179,50 +179,64 @@ def _patch_voice_recv_client() -> None:
 
 _patch_voice_recv_client()
 
-# MIDI ノート番号から音階名（C4, D#5 など）へ変換する関数
-NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+NOTE_NAMES_SHARP = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"]
+NOTE_NAMES_FLAT  = ["C", "D♭", "D", "E♭", "E", "F", "G♭", "G", "A♭", "A", "B♭", "B"]
 
-def freq_to_note_name(freq: float) -> str | None:
-    if freq < 20 or freq > 4186:  # ピアノの範囲 (A0 〜 C8) 外をフィルタ
+def midi_to_freq(midi_num: int) -> float:
+    return 440.0 * (2.0 ** ((midi_num - 69) / 12.0))
+
+def freq_to_notes(freq: float) -> tuple[str, str, int] | None:
+    if freq < 27.5 or freq > 4186.0:  # A0 〜 C8
         return None
-    # 周波数 -> MIDI ノート番号
-    midi_num = round(69 + 12 * math.log2(freq / 440.0))
-    note_index = midi_num % 12
+    midi_num = int(round(69 + 12 * math.log2(freq / 440.0)))
+    idx = midi_num % 12
     octave = (midi_num // 12) - 1
-    return f"{NOTE_NAMES[note_index]}{octave}"
+    return NOTE_NAMES_SHARP[idx] + str(octave), NOTE_NAMES_FLAT[idx] + str(octave), midi_num
 
-def extract_polyphonic_notes(pcm_bytes: bytes, sample_rate: int = 48000, top_k: int = 5) -> list[str]:
-    """PCM(16bit stereo)データからFFT解析で主要な周波数ピーク(和音/倍音層)を検出"""
-    if len(pcm_bytes) < 3840:  # 十分なサンプルがない場合はスキップ
+def analyze_pitch_layers(pcm_bytes: bytes, top_k: int = 4) -> list[tuple[str, str, int]]:
+    """PCMから複数音階（和音・倍音層）を検出"""
+    if len(pcm_bytes) < 3840:
         return []
-
-    # 16-bit PCM (ステレオ) を numpy 配列に変換してモノラル化
     audio_data = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
-    mono = audio_data[::2]  # Lチャンネルのみ抽出
-
-    # ハミング窓をかけて FFT 実行
+    mono = audio_data[::2]
     windowed = mono * np.hamming(len(mono))
     fft_spectrum = np.abs(np.fft.rfft(windowed))
-    freqs = np.fft.rfftfreq(len(mono), d=1.0 / sample_rate)
+    freqs = np.fft.rfftfreq(len(mono), d=1.0 / 48000)
 
-    # パワースペクトルのピーク検出（和音・声の層を拾う）
-    threshold = np.max(fft_spectrum) * 0.15  # ピーク判定の閾値
-    peaks, _ = find_peaks(fft_spectrum, height=threshold, distance=int(30 / (sample_rate / len(mono))))
+    max_val = np.max(fft_spectrum)
+    if max_val < 500:
+        return []
 
+    peaks, _ = find_peaks(fft_spectrum, height=max_val * 0.18, distance=max(1, int(30 / (48000 / len(mono)))))
     if len(peaks) == 0:
         return []
 
-    # 音量が大きい順にソートして上位 top_k 個のピークを取得
     sorted_peaks = sorted(peaks, key=lambda p: fft_spectrum[p], reverse=True)[:top_k]
-    
-    notes = []
+    results, seen_midi = [], set()
     for p in sorted_peaks:
-        f = freqs[p]
-        note_name = freq_to_note_name(f)
-        if note_name and note_name not in notes:
-            notes.append(note_name)
+        res = freq_to_notes(freqs[p])
+        if res and res[2] not in seen_midi:
+            seen_midi.add(res[2])
+            results.append(res)
+    return results
 
-    return notes
+def synthesize_piano_chord(midi_list: list[int], duration_sec: float = 0.25) -> bytes:
+    """検出MIDIからピアノ波形(PCM 16bit stereo 48kHz)を生成"""
+    num_samples = int(48000 * duration_sec)
+    t = np.linspace(0, duration_sec, num_samples, endpoint=False)
+    mixed_signal = np.zeros(num_samples, dtype=np.float32)
+
+    for midi_num in midi_list:
+        f0 = midi_to_freq(midi_num)
+        note_wave = np.sin(2 * np.pi * f0 * t) + 0.5 * np.sin(2 * np.pi * f0 * 2 * t) + 0.25 * np.sin(2 * np.pi * f0 * 3 * t)
+        decay = np.exp(-6.0 * t) * np.minimum(t / 0.005, 1.0)
+        mixed_signal += note_wave * decay
+
+    if len(midi_list) > 0:
+        mixed_signal /= math.sqrt(len(midi_list))
+
+    audio_int16 = (mixed_signal * 12000).clip(-32768, 32767).astype(np.int16)
+    return np.column_stack((audio_int16, audio_int16)).flatten().tobytes()
 # ============================================================
 # 録音 Sink
 # ============================================================
