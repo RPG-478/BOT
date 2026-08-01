@@ -33,55 +33,83 @@ def we(description: str | None = None, title: str | None = None) -> discord.Embe
     return discord.Embed(title=title, description=description, color=0x3498DB)
 
 # ============================================================
-# 超高速ピッチ変換処理 (低レイテンシ仕様)
+# リアルタイム・時間長維持ピッチ変換 (Granular Overlap-Add)
 # ============================================================
 def pitch_shift_pcm(pcm_bytes: bytes, semitones: float) -> bytes:
+    """
+    時間長（速度）を変えずにピッチ（音高）のみを変更するピッチシフター。
+    20ms(3840bytes)の入力に対し、常に20ms(3840bytes)の出力を返すため
+    バッファアンダーラン（途切れ）が発生しません。
+    """
     if semitones == 0 or len(pcm_bytes) == 0:
         return pcm_bytes
 
     factor = 2.0 ** (semitones / 12.0)
 
-    from fractions import Fraction
-    frac = Fraction(factor).limit_denominator(12)  # 分母の上限を下げて処理を高速化
-    up, down = frac.numerator, frac.denominator
-
+    # float32 (-1.0 ~ 1.0) に変換
     audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+    num_samples = len(audio) // CHANNELS  # 960 サンプル (20ms)
     audio_stereo = audio.reshape(-1, CHANNELS)
 
-    # padtype='line' で端の低レイテンシ化を図る
-    shifted_ch0 = scipy.signal.resample_poly(audio_stereo[:, 0], down, up, padtype='line')
-    shifted_ch1 = scipy.signal.resample_poly(audio_stereo[:, 1], down, up, padtype='line')
+    # グラニュラー処理パラメータ
+    grain_size = 256  # 約5.3ms
+    hop_size = 64     # 75% オーバーラップ
 
-    shifted_audio = np.column_stack((shifted_ch0, shifted_ch1))
-    int16_audio = (shifted_audio * 32767.0).clip(-32768, 32767).astype(np.int16)
+    window = np.hanning(grain_size)[:, None]  # ハニング窓
+    output = np.zeros_like(audio_stereo)
+    window_sum = np.zeros((num_samples, 1), dtype=np.float32) + 1e-6
+
+    from fractions import Fraction
+    frac = Fraction(factor).limit_denominator(12)
+    up, down = frac.numerator, frac.denominator
+
+    # 粒（グラニュール）単位でピッチシフト＆重ね合わせ
+    for pos in range(0, num_samples - grain_size + 1, hop_size):
+        grain = audio_stereo[pos:pos + grain_size] * window
+
+        # リサンプリング
+        g_ch0 = scipy.signal.resample_poly(grain[:, 0], down, up)
+        g_ch1 = scipy.signal.resample_poly(grain[:, 1], down, up)
+        resampled_grain = np.column_stack((g_ch0, g_ch1))
+
+        # 元の粒サイズにフィット調整
+        res_len = len(resampled_grain)
+        if res_len > grain_size:
+            resampled_grain = resampled_grain[:grain_size]
+        elif res_len < grain_size:
+            resampled_grain = np.pad(resampled_grain, ((0, grain_size - res_len), (0, 0)))
+
+        # オーバーラップ・アッド (OLA)
+        resampled_grain *= window
+        output[pos:pos + grain_size] += resampled_grain
+        window_sum[pos:pos + grain_size] += window ** 2
+
+    # 音量正規化 (窓関数の重なり補正)
+    output /= window_sum
+
+    # int16 にクリッピングしてバイト化
+    int16_audio = (output * 32767.0).clip(-32768, 32767).astype(np.int16)
     return int16_audio.tobytes()
 
+
 # ============================================================
-# 超低遅延・超即応型 ジッターバッファ
+# 超低遅延・安定型再生ソース
 # ============================================================
-class UltraLowLatencyAudioSource(discord.AudioSource):
-    """
-    遅延50ms以下を達成するための超低遅延バッファ。
-    バッファ量の上限を低く保ち、溜まりすぎたデータを自動でスキップ（パージ）します。
-    """
-    def __init__(self, target_buffer_ms: int = 20, max_buffer_ms: int = 40) -> None:
+class VoiceChangerAudioSource(discord.AudioSource):
+    def __init__(self, target_buffer_ms: int = 20) -> None:
         self._buffer = bytearray()
         self._lock = threading.Lock()
-        
-        # 目標バッファ量 (例: 20ms = 1パケット分)
         self.target_prebuffer_bytes = int((target_buffer_ms / 1000.0) * BYTES_PER_SECOND)
-        # 許容上限バッファ量 (例: 40ms = 2パケット分)
-        self.max_buffer_bytes = int((max_buffer_ms / 1000.0) * BYTES_PER_SECOND)
+        self.max_buffer_bytes = int((60 / 1000.0) * BYTES_PER_SECOND)
         self.is_buffering = True
 
     def feed(self, pcm: bytes) -> None:
         with self._lock:
             self._buffer.extend(pcm)
-
-            # 遅延が積み重なるのを防ぐため、上限(40ms)を超えたら古いデータを切り捨てる
+            
+            # バッファが溜まりすぎた場合はパージして低遅延を維持
             if len(self._buffer) > self.max_buffer_bytes:
                 overflow = len(self._buffer) - self.max_buffer_bytes
-                # FRAME_SIZE (4byte) 単位で整列させて切り捨てる
                 overflow = (overflow // FRAME_SIZE) * FRAME_SIZE
                 del self._buffer[:overflow]
 
@@ -106,8 +134,9 @@ class UltraLowLatencyAudioSource(discord.AudioSource):
     def is_opus(self) -> bool:
         return False
 
+
 # ============================================================
-# 音声受信 & パフォーマンス計測 Sink
+# 音声受信 & 変換 Sink
 # ============================================================
 class VoiceChangerSink(voice_recv.AudioSink):
     def __init__(self, bot: commands.Bot, vc: voice_recv.VoiceRecvClient, semitones: float = 0.0):
@@ -124,8 +153,7 @@ class VoiceChangerSink(voice_recv.AudioSink):
         self.avg_proc_time_ms: float = 0.0
         self.proc_count: int = 0
 
-        # 目標20ms・上限40msの超低遅延バッファを採用
-        self.audio_source = UltraLowLatencyAudioSource(target_buffer_ms=20, max_buffer_ms=40)
+        self.audio_source = VoiceChangerAudioSource(target_buffer_ms=20)
         if self.vc and self.vc.is_connected():
             try:
                 self.vc.play(self.audio_source)
@@ -155,12 +183,12 @@ class VoiceChangerSink(voice_recv.AudioSink):
         with self._lock:
             current_pitch = self.semitones
 
+        # ピッチ変換（20ms長を維持して変換）
         processed_pcm = pitch_shift_pcm(pcm, current_pitch)
         self.audio_source.feed(processed_pcm)
 
         proc_time = (time.perf_counter() - start_time) * 1000.0
         self.last_proc_time_ms = proc_time
-
         self.proc_count += 1
         self.avg_proc_time_ms += (proc_time - self.avg_proc_time_ms) / min(self.proc_count, 50)
 
@@ -192,6 +220,7 @@ class VoiceChangerSink(voice_recv.AudioSink):
     def cleanup(self) -> None:
         self._running = False
 
+
 # ============================================================
 # ボイスチェンジャー Cog 本体
 # ============================================================
@@ -210,11 +239,10 @@ class VoiceChangerCog(commands.Cog):
             proc_ms = sink.last_proc_time_ms
             avg_ms = sink.avg_proc_time_ms
             buf_ms = sink.audio_source.buffered_ms
-            # パケット伝送基本周期(20ms) + 処理時間 + バッファ滞留量
             total_est_delay = avg_ms + buf_ms + 20.0
 
             await ctx.send(embed=we(
-                f"🎙️ **ボイスチェンジャー動作中 (超低遅延モード)**\n"
+                f"🎙️ **ボイスチェンジャー動作中 (超低遅延＆滑らかモード)**\n"
                 f"🎵 設定ピッチ: `{sink.semitones:+.1f}` 半音\n\n"
                 f"📊 **遅延ステータス (数値)**\n"
                 f"├ ⚡ 変換処理時間: `{proc_ms:.2f} ms` (平均: `{avg_ms:.2f} ms`)\n"
@@ -257,7 +285,7 @@ class VoiceChangerCog(commands.Cog):
 
         self.vc_sessions[guild_id] = {"sink": sink, "vc": vc}
         await ctx.send(embed=we(
-            f"🎙️ **{target_channel.name}** で低遅延モードを開始しました！\n"
+            f"🎙️ **{target_channel.name}** でボイスチェンジャーを開始しました！\n"
             f"🎵 ピッチ: `{pitch:+.1f}` 半音\n"
             f"📊 `!vc` で遅延数値を確認できます。"
         ))
