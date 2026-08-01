@@ -94,7 +94,6 @@ FRAME_SIZE = 4
 # 無音ギャップが異常に長くなった場合(切断・長時間退席など)にファイルが
 # 膨張しすぎないよう上限を設ける
 MAX_GAP_SECONDS = 10
-
 # yt-dlpの設定（ストリーミング再生用および検索用）
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -1276,6 +1275,7 @@ class AudioSink(voice_recv.AudioSink):
         self.last_update_time = 0
  
         # --- 診断用カウンタ ---
+        self.write_call_count = 0
         self.dave_error_count = 0
         self.opus_error_count = 0
         self.total_frame_count = 0
@@ -1286,6 +1286,19 @@ class AudioSink(voice_recv.AudioSink):
         return True
  
     def write(self, user, data: voice_recv.VoiceData):
+        try:
+            self._write_inner(user, data)
+        except Exception as e:
+            # ここに来る例外は DAVE復号/Opusデコード以外の想定外のバグ。
+            # voice_recv 側が write() の例外を握りつぶすことがあるため、
+            # 必ず自分でログに出して見えるようにしておく。
+            logger.error(f"[REC] AudioSink.write() で予期せぬエラー: {e!r}", exc_info=True)
+ 
+    def _write_inner(self, user, data: voice_recv.VoiceData):
+        # write() が実際に呼ばれているかどうかを独立してカウント
+        # (opusデータの有無に関わらず、呼び出された時点でカウントする)
+        self.write_call_count += 1
+ 
         raw_opus = getattr(data, 'opus', None)
         if not raw_opus:
             return
@@ -1307,7 +1320,8 @@ class AudioSink(voice_recv.AudioSink):
             payload = self.vc.dave_decrypt(user_id, bytes(raw_opus))
         except Exception as e:
             self.dave_error_count += 1
-            logger.debug(f"DAVE decrypt failed for {user_key}: {e}")
+            if self.dave_error_count <= 3:  # ログが埋め尽くされないよう最初の数回だけ詳細を出す
+                logger.error(f"[REC] DAVE decrypt failed for {user_key}: {e!r}", exc_info=True)
             return
  
         # --- 2. Opusデコード(ユーザーごとにデコーダーを使い回す) ---
@@ -1364,7 +1378,6 @@ class AudioSink(voice_recv.AudioSink):
         self.buffers.clear()
         self.user_start_time.clear()
         self.decoders.clear()
-
 
 
 # =====================
@@ -2465,6 +2478,7 @@ class RecordingCog(commands.Cog):
         captured_buffers = {key: bytes(pcm) for key, pcm in sink.buffers.items()}
         captured_packet_count = sink.packet_count
         # 診断用カウンタも退避
+        write_calls = sink.write_call_count
         dave_errors = sink.dave_error_count
         opus_errors = sink.opus_error_count
         total_frames = sink.total_frame_count
@@ -2491,7 +2505,8 @@ class RecordingCog(commands.Cog):
         opus_rate = (opus_errors / total_frames * 100) if total_frames else 0
         await ctx.send(embed=we(
             "💾 録音を停止しました。ファイルを生成中です...\n"
-            f"🩺 診断: 総フレーム `{total_frames}` / DAVE復号失敗 `{dave_errors}` (`{dave_rate:.1f}%`) "
+            f"🩺 診断: write()呼び出し `{write_calls}` / 総フレーム(opusあり) `{total_frames}` / "
+            f"DAVE復号失敗 `{dave_errors}` (`{dave_rate:.1f}%`) "
             f"/ Opusデコード失敗 `{opus_errors}` (`{opus_rate:.1f}%`)"
         ))
  
