@@ -25,14 +25,26 @@ import discord.opus
  
 logger = logging.getLogger(__name__)
  
+# --- 診断用カウンタ ---
+# Opusデコードの総試行回数と失敗(OpusError)回数を記録する。
+# 失敗率が異常に高い場合(目安: 数%を大きく超える)、ネットワークの
+# パケットロスではなく、暗号化方式(RTP復号)とライブラリのバージョン
+# 不整合が原因である可能性が高い。
+_opus_decode_stats = {'total': 0, 'errors': 0}
+_opus_decode_lock = threading.Lock()
+ 
 # OpusError(corrupted stream)が発生してもバックグラウンドスレッドを止めないように補正
 _original_decode = discord.opus.Decoder.decode
  
  
 def safe_decode(self, data, *, fec=False):
+    with _opus_decode_lock:
+        _opus_decode_stats['total'] += 1
     try:
         return _original_decode(self, data, fec=fec)
     except discord.opus.OpusError as e:
+        with _opus_decode_lock:
+            _opus_decode_stats['errors'] += 1
         # corrupted stream (-4) などのエラーが発生した場合は空データ（無音）を返す
         logger.debug(f"Opus decode skipped corrupted packet: {e}")
         # 48kHz, 2ch, 16bit, 20ms の場合の標準フレームサイズは 960サンプル = 3840バイト
@@ -1289,6 +1301,7 @@ class AudioSink(voice_recv.AudioSink):
         self.user_start_time.clear()
 
 
+
 # =====================
 # Main Voice Cog (Updated)
 # =====================
@@ -2328,9 +2341,21 @@ class RecordingCog(commands.Cog):
         except Exception as e:
             return await ctx.send(embed=we(f"❌ ボイスチャンネルへの接続に失敗しました: `{e}`"))
  
+        # --- 診断: 現在ネゴシエートされている暗号化モードをログ出力 ---
+        # 新方式(aead_xchacha20_poly1305_rtpsize / aead_aes256_gcm_rtpsize)以外や、
+        # ライブラリのバージョン不整合が疑われる場合はここで確認できる。
+        negotiated_mode = getattr(vc, 'mode', '不明')
+        logger.info(f"[REC] Voice encryption mode: {negotiated_mode}")
+ 
+        # このセッション用にOpusデコードの成功/失敗カウンタをリセット
+        with _opus_decode_lock:
+            _opus_decode_stats['total'] = 0
+            _opus_decode_stats['errors'] = 0
+ 
         # 最初のお知らせメッセージを送信（これを後で編集します）
         status_msg = await ctx.send(
             embed=we(f"🎙️ **{target_channel.name}** で録音を開始しました。\n"
+                     f"🔐 暗号化モード: `{negotiated_mode}`\n"
                      f"📦 受信パケット数: `0` 個\n"
                      f"停止するには `!rec stop` を実行してください。")
         )
@@ -2396,7 +2421,20 @@ class RecordingCog(commands.Cog):
         state['is_recording'] = False
         state['sink'] = None
  
-        await ctx.send(embed=we("💾 録音を停止しました。ファイルを生成中です..."))
+        # --- 診断: Opusデコードの失敗率を表示 ---
+        # ここが数%を大きく超えて高い(例: 20%以上)場合、ネットワークの
+        # 単純なパケットロスというより、暗号化方式/ライブラリのバージョン
+        # 不整合でデコードが機能していない可能性が高い。
+        with _opus_decode_lock:
+            total = _opus_decode_stats['total']
+            errors = _opus_decode_stats['errors']
+        error_rate = (errors / total * 100) if total else 0
+ 
+        await ctx.send(embed=we(
+            "💾 録音を停止しました。ファイルを生成中です...\n"
+            f"🩺 診断: Opusデコード試行 `{total}` 回中 失敗 `{errors}` 回 "
+            f"(失敗率 `{error_rate:.1f}%`)"
+        ))
  
         # 2. データの存在確認
         if not captured_buffers:
