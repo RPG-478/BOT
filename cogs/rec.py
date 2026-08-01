@@ -262,6 +262,12 @@ class RecordingSink(voice_recv.AudioSink):
         self.packet_queue: list[tuple[float, bytes]] = []
         self.packet_count = 0
         self._running = True
+        self._lock = threading.Lock()
+        self.labels: dict = {}
+        self.total_frame_count = 0
+        self.dave_error_count = 0
+        self.opus_error_count = 0
+        self.write_call_count = 0
 
         # やまびこ再生用のバックグラウンドタスクを起動 (write メソッドを止めないため)
         if self.is_echo:
