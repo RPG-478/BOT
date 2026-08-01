@@ -20,6 +20,7 @@ from scipy import signal
 import numpy as np
 import re
 import aiohttp
+import wave
 
 # yt-dlpの設定（ストリーミング再生用および検索用）
 YTDL_OPTIONS = {
@@ -1186,6 +1187,32 @@ class VoiceControlView(discord.ui.View):
         else:
             await interaction.response.send_message("❌ ボイスチャンネルに接続していません。", ephemeral=True)
 
+class AudioSink(voice_recv.AudioSink):
+    """
+    受信した音声データ（PCM）をユーザーごとにメモリ上にバッファリングするSinkクラス
+    """
+    def __init__(self):
+        super().__init__()
+        # {user_id: bytearray()} でPCMデータを蓄積
+        self.buffers = {}
+
+    def wants_opus(self) -> bool:
+        # デコード済みのPCM形式 (48kHz, 16bit, 2ch) で受け取る
+        return False
+
+    def write(self, user, data: voice_recv.VoiceData):
+        if user is None:
+            return
+        
+        user_id = user.id
+        if user_id not in self.buffers:
+            self.buffers[user_id] = bytearray()
+        
+        # PCM データをバッファに追加
+        self.buffers[user_id].extend(data.pcm)
+
+    def cleanup(self):
+        self.buffers.clear()
 
 # =====================
 # Main Voice Cog (Updated)
@@ -1204,6 +1231,7 @@ class VoiceCog(commands.Cog):
         self.default_speed = 1.0
         self.default_eq = "flat"
         self.vv_host = "http://localhost:50021"
+        self.recorders = {}
 
     def get_state(self, guild_id: int):
         if guild_id not in self.states:
@@ -1221,7 +1249,11 @@ class VoiceCog(commands.Cog):
                 'custom_eq_filter': None,
                 'is_paused': False,
                 'is_changing_setting': False,
-                'panel_message': None 
+                'panel_message': None,
+                # --- 録音用ステート ---
+                'is_recording': False,
+                'rec_start_time': 0,
+                'sink': None
             }
         return self.states[guild_id]
 
@@ -2148,7 +2180,189 @@ class VoiceCog(commands.Cog):
         await interaction.followup.send(f"🗣️ **再生中:** `{text}` (話者ID: {speaker})")
 
 
+class RecordingCog(commands.Cog):
+    """
+    ボイスチャンネル録音機能を管理するCog
+    """
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    def get_state(self, guild_id: int) -> dict:
+        """
+        メインCog/Bot側の get_state と互換性を持つステート管理
+        """
+        if hasattr(self.bot, 'get_state'):
+            return self.bot.get_state(guild_id)
+        
+        if not hasattr(self.bot, 'states'):
+            self.bot.states = {}
+        if guild_id not in self.bot.states:
+            self.bot.states[guild_id] = {
+                'queue': None,
+                'current_ctx': None,
+                'is_processing_queue': False,
+                'current_track': None,
+                'start_time': 0,
+                'elapsed_offset': 0,
+                'retry_count': 0,
+                'volume': 1.0,
+                'speed': 1.0,
+                'eq': 'flat',
+                'custom_eq_filter': None,
+                'is_paused': False,
+                'is_changing_setting': False,
+                'panel_message': None,
+                # --- 録音用ステート ---
+                'is_recording': False,
+                'rec_start_time': 0,
+                'sink': None
+            }
+        return self.bot.states[guild_id]
+
+    record_group = app_commands.Group(name="record", description="ボイスチャンネルの録音コマンド")
+
+    @record_group.command(name="start", description="ボイスチャンネルの録音を開始します")
+    async def record_start(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        # 1. ユーザーがVCに入っているかチェック
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            return await interaction.followup.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"))
+
+        target_channel = interaction.user.voice.channel
+        guild_id = interaction.guild_id
+        state = self.get_state(guild_id)
+        vc = interaction.guild.voice_client
+
+        # 2. すでに録音中か確認
+        if state.get('is_recording'):
+            return await interaction.followup.send(embed=we("⚠️ 既にこのサーバーで録音処理が実行中です。"))
+
+        # 3. VoiceClientの接続制御 (voice_recv 互換クライアントとして接続)
+        try:
+            if vc is None:
+                vc = await target_channel.connect(cls=voice_recv.VoiceRecvClient)
+            elif not isinstance(vc, voice_recv.VoiceRecvClient):
+                # 通常のVoiceClientが繋がっている場合は切断して再接続
+                await vc.disconnect(force=True)
+                vc = await target_channel.connect(cls=voice_recv.VoiceRecvClient)
+            elif vc.channel != target_channel:
+                await vc.move_to(target_channel)
+        except Exception as e:
+            logger.error(f"VC Connection Error during recording start: {e}")
+            return await interaction.followup.send(embed=we(f"❌ ボイスチャンネルへの接続に失敗しました: `{e}`"))
+
+        # 4. Sinkの生成とリスニングの開始
+        sink = AudioSink()
+        vc.listen(sink)
+
+        # 5. ステートの更新
+        state['is_recording'] = True
+        state['rec_start_time'] = time.time()
+        state['sink'] = sink
+        state['current_interaction'] = interaction
+
+        await interaction.followup.send(
+            embed=we(f"🎙️ **{target_channel.name}** で録音を開始しました。\n停止するには `/record stop` を実行してください。")
+        )
+
+    @record_group.command(name="stop", description="録音を停止し、音声ファイルを保存・送信します")
+    async def record_stop(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        guild_id = interaction.guild_id
+        state = self.get_state(guild_id)
+        vc = interaction.guild.voice_client
+        sink: AudioSink = state.get('sink')
+
+        if not state.get('is_recording') or not vc or not isinstance(vc, voice_recv.VoiceRecvClient) or not sink:
+            return await interaction.followup.send(embed=we("⚠️ 現在録音は行われていません。"))
+
+        # 1. 録音停止
+        try:
+            vc.stop_listening()
+        except Exception as e:
+            logger.error(f"Stop listening error: {e}")
+
+        # 2. ステートの初期化
+        state['is_recording'] = False
+        state['sink'] = None
+
+        await interaction.followup.send(embed=we("💾 録音を停止しました。音声データを書き出し中です..."))
+
+        if not sink.buffers:
+            await interaction.channel.send(embed=we("✅ 録音データが検出されなかったか、発言がありませんでした。"))
+            sink.cleanup()
+            return
+
+        # 3. ユーザーごとにWAVファイルを書き出し
+        files_to_send = []
+        for user_id, pcm_data in sink.buffers.items():
+            if not pcm_data:
+                continue
+
+            user = self.bot.get_user(user_id)
+            username = user.name if user else f"User_{user_id}"
+
+            # WAV フォーマット作成 (48kHz, 16-bit, Stereo)
+            wav_buf = io.BytesIO()
+            with wave.open(wav_buf, 'wb') as wf:
+                wf.setnchannels(2)        # 2ch
+                wf.setsampwidth(2)        # 16bit
+                wf.setframerate(48000)    # 48kHz
+                wf.writeframes(pcm_data)
+
+            wav_buf.seek(0)
+            
+            file_item = discord.File(
+                fp=wav_buf, 
+                filename=f"rec_{username}_{int(time.time())}.wav"
+            )
+            files_to_send.append(file_item)
+
+        # 4. メモリクリア
+        sink.cleanup()
+
+        if not files_to_send:
+            await interaction.channel.send(embed=we("✅ 音声データが見つかりませんでした。"))
+            return
+
+        # 5. Discordの添付ファイル制限(最大10個)に合わせて送信
+        for chunk_idx in range(0, len(files_to_send), 10):
+            chunk = files_to_send[chunk_idx:chunk_idx + 10]
+            await interaction.channel.send(
+                content=f"🎵 **録音データ出力 ({chunk_idx + 1}〜{chunk_idx + len(chunk)}件)**:", 
+                files=chunk
+            )
+
+    @record_group.command(name="status", description="現在の録音状況を確認します")
+    async def record_status(self, interaction: discord.Interaction):
+        guild_id = interaction.guild_id
+        state = self.get_state(guild_id)
+        is_rec = state.get('is_recording', False)
+
+        if is_rec:
+            elapsed = int(time.time() - state.get('rec_start_time', time.time()))
+            m, s = divmod(elapsed, 60)
+            h, m = divmod(m, 60)
+            time_str = f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
+
+            embed = discord.Embed(
+                title="🎙️ 録音中", 
+                description=f"現在の経過時間: **{time_str}**", 
+                color=0x2ECC71
+            )
+        else:
+            embed = discord.Embed(
+                title="⏸️ 待機中", 
+                description="現在このサーバーで録音は行われていません。", 
+                color=0x95A5A6
+            )
+
+        await interaction.response.send_message(embed=embed)
+
 
 #↓落ちた原因これね
 async def setup(bot):
     await bot.add_cog(VoiceCog(bot))
+    await bot.add_cog(RecordingCog(bot))
