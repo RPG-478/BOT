@@ -1206,33 +1206,30 @@ class VoiceControlView(discord.ui.View):
             await interaction.response.send_message("❌ ボイスチャンネルに接続していません。", ephemeral=True)
 
 class AudioSink(voice_recv.AudioSink):
-    """
-    受信した音声データ(PCM)をユーザーごとにメモリ上にバッファリングするSinkクラス
-    （Corrupted stream 対策版）
-    """
     def __init__(self):
         super().__init__()
         self.buffers = {}
 
     def wants_opus(self) -> bool:
-        # デコード済みのPCM形式で受け取る
-        return False
+        return False  # PCMとして受け取る
 
     def write(self, user, data: voice_recv.VoiceData):
-        if user is None or not hasattr(data, 'pcm') or data.pcm is None:
+        if not hasattr(data, 'pcm') or data.pcm is None:
             return
-        
-        try:
-            user_id = user.id
-            if user_id not in self.buffers:
-                self.buffers[user_id] = bytearray()
-            
-            # PCMデータをバッファに追加
-            self.buffers[user_id].extend(data.pcm)
-        except Exception as e:
-            # 個別のパケット書き込みエラーは無視してログ出力にとどめる
-            logger.warning(f"Voice write error for user {user}: {e}")
 
+        # user が取得できている場合は user.id、取れない場合は ssrc や "unknown" をキーにする
+        if user is not None:
+            user_key = f"User_{user.name}_{user.id}"
+        elif hasattr(data, 'ssrc') and data.ssrc is not None:
+            user_key = f"SSRC_{data.ssrc}"
+        else:
+            user_key = "Unknown_User"
+
+        if user_key not in self.buffers:
+            self.buffers[user_key] = bytearray()
+
+        self.buffers[user_key].extend(data.pcm)
+        
     def cleanup(self):
         self.buffers.clear()
 
