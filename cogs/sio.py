@@ -22,7 +22,7 @@ import re
 import aiohttp
 import wave
 import discord.opus
-
+ 
 logger = logging.getLogger(__name__)
  
 # OpusError(corrupted stream)が発生してもバックグラウンドスレッドを止めないように補正
@@ -1251,6 +1251,7 @@ class AudioSink(voice_recv.AudioSink):
         # ファイナライザとして自動的に呼び出す(AudioSource.cleanup()と同様の仕様)。
         # そのため stop_listening() を呼んだ後では buffers はすでに空になっている。
         self.buffers.clear()
+
 
 # =====================
 # Main Voice Cog (Updated)
