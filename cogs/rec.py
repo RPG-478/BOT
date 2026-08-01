@@ -23,6 +23,9 @@ import threading
 import time
 import wave
 import ctypes.util
+import math
+import numpy as np
+from scipy.signal import find_peaks
 
 import discord
 import discord.opus
@@ -176,7 +179,50 @@ def _patch_voice_recv_client() -> None:
 
 _patch_voice_recv_client()
 
+# MIDI ノート番号から音階名（C4, D#5 など）へ変換する関数
+NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
+def freq_to_note_name(freq: float) -> str | None:
+    if freq < 20 or freq > 4186:  # ピアノの範囲 (A0 〜 C8) 外をフィルタ
+        return None
+    # 周波数 -> MIDI ノート番号
+    midi_num = round(69 + 12 * math.log2(freq / 440.0))
+    note_index = midi_num % 12
+    octave = (midi_num // 12) - 1
+    return f"{NOTE_NAMES[note_index]}{octave}"
+
+def extract_polyphonic_notes(pcm_bytes: bytes, sample_rate: int = 48000, top_k: int = 5) -> list[str]:
+    """PCM(16bit stereo)データからFFT解析で主要な周波数ピーク(和音/倍音層)を検出"""
+    if len(pcm_bytes) < 3840:  # 十分なサンプルがない場合はスキップ
+        return []
+
+    # 16-bit PCM (ステレオ) を numpy 配列に変換してモノラル化
+    audio_data = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+    mono = audio_data[::2]  # Lチャンネルのみ抽出
+
+    # ハミング窓をかけて FFT 実行
+    windowed = mono * np.hamming(len(mono))
+    fft_spectrum = np.abs(np.fft.rfft(windowed))
+    freqs = np.fft.rfftfreq(len(mono), d=1.0 / sample_rate)
+
+    # パワースペクトルのピーク検出（和音・声の層を拾う）
+    threshold = np.max(fft_spectrum) * 0.15  # ピーク判定の閾値
+    peaks, _ = find_peaks(fft_spectrum, height=threshold, distance=int(30 / (sample_rate / len(mono))))
+
+    if len(peaks) == 0:
+        return []
+
+    # 音量が大きい順にソートして上位 top_k 個のピークを取得
+    sorted_peaks = sorted(peaks, key=lambda p: fft_spectrum[p], reverse=True)[:top_k]
+    
+    notes = []
+    for p in sorted_peaks:
+        f = freqs[p]
+        note_name = freq_to_note_name(f)
+        if note_name and note_name not in notes:
+            notes.append(note_name)
+
+    return notes
 # ============================================================
 # 録音 Sink
 # ============================================================
@@ -434,6 +480,46 @@ class RecordingCog(commands.Cog):
         """!rec status : 録音状況を表示"""
         await self.status_command(ctx)
 
+    @rec_group.command(name="pitch")
+    @commands.guild_only()
+    async def rec_pitch(self, ctx: commands.Context):
+        """!rec pitch : 直近の音声からリアルタイムでピアノ音階（単音/和音/声の倍音層）を解析"""
+        guild_id = ctx.guild.id
+        session = self.sessions.get(guild_id)
+
+        if not session:
+            return await ctx.send(embed=we("⚠️ 現在録音中ではありません。`!rec start` で開始してください。"))
+
+        sink: RecordingSink = session["sink"]
+        audio_snapshot = sink.snapshot()
+
+        if not audio_snapshot:
+            return await ctx.send(embed=we("🎵 音声データがまだ蓄積されていません。話してから実行してください。"))
+
+        embed = discord.Embed(title="🎹 リアルタイム音階解析 (Pitch Detection)", color=0x3498DB)
+
+        found_any = False
+        for speaker_label, pcm in audio_snapshot.items():
+            # 直近 0.5 秒分のデータ（192000 * 0.5 = 96000 bytes）を取り出して解析
+            recent_pcm = pcm[-96000:] if len(pcm) > 96000 else pcm
+            
+            # 周波数解析を行って音階群を取得
+            detected_notes = extract_polyphonic_notes(recent_pcm, sample_rate=48000, top_k=6)
+
+            if detected_notes:
+                found_any = True
+                notes_str = " / ".join([f"`{n}`" for n in detected_notes])
+                embed.add_field(
+                    name=f"🎙️ {speaker_label}",
+                    value=f"検出音階（層）: {notes_str}",
+                    inline=False
+                )
+
+        if not found_any:
+            embed.description = "現在明確なピッチ（音階）は検出されませんでした。"
+
+        await ctx.send(embed=embed)
+    
     # --------------------------------------------------
     # コマンド処理の実装
     # --------------------------------------------------
@@ -604,6 +690,8 @@ class RecordingCog(commands.Cog):
             )
 
         await ctx.send(embed=embed)
+
+
 
     # --------------------------------------------------
     # エンコード処理
