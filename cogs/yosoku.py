@@ -91,11 +91,11 @@ class PredictionView(discord.ui.View):
             }).execute
         )
 
-        start_price = float(self.chart_data_full['Close'].iloc[124])
+        start_price = float(self.chart_data_full['Close'].iloc[61])
         future_price = float(self.chart_data_full['Close'].iloc[self.future_idx_end])
         change_rate = ((future_price - start_price) / start_price) * 100
 
-        vlines_date = self.chart_data_full.index[124]
+        vlines_date = self.chart_data_full.index[61]
         
         buf = io.BytesIO()
         mpf.plot(
@@ -148,7 +148,7 @@ class PredictionView(discord.ui.View):
         )
 
         embed.add_field(
-            name="1ヶ月後の変化",
+            name="10営業日後の変化",
             value=f"{start_price:,.1f}円 → {future_price:,.1f}円 ({change_rate:+.2f}%)",
             inline=False
         )
@@ -172,7 +172,7 @@ class StockGame(commands.Cog):
         except Exception:
             self.stock_df = pd.DataFrame()
 
-    @app_commands.command(name="quiz_stock", description="株価1ヶ月予測クイズを開始します")
+    @app_commands.command(name="quiz_stock", description="株価10営業日予測クイズを開始します")
     async def quiz_stock(self, interaction: discord.Interaction):
         if self.stock_df.empty:
             await interaction.response.send_message("銘柄データがありません。", ephemeral=True)
@@ -194,7 +194,7 @@ class StockGame(commands.Cog):
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
                 
-                if len(df) > 150:
+                if len(df) > 100:
                     info = stock.info
                     break
             except Exception:
@@ -203,25 +203,22 @@ class StockGame(commands.Cog):
             await interaction.followup.send("データ取得に失敗しました。")
             return
 
-        max_start_idx = len(df) - 125 - 20
+        max_start_idx = len(df) - 72
         if max_start_idx <= 0:
             await interaction.followup.send("データ期間が不足しています。")
             return
 
         start_idx = random.randint(0, max_start_idx)
-        end_idx = start_idx + 125
-        future_idx = end_idx + 20
-
-        chart_data_full = df.iloc[start_idx:future_idx+1].copy()
-        chart_data_initial = chart_data_full.iloc[:125].copy()
+        chart_data_full = df.iloc[start_idx : start_idx + 72].copy()
+        chart_data_initial = chart_data_full.iloc[:62].copy()
         
         price_start = chart_data_initial['Close'].iloc[-1]
         price_future = chart_data_full['Close'].iloc[-1]
         
         change_rate = (price_future - price_start) / price_start
-        if change_rate > 0.01:
+        if change_rate > 0.03:
             correct = "上がる"
-        elif change_rate < -0.01:
+        elif change_rate < -0.03:
             correct = "下がる"
         else:
             correct = "横ばい"
@@ -253,8 +250,8 @@ class StockGame(commands.Cog):
         pbr_str = f"{pbr_val}倍" if pbr_val is not None else "N/A"
 
         embed = discord.Embed(
-            title="株価1ヶ月予測クイズ",
-            description="右端から1ヶ月後の値動きを予測してください。",
+            title="株価10営業日予測クイズ",
+            description="右端から10営業日後の値動きを予測してください。",
             color=discord.Color.blue()
         )
         embed.add_field(
