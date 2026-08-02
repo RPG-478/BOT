@@ -1,6 +1,7 @@
 import io
 import random
 import os
+import math
 import asyncio
 import discord
 from discord import app_commands
@@ -11,7 +12,12 @@ import matplotlib
 matplotlib.use('Agg')
 import mplfinance as mpf
 
-import config  # Supabase設定を含む設定ファイル
+import config
+
+def truncate_num(val):
+    if isinstance(val, (int, float)) and not math.isnan(val):
+        return int(val)
+    return None
 
 class PredictionView(discord.ui.View):
     def __init__(self, correct_answer, chart_data_full, future_idx_end, ticker, name, sector, info, reward_amount=500):
@@ -40,10 +46,9 @@ class PredictionView(discord.ui.View):
     async def handle_answer(self, interaction: discord.Interaction, choice: str):
         user_id = str(interaction.user.id)
         is_correct = choice == self.correct_answer
-        result_text = "正解 🎉" if is_correct else "不正解 😢"
+        result_text = "正解" if is_correct else "不正解"
         earned_coins = self.reward_amount if is_correct else 0
         
-        # --- ago coin 決済処理 (chaos.py の方式を踏襲) ---
         if is_correct:
             res_user = await asyncio.to_thread(
                 config.supabase.table("users").select("balance").eq("user_id", user_id).execute
@@ -63,7 +68,6 @@ class PredictionView(discord.ui.View):
                 }).execute
             )
 
-        # --- 戦績データの更新 (stock_quiz_stats テーブル) ---
         res_stats = await asyncio.to_thread(
             config.supabase.table("stock_quiz_stats").select("*").eq("user_id", user_id).execute
         )
@@ -87,7 +91,6 @@ class PredictionView(discord.ui.View):
             }).execute
         )
 
-        # --- フィードバック数値計算 & 事後チャート生成 ---
         start_price = float(self.chart_data_full['Close'].iloc[124])
         future_price = float(self.chart_data_full['Close'].iloc[self.future_idx_end])
         change_rate = ((future_price - start_price) / start_price) * 100
@@ -114,68 +117,74 @@ class PredictionView(discord.ui.View):
         buf.seek(0)
         file = discord.File(buf, filename="after_candle.png")
 
-        # --- テクニカル分析メッセージ ---
         ma25 = self.chart_data_full['Close'].iloc[:125].rolling(25).mean().iloc[-1]
         ma75 = self.chart_data_full['Close'].iloc[:125].rolling(75).mean().iloc[-1]
         
         if ma25 > ma75:
-            ma_analysis = "予測時点では25日線が75日線の上に位置する短期上昇傾向（ゴールデンクロス後）でした。"
+            ma_analysis = "25日線が75日線の上に位置する短期上昇傾向（ゴールデンクロス後）"
         else:
-            ma_analysis = "予測時点では25日線が75日線の下に位置する短期下落傾向（デッドクロス後）でした。"
+            ma_analysis = "25日線が75日線の下に位置する短期下落傾向（デッドクロス後）"
 
         if change_rate > 5:
-            trend_summary = "1ヶ月間で強い上昇トレンドを示しました。"
+            trend_summary = "強い上昇トレンド"
         elif change_rate > 1:
-            trend_summary = "1ヶ月間でゆるやかな上昇となりました。"
+            trend_summary = "ゆるやかな上昇"
         elif change_rate < -5:
-            trend_summary = "1ヶ月間で大幅な下落となりました。"
+            trend_summary = "大幅な下落"
         elif change_rate < -1:
-            trend_summary = "1ヶ月間でゆるやかな下落となりました。"
+            trend_summary = "ゆるやかな下落"
         else:
-            trend_summary = "1ヶ月間ほぼレンジ内での横ばい推移となりました。"
+            trend_summary = "レンジ内での横ばい推移"
 
-        market_cap = self.info.get('marketCap', None)
-        market_cap_str = f"{market_cap / 100000000:.1f}億円" if market_cap else "N/A"
-        per_str = f"{self.info.get('trailingPE', 'N/A')}"
-        pbr_str = f"{self.info.get('priceToBook', 'N/A')}"
-        dividend_yield = self.info.get('dividendYield', None)
-        div_str = f"{dividend_yield * 100:.2f}%" if dividend_yield else "N/A"
+        raw_market_cap = self.info.get('marketCap', None)
+        market_cap_val = truncate_num(raw_market_cap / 100000000) if raw_market_cap else None
+        market_cap_str = f"{market_cap_val:,}億円" if market_cap_val is not None else "N/A"
 
-        # --- Embed作成 ---
+        per_val = truncate_num(self.info.get('trailingPE', None))
+        per_str = f"{per_val}倍" if per_val is not None else "N/A"
+
+        pbr_val = truncate_num(self.info.get('priceToBook', None))
+        pbr_str = f"{pbr_val}倍" if pbr_val is not None else "N/A"
+
+        div_raw = self.info.get('dividendYield', None)
+        div_str = f"{div_raw * 100:.2f}%" if isinstance(div_raw, (int, float)) else "N/A"
+
+        reward_msg = f"\n獲得報酬: **+{earned_coins:,} ago coin**" if is_correct else ""
+
         embed = discord.Embed(
             title=f"結果発表: {result_text} (正解: {self.correct_answer})",
-            description=(
-                f"回答者: {interaction.user.mention}\n"
-                f"選択した予測: **{choice}**\n"
-                f"{f'🎁 **+{earned_coins:,} ago coin** を獲得しました！' if is_correct else ''}"
-            ),
+            description=f"回答者: {interaction.user.mention}\n選択予測: **{choice}**{reward_msg}",
             color=discord.Color.green() if is_correct else discord.Color.red()
         )
         
         embed.add_field(
             name="銘柄情報",
             value=f"**企業名**: {self.name}\n**コード**: {self.ticker}\n**業種**: {self.sector}",
-            inline=False
+            inline=True
         )
 
         embed.add_field(
-            name="1ヶ月後の価格変化（フィードバック）",
+            name="財務指標",
+            value=f"**時価総額**: {market_cap_str}\n**PER**: {per_str}\n**PBR**: {pbr_str}\n**配当利回り**: {div_str}",
+            inline=True
+        )
+
+        embed.add_field(
+            name="1ヶ月後の価格変化",
             value=(
                 f"**基準日価格**: {start_price:,.1f}円\n"
                 f"**1ヶ月後価格**: {future_price:,.1f}円\n"
                 f"**変動幅**: {price_diff:+,.1f}円 ({change_rate:+.2f}%)\n"
-                f"**期間中最高値**: {high_price:,.1f}円 / **最安値**: {low_price:,.1f}円\n"
+                f"**期間最高値**: {high_price:,.1f}円\n"
+                f"**期間最安値**: {low_price:,.1f}円\n"
                 f"**展開**: {trend_summary}"
             ),
             inline=False
         )
 
         embed.add_field(
-            name="テクニカル & 財務ポイント",
-            value=(
-                f"**移動平均線分析**: {ma_analysis}\n"
-                f"**指標**: 時価総額: {market_cap_str} | PER: {per_str}倍 | PBR: {pbr_str}倍 | 配当利回り: {div_str}"
-            ),
+            name="テクニカル分析",
+            value=f"**移動平均線**: {ma_analysis}",
             inline=False
         )
 
@@ -270,19 +279,28 @@ class StockGame(commands.Cog):
 
         period_str = f"{chart_data_initial.index[0].strftime('%Y-%m-%d')} 〜 {chart_data_initial.index[-1].strftime('%Y-%m-%d')}"
         
-        market_cap = info.get('marketCap', None)
-        market_cap_str = f"{market_cap / 100000000:.1f}億円" if market_cap else "N/A"
-        per_str = f"{info.get('trailingPE', 'N/A')}"
-        pbr_str = f"{info.get('priceToBook', 'N/A')}"
+        raw_market_cap = info.get('marketCap', None)
+        market_cap_val = truncate_num(raw_market_cap / 100000000) if raw_market_cap else None
+        market_cap_str = f"{market_cap_val:,}億円" if market_cap_val is not None else "N/A"
+
+        per_val = truncate_num(info.get('trailingPE', None))
+        per_str = f"{per_val}倍" if per_val is not None else "N/A"
+
+        pbr_val = truncate_num(info.get('priceToBook', None))
+        pbr_str = f"{pbr_val}倍" if pbr_val is not None else "N/A"
 
         embed = discord.Embed(
             title="株価1ヶ月予測チャートクイズ",
-            description=f"対象期間: {period_str} (日足6ヶ月)\n右端（基準日）から **1ヶ月後（約20営業日後）** の値動きを予測してください。\n正解すると **500 ago coin** を獲得できます！",
+            description=(
+                f"**対象期間**: {period_str} (日足6ヶ月)\n"
+                f"右端（基準日）から **1ヶ月後（約20営業日後）** の値動きを予測してください。\n"
+                f"正解報酬: **500 ago coin**"
+            ),
             color=discord.Color.blue()
         )
         embed.add_field(
             name="ヒント & 企業財務データ", 
-            value=f"**業種**: {sector}\n**時価総額**: {market_cap_str}\n**PER**: {per_str}倍 | **PBR**: {pbr_str}倍", 
+            value=f"**業種**: {sector}\n**時価総額**: {market_cap_str}\n**PER**: {per_str}\n**PBR**: {pbr_str}", 
             inline=False
         )
         embed.set_image(url="attachment://candle.png")
@@ -299,7 +317,7 @@ class StockGame(commands.Cog):
         stats_data = res_stats.data[0] if (res_stats.data and len(res_stats.data) > 0) else None
 
         if not stats_data or stats_data.get("total_games", 0) == 0:
-            await interaction.response.send_message("まだプレイ記録がありません。`/quiz_stock` で挑戦してみましょう！", ephemeral=True)
+            await interaction.response.send_message("まだプレイ記録がありません。/quiz_stock で挑戦してみましょう。", ephemeral=True)
             return
 
         total = stats_data.get("total_games", 0)
@@ -307,23 +325,22 @@ class StockGame(commands.Cog):
         win_rate = (correct / total) * 100 if total > 0 else 0.0
         earned = stats_data.get("total_earned", 0)
 
-        # 勝率に応じた分析コメント
         if win_rate >= 70:
-            analysis = "素晴らしい相場観です！移動平均線や各種財務指標を的確に分析できています。"
+            analysis = "移動平均線や財務指標を的確に分析できています。"
         elif win_rate >= 50:
-            analysis = "安定した予測精度です。25日・75日移動平均線のクロス状態やPER/PBRの組み合わせに注目してさらに勝率を上げましょう。"
+            analysis = "25日・75日移動平均線のクロス状態やPER/PBRの組み合わせに注目して精度を上げましょう。"
         else:
-            analysis = "トレンドの転換点を見極める練習が必要です。事後チャートのフィードバックや移動平均線の傾きを参考にしてみましょう。"
+            analysis = "トレンドの転換点を見極める練習が必要です。事後チャートのフィードバックを参考にしてみましょう。"
 
         embed = discord.Embed(
-            title=f"📊 {interaction.user.display_name} さんの株価予測戦績",
+            title=f"{interaction.user.display_name} さんの株価予測戦績",
             color=discord.Color.gold()
         )
         embed.add_field(name="総挑戦数", value=f"{total} 回", inline=True)
         embed.add_field(name="正解数", value=f"{correct} 回", inline=True)
         embed.add_field(name="勝率", value=f"{win_rate:.1f} %", inline=True)
         embed.add_field(name="累計獲得 ago coin", value=f"{earned:,} コイン", inline=False)
-        embed.add_field(name="相場観分析フィードバック", value=analysis, inline=False)
+        embed.add_field(name="相場観分析", value=analysis, inline=False)
 
         await interaction.response.send_message(embed=embed)
 
