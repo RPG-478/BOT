@@ -11,6 +11,7 @@ import yfinance as yf
 import matplotlib
 matplotlib.use('Agg')
 import mplfinance as mpf
+from deep_translator import GoogleTranslator
 
 import config
 
@@ -425,14 +426,34 @@ class StockGame(commands.Cog):
         else:
             div_str = "N/A"
 
+        summary_en = info.get('longBusinessSummary', '')
+        if summary_en:
+            try:
+                summary_ja = await asyncio.to_thread(
+                    GoogleTranslator(source='auto', target='ja').translate, summary_en
+                )
+                if correct_name in summary_ja:
+                    summary_ja = summary_ja.replace(correct_name, "〇〇")
+                if len(summary_ja) > 300:
+                    summary_ja = summary_ja[:300] + "..."
+            except Exception:
+                summary_ja = "概要取得失敗"
+        else:
+            summary_ja = "概要情報なし"
+
         embed = discord.Embed(
             title="企業名当てクイズ",
-            description="提示されたチャートや指標から企業名を当ててください。",
+            description="提示された情報やチャートから企業名を当ててください。",
             color=discord.Color.purple()
         )
         embed.add_field(
             name="企業情報",
             value=f"業種: {sector}\n時価総額: {market_cap_str}\nPER: {per_str} | PBR: {pbr_str}\n配当利回り: {div_str}",
+            inline=False
+        )
+        embed.add_field(
+            name="企業概要",
+            value=summary_ja,
             inline=False
         )
         embed.set_image(url="attachment://company_candle.png")
