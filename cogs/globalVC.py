@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import io
+import collections
+import dataclasses
 import logging
 import sys
 import threading
 import time
-import numpy as np
+from typing import Optional
 
 import discord
 import discord.opus
@@ -21,11 +22,53 @@ SAMPLE_WIDTH = 2
 FRAME_SIZE = CHANNELS * SAMPLE_WIDTH
 FRAME_DURATION = 0.02  # 20ms
 FRAME_BYTE_SIZE = int(DISCORD_SAMPLE_RATE * FRAME_DURATION * FRAME_SIZE)  # 3840 bytes
+MAX_BUFFER_FRAMES = 50  # 送信バッファの上限 (20ms * 50 = 約1秒分)
 
-# グローバルルーム管理: { "room_name": [VoiceRecvClient, ...] }
+
+# ============================================================
+# ルーム定義 / 接続管理
+# ============================================================
+@dataclasses.dataclass
+class RoomConfig:
+    """`gvc create` で定義されるルームの設定。接続の有無に関わらず存在する。"""
+    name: str
+    owner_id: int
+    owner_guild_id: int
+    max_servers: int = 0          # 0 = 無制限
+    private: bool = False
+    password: str = ""
+    description: str = ""
+    created_at: float = dataclasses.field(default_factory=time.time)
+
+
+# ルーム定義: { "room_name": RoomConfig }  ※ gvc create で作成され、gvc delete まで残り続ける
+ROOMS: dict[str, RoomConfig] = {}
+# ルームごとの実際に接続中の VoiceRecvClient 一覧: { "room_name": [vc, ...] }
 GLOBAL_ROOMS: dict[str, list[voice_recv.VoiceRecvClient]] = {}
-# ルームごとの音声混音バッファ
-ROOM_AUDIO_BUFFERS: dict[str, collections.deque] = {}
+
+
+def _remove_vc_from_rooms(vc: voice_recv.VoiceRecvClient) -> Optional[str]:
+    """全ルームの接続中リストから vc を取り除く。所属していたルーム名を返す。"""
+    for room_name, clients in list(GLOBAL_ROOMS.items()):
+        if vc in clients:
+            clients.remove(vc)
+            if not clients:
+                del GLOBAL_ROOMS[room_name]
+            return room_name
+    return None
+
+
+async def _disconnect_and_cleanup(vc: voice_recv.VoiceRecvClient) -> None:
+    """listen/play を止めて切断し、ルーム管理からも除去する。"""
+    _remove_vc_from_rooms(vc)
+    try:
+        vc.stop_listening()
+    except Exception:
+        logger.debug("stop_listening 失敗 (無視)", exc_info=True)
+    try:
+        await vc.disconnect(force=True)
+    except Exception:
+        logger.debug("disconnect 失敗 (無視)", exc_info=True)
 
 
 # ============================================================
@@ -106,21 +149,36 @@ def _patch_voice_recv_client() -> None:
             try:
                 return session.decrypt(user_id, cached, data)
             except TypeError:
+                # キャッシュした MediaType の型自体が合わない -> 候補を再探索
+                logger.debug("DAVE decrypt: キャッシュ済み MediaType %r が型不一致。再探索します。", cached)
+                _media_type_audio = _UNSET
+            except Exception as e:
+                # 型は合っていたが復号自体が失敗 (セッションのエポック更新等の可能性)。
+                # キャッシュを破棄して候補を再探索する。ここを再探索しないままだと
+                # このユーザーの音声が復元されるまで永久に無音になり得る。
+                logger.debug(
+                    "DAVE decrypt: キャッシュ済み MediaType %r で復号失敗 (%r)。再探索します。",
+                    cached, e,
+                )
                 _media_type_audio = _UNSET
 
         last_error: Exception | None = None
         for candidate in _media_type_candidates(session):
             try:
                 result = session.decrypt(user_id, candidate, data)
-            except TypeError as e:
+            except Exception as e:
+                # 元のコードは TypeError しか継続対象にしておらず、それ以外の例外で
+                # ループを即座に抜けてしまい他の候補を一切試さないバグがあった。
+                # (これが「音声が全く聞こえない」の主要因になり得る)
                 last_error = e
                 continue
             _media_type_audio = candidate
+            logger.debug("DAVE decrypt: MediaType 候補 %r で復号成功", candidate)
             return result
 
         try:
             return session.decrypt(user_id, data)
-        except TypeError as e:
+        except Exception as e:
             last_error = e
 
         raise RuntimeError(f"DAVE decrypt 失敗: {last_error!r}")
@@ -139,6 +197,10 @@ class GlobalAudioSink(voice_recv.AudioSink):
         self.current_vc = current_vc
         self.decoders: dict[int, discord.opus.Decoder] = {}
         self.opus_available = discord.opus.is_loaded()
+        self._warned_decrypt = False
+        self._warned_decode = False
+        if not self.opus_available:
+            logger.warning("ルーム %s: libopus がロードされていません。音声を復号できません。", room_name)
 
     def wants_opus(self) -> bool:
         return True
@@ -155,25 +217,39 @@ class GlobalAudioSink(voice_recv.AudioSink):
         # DAVE復号処理
         try:
             payload = self.current_vc.dave_decrypt(user_id, bytes(raw_opus))
-        except Exception:
+        except Exception as e:
+            if not self._warned_decrypt:
+                self._warned_decrypt = True
+                logger.warning("ルーム %s: DAVE復号に失敗しました (以後は debug ログのみ出力): %r", self.room_name, e)
+            else:
+                logger.debug("ルーム %s: DAVE復号失敗: %r", self.room_name, e)
             return
 
         if not payload or not self.opus_available:
             return
 
-        decoder = self.decoders.setdefault(user_id, discord.opus.Decoder())
+        decoder = self.decoders.get(user_id)
+        if decoder is None:
+            decoder = discord.opus.Decoder()
+            self.decoders[user_id] = decoder
+
         try:
             pcm = decoder.decode(payload, fec=False)
-        except discord.opus.OpusError:
+        except discord.opus.OpusError as e:
+            if not self._warned_decode:
+                self._warned_decode = True
+                logger.warning("ルーム %s: Opusデコードに失敗しました (以後は debug ログのみ出力): %r", self.room_name, e)
+            else:
+                logger.debug("ルーム %s: Opusデコード失敗: %r", self.room_name, e)
             return
 
         # 復号されたPCM音声を他サーバーの送信ストリームに流す
         if pcm and self.room_name in GLOBAL_ROOMS:
             for vc in GLOBAL_ROOMS[self.room_name]:
-                # 修正: not vc.is_playing() の条件を削除して常時書き込めるように変更
                 if vc != self.current_vc and vc.is_connected():
-                    if hasattr(vc, "global_source") and vc.global_source:
-                        vc.global_source.write_pcm(pcm)
+                    source = getattr(vc, "global_source", None)
+                    if source:
+                        source.write_pcm(pcm)
 
     def cleanup(self) -> None:
         self.decoders.clear()
@@ -181,28 +257,41 @@ class GlobalAudioSink(voice_recv.AudioSink):
 
 class GlobalAudioSource(discord.AudioSource):
     """他サーバーから届いたPCM音声を自サーバーVCに再生するSource"""
+
     def __init__(self):
-        self.buffer = bytearray()
+        # 固定長フレームの deque を使うことで、bytearray の毎回 del によるO(n)シフトを避ける
+        self._frames: collections.deque[bytes] = collections.deque(maxlen=MAX_BUFFER_FRAMES)
+        self._pending = bytearray()  # FRAME_BYTE_SIZE 未満の端数
         self._lock = threading.Lock()
 
     def write_pcm(self, pcm: bytes):
         with self._lock:
-            # バッファが大きくなりすぎないように制限 (最大 1秒分)
-            if len(self.buffer) < FRAME_BYTE_SIZE * 50:
-                self.buffer.extend(pcm)
+            self._pending.extend(pcm)
+            while len(self._pending) >= FRAME_BYTE_SIZE:
+                frame = bytes(self._pending[:FRAME_BYTE_SIZE])
+                del self._pending[:FRAME_BYTE_SIZE]
+                # maxlen を超えたら古いフレームから自動的に破棄され、遅延が蓄積しない
+                self._frames.append(frame)
 
     def read(self) -> bytes:
         with self._lock:
-            if len(self.buffer) >= FRAME_BYTE_SIZE:
-                data = bytes(self.buffer[:FRAME_BYTE_SIZE])
-                del self.buffer[:FRAME_BYTE_SIZE]
-                return data
-        
+            if self._frames:
+                return self._frames.popleft()
         # バッファに音声がないときは無音 (PCM 0埋め) パケットを返す
         return b"\x00" * FRAME_BYTE_SIZE
 
     def is_opus(self) -> bool:
         return False
+
+
+# ============================================================
+# ルームオプション (gvc create で指定するフラグ)
+# ============================================================
+class RoomOptions(commands.FlagConverter, prefix="--", delimiter=" ", case_insensitive=True):
+    max: int = commands.flag(default=0, description="最大参加サーバー数 (0=無制限)")
+    private: bool = commands.flag(default=False, description="非公開ルームにする (参加時にパスワードが必要)")
+    password: str = commands.flag(default="", description="非公開ルームのパスワード")
+    desc: str = commands.flag(default="", description="ルームの説明")
 
 
 # ============================================================
@@ -216,37 +305,80 @@ class GlobalVCCog(commands.Cog):
     async def gvc_group(self, ctx: commands.Context):
         embed = discord.Embed(title="🌐 グローバルVC コマンド一覧", color=0x3498DB)
         embed.description = (
-            f"`{ctx.prefix}gvc list` : アクティブなルーム一覧を表示\n"
-            f"`{ctx.prefix}gvc join <ルーム名>` : 指定したルームに参加\n"
-            f"`{ctx.prefix}gvc leave` : グローバルVCから離脱"
+            f"`{ctx.prefix}gvc create <ルーム名> [--max 5] [--private] [--password xxxx] [--desc 説明]` "
+            f": 新しいルームを作成\n"
+            f"`{ctx.prefix}gvc join <ルーム名> [パスワード]` : 指定したルームに参加 (要ボイスチャンネル在室)\n"
+            f"`{ctx.prefix}gvc list` : ルーム一覧を表示\n"
+            f"`{ctx.prefix}gvc info <ルーム名>` : ルームの詳細設定を表示\n"
+            f"`{ctx.prefix}gvc delete <ルーム名>` : ルームを削除 (作成者のみ)\n"
+            f"`{ctx.prefix}gvc leave` : グローバルVCから離脱 (ルーム自体は残ります)\n\n"
+            f"ルーム名にスペースを含める場合は `\"\"` で囲んでください。"
         )
         await ctx.send(embed=embed)
 
-    @gvc_group.command(name="list")
-    async def gvc_list(self, ctx: commands.Context):
-        if not GLOBAL_ROOMS:
-            return await ctx.send("現在作成されているグローバルVCルームはありません。")
+    @gvc_group.command(name="create")
+    async def gvc_create(self, ctx: commands.Context, room_name: str, *, options: RoomOptions = None):
+        # フラグが一切指定されなかった場合、discord.py は空文字列を RoomOptions に変換して
+        # 各フラグのデフォルト値を持つインスタンスを渡してくる。念のため None の場合の保険も入れる。
+        if room_name in ROOMS:
+            return await ctx.send(f"⚠️ ルーム **{room_name}** はすでに存在します。")
 
-        embed = discord.Embed(title="🌐 アクティブなルーム一覧", color=0x2ECC71)
-        for room_name, clients in GLOBAL_ROOMS.items():
-            servers = [vc.guild.name for vc in clients if vc.guild]
-            embed.add_field(
-                name=f"🎙️ ルーム: {room_name}",
-                value=f"参加サーバー({len(servers)}): {', '.join(servers)}",
-                inline=False
-            )
+        max_servers = options.max if options else 0
+        private = options.private if options else False
+        password = options.password if options else ""
+        description = options.desc if options else ""
+
+        if private and not password:
+            return await ctx.send("⚠️ 非公開ルームにする場合は `--password` でパスワードを指定してください。")
+        if max_servers < 0:
+            return await ctx.send("⚠️ `--max` は 0 以上の値を指定してください。")
+
+        ROOMS[room_name] = RoomConfig(
+            name=room_name,
+            owner_id=ctx.author.id,
+            owner_guild_id=ctx.guild.id,
+            max_servers=max_servers,
+            private=private,
+            password=password,
+            description=description,
+        )
+
+        embed = discord.Embed(title=f"🌐 ルーム **{room_name}** を作成しました", color=0x2ECC71)
+        embed.add_field(name="最大参加サーバー数", value="無制限" if max_servers == 0 else str(max_servers))
+        embed.add_field(name="公開設定", value="🔒 非公開" if private else "🌍 公開")
+        if description:
+            embed.add_field(name="説明", value=description, inline=False)
+        embed.set_footer(text=f"{ctx.prefix}gvc join {room_name} で参加できます")
         await ctx.send(embed=embed)
 
     @gvc_group.command(name="join")
-    async def gvc_join(self, ctx: commands.Context, room_name: str):
+    async def gvc_join(self, ctx: commands.Context, room_name: str, password: str = None):
         if not ctx.author.voice or not ctx.author.voice.channel:
             return await ctx.send("⚠️ ボイスチャンネルに参加してから実行してください。")
 
-        guild_id = ctx.guild.id
+        room = ROOMS.get(room_name)
+        if room is None:
+            return await ctx.send(
+                f"❌ ルーム **{room_name}** は存在しません。"
+                f"先に `{ctx.prefix}gvc create {room_name}` で作成してください。"
+            )
+
+        if room.private and password != room.password:
+            return await ctx.send("🔒 このルームは非公開です。正しいパスワードを指定してください。")
+
+        current_members = GLOBAL_ROOMS.get(room_name, [])
+        if room.max_servers and len(current_members) >= room.max_servers:
+            return await ctx.send(f"⚠️ ルーム **{room_name}** は満員です ({room.max_servers}サーバーまで)。")
+
+        if any(vc.guild and vc.guild.id == ctx.guild.id for vc in current_members):
+            return await ctx.send(f"⚠️ このサーバーはすでにルーム **{room_name}** に参加しています。")
+
         vc_channel = ctx.author.voice.channel
 
         if ctx.voice_client is not None:
-            await ctx.voice_client.disconnect(force=True)
+            # 既存の接続を正しくルーム管理から除去してから切断する
+            # (元のコードはここで disconnect のみ行い GLOBAL_ROOMS に古い参照が残るバグがあった)
+            await _disconnect_and_cleanup(ctx.voice_client)
             await asyncio.sleep(0.5)
 
         try:
@@ -254,7 +386,7 @@ class GlobalVCCog(commands.Cog):
                 cls=voice_recv.VoiceRecvClient,
                 timeout=30.0,
                 reconnect=True,
-                self_deaf=False
+                self_deaf=False,
             )
         except Exception as e:
             return await ctx.send(f"❌ ボイス接続に失敗しました: `{e}`")
@@ -276,26 +408,71 @@ class GlobalVCCog(commands.Cog):
             f"別サーバーの同名ルームと相互接続されています。"
         )
 
+    @gvc_group.command(name="list")
+    async def gvc_list(self, ctx: commands.Context):
+        if not ROOMS:
+            return await ctx.send("現在作成されているグローバルVCルームはありません。")
+
+        embed = discord.Embed(title="🌐 ルーム一覧", color=0x2ECC71)
+        for room_name, room in ROOMS.items():
+            clients = GLOBAL_ROOMS.get(room_name, [])
+            servers = [vc.guild.name for vc in clients if vc.guild]
+            lock = "🔒" if room.private else "🌍"
+            cap = "無制限" if room.max_servers == 0 else f"{len(servers)}/{room.max_servers}"
+            value = f"{lock} 参加サーバー数: {cap}"
+            if servers:
+                value += f"\n接続中: {', '.join(servers)}"
+            if room.description:
+                value += f"\n説明: {room.description}"
+            embed.add_field(name=f"🎙️ {room_name}", value=value, inline=False)
+        await ctx.send(embed=embed)
+
+    @gvc_group.command(name="info")
+    async def gvc_info(self, ctx: commands.Context, room_name: str):
+        room = ROOMS.get(room_name)
+        if room is None:
+            return await ctx.send(f"❌ ルーム **{room_name}** は存在しません。")
+
+        clients = GLOBAL_ROOMS.get(room_name, [])
+        servers = [vc.guild.name for vc in clients if vc.guild]
+
+        embed = discord.Embed(title=f"🌐 ルーム情報: {room_name}", color=0x3498DB)
+        embed.add_field(name="公開設定", value="🔒 非公開" if room.private else "🌍 公開")
+        embed.add_field(name="最大参加サーバー数", value="無制限" if room.max_servers == 0 else str(room.max_servers))
+        embed.add_field(name="現在の参加サーバー数", value=str(len(servers)))
+        if servers:
+            embed.add_field(name="接続中のサーバー", value=", ".join(servers), inline=False)
+        if room.description:
+            embed.add_field(name="説明", value=room.description, inline=False)
+        embed.add_field(name="作成日時", value=f"<t:{int(room.created_at)}:R>", inline=False)
+        await ctx.send(embed=embed)
+
+    @gvc_group.command(name="delete")
+    async def gvc_delete(self, ctx: commands.Context, room_name: str):
+        room = ROOMS.get(room_name)
+        if room is None:
+            return await ctx.send(f"❌ ルーム **{room_name}** は存在しません。")
+
+        is_owner = ctx.author.id == room.owner_id
+        has_perm = ctx.author.guild_permissions.manage_guild if ctx.guild else False
+        if not (is_owner or has_perm):
+            return await ctx.send("⚠️ このルームを削除できるのは作成者、またはサーバー管理権限を持つユーザーのみです。")
+
+        for vc in list(GLOBAL_ROOMS.get(room_name, [])):
+            await _disconnect_and_cleanup(vc)
+
+        GLOBAL_ROOMS.pop(room_name, None)
+        del ROOMS[room_name]
+        await ctx.send(f"🗑️ ルーム **{room_name}** を削除しました。")
+
     @gvc_group.command(name="leave")
     async def gvc_leave(self, ctx: commands.Context):
         vc = ctx.voice_client
         if not vc:
             return await ctx.send("現在ボイスチャンネルに接続していません。")
 
-        # ルームから削除
-        for room_name, clients in list(GLOBAL_ROOMS.items()):
-            if vc in clients:
-                clients.remove(vc)
-                if not clients:
-                    del GLOBAL_ROOMS[room_name]
-
-        try:
-            vc.stop_listening()
-            await vc.disconnect(force=True)
-        except Exception:
-            pass
-
-        await ctx.send("🌐 グローバルVCから切断しました。")
+        await _disconnect_and_cleanup(vc)
+        await ctx.send("🌐 グローバルVCから切断しました。ルーム自体は残っています。")
 
 
 async def setup(bot: commands.Bot):
