@@ -332,14 +332,12 @@ class TranscriptionCog(commands.Cog):
         logger.info("Whisper モデルのロードが完了しました。")
 
     async def _get_or_create_webhook(self, channel: discord.TextChannel) -> discord.Webhook:
-        """チャンネルの既存 Webhook を取得するか、無ければ新規作成する"""
+        """指定したチャンネルの既存 Webhook を取得するか、無ければ新規作成する"""
         webhooks = await channel.webhooks()
-        # Bot自身が作成したWebhookや既存のWebhookを探す
         for wh in webhooks:
-            if wh.token:  # アクセス可能な Webhook であること
+            if wh.token:
                 return wh
 
-        # 見つからない場合は新規作成
         return await channel.create_webhook(name="STT-Transcriber")
 
     @commands.group(name="stt", invoke_without_command=True)
@@ -348,17 +346,25 @@ class TranscriptionCog(commands.Cog):
         session = self.sessions.get(ctx.guild.id)
         if session:
             await ctx.send(embed=we(
-                f"🎙️ **文字起こし実行中 (Webhook自動取得)**\n"
-                f"チャンネル: **{session['channel_name']}**\n"
+                f"🎙️ **文字起こし実行中 (Webhook出力)**\n"
+                f"ボイスチャンネル: **{session['vc_channel_name']}**\n"
+                f"送信先チャンネル: {session['target_channel_mention']}\n"
                 f"停止コマンド: `{ctx.prefix}stt stop`"
             ))
         else:
-            await ctx.send(embed=we(f"⏸️ 文字起こし停止中 (`{ctx.prefix}stt start` で開始)"))
+            await ctx.send(embed=we(f"⏸️ 文字起こし停止中 (`{ctx.prefix}stt start [#チャンネル]` で開始)"))
 
     @stt_group.command(name="start")
     @commands.guild_only()
-    async def stt_start(self, ctx: commands.Context):
-        """!stt start で起動（URL不要で自動取得します）"""
+    async def stt_start(
+        self,
+        ctx: commands.Context,
+        target_channel: discord.TextChannel | None = None
+    ):
+        """
+        !stt start [#チャンネル]
+        送信先チャンネルを指定可能です。省略した場合は実行場所へ送信します。
+        """
         if not ctx.author.voice or not ctx.author.voice.channel:
             return await ctx.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"))
 
@@ -366,14 +372,15 @@ class TranscriptionCog(commands.Cog):
         if guild_id in self.sessions:
             return await ctx.send(embed=we("⚠️ 既に文字起こしが実行中です。"))
 
-        target_channel = ctx.author.voice.channel
-        text_channel: discord.TextChannel = ctx.channel
+        vc_channel = ctx.author.voice.channel
+        # チャンネル指定が無ければコマンド実行チャンネルを使用
+        send_channel: discord.TextChannel = target_channel or ctx.channel
 
         # Webhook の自動取得・作成
         try:
-            webhook = await self._get_or_create_webhook(text_channel)
+            webhook = await self._get_or_create_webhook(send_channel)
         except discord.Forbidden:
-            return await ctx.send(embed=we("❌ Botに `ウェブフックの管理 (Manage Webhooks)` 権限がありません。"))
+            return await ctx.send(embed=we(f"❌ Botに {send_channel.mention} の `ウェブフックの管理 (Manage Webhooks)` 権限がありません。"))
         except Exception as e:
             return await ctx.send(embed=we(f"❌ Webhookの取得に失敗しました: `{e}`"))
 
@@ -382,7 +389,7 @@ class TranscriptionCog(commands.Cog):
                 await ctx.voice_client.disconnect(force=True)
                 await asyncio.sleep(1.0)
 
-            vc = await target_channel.connect(
+            vc = await vc_channel.connect(
                 cls=voice_recv.VoiceRecvClient,
                 timeout=30.0,
                 reconnect=True,
@@ -391,7 +398,7 @@ class TranscriptionCog(commands.Cog):
         except Exception as e:
             return await ctx.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
 
-        # Webhookを使ってメッセージを送信する非同期関数
+        # Webhookを使って指定チャンネルへメッセージを送信する非同期関数
         async def send_webhook(display_name: str, avatar_url: str | None, text: str):
             async with aiohttp.ClientSession() as session:
                 wh_obj = discord.Webhook.from_url(webhook.url, session=session)
@@ -415,12 +422,14 @@ class TranscriptionCog(commands.Cog):
         self.sessions[guild_id] = {
             "sink": sink,
             "vc": vc,
-            "channel_name": target_channel.name
+            "vc_channel_name": vc_channel.name,
+            "target_channel_mention": send_channel.mention
         }
 
         await ctx.send(embed=we(
-            f"🎙️ **{target_channel.name}** で文字起こしを開始しました！\n"
-            f"🤖 Webhook: `{webhook.name}` を使用して発話し結果を表示します。"
+            f"🎙️ **{vc_channel.name}** で文字起こしを開始しました！\n"
+            f"🤖 送信先: {send_channel.mention}\n"
+            f"💬 発話者の名前とアイコンで Webhook からメッセージが届きます。"
         ))
 
     @stt_group.command(name="stop")
