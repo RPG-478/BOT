@@ -1,7 +1,9 @@
 import io
 import random
 import os
+import asyncio
 import discord
+from discord import app_commands
 from discord.ext import commands
 import pandas as pd
 import yfinance as yf
@@ -9,15 +11,19 @@ import matplotlib
 matplotlib.use('Agg')
 import mplfinance as mpf
 
+import config  # Supabase設定を含む設定ファイル
+
 class PredictionView(discord.ui.View):
-    def __init__(self, correct_answer, chart_data_full, future_idx_end, name, sector, info):
-        super().__init__(timeout=60)
+    def __init__(self, correct_answer, chart_data_full, future_idx_end, ticker, name, sector, info, reward_amount=500):
+        super().__init__(timeout=120)
         self.correct_answer = correct_answer
         self.chart_data_full = chart_data_full
         self.future_idx_end = future_idx_end
+        self.ticker = ticker
         self.name = name
         self.sector = sector
         self.info = info
+        self.reward_amount = reward_amount
 
     @discord.ui.button(label="上がる", style=discord.ButtonStyle.green)
     async def up_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -32,36 +38,147 @@ class PredictionView(discord.ui.View):
         await self.handle_answer(interaction, "横ばい")
 
     async def handle_answer(self, interaction: discord.Interaction, choice: str):
-        result = "正解" if choice == self.correct_answer else "不正解"
+        user_id = str(interaction.user.id)
+        is_correct = choice == self.correct_answer
+        result_text = "正解 🎉" if is_correct else "不正解 😢"
+        earned_coins = self.reward_amount if is_correct else 0
         
-        price_start = self.chart_data_full['Close'].iloc[124]
-        price_future = self.chart_data_full['Close'].iloc[self.future_idx_end]
-        change_rate = ((price_future - price_start) / price_start) * 100
+        # --- ago coin 決済処理 (chaos.py の方式を踏襲) ---
+        if is_correct:
+            res_user = await asyncio.to_thread(
+                config.supabase.table("users").select("balance").eq("user_id", user_id).execute
+            )
+            current_balance = res_user.data[0]["balance"] if (res_user.data and len(res_user.data) > 0) else 0
+            new_balance = current_balance + earned_coins
 
+            await asyncio.to_thread(
+                config.supabase.table("users").upsert({"user_id": user_id, "balance": new_balance}).execute
+            )
+            await asyncio.to_thread(
+                config.supabase.table("transaction_history").insert({
+                    "sender_id": "SYSTEM",
+                    "receiver_id": user_id,
+                    "amount": earned_coins,
+                    "reason": "株価予測クイズ正解報酬"
+                }).execute
+            )
+
+        # --- 戦績データの更新 (stock_quiz_stats テーブル) ---
+        res_stats = await asyncio.to_thread(
+            config.supabase.table("stock_quiz_stats").select("*").eq("user_id", user_id).execute
+        )
+        stats_data = res_stats.data[0] if (res_stats.data and len(res_stats.data) > 0) else None
+
+        if stats_data:
+            total_games = stats_data.get("total_games", 0) + 1
+            correct_games = stats_data.get("correct_games", 0) + (1 if is_correct else 0)
+            total_earned = stats_data.get("total_earned", 0) + earned_coins
+        else:
+            total_games = 1
+            correct_games = 1 if is_correct else 0
+            total_earned = earned_coins
+
+        await asyncio.to_thread(
+            config.supabase.table("stock_quiz_stats").upsert({
+                "user_id": user_id,
+                "total_games": total_games,
+                "correct_games": correct_games,
+                "total_earned": total_earned
+            }).execute
+        )
+
+        # --- フィードバック数値計算 & 事後チャート生成 ---
+        start_price = float(self.chart_data_full['Close'].iloc[124])
+        future_price = float(self.chart_data_full['Close'].iloc[self.future_idx_end])
+        change_rate = ((future_price - start_price) / start_price) * 100
+        price_diff = future_price - start_price
+
+        future_period_data = self.chart_data_full.iloc[124:self.future_idx_end+1]
+        high_price = float(future_period_data['High'].max())
+        low_price = float(future_period_data['Low'].min())
+
+        vlines_date = self.chart_data_full.index[124]
+        
         buf = io.BytesIO()
         mpf.plot(
             self.chart_data_full.iloc[:self.future_idx_end+1],
             type='candle',
             style='yahoo',
             mav=(25, 75),
-            title=f"\n{self.name} ({self.sector}) - 事後チャート",
+            vlines=dict(vlines=vlines_date, linewidths=1.5, linestyle='--'),
+            title=f"\n{self.name} ({self.ticker}) - 事後チャート",
             ylabel='Price (JPY)',
-            figsize=(12, 6),
+            figsize=(14, 6),
             savefig=dict(fname=buf, dpi=100, bbox_inches='tight')
         )
         buf.seek(0)
         file = discord.File(buf, filename="after_candle.png")
 
-        market_cap = self.info.get('marketCap', 'N/A')
-        per = self.info.get('trailingPE', 'N/A')
-        pbr = self.info.get('priceToBook', 'N/A')
+        # --- テクニカル分析メッセージ ---
+        ma25 = self.chart_data_full['Close'].iloc[:125].rolling(25).mean().iloc[-1]
+        ma75 = self.chart_data_full['Close'].iloc[:125].rolling(75).mean().iloc[-1]
+        
+        if ma25 > ma75:
+            ma_analysis = "予測時点では25日線が75日線の上に位置する短期上昇傾向（ゴールデンクロス後）でした。"
+        else:
+            ma_analysis = "予測時点では25日線が75日線の下に位置する短期下落傾向（デッドクロス後）でした。"
 
+        if change_rate > 5:
+            trend_summary = "1ヶ月間で強い上昇トレンドを示しました。"
+        elif change_rate > 1:
+            trend_summary = "1ヶ月間でゆるやかな上昇となりました。"
+        elif change_rate < -5:
+            trend_summary = "1ヶ月間で大幅な下落となりました。"
+        elif change_rate < -1:
+            trend_summary = "1ヶ月間でゆるやかな下落となりました。"
+        else:
+            trend_summary = "1ヶ月間ほぼレンジ内での横ばい推移となりました。"
+
+        market_cap = self.info.get('marketCap', None)
+        market_cap_str = f"{market_cap / 100000000:.1f}億円" if market_cap else "N/A"
+        per_str = f"{self.info.get('trailingPE', 'N/A')}"
+        pbr_str = f"{self.info.get('priceToBook', 'N/A')}"
+        dividend_yield = self.info.get('dividendYield', None)
+        div_str = f"{dividend_yield * 100:.2f}%" if dividend_yield else "N/A"
+
+        # --- Embed作成 ---
         embed = discord.Embed(
-            title="株価1ヶ月予測ゲーム結果",
-            description=f"回答者: {interaction.user.display_name}\n選択: {choice} / 結果: **{result}** (正解: {self.correct_answer})\n1ヶ月後の変動率: {change_rate:.2f}%",
-            color=discord.Color.green() if choice == self.correct_answer else discord.Color.red()
+            title=f"結果発表: {result_text} (正解: {self.correct_answer})",
+            description=(
+                f"回答者: {interaction.user.mention}\n"
+                f"選択した予測: **{choice}**\n"
+                f"{f'🎁 **+{earned_coins:,} ago coin** を獲得しました！' if is_correct else ''}"
+            ),
+            color=discord.Color.green() if is_correct else discord.Color.red()
         )
-        embed.add_field(name="財務情報", value=f"時価総額: {market_cap}\nPER: {per}\nPBR: {pbr}", inline=False)
+        
+        embed.add_field(
+            name="銘柄情報",
+            value=f"**企業名**: {self.name}\n**コード**: {self.ticker}\n**業種**: {self.sector}",
+            inline=False
+        )
+
+        embed.add_field(
+            name="1ヶ月後の価格変化（フィードバック）",
+            value=(
+                f"**基準日価格**: {start_price:,.1f}円\n"
+                f"**1ヶ月後価格**: {future_price:,.1f}円\n"
+                f"**変動幅**: {price_diff:+,.1f}円 ({change_rate:+.2f}%)\n"
+                f"**期間中最高値**: {high_price:,.1f}円 / **最安値**: {low_price:,.1f}円\n"
+                f"**展開**: {trend_summary}"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="テクニカル & 財務ポイント",
+            value=(
+                f"**移動平均線分析**: {ma_analysis}\n"
+                f"**指標**: 時価総額: {market_cap_str} | PER: {per_str}倍 | PBR: {pbr_str}倍 | 配当利回り: {div_str}"
+            ),
+            inline=False
+        )
+
         embed.set_image(url="attachment://after_candle.png")
 
         for child in self.children:
@@ -81,11 +198,13 @@ class StockGame(commands.Cog):
         except Exception:
             self.stock_df = pd.DataFrame()
 
-    @commands.command(name="start")
-    async def start_game(self, ctx):
+    @app_commands.command(name="quiz_stock", description="株価1ヶ月予測クイズを開始します")
+    async def quiz_stock(self, interaction: discord.Interaction):
         if self.stock_df.empty:
-            await ctx.send("銘柄データがありません。")
+            await interaction.response.send_message("銘柄データがありません。", ephemeral=True)
             return
+
+        await interaction.response.defer()
 
         for _ in range(10):
             row = self.stock_df.sample(1).iloc[0]
@@ -107,12 +226,12 @@ class StockGame(commands.Cog):
             except Exception:
                 continue
         else:
-            await ctx.send("データ取得に失敗しました。")
+            await interaction.followup.send("データ取得に失敗しました。")
             return
 
         max_start_idx = len(df) - 125 - 20
         if max_start_idx <= 0:
-            await ctx.send("データ期間が不足しています。")
+            await interaction.followup.send("データ期間が不足しています。")
             return
 
         start_idx = random.randint(0, max_start_idx)
@@ -139,31 +258,74 @@ class StockGame(commands.Cog):
             type='candle',
             style='yahoo',
             mav=(25, 75),
-            title=f"\n{name} ({sector})",
+            title=f"\nSector: {sector} (銘柄非公開)",
             ylabel='Price (JPY)',
-            figsize=(12, 6),
+            figsize=(14, 6),
             savefig=dict(fname=buf, dpi=100, bbox_inches='tight')
         )
         buf.seek(0)
         
         file = discord.File(buf, filename="candle.png")
-        view = PredictionView(correct, chart_data_full, len(chart_data_full)-1, name, sector, info)
+        view = PredictionView(correct, chart_data_full, len(chart_data_full)-1, ticker, name, sector, info, reward_amount=500)
 
         period_str = f"{chart_data_initial.index[0].strftime('%Y-%m-%d')} 〜 {chart_data_initial.index[-1].strftime('%Y-%m-%d')}"
         
-        market_cap = info.get('marketCap', 'N/A')
-        per = info.get('trailingPE', 'N/A')
-        pbr = info.get('priceToBook', 'N/A')
+        market_cap = info.get('marketCap', None)
+        market_cap_str = f"{market_cap / 100000000:.1f}億円" if market_cap else "N/A"
+        per_str = f"{info.get('trailingPE', 'N/A')}"
+        pbr_str = f"{info.get('priceToBook', 'N/A')}"
 
         embed = discord.Embed(
-            title="株価1ヶ月予測ゲーム",
-            description=f"表示期間: {period_str} (6ヶ月)\n1ヶ月後の値動きを予測してください。",
+            title="株価1ヶ月予測チャートクイズ",
+            description=f"対象期間: {period_str} (日足6ヶ月)\n右端（基準日）から **1ヶ月後（約20営業日後）** の値動きを予測してください。\n正解すると **500 ago coin** を獲得できます！",
             color=discord.Color.blue()
         )
-        embed.add_field(name="企業情報", value=f"銘柄名: {name}\n業種: {sector}\n時価総額: {market_cap}\nPER: {per}\nPBR: {pbr}", inline=False)
+        embed.add_field(
+            name="ヒント & 企業財務データ", 
+            value=f"**業種**: {sector}\n**時価総額**: {market_cap_str}\n**PER**: {per_str}倍 | **PBR**: {pbr_str}倍", 
+            inline=False
+        )
         embed.set_image(url="attachment://candle.png")
 
-        await ctx.send(embed=embed, file=file, view=view)
+        await interaction.followup.send(embed=embed, file=file, view=view)
+
+    @app_commands.command(name="states_stock", description="株価予測クイズの戦績と相場観の分析を表示します")
+    async def states_stock(self, interaction: discord.Interaction):
+        user_id = str(interaction.user.id)
+        
+        res_stats = await asyncio.to_thread(
+            config.supabase.table("stock_quiz_stats").select("*").eq("user_id", user_id).execute
+        )
+        stats_data = res_stats.data[0] if (res_stats.data and len(res_stats.data) > 0) else None
+
+        if not stats_data or stats_data.get("total_games", 0) == 0:
+            await interaction.response.send_message("まだプレイ記録がありません。`/quiz_stock` で挑戦してみましょう！", ephemeral=True)
+            return
+
+        total = stats_data.get("total_games", 0)
+        correct = stats_data.get("correct_games", 0)
+        win_rate = (correct / total) * 100 if total > 0 else 0.0
+        earned = stats_data.get("total_earned", 0)
+
+        # 勝率に応じた分析コメント
+        if win_rate >= 70:
+            analysis = "素晴らしい相場観です！移動平均線や各種財務指標を的確に分析できています。"
+        elif win_rate >= 50:
+            analysis = "安定した予測精度です。25日・75日移動平均線のクロス状態やPER/PBRの組み合わせに注目してさらに勝率を上げましょう。"
+        else:
+            analysis = "トレンドの転換点を見極める練習が必要です。事後チャートのフィードバックや移動平均線の傾きを参考にしてみましょう。"
+
+        embed = discord.Embed(
+            title=f"📊 {interaction.user.display_name} さんの株価予測戦績",
+            color=discord.Color.gold()
+        )
+        embed.add_field(name="総挑戦数", value=f"{total} 回", inline=True)
+        embed.add_field(name="正解数", value=f"{correct} 回", inline=True)
+        embed.add_field(name="勝率", value=f"{win_rate:.1f} %", inline=True)
+        embed.add_field(name="累計獲得 ago coin", value=f"{earned:,} コイン", inline=False)
+        embed.add_field(name="相場観分析フィードバック", value=analysis, inline=False)
+
+        await interaction.response.send_message(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(StockGame(bot))
