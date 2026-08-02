@@ -1,5 +1,6 @@
 import io
 import random
+import os
 import discord
 from discord.ext import commands
 import pandas as pd
@@ -37,7 +38,8 @@ class StockGame(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         try:
-            df_csv = pd.read_csv('Issues_20260725170724.csv', encoding='shift-jis')
+            csv_path = os.path.join('Assets', 'Issues_20260725170724.csv')
+            df_csv = pd.read_csv(csv_path, encoding='shift-jis')
             self.stock_df = df_csv[df_csv['商品分類'] == '株式'].copy()
             self.stock_df['Ticker'] = self.stock_df['銘柄コード'].astype(str).str.zfill(5).str[:4] + '.T'
         except Exception:
