@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import dataclasses
+import io
 import logging
 import sys
 import threading
@@ -69,6 +70,42 @@ async def _disconnect_and_cleanup(vc: voice_recv.VoiceRecvClient) -> None:
         await vc.disconnect(force=True)
     except Exception:
         logger.debug("disconnect 失敗 (無視)", exc_info=True)
+
+
+# ============================================================
+# グロチャ (テキストチャット連携) 管理
+# ============================================================
+@dataclasses.dataclass
+class TextLink:
+    guild_id: int
+    channel_id: int
+    webhook: discord.Webhook
+
+
+# ルームごとに連携中のテキストチャンネル: { "room_name": [TextLink, ...] }
+ROOM_TEXT_LINKS: dict[str, list[TextLink]] = {}
+# チャンネルID -> ルーム名 の逆引き (on_message での高速判定用)
+CHANNEL_TO_ROOM: dict[int, str] = {}
+
+
+async def _remove_text_link(channel_id: int, *, delete_webhook: bool = True) -> Optional[str]:
+    """指定チャンネルのグロチャ連携を解除する。所属していたルーム名を返す。"""
+    room_name = CHANNEL_TO_ROOM.pop(channel_id, None)
+    if room_name is None:
+        return None
+
+    links = ROOM_TEXT_LINKS.get(room_name, [])
+    for link in list(links):
+        if link.channel_id == channel_id:
+            links.remove(link)
+            if delete_webhook:
+                try:
+                    await link.webhook.delete(reason="グロチャ連携解除")
+                except Exception:
+                    logger.debug("webhook 削除失敗 (無視)", exc_info=True)
+    if not links:
+        ROOM_TEXT_LINKS.pop(room_name, None)
+    return room_name
 
 
 # ============================================================
@@ -311,7 +348,9 @@ class GlobalVCCog(commands.Cog):
             f"`{ctx.prefix}gvc list` : ルーム一覧を表示\n"
             f"`{ctx.prefix}gvc info <ルーム名>` : ルームの詳細設定を表示\n"
             f"`{ctx.prefix}gvc delete <ルーム名>` : ルームを削除 (作成者のみ)\n"
-            f"`{ctx.prefix}gvc leave` : グローバルVCから離脱 (ルーム自体は残ります)\n\n"
+            f"`{ctx.prefix}gvc leave` : グローバルVCから離脱 (ルーム自体は残ります)\n"
+            f"`{ctx.prefix}gvc chat connect <ルーム名> [パスワード]` : このチャンネルをグロチャに接続\n"
+            f"`{ctx.prefix}gvc chat disconnect` : このチャンネルのグロチャ接続を解除\n\n"
             f"ルーム名にスペースを含める場合は `\"\"` で囲んでください。"
         )
         await ctx.send(embed=embed)
@@ -419,7 +458,8 @@ class GlobalVCCog(commands.Cog):
             servers = [vc.guild.name for vc in clients if vc.guild]
             lock = "🔒" if room.private else "🌍"
             cap = "無制限" if room.max_servers == 0 else f"{len(servers)}/{room.max_servers}"
-            value = f"{lock} 参加サーバー数: {cap}"
+            chat_count = len(ROOM_TEXT_LINKS.get(room_name, []))
+            value = f"{lock} VC参加サーバー数: {cap} / グロチャ接続数: {chat_count}"
             if servers:
                 value += f"\n接続中: {', '.join(servers)}"
             if room.description:
@@ -436,12 +476,22 @@ class GlobalVCCog(commands.Cog):
         clients = GLOBAL_ROOMS.get(room_name, [])
         servers = [vc.guild.name for vc in clients if vc.guild]
 
+        text_links = ROOM_TEXT_LINKS.get(room_name, [])
+        chat_channels = []
+        for link in text_links:
+            channel = self.bot.get_channel(link.channel_id)
+            if channel:
+                chat_channels.append(f"#{channel.name} ({channel.guild.name})")
+
         embed = discord.Embed(title=f"🌐 ルーム情報: {room_name}", color=0x3498DB)
         embed.add_field(name="公開設定", value="🔒 非公開" if room.private else "🌍 公開")
         embed.add_field(name="最大参加サーバー数", value="無制限" if room.max_servers == 0 else str(room.max_servers))
-        embed.add_field(name="現在の参加サーバー数", value=str(len(servers)))
+        embed.add_field(name="現在の参加サーバー数(VC)", value=str(len(servers)))
         if servers:
-            embed.add_field(name="接続中のサーバー", value=", ".join(servers), inline=False)
+            embed.add_field(name="接続中のサーバー(VC)", value=", ".join(servers), inline=False)
+        embed.add_field(name="グロチャ接続数", value=str(len(chat_channels)))
+        if chat_channels:
+            embed.add_field(name="グロチャ接続チャンネル", value="\n".join(chat_channels), inline=False)
         if room.description:
             embed.add_field(name="説明", value=room.description, inline=False)
         embed.add_field(name="作成日時", value=f"<t:{int(room.created_at)}:R>", inline=False)
@@ -461,9 +511,13 @@ class GlobalVCCog(commands.Cog):
         for vc in list(GLOBAL_ROOMS.get(room_name, [])):
             await _disconnect_and_cleanup(vc)
 
+        for link in list(ROOM_TEXT_LINKS.get(room_name, [])):
+            await _remove_text_link(link.channel_id)
+
         GLOBAL_ROOMS.pop(room_name, None)
+        ROOM_TEXT_LINKS.pop(room_name, None)
         del ROOMS[room_name]
-        await ctx.send(f"🗑️ ルーム **{room_name}** を削除しました。")
+        await ctx.send(f"🗑️ ルーム **{room_name}** を削除しました (VC・グロチャの連携もすべて解除)。")
 
     @gvc_group.command(name="leave")
     async def gvc_leave(self, ctx: commands.Context):
@@ -473,6 +527,134 @@ class GlobalVCCog(commands.Cog):
 
         await _disconnect_and_cleanup(vc)
         await ctx.send("🌐 グローバルVCから切断しました。ルーム自体は残っています。")
+
+    # ------------------------------------------------------------
+    # グロチャ (テキストチャット連携)
+    # ------------------------------------------------------------
+    @gvc_group.group(name="chat", invoke_without_command=True)
+    async def gvc_chat_group(self, ctx: commands.Context):
+        embed = discord.Embed(title="🌐 グロチャ コマンド一覧", color=0x3498DB)
+        embed.description = (
+            f"`{ctx.prefix}gvc chat connect <ルーム名> [パスワード]` : このチャンネルを指定ルームのグロチャに接続\n"
+            f"`{ctx.prefix}gvc chat disconnect` : このチャンネルのグロチャ接続を解除"
+        )
+        await ctx.send(embed=embed)
+
+    @gvc_chat_group.command(name="connect")
+    async def gvc_chat_connect(self, ctx: commands.Context, room_name: str, password: str = None):
+        room = ROOMS.get(room_name)
+        if room is None:
+            return await ctx.send(
+                f"❌ ルーム **{room_name}** は存在しません。"
+                f"先に `{ctx.prefix}gvc create {room_name}` で作成してください。"
+            )
+
+        if room.private and password != room.password:
+            return await ctx.send("🔒 このルームは非公開です。正しいパスワードを指定してください。")
+
+        if ctx.channel.id in CHANNEL_TO_ROOM:
+            current_room = CHANNEL_TO_ROOM[ctx.channel.id]
+            return await ctx.send(
+                f"⚠️ このチャンネルはすでにルーム **{current_room}** のグロチャに接続されています。"
+                f"先に `{ctx.prefix}gvc chat disconnect` してください。"
+            )
+
+        if any(link.guild_id == ctx.guild.id for link in ROOM_TEXT_LINKS.get(room_name, [])):
+            return await ctx.send(f"⚠️ このサーバーはすでに別のチャンネルでルーム **{room_name}** のグロチャに接続済みです。")
+
+        perms = ctx.channel.permissions_for(ctx.guild.me)
+        if not perms.manage_webhooks:
+            return await ctx.send("⚠️ このチャンネルで Webhook を管理する権限がボットにありません。")
+
+        try:
+            webhook = await ctx.channel.create_webhook(
+                name=f"グロチャ: {room_name}", reason="グローバルチャット連携"
+            )
+        except Exception as e:
+            return await ctx.send(f"❌ Webhook の作成に失敗しました: `{e}`")
+
+        link = TextLink(guild_id=ctx.guild.id, channel_id=ctx.channel.id, webhook=webhook)
+        ROOM_TEXT_LINKS.setdefault(room_name, []).append(link)
+        CHANNEL_TO_ROOM[ctx.channel.id] = room_name
+
+        await ctx.send(
+            f"🌐 このチャンネルをルーム **{room_name}** のグロチャに接続しました！\n"
+            f"以降、このチャンネルの発言は同ルームに接続中の他サーバーへ、送信者の名前とアイコンで中継されます。"
+        )
+
+    @gvc_chat_group.command(name="disconnect")
+    async def gvc_chat_disconnect(self, ctx: commands.Context):
+        room_name = await _remove_text_link(ctx.channel.id)
+        if room_name is None:
+            return await ctx.send("このチャンネルはグロチャに接続されていません。")
+        await ctx.send(f"🌐 ルーム **{room_name}** のグロチャ接続を解除しました。")
+
+    @commands.Cog.listener("on_message")
+    async def on_message(self, message: discord.Message):
+        # webhook からの中継メッセージ自身には反応しない (無限ループ防止)
+        if message.webhook_id is not None:
+            return
+        if message.author.bot:
+            return
+        if not message.guild:
+            return
+
+        room_name = CHANNEL_TO_ROOM.get(message.channel.id)
+        if room_name is None:
+            return
+
+        if not message.content and not message.attachments:
+            return
+
+        links = ROOM_TEXT_LINKS.get(room_name, [])
+        if len(links) <= 1:
+            return  # 他に接続チャンネルがなければ中継不要
+
+        # 添付ファイルは一度だけ読み込み、送信先ごとに新しい File として使い回す
+        # (discord.File は一度送信すると再利用できないため)
+        attachment_payloads: list[tuple[bytes, str]] = []
+        for attachment in message.attachments:
+            try:
+                data = await attachment.read()
+                attachment_payloads.append((data, attachment.filename))
+            except Exception:
+                logger.debug("グロチャ: 添付ファイル取得失敗 (%s)", attachment.filename, exc_info=True)
+
+        content = (message.content or "")[:2000]
+        username = f"{message.author.display_name} [{message.guild.name}]"[:80] or "unknown"
+        avatar_url = message.author.display_avatar.url
+
+        for link in links:
+            if link.channel_id == message.channel.id:
+                continue
+
+            files = [discord.File(io.BytesIO(data), filename=name) for data, name in attachment_payloads]
+            try:
+                await link.webhook.send(
+                    content=content if content else None,
+                    username=username,
+                    avatar_url=avatar_url,
+                    files=files if files else discord.utils.MISSING,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.NotFound:
+                # webhook が手動で削除された等 -> このチャンネルの連携を自動解除
+                logger.warning(
+                    "ルーム %s: webhook が見つかりません。連携を解除します (channel_id=%s)",
+                    room_name, link.channel_id,
+                )
+                await _remove_text_link(link.channel_id, delete_webhook=False)
+            except Exception as e:
+                logger.warning(
+                    "ルーム %s: グロチャ中継に失敗しました (channel_id=%s): %r",
+                    room_name, link.channel_id, e,
+                )
+
+    @commands.Cog.listener("on_guild_channel_delete")
+    async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
+        if channel.id in CHANNEL_TO_ROOM:
+            # チャンネル自体が消えているので webhook 削除は試みない
+            await _remove_text_link(channel.id, delete_webhook=False)
 
 
 async def setup(bot: commands.Bot):
