@@ -11,6 +11,7 @@ import collections
 import numpy as np
 from scipy import signal
 
+import aiohttp
 import discord
 import discord.opus
 from discord.ext import commands
@@ -151,9 +152,10 @@ _patch_voice_recv_client()
 # ユーザー別音声バッファ ＆ VAD
 # ============================================================
 class UserAudioBuffer:
-    def __init__(self, user_id: int, display_name: str):
+    def __init__(self, user_id: int, display_name: str, avatar_url: str | None = None):
         self.user_id = user_id
         self.display_name = display_name
+        self.avatar_url = avatar_url
         self.buffer = bytearray()
         self.last_speech_time = time.time()
         self.is_speaking = False
@@ -229,7 +231,6 @@ class TranscriptionSink(voice_recv.AudioSink):
         self.monitor_thread.start()
 
     def wants_opus(self) -> bool:
-        # DAVE(E2EE) 環境でも自前復号・デコードを行うため True
         return True
 
     def write(self, user, data: voice_recv.VoiceData) -> None:
@@ -239,6 +240,8 @@ class TranscriptionSink(voice_recv.AudioSink):
 
         user_id = getattr(user, 'id', 0) if user else 0
         display_name = getattr(user, 'display_name', None) or getattr(user, 'name', f"User_{user_id}")
+        avatar_url = str(user.display_avatar.url) if user and hasattr(user, 'display_avatar') else None
+
         if user_id == 0:
             return
 
@@ -248,7 +251,7 @@ class TranscriptionSink(voice_recv.AudioSink):
 
         with self._lock:
             if user_id not in self.user_buffers:
-                self.user_buffers[user_id] = UserAudioBuffer(user_id, display_name)
+                self.user_buffers[user_id] = UserAudioBuffer(user_id, display_name, avatar_url)
             self.user_buffers[user_id].append(pcm)
 
     def _decode_opus(self, user_id: int, raw_opus: bytes) -> bytes | None:
@@ -284,14 +287,13 @@ class TranscriptionSink(voice_recv.AudioSink):
                     if ubuf.should_transcribe():
                         audio_data = ubuf.pop_audio_for_whisper()
                         if audio_data is not None and len(audio_data) > WHISPER_SAMPLE_RATE * 0.4:
-                            # 0.4秒以上の音声データを文字起こし処理へ委譲
                             threading.Thread(
                                 target=self._run_whisper,
-                                args=(ubuf.display_name, audio_data),
+                                args=(ubuf.display_name, ubuf.avatar_url, audio_data),
                                 daemon=True
                             ).start()
 
-    def _run_whisper(self, display_name: str, audio: np.ndarray):
+    def _run_whisper(self, display_name: str, avatar_url: str | None, audio: np.ndarray):
         try:
             segments, _ = self.whisper_model.transcribe(
                 audio,
@@ -303,7 +305,7 @@ class TranscriptionSink(voice_recv.AudioSink):
 
             if text:
                 asyncio.run_coroutine_threadsafe(
-                    self.callback_coro(display_name, text),
+                    self.callback_coro(display_name, avatar_url, text),
                     self.bot.loop
                 )
         except Exception as e:
@@ -322,8 +324,6 @@ class TranscriptionCog(commands.Cog):
         self.sessions: dict[int, dict] = {}
 
         logger.info("Whisper モデルをロード中...")
-        # CPUの場合は "base" / "small" と compute_type="int8" が高速
-        # GPU利用時は device="cuda", compute_type="float16"
         self.whisper_model = WhisperModel(
             "base",
             device="cpu",
@@ -331,13 +331,24 @@ class TranscriptionCog(commands.Cog):
         )
         logger.info("Whisper モデルのロードが完了しました。")
 
+    async def _get_or_create_webhook(self, channel: discord.TextChannel) -> discord.Webhook:
+        """チャンネルの既存 Webhook を取得するか、無ければ新規作成する"""
+        webhooks = await channel.webhooks()
+        # Bot自身が作成したWebhookや既存のWebhookを探す
+        for wh in webhooks:
+            if wh.token:  # アクセス可能な Webhook であること
+                return wh
+
+        # 見つからない場合は新規作成
+        return await channel.create_webhook(name="STT-Transcriber")
+
     @commands.group(name="stt", invoke_without_command=True)
     @commands.guild_only()
     async def stt_group(self, ctx: commands.Context):
         session = self.sessions.get(ctx.guild.id)
         if session:
             await ctx.send(embed=we(
-                f"🎙️ **文字起こし実行中**\n"
+                f"🎙️ **文字起こし実行中 (Webhook自動取得)**\n"
                 f"チャンネル: **{session['channel_name']}**\n"
                 f"停止コマンド: `{ctx.prefix}stt stop`"
             ))
@@ -347,6 +358,7 @@ class TranscriptionCog(commands.Cog):
     @stt_group.command(name="start")
     @commands.guild_only()
     async def stt_start(self, ctx: commands.Context):
+        """!stt start で起動（URL不要で自動取得します）"""
         if not ctx.author.voice or not ctx.author.voice.channel:
             return await ctx.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"))
 
@@ -355,7 +367,15 @@ class TranscriptionCog(commands.Cog):
             return await ctx.send(embed=we("⚠️ 既に文字起こしが実行中です。"))
 
         target_channel = ctx.author.voice.channel
-        text_channel = ctx.channel
+        text_channel: discord.TextChannel = ctx.channel
+
+        # Webhook の自動取得・作成
+        try:
+            webhook = await self._get_or_create_webhook(text_channel)
+        except discord.Forbidden:
+            return await ctx.send(embed=we("❌ Botに `ウェブフックの管理 (Manage Webhooks)` 権限がありません。"))
+        except Exception as e:
+            return await ctx.send(embed=we(f"❌ Webhookの取得に失敗しました: `{e}`"))
 
         try:
             if ctx.voice_client is not None:
@@ -371,17 +391,24 @@ class TranscriptionCog(commands.Cog):
         except Exception as e:
             return await ctx.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
 
-        # 文字起こし完了時にDiscordへ送信する非同期関数
-        async def on_transcribed(display_name: str, text: str):
-            embed = discord.Embed(description=text, color=0x3498DB)
-            embed.set_author(name=f"🗣️ {display_name}")
-            await text_channel.send(embed=embed)
+        # Webhookを使ってメッセージを送信する非同期関数
+        async def send_webhook(display_name: str, avatar_url: str | None, text: str):
+            async with aiohttp.ClientSession() as session:
+                wh_obj = discord.Webhook.from_url(webhook.url, session=session)
+                try:
+                    await wh_obj.send(
+                        content=text,
+                        username=display_name,
+                        avatar_url=avatar_url
+                    )
+                except Exception as ex:
+                    logger.error(f"[Webhook Send Error] {ex}")
 
         sink = TranscriptionSink(
             bot=self.bot,
             vc=vc,
             whisper_model=self.whisper_model,
-            callback_coro=on_transcribed
+            callback_coro=send_webhook
         )
         vc.listen(sink)
 
@@ -392,8 +419,8 @@ class TranscriptionCog(commands.Cog):
         }
 
         await ctx.send(embed=we(
-            f"🎙️ **{target_channel.name}** でリアルタイム文字起こしを開始しました！\n"
-            f"発言が途切れたタイミングでこのテキストチャンネルに文字起こし結果が送信されます。"
+            f"🎙️ **{target_channel.name}** で文字起こしを開始しました！\n"
+            f"🤖 Webhook: `{webhook.name}` を使用して発話し結果を表示します。"
         ))
 
     @stt_group.command(name="stop")
