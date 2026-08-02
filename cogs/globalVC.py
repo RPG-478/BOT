@@ -132,9 +132,6 @@ def _patch_voice_recv_client() -> None:
 _patch_voice_recv_client()
 
 
-# ============================================================
-# グローバルVC送受信 AudioSink
-# ============================================================
 class GlobalAudioSink(voice_recv.AudioSink):
     def __init__(self, room_name: str, current_vc: voice_recv.VoiceRecvClient):
         super().__init__()
@@ -170,15 +167,15 @@ class GlobalAudioSink(voice_recv.AudioSink):
         except discord.opus.OpusError:
             return
 
-        # 復号されたPCM音声を他サーバーの送信ストリームに流す処理
+        # 復号されたPCM音声を他サーバーの送信ストリームに流す
         if pcm and self.room_name in GLOBAL_ROOMS:
             for vc in GLOBAL_ROOMS[self.room_name]:
-                if vc != self.current_vc and vc.is_connected() and not vc.is_playing():
+                # 修正: not vc.is_playing() の条件を削除して常時書き込めるように変更
+                if vc != self.current_vc and vc.is_connected():
                     if hasattr(vc, "global_source") and vc.global_source:
                         vc.global_source.write_pcm(pcm)
 
     def cleanup(self) -> None:
-        """AudioSink の停止時に呼ばれるクリーンアップ処理"""
         self.decoders.clear()
 
 
@@ -190,7 +187,9 @@ class GlobalAudioSource(discord.AudioSource):
 
     def write_pcm(self, pcm: bytes):
         with self._lock:
-            self.buffer.extend(pcm)
+            # バッファが大きくなりすぎないように制限 (最大 1秒分)
+            if len(self.buffer) < FRAME_BYTE_SIZE * 50:
+                self.buffer.extend(pcm)
 
     def read(self) -> bytes:
         with self._lock:
@@ -198,7 +197,8 @@ class GlobalAudioSource(discord.AudioSource):
                 data = bytes(self.buffer[:FRAME_BYTE_SIZE])
                 del self.buffer[:FRAME_BYTE_SIZE]
                 return data
-        # バッファ不足時は無音パケットを返す
+        
+        # バッファに音声がないときは無音 (PCM 0埋め) パケットを返す
         return b"\x00" * FRAME_BYTE_SIZE
 
     def is_opus(self) -> bool:
