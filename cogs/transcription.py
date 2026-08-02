@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 import os
 import sys
@@ -9,7 +10,6 @@ import threading
 import time
 import collections
 import numpy as np
-from scipy import signal
 
 import aiohttp
 import discord
@@ -17,8 +17,8 @@ import discord.opus
 from discord.ext import commands
 from discord.ext import voice_recv
 
-# 高速・軽量な Whisper エンジン
-from faster_whisper import WhisperModel
+# 超軽量音声認識 Vosk
+from vosk import Model, KaldiRecognizer
 
 logger = logging.getLogger(__name__)
 
@@ -26,18 +26,18 @@ logger = logging.getLogger(__name__)
 # 定数設定
 # ============================================================
 DISCORD_SAMPLE_RATE = 48000  # Discord 音声 (48kHz)
-WHISPER_SAMPLE_RATE = 16000  # Whisper 入力用 (16kHz)
+VOSK_SAMPLE_RATE = 16000     # Vosk 入力用 (16kHz)
 CHANNELS = 2
 SAMPLE_WIDTH = 2
 FRAME_SIZE = CHANNELS * SAMPLE_WIDTH
 
-# 無音判定の閾値（秒）: 発話後、この時間だけ無音が続いたら文字起こしを実行
-SILENCE_THRESHOLD_SEC = 1.0
-# 音量判定の閾値（16bit int PCMのRMS値）
-RMS_SILENCE_THRESHOLD = 400
+# Vosk 日本語モデルのフォルダパス
+MODEL_PATH = "model"  # 例: vosk-model-small-japanese-0.22 フォルダを model にリネーム
 
-# 日本語の文脈・表記を補正するためのプロンプト
-INITIAL_PROMPT = "こんにちは。Discordのボイスチャットの文字起こしです。日本語で正しく句読点を含めて文字起こししてください。"
+# 無音判定の閾値（秒）
+SILENCE_THRESHOLD_SEC = 0.8
+# 音量判定の閾値（RMS値）
+RMS_SILENCE_THRESHOLD = 400
 
 # voice_recv が無音時に渡してくる Opus パケット
 OPUS_SILENCE = b"\xf8\xff\xfe"
@@ -152,31 +152,25 @@ _patch_voice_recv_client()
 
 
 # ============================================================
-# 前処理関数 (ノイズ除去・ノーマライズ)
+# 音声リサンプル関数 (48kHz ステレオ -> 16kHz モノラル 16bit PCM)
 # ============================================================
-def preprocess_audio(audio_mono: np.ndarray) -> np.ndarray:
-    """音声の前処理（低周波ノイズカット ＆ 音量ノーマライズ）を行って精度を高める"""
-    if len(audio_mono) == 0:
-        return audio_mono
+def resample_48k_to_16k(pcm_data: bytes) -> bytes:
+    """PCMバイナリを高速に 16kHz モノラル 16bit PCM に変換"""
+    audio_16bit = np.frombuffer(pcm_data, dtype=np.int16)
+    if len(audio_16bit) == 0:
+        return b""
 
-    # 1. 80Hz以下の環境ノイズ（マイクの重低音ノイズ等）をハイパスフィルターで除去
-    b, a = signal.butter(2, 80 / (DISCORD_SAMPLE_RATE / 2), btype='high')
-    filtered_audio = signal.filtfilt(b, a, audio_mono)
+    # ステレオ -> モノラル
+    audio_stereo = audio_16bit.reshape(-1, CHANNELS)
+    audio_mono = audio_stereo.mean(axis=1)
 
-    # 2. 48kHz -> 16kHz リサンプル
-    num_target_samples = int(len(filtered_audio) * WHISPER_SAMPLE_RATE / DISCORD_SAMPLE_RATE)
-    resampled_audio = signal.resample(filtered_audio, num_target_samples)
-
-    # 3. 音量ノーマライズ (Peak Normalization)
-    max_val = np.max(np.abs(resampled_audio))
-    if max_val > 0:
-        resampled_audio = (resampled_audio / max_val) * 0.95
-
-    return resampled_audio.astype(np.float32)
+    # 48kHz -> 16kHz (3:1 スライスダウンサンプリングで超軽量化)
+    audio_16k = audio_mono[::3].astype(np.int16)
+    return audio_16k.tobytes()
 
 
 # ============================================================
-# ユーザー別音声バッファ ＆ VAD
+# ユーザー別音声バッファ
 # ============================================================
 class UserAudioBuffer:
     def __init__(self, user_id: int, display_name: str, avatar_url: str | None = None):
@@ -206,7 +200,7 @@ class UserAudioBuffer:
             return len(self.buffer) > 0
         return False
 
-    def pop_audio_for_whisper(self) -> np.ndarray | None:
+    def pop_audio_for_vosk(self) -> bytes | None:
         if len(self.buffer) == 0:
             return None
 
@@ -214,33 +208,24 @@ class UserAudioBuffer:
         self.buffer.clear()
         self.is_speaking = False
 
-        audio_16bit = np.frombuffer(pcm, dtype=np.int16)
-        if len(audio_16bit) == 0:
-            return None
-
-        # ステレオ -> モノラル
-        audio_stereo = audio_16bit.reshape(-1, CHANNELS)
-        audio_mono = audio_stereo.mean(axis=1)
-
-        # 音声前処理を適用
-        return preprocess_audio(audio_mono)
+        return resample_48k_to_16k(pcm)
 
 
 # ============================================================
-# 文字起こし統合 AudioSink
+# Vosk 文字起こし AudioSink
 # ============================================================
 class TranscriptionSink(voice_recv.AudioSink):
     def __init__(
         self,
         bot: commands.Bot,
         vc: voice_recv.VoiceRecvClient,
-        whisper_model: WhisperModel,
+        vosk_model: Model,
         callback_coro
     ):
         super().__init__()
         self.bot = bot
         self.vc = vc
-        self.whisper_model = whisper_model
+        self.vosk_model = vosk_model
         self.callback_coro = callback_coro
 
         self.user_buffers: dict[int, UserAudioBuffer] = {}
@@ -307,30 +292,21 @@ class TranscriptionSink(voice_recv.AudioSink):
             with self._lock:
                 for user_id, ubuf in list(self.user_buffers.items()):
                     if ubuf.should_transcribe():
-                        audio_data = ubuf.pop_audio_for_whisper()
-                        if audio_data is not None and len(audio_data) > WHISPER_SAMPLE_RATE * 0.4:
+                        pcm_16k = ubuf.pop_audio_for_vosk()
+                        if pcm_16k and len(pcm_16k) > VOSK_SAMPLE_RATE * 2 * 0.4:
                             threading.Thread(
-                                target=self._run_whisper,
-                                args=(ubuf.display_name, ubuf.avatar_url, audio_data),
+                                target=self._run_vosk,
+                                args=(ubuf.display_name, ubuf.avatar_url, pcm_16k),
                                 daemon=True
                             ).start()
 
-    def _run_whisper(self, display_name: str, avatar_url: str | None, audio: np.ndarray):
+    def _run_vosk(self, display_name: str, avatar_url: str | None, pcm_16k: bytes):
         try:
-            # 高精度推論パラメータの設定
-            segments, _ = self.whisper_model.transcribe(
-                audio,
-                language="ja",
-                beam_size=5,             # 探索幅（精度優先）
-                best_of=5,               # 候補生成数
-                temperature=0.0,         # 確定的な推論結果（誤字低減）
-                initial_prompt=INITIAL_PROMPT,  # プロンプト付与による表記揺れ防ぎ
-                vad_filter=True,         # 音声区間検知を有効化
-                vad_parameters=dict(
-                    min_silence_duration_ms=500
-                )
-            )
-            text = "".join([segment.text for segment in segments]).strip()
+            # 各認識タスクごとに Recognizer を用意
+            rec = KaldiRecognizer(self.vosk_model, VOSK_SAMPLE_RATE)
+            rec.AcceptWaveform(pcm_16k)
+            result_json = json.loads(rec.FinalResult())
+            text = result_json.get("text", "").replace(" ", "").strip()
 
             if text:
                 asyncio.run_coroutine_threadsafe(
@@ -338,7 +314,7 @@ class TranscriptionSink(voice_recv.AudioSink):
                     self.bot.loop
                 )
         except Exception as e:
-            logger.error(f"[Whisper Error] {e}")
+            logger.error(f"[Vosk Error] {e}")
 
     def cleanup(self):
         self._running = False
@@ -352,15 +328,13 @@ class TranscriptionCog(commands.Cog):
         self.bot = bot
         self.sessions: dict[int, dict] = {}
 
-        logger.info("Whisper 高精度モデルをロード中...")
-        # モデルを "small" に引き上げ (PCスペックやGPU環境に応じて "large-v3-turbo" も選択可能)
-        # GPUが使用できる環境の場合は device="cuda", compute_type="float16" に調整してください
-        self.whisper_model = WhisperModel(
-            "small",
-            device="cpu",
-            compute_type="int8"
-        )
-        logger.info("Whisper モデルのロードが完了しました。")
+        if not os.path.exists(MODEL_PATH):
+            logger.error(f"Vosk モデルが見つかりません。{MODEL_PATH} フォルダを配置してください。")
+            raise FileNotFoundError(f"Vosk model not found at {MODEL_PATH}")
+
+        logger.info("Vosk 日本語モデルをロード中...")
+        self.vosk_model = Model(MODEL_PATH)
+        logger.info("Vosk モデルのロードが完了しました。")
 
     async def _get_or_create_webhook(self, channel: discord.TextChannel) -> discord.Webhook:
         webhooks = await channel.webhooks()
@@ -376,7 +350,7 @@ class TranscriptionCog(commands.Cog):
         session = self.sessions.get(ctx.guild.id)
         if session:
             await ctx.send(embed=we(
-                f"🎙️ **高精度文字起こし実行中**\n"
+                f"🎙️ **Vosk 文字起こし実行中**\n"
                 f"ボイスチャンネル: **{session['vc_channel_name']}**\n"
                 f"送信先チャンネル: {session['target_channel_mention']}\n"
                 f"停止コマンド: `{ctx.prefix}stt stop`"
@@ -392,7 +366,7 @@ class TranscriptionCog(commands.Cog):
         target_channel: discord.TextChannel | None = None
     ):
         if not ctx.author.voice or not ctx.author.voice.channel:
-            return await ctx.send(embed=we("⚠️ ボイスチャンネル（または聞き専VC）に参加してから実行してください。"))
+            return await ctx.send(embed=we("⚠️ 先にボイスチャンネルに参加してから実行してください。"))
 
         guild_id = ctx.guild.id
         if guild_id in self.sessions:
@@ -437,7 +411,7 @@ class TranscriptionCog(commands.Cog):
         sink = TranscriptionSink(
             bot=self.bot,
             vc=vc,
-            whisper_model=self.whisper_model,
+            vosk_model=self.vosk_model,
             callback_coro=send_webhook
         )
         vc.listen(sink)
@@ -450,7 +424,7 @@ class TranscriptionCog(commands.Cog):
         }
 
         await ctx.send(embed=we(
-            f"🎙️ **{vc_channel.name}** で高精度文字起こしを開始しました！\n"
+            f"🎙️ **{vc_channel.name}** で Vosk 軽量文字起こしを開始しました！\n"
             f"🤖 結果を {send_channel.mention} へ送信します。"
         ))
 
