@@ -174,9 +174,12 @@ class GlobalAudioSink(voice_recv.AudioSink):
         if pcm and self.room_name in GLOBAL_ROOMS:
             for vc in GLOBAL_ROOMS[self.room_name]:
                 if vc != self.current_vc and vc.is_connected() and not vc.is_playing():
-                    # 送信ストリーム(AudioSource)がセットされていればPCMを送信
                     if hasattr(vc, "global_source") and vc.global_source:
                         vc.global_source.write_pcm(pcm)
+
+    def cleanup(self) -> None:
+        """AudioSink の停止時に呼ばれるクリーンアップ処理"""
+        self.decoders.clear()
 
 
 class GlobalAudioSource(discord.AudioSource):
