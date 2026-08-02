@@ -39,10 +39,6 @@ class PredictionView(discord.ui.View):
     async def down_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.handle_answer(interaction, "下がる")
 
-    @discord.ui.button(label="横ばい", style=discord.ButtonStyle.gray)
-    async def flat_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_answer(interaction, "横ばい")
-
     async def handle_answer(self, interaction: discord.Interaction, choice: str):
         user_id = str(interaction.user.id)
         is_correct = choice == self.correct_answer
@@ -316,13 +312,10 @@ class StockGame(commands.Cog):
         price_start = chart_data_initial['Close'].iloc[-1]
         price_future = chart_data_full['Close'].iloc[-1]
         
-        change_rate = (price_future - price_start) / price_start
-        if change_rate > 0.03:
+        if price_future >= price_start:
             correct = "上がる"
-        elif change_rate < -0.03:
-            correct = "下がる"
         else:
-            correct = "横ばい"
+            correct = "下がる"
 
         buf = io.BytesIO()
         mpf.plot(
