@@ -36,6 +36,9 @@ SILENCE_THRESHOLD_SEC = 1.0
 # 音量判定の閾値（16bit int PCMのRMS値）
 RMS_SILENCE_THRESHOLD = 400
 
+# 日本語の文脈・表記を補正するためのプロンプト
+INITIAL_PROMPT = "こんにちは。Discordのボイスチャットの文字起こしです。日本語で正しく句読点を含めて文字起こししてください。"
+
 # voice_recv が無音時に渡してくる Opus パケット
 OPUS_SILENCE = b"\xf8\xff\xfe"
 
@@ -149,6 +152,30 @@ _patch_voice_recv_client()
 
 
 # ============================================================
+# 前処理関数 (ノイズ除去・ノーマライズ)
+# ============================================================
+def preprocess_audio(audio_mono: np.ndarray) -> np.ndarray:
+    """音声の前処理（低周波ノイズカット ＆ 音量ノーマライズ）を行って精度を高める"""
+    if len(audio_mono) == 0:
+        return audio_mono
+
+    # 1. 80Hz以下の環境ノイズ（マイクの重低音ノイズ等）をハイパスフィルターで除去
+    b, a = signal.butter(2, 80 / (DISCORD_SAMPLE_RATE / 2), btype='high')
+    filtered_audio = signal.filtfilt(b, a, audio_mono)
+
+    # 2. 48kHz -> 16kHz リサンプル
+    num_target_samples = int(len(filtered_audio) * WHISPER_SAMPLE_RATE / DISCORD_SAMPLE_RATE)
+    resampled_audio = signal.resample(filtered_audio, num_target_samples)
+
+    # 3. 音量ノーマライズ (Peak Normalization)
+    max_val = np.max(np.abs(resampled_audio))
+    if max_val > 0:
+        resampled_audio = (resampled_audio / max_val) * 0.95
+
+    return resampled_audio.astype(np.float32)
+
+
+# ============================================================
 # ユーザー別音声バッファ ＆ VAD
 # ============================================================
 class UserAudioBuffer:
@@ -195,12 +222,8 @@ class UserAudioBuffer:
         audio_stereo = audio_16bit.reshape(-1, CHANNELS)
         audio_mono = audio_stereo.mean(axis=1)
 
-        # 48kHz -> 16kHz リサンプル
-        num_target_samples = int(len(audio_mono) * WHISPER_SAMPLE_RATE / DISCORD_SAMPLE_RATE)
-        resampled_audio = signal.resample(audio_mono, num_target_samples)
-
-        # float32 ( -1.0 〜 1.0 ) に規格化
-        return (resampled_audio / 32768.0).astype(np.float32)
+        # 音声前処理を適用
+        return preprocess_audio(audio_mono)
 
 
 # ============================================================
@@ -226,7 +249,6 @@ class TranscriptionSink(voice_recv.AudioSink):
         self.opus_available = discord.opus.is_loaded()
         self._running = True
 
-        # バックグラウンドで無音状態を監視するスレッド
         self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.monitor_thread.start()
 
@@ -295,11 +317,18 @@ class TranscriptionSink(voice_recv.AudioSink):
 
     def _run_whisper(self, display_name: str, avatar_url: str | None, audio: np.ndarray):
         try:
+            # 高精度推論パラメータの設定
             segments, _ = self.whisper_model.transcribe(
                 audio,
                 language="ja",
-                beam_size=5,
-                vad_filter=True
+                beam_size=5,             # 探索幅（精度優先）
+                best_of=5,               # 候補生成数
+                temperature=0.0,         # 確定的な推論結果（誤字低減）
+                initial_prompt=INITIAL_PROMPT,  # プロンプト付与による表記揺れ防ぎ
+                vad_filter=True,         # 音声区間検知を有効化
+                vad_parameters=dict(
+                    min_silence_duration_ms=500
+                )
             )
             text = "".join([segment.text for segment in segments]).strip()
 
@@ -323,16 +352,17 @@ class TranscriptionCog(commands.Cog):
         self.bot = bot
         self.sessions: dict[int, dict] = {}
 
-        logger.info("Whisper モデルをロード中...")
+        logger.info("Whisper 高精度モデルをロード中...")
+        # モデルを "small" に引き上げ (PCスペックやGPU環境に応じて "large-v3-turbo" も選択可能)
+        # GPUが使用できる環境の場合は device="cuda", compute_type="float16" に調整してください
         self.whisper_model = WhisperModel(
-            "base",
+            "small",
             device="cpu",
             compute_type="int8"
         )
         logger.info("Whisper モデルのロードが完了しました。")
 
     async def _get_or_create_webhook(self, channel: discord.TextChannel) -> discord.Webhook:
-        """指定したチャンネルの既存 Webhook を取得するか、無ければ新規作成する"""
         webhooks = await channel.webhooks()
         for wh in webhooks:
             if wh.token:
@@ -346,13 +376,13 @@ class TranscriptionCog(commands.Cog):
         session = self.sessions.get(ctx.guild.id)
         if session:
             await ctx.send(embed=we(
-                f"🎙️ **文字起こし実行中 (Webhook出力)**\n"
+                f"🎙️ **高精度文字起こし実行中**\n"
                 f"ボイスチャンネル: **{session['vc_channel_name']}**\n"
                 f"送信先チャンネル: {session['target_channel_mention']}\n"
                 f"停止コマンド: `{ctx.prefix}stt stop`"
             ))
         else:
-            await ctx.send(embed=we(f"⏸️ 文字起こし停止中 (`{ctx.prefix}stt start [#チャンネル]` で開始)"))
+            await ctx.send(embed=we(f"⏸️ 文字起こし停止中 (`{ctx.prefix}stt start` で開始)"))
 
     @stt_group.command(name="start")
     @commands.guild_only()
@@ -361,22 +391,16 @@ class TranscriptionCog(commands.Cog):
         ctx: commands.Context,
         target_channel: discord.TextChannel | None = None
     ):
-        """
-        !stt start [#チャンネル]
-        送信先チャンネルを指定可能です。省略した場合は実行場所へ送信します。
-        """
         if not ctx.author.voice or not ctx.author.voice.channel:
-            return await ctx.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"))
+            return await ctx.send(embed=we("⚠️ ボイスチャンネル（または聞き専VC）に参加してから実行してください。"))
 
         guild_id = ctx.guild.id
         if guild_id in self.sessions:
             return await ctx.send(embed=we("⚠️ 既に文字起こしが実行中です。"))
 
         vc_channel = ctx.author.voice.channel
-        # チャンネル指定が無ければコマンド実行チャンネルを使用
         send_channel: discord.TextChannel = target_channel or ctx.channel
 
-        # Webhook の自動取得・作成
         try:
             webhook = await self._get_or_create_webhook(send_channel)
         except discord.Forbidden:
@@ -398,7 +422,6 @@ class TranscriptionCog(commands.Cog):
         except Exception as e:
             return await ctx.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
 
-        # Webhookを使って指定チャンネルへメッセージを送信する非同期関数
         async def send_webhook(display_name: str, avatar_url: str | None, text: str):
             async with aiohttp.ClientSession() as session:
                 wh_obj = discord.Webhook.from_url(webhook.url, session=session)
@@ -427,9 +450,8 @@ class TranscriptionCog(commands.Cog):
         }
 
         await ctx.send(embed=we(
-            f"🎙️ **{vc_channel.name}** で文字起こしを開始しました！\n"
-            f"🤖 送信先: {send_channel.mention}\n"
-            f"💬 発話者の名前とアイコンで Webhook からメッセージが届きます。"
+            f"🎙️ **{vc_channel.name}** で高精度文字起こしを開始しました！\n"
+            f"🤖 結果を {send_channel.mention} へ送信します。"
         ))
 
     @stt_group.command(name="stop")
