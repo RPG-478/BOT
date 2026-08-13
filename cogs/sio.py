@@ -1398,7 +1398,7 @@ class VoiceCog(commands.Cog):
         channel = interaction.user.voice.channel
         
         # ⏱️ タイムアウト秒数の設定 (10秒)
-        TIMEOUT_SECONDS = 10.0
+        TIMEOUT_SECONDS = 45.0
 
         try:
             if interaction.guild.voice_client:
@@ -1890,7 +1890,7 @@ class VoiceCog(commands.Cog):
         input_str = query.strip() if query else ""
 
         # ⏱️ タイムアウト秒数の設定 (15秒)
-        TIMEOUT_SECONDS = 15.0
+        TIMEOUT_SECONDS = 45.0
 
         # YouTube関連ドメイン判定
         yt_pattern = re.compile(r'https?://(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)/', re.IGNORECASE)
