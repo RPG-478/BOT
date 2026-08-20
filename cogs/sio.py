@@ -1761,7 +1761,11 @@ class VoiceCog(commands.Cog):
             if is_yt:
                 try:
                     info = await self.get_yt_info(target_input)
-                    state['current_track'] = (info['stream_url'], info['title'], info['duration'], b62_id, is_yt)
+                    # /play では先に取得済みの動画タイトルをキューへ保存している。
+                    # ストリームURLを再解析すると、汎用エクストラクタのファイル名
+                    # （例: "videoplayback"）になる場合があるため、保存済みのタイトルを優先する。
+                    video_title = filename or info['title']
+                    state['current_track'] = (info['stream_url'], video_title, info['duration'], b62_id, is_yt)
                 except Exception as e:
                     logging.error(f"YouTube解析失敗: {e}")
                     # 💡 安全なメッセージ送信ハンドラ
