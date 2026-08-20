@@ -52,6 +52,26 @@ if YTDL_COOKIE_FILE:
     YTDL_OPTIONS['cookiefile'] = YTDL_COOKIE_FILE
 # BASE62の定義
 BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
+MAX_QUEUE_SIZE = 50
+MAX_PLAYLIST_ITEMS = 50
+MAX_TTS_CHARS = 300
+PANEL_TIMEOUT_SECONDS = 900
+SAFE_CUSTOM_AUDIO_FILTERS = {
+    'acompressor', 'aecho', 'alimiter', 'apulsator', 'bass', 'dynaudnorm',
+    'equalizer', 'extrastereo', 'highpass', 'lowpass', 'loudnorm', 'treble',
+    'tremolo', 'vibrato', 'volume',
+}
+
+
+def is_safe_custom_audio_filter(filter_text: str) -> bool:
+    """ファイル・ネットワーク入力を許すFFmpegフィルターを拒否する。"""
+    if not filter_text or any(char in filter_text for char in ('\n', '\r', ';', '|')):
+        return False
+    for part in filter_text.split(','):
+        name = part.split('=', 1)[0].strip()
+        if name not in SAFE_CUSTOM_AUDIO_FILTERS:
+            return False
+    return True
 
 # 音響エフェクト（EQ）の設定マップ
 # JavaScriptの3帯域立体音響、空気吸収マイルド減衰、頭部陰影、およびFDNリバーブ分離回路をFFmpeg用にシミュレート
@@ -350,8 +370,11 @@ class PythonSpatialAudioSource(discord.AudioSource):
                     z = -math.cos(yaw) * math.cos(pitch) * global_distance
                     angle_deg = math.degrees(math.atan2(x, -z)) % 360
                     
-                    # Pitchに応じた仰角インデックス選択 (y軸補正)
-                    y_elevation = int(np.clip(config['y'] + int(pitch * 2), -1, 1))
+                    # HRTFテーブルは -4.0 / 0.0 / 4.0 の仰角キーで構築している。
+                    # 3D回転でも必ず同じ集合から最も近い仰角を選択する。
+                    elevation_levels = (-4.0, 0.0, 4.0)
+                    target_elevation = (pitch / 0.45) * 4.0
+                    y_elevation = min(elevation_levels, key=lambda value: abs(value - target_elevation))
                 elif rot_mode == 'standard':
                     # 通常 2D 水平回転
                     config['angle'] += 0.015 * config['speed']
@@ -512,8 +535,9 @@ class PythonSpatialAudioSource(discord.AudioSource):
             else:
                 self.agc_gain = self.agc_gain * 0.98 + desired_gain * 0.02
 
-            final_l = np.clip(mix_l * self.agc_gain, -1.0, 1.0)
-            final_r = np.clip(mix_r * self.agc_gain, -1.0, 1.0)
+            volume = float(np.clip(self.state.get('volume', 1.0), 0.0, 2.0))
+            final_l = np.clip(mix_l * self.agc_gain * volume, -1.0, 1.0)
+            final_r = np.clip(mix_r * self.agc_gain * volume, -1.0, 1.0)
 
             out_samples = np.empty(len(samples), dtype=np.int16)
             out_samples[0::2] = (final_l * 32767).astype(np.int16)
@@ -601,8 +625,9 @@ class PythonSpatialAudioSource(discord.AudioSource):
             else:
                 out_l, out_r = in_l, in_r
 
-            out_l = max(-1.0, min(1.0, out_l))
-            out_r = max(-1.0, min(1.0, out_r))
+            volume = float(np.clip(self.state.get('volume', 1.0), 0.0, 2.0))
+            out_l = max(-1.0, min(1.0, out_l * volume))
+            out_r = max(-1.0, min(1.0, out_r * volume))
             
             out_samples.append(int(out_l * 32767))
             out_samples.append(int(out_r * 32767))
@@ -692,8 +717,9 @@ class PythonSpatialAudioSource(discord.AudioSource):
             else:
                 out_l, out_r = in_l, in_r
 
-            out_l = max(-1.0, min(1.0, out_l))
-            out_r = max(-1.0, min(1.0, out_r))
+            volume = float(np.clip(self.state.get('volume', 1.0), 0.0, 2.0))
+            out_l = max(-1.0, min(1.0, out_l * volume))
+            out_r = max(-1.0, min(1.0, out_r * volume))
             
             out_samples.append(int(out_l * 32767))
             out_samples.append(int(out_r * 32767))
@@ -709,7 +735,7 @@ class PythonSpatialAudioSource(discord.AudioSource):
 # ==================================================
 class SpatialControlView(discord.ui.View):
     def __init__(self, cog, guild_id: int):
-        super().__init__(timeout=None)
+        super().__init__(timeout=PANEL_TIMEOUT_SECONDS)
         self.cog = cog
         self.guild_id = guild_id
 
@@ -876,7 +902,12 @@ class SearchModal(discord.ui.Modal, title="🎵 YouTube 楽曲検索"):
                 url, filename, is_yt = info['webpage_url'], info['title'], True
 
             state['current_ctx'] = interaction
-            await state['queue'].put((url, filename, None, is_yt))
+            if not await self.cog.enqueue_track(self.guild_id, (url, filename, None, is_yt)):
+                await interaction.followup.send(
+                    f"❌ キューの上限（{MAX_QUEUE_SIZE}件）に達しています。",
+                    ephemeral=True,
+                )
+                return
             await interaction.followup.send(f"✅ **{filename}** をキューに追加しました！", ephemeral=True)
 
             # バグ修正: interaction.guild から voice_client を取得するように修正
@@ -914,11 +945,19 @@ class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルタ�
             state['custom_eq_filter'] = None
             await interaction.response.send_message("⚙️ カスタムEQを解除しました（Flatに戻します）。", ephemeral=True)
         else:
+            if not is_safe_custom_audio_filter(user_filter):
+                await interaction.response.send_message(
+                    "❌ 使用できないフィルターです。equalizer、bass、treble、volume、vibrato、tremoloなどの"
+                    "音声フィルターだけをカンマ区切りで指定してください。",
+                    ephemeral=True,
+                )
+                return
             state['eq'] = "custom"
             state['custom_eq_filter'] = user_filter
             await interaction.response.send_message(f"⚙️ カスタムEQを設定しました:\n`{user_filter}`\n即時反映します。", ephemeral=True)
+            ctx = state['current_ctx'] or interaction
+            await self.cog.apply_immediate_setting(ctx)
 
-        # 曲を止めずにパネル表示だけを更新する
         await self.cog.update_panel(self.guild_id)
 
 
@@ -928,7 +967,7 @@ class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルタ�
 class VoiceControlView(discord.ui.View):
     """音量・倍速・EQ・再生コントロールをまとめた常時同期型インタラクティブメニューUI"""
     def __init__(self, cog, guild_id: int):
-        super().__init__(timeout=None)
+        super().__init__(timeout=PANEL_TIMEOUT_SECONDS)
         self.cog = cog
         self.guild_id = guild_id
         
@@ -1072,9 +1111,24 @@ class VoiceControlView(discord.ui.View):
             await interaction.response.send_message("❌ ボイスチャンネルに接続していません。", ephemeral=True)
 
 
+# 録音経路は開始・停止・保存のコマンドが未実装のため、誤って有効化しない。
+# 受信音声を保存する機能を実装する際は、同意・保持期間・アクセス制御を含めて
+# 専用Cogとして設計し直すこと。
+RECORDING_ENABLED = False
+BYTES_PER_SECOND = 48_000 * 2 * 2
+FRAME_SIZE = 960 * 2 * 2
+MAX_GAP_SECONDS = 5.0
+
 class AudioSink(voice_recv.AudioSink):
     def __init__(self, bot, vc, update_callback=None):
         super().__init__()
+        self.disabled = not RECORDING_ENABLED
+        self.buffers = {}
+        self.user_start_time = {}
+        self.decoders = {}
+        if self.disabled:
+            logger.warning("AudioSink was created while recording is disabled; ignoring all incoming audio.")
+            return
         self.bot = bot
         self.vc = vc  # DAVE復号のためVoiceRecvClientへの参照を保持
         self.buffers = {}
@@ -1098,6 +1152,8 @@ class AudioSink(voice_recv.AudioSink):
         return True
  
     def write(self, user, data: voice_recv.VoiceData):
+        if self.disabled:
+            return
         try:
             self._write_inner(user, data)
         except Exception as e:
@@ -1214,7 +1270,7 @@ class VoiceCog(commands.Cog):
     def get_state(self, guild_id: int):
         if guild_id not in self.states:
             self.states[guild_id] = {
-                'queue': asyncio.Queue(),
+                'queue': asyncio.Queue(maxsize=MAX_QUEUE_SIZE),
                 'current_ctx': None,
                 'is_processing_queue': False,
                 'current_track': None,
@@ -1227,6 +1283,7 @@ class VoiceCog(commands.Cog):
                 'custom_eq_filter': None,
                 'is_paused': False,
                 'is_changing_setting': False,
+                'resume_music_after_tts': False,
                 'panel_message': None,
                 # --- 録音用ステート ---
                 'is_recording': False,
@@ -1253,15 +1310,24 @@ class VoiceCog(commands.Cog):
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
-            stdout, _ = await proc.communicate()
+            try:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                logger.warning("ffprobe timed out after 20 seconds")
+                return 0
             data = json.loads(stdout)
             return float(data['format']['duration'])
         except Exception:
             return 0
             
-    async def get_attachment_info(self, b62_id: str):
+    async def get_attachment_info(self, b62_id: str, requesting_guild_id: int | None = None):
         try:
             guild_id, channel_id, message_id = decode_full_id(b62_id)
+            if requesting_guild_id is not None and guild_id != requesting_guild_id:
+                logger.warning("Cross-guild attachment access blocked: request=%s source=%s", requesting_guild_id, guild_id)
+                return None, None
             guild = self.bot.get_guild(guild_id) or await self.bot.fetch_guild(guild_id)
             if not guild: return None, None
             channel = guild.get_channel(channel_id) or await guild.fetch_channel(channel_id)
@@ -1272,6 +1338,14 @@ class VoiceCog(commands.Cog):
         except Exception as e:
             logging.debug(f"Universal ID format match but lookup failed ({b62_id}): {e}")
         return None, None
+
+    async def enqueue_track(self, guild_id: int, track: tuple) -> bool:
+        """ギルドごとのキュー上限を守ってトラックを追加する。"""
+        queue = self.get_state(guild_id)['queue']
+        if queue.full():
+            return False
+        await queue.put(track)
+        return True
 
     @app_commands.command(name="join", description="ボイスチャンネルに参加します")
     async def join_cmd(self, interaction: discord.Interaction):
@@ -1575,7 +1649,11 @@ class VoiceCog(commands.Cog):
             selected_track = self.tracks[idx]
             state = self.cog.get_state(self.guild_id)
             state['current_ctx'] = self.ctx
-            await state['queue'].put((selected_track['url'], selected_track['title'], None, True))
+            if not await self.cog.enqueue_track(self.guild_id, (selected_track['url'], selected_track['title'], None, True)):
+                return await interaction.response.send_message(
+                    f"❌ キューの上限（{MAX_QUEUE_SIZE}件）に達しています。",
+                    ephemeral=True,
+                )
 
             if not self.ctx.voice_client.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
                 await self.cog.check_queue(self.guild_id)
@@ -1715,7 +1793,12 @@ class VoiceCog(commands.Cog):
         if state.get('elapsed_offset', 0) > 0:
             before_options += f" -ss {state['elapsed_offset']}"
 
-        options = "-vn -ar 48000 -ac 2"
+        speed = float(np.clip(state.get('speed', 1.0), 0.5, 2.0))
+        audio_filters = [f"atempo={speed:.3f}"]
+        custom_filter = state.get('custom_eq_filter')
+        if state.get('eq') == 'custom' and custom_filter and is_safe_custom_audio_filter(custom_filter):
+            audio_filters.append(custom_filter)
+        options = f"-vn -ar 48000 -ac 2 -af {shlex.quote(','.join(audio_filters))}"
 
         try:
             # 1. yt-dlpと同じHTTPヘッダーでFFmpegを起動し、即時終了を検知する。
@@ -1881,7 +1964,7 @@ class VoiceCog(commands.Cog):
         # 3. BASE62 のユニバーサルID指定（または検索へのフォールバック）
         elif input_str and len(input_str.split()) == 1 and all(c in BASE62 for c in input_str):
             try:
-                url, filename = await asyncio.wait_for(self.get_attachment_info(input_str), timeout=TIMEOUT_SECONDS)
+                url, filename = await asyncio.wait_for(self.get_attachment_info(input_str, interaction.guild_id), timeout=TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
                 return await interaction.followup.send("⏱️ タイムアウト: ID情報の取得に時間がかかりすぎました。")
             except Exception:
@@ -1922,8 +2005,12 @@ class VoiceCog(commands.Cog):
             embed = we(msg) if hasattr(self, 'we') else (we(msg) if 'we' in globals() else discord.Embed(description=msg, color=0xFF0000))
             return await interaction.followup.send(embed=embed)
 
-        # キューに追加
-        await state['queue'].put((url, filename, final_id, is_yt))
+        # キューに追加（ギルド単位の上限を超える場合は受け付けない）
+        if not await self.enqueue_track(interaction.guild_id, (url, filename, final_id, is_yt)):
+            return await interaction.followup.send(
+                f"❌ キューの上限（{MAX_QUEUE_SIZE}件）に達しています。再生完了または停止後に追加してください。",
+                ephemeral=True,
+            )
 
         # 再生状態の安全確認
         vc = interaction.guild.voice_client
@@ -2004,9 +2091,9 @@ class VoiceCog(commands.Cog):
 
     @commands.command()
     async def list(self, ctx, limit: int = 20):
-        """このチャンネル内にアップロードされた音声のユニバーサルIDを20件表示します"""
+        """このチャンネル内にアップロードされた音声のIDを20件表示します。"""
         embed = we(title="チャンネル内音声リスト")
-        desc = "ユニバーサルID（全サーバー共通）\n" + "─" * 20 + "\n"
+        desc = "このサーバー内で再生可能な音声ID\n" + "─" * 20 + "\n"
         async for msg in ctx.channel.history(limit=limit):
             if msg.attachments:
                 b62 = encode_full_id(ctx.guild.id, ctx.channel.id, msg.id)
@@ -2023,6 +2110,7 @@ class VoiceCog(commands.Cog):
         state = self.get_state(ctx.guild.id)
         state['current_ctx'] = ctx
         tokens = []
+        playlist_key = None
 
         if ctx.message.attachments:
             attachment = ctx.message.attachments[0]
@@ -2037,7 +2125,8 @@ class VoiceCog(commands.Cog):
         elif input_data:
             if self.bot.supabase:
                 try:
-                    res = self.bot.supabase.table("playlists").select("ids").eq("name", input_data).execute()
+                    playlist_key = f"{ctx.guild.id}:{input_data}"
+                    res = self.bot.supabase.table("playlists").select("ids").eq("name", playlist_key).execute()
                     if res.data:
                         tokens = res.data[0]["ids"]
                     else:
@@ -2051,14 +2140,18 @@ class VoiceCog(commands.Cog):
             return await ctx.send("プレイリスト名、ID、またはJSONファイルを指定してください。")
 
         added = 0
-        for token in tokens:
-            url, fname = await self.get_attachment_info(token)
-            if url:
-                await state['queue'].put((url, fname, token, False))
+        skipped = 0
+        for token in tokens[:MAX_PLAYLIST_ITEMS]:
+            url, fname = await self.get_attachment_info(token, ctx.guild.id)
+            if url and await self.enqueue_track(ctx.guild.id, (url, fname, token, False)):
                 added += 1
+            else:
+                skipped += 1
+        skipped += max(0, len(tokens) - MAX_PLAYLIST_ITEMS)
         
         if added > 0:
-            await ctx.send(f"✅ {added} 件をキューに追加しました。")
+            suffix = f"（{skipped}件は無効IDまたはキュー上限のため追加しませんでした）" if skipped else ""
+            await ctx.send(f"✅ {added} 件をキューに追加しました。{suffix}")
             if not ctx.voice_client.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
                 await self.check_queue(ctx.guild.id)
             else:
@@ -2074,22 +2167,24 @@ class VoiceCog(commands.Cog):
         
         state = self.get_state(ctx.guild.id)
         ids = []
-        if state['current_track']: 
+        if state['current_track'] and state['current_track'][3]:
             ids.append(state['current_track'][3])
         
         temp = []
         while not state['queue'].empty():
             item = await state['queue'].get()
             temp.append(item)
-            ids.append(item[2])
+            if item[2]:
+                ids.append(item[2])
         for item in temp: 
             await state['queue'].put(item)
 
         if not ids: return await ctx.send("キューが空です。")
 
         try:
-            self.bot.supabase.table("playlists").upsert({"name": name, "ids": ids}).execute()
-            await ctx.send(f"✅ 現在のキューを `{name}` として保存しました。")
+            playlist_key = f"{ctx.guild.id}:{name}"
+            self.bot.supabase.table("playlists").upsert({"name": playlist_key, "ids": ids}).execute()
+            await ctx.send(f"✅ このサーバー内のキューを `{name}` として保存しました。")
         except Exception as e:
             await ctx.send(f"エラー: {e}")
             
@@ -2197,9 +2292,29 @@ class VoiceCog(commands.Cog):
                 print(f"VOICEVOX Connection Error: {e}")
                 return None
 
+    def resume_music_after_tts(self, guild_id: int, error=None):
+        """TTSの完了後、TTS開始前に再生中だった音楽だけを安全に再開する。"""
+        state = self.get_state(guild_id)
+        if error:
+            logger.error("TTS playback error: %r", error)
+
+        if not state.get('resume_music_after_tts'):
+            return
+
+        state['resume_music_after_tts'] = False
+        if state.get('is_paused') and state.get('current_track'):
+            state['is_paused'] = False
+            asyncio.create_task(self.check_queue(guild_id))
+
     @app_commands.command(name="speak", description="VOICEVOXで指定したテキストをボイスチャンネルで再生します")
     @app_commands.describe(text="喋らせたいテキスト", speaker="話者ID（1:四国めたん, 3:ずんだもん 等）")
     async def speak_cmd(self, interaction: discord.Interaction, text: str, speaker: int = 1):
+        if len(text) > MAX_TTS_CHARS:
+            await interaction.response.send_message(
+                f"❌ 読み上げは{MAX_TTS_CHARS}文字以内にしてください。",
+                ephemeral=True,
+            )
+            return
         await interaction.response.defer()
 
         # VOICEVOXから音声データを取得
@@ -2220,18 +2335,38 @@ class VoiceCog(commands.Cog):
         target_channel = interaction.user.voice.channel
 
         if vc is None:
-            vc = await target_channel.connect()
+            vc = await target_channel.connect(cls=voice_recv.VoiceRecvClient)
         elif vc.channel != target_channel:
             await vc.move_to(target_channel)
 
-        # メモリ上のWAVデータをFFmpegで再生
-        audio_stream = io.BytesIO(wav_bytes)
-        source = discord.FFmpegPCMAudio(audio_stream, pipe=True)
-
-        if vc.is_playing():
+        state = self.get_state(interaction.guild_id)
+        state['resume_music_after_tts'] = False
+        if vc.is_playing() and state.get('current_track'):
+            # 音楽を一時停止状態へ遷移させてから止める。musicのafter callbackは
+            # is_pausedを確認してキューを進めないため、TTSと競合しない。
+            actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
+            state['elapsed_offset'] += actual_played
+            state['is_paused'] = True
+            state['resume_music_after_tts'] = True
+            vc.stop()
+            for _ in range(20):
+                if not vc.is_playing():
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                state['is_paused'] = False
+                state['resume_music_after_tts'] = False
+                await interaction.followup.send("❌ 既存の音声を安全に停止できなかったため、TTSを開始しませんでした。")
+                return
+        elif vc.is_playing():
             vc.stop()
 
-        vc.play(source)
+        # メモリ上のWAVデータをFFmpegで再生する。終了時には必要な音楽だけを再開する。
+        audio_stream = io.BytesIO(wav_bytes)
+        source = discord.FFmpegPCMAudio(audio_stream, pipe=True)
+        vc.play(source, after=lambda error: self.bot.loop.call_soon_threadsafe(
+            self.resume_music_after_tts, interaction.guild_id, error
+        ))
         await interaction.followup.send(f"🗣️ **再生中:** `{text}` (話者ID: {speaker})")
 
 
