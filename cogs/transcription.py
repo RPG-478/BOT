@@ -18,7 +18,11 @@ from discord.ext import commands
 from discord.ext import voice_recv
 
 # 超軽量音声認識 Vosk
-from vosk import Model, KaldiRecognizer
+try:
+    from vosk import Model, KaldiRecognizer
+except ImportError:
+    Model = None
+    KaldiRecognizer = None
 
 logger = logging.getLogger(__name__)
 
@@ -328,13 +332,15 @@ class TranscriptionCog(commands.Cog):
         self.bot = bot
         self.sessions: dict[int, dict] = {}
 
-        if not os.path.exists(MODEL_PATH):
-            logger.error(f"Vosk モデルが見つかりません。{MODEL_PATH} フォルダを配置してください。")
-            raise FileNotFoundError(f"Vosk model not found at {MODEL_PATH}")
-
-        logger.info("Vosk 日本語モデルをロード中...")
-        self.vosk_model = Model(MODEL_PATH)
-        logger.info("Vosk モデルのロードが完了しました。")
+        self.vosk_model = None
+        if Model is None:
+            logger.warning("Voskが未インストールのため、文字起こし機能を無効化します。")
+        elif not os.path.exists(MODEL_PATH):
+            logger.warning("Voskモデルが見つからないため、文字起こし機能を無効化します: %s", MODEL_PATH)
+        else:
+            logger.info("Vosk 日本語モデルをロード中...")
+            self.vosk_model = Model(MODEL_PATH)
+            logger.info("Vosk モデルのロードが完了しました。")
 
     async def _get_or_create_webhook(self, channel: discord.TextChannel) -> discord.Webhook:
         webhooks = await channel.webhooks()
@@ -365,6 +371,8 @@ class TranscriptionCog(commands.Cog):
         ctx: commands.Context,
         target_channel: discord.TextChannel | None = None
     ):
+        if self.vosk_model is None:
+            return await ctx.send(embed=we("❌ 文字起こし機能は現在利用できません。`vosk` と日本語モデルを設定してください。"))
         if not ctx.author.voice or not ctx.author.voice.channel:
             return await ctx.send(embed=we("⚠️ 先にボイスチャンネルに参加してから実行してください。"))
 

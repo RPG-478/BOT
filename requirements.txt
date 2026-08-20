@@ -12,3 +12,13 @@ lightgbm>=4.0.0
 psutil
 PyGithub
 python-dotenv
+aiohttp
+beautifulsoup4
+curl_cffi
+deep-translator
+groq
+mplfinance
+pandas
+scipy
+vosk
+yfinance

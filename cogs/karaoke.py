@@ -18,7 +18,11 @@ import discord.opus
 from discord.ext import commands
 from discord.ext import voice_recv
 
-from vosk import Model, KaldiRecognizer
+try:
+    from vosk import Model, KaldiRecognizer
+except ImportError:
+    Model = None
+    KaldiRecognizer = None
 
 logger = logging.getLogger(__name__)
 
@@ -279,9 +283,13 @@ class KaraokeCog(commands.Cog):
         self.bot = bot
         self.sessions: dict[int, dict] = {}
 
-        if not os.path.exists(MODEL_PATH):
-            raise FileNotFoundError(f"Vosk model not found at {MODEL_PATH}")
-        self.vosk_model = Model(MODEL_PATH)
+        self.vosk_model = None
+        if Model is None:
+            logger.warning("Voskが未インストールのため、カラオケ機能を無効化します。")
+        elif not os.path.exists(MODEL_PATH):
+            logger.warning("Voskモデルが見つからないため、カラオケ機能を無効化します: %s", MODEL_PATH)
+        else:
+            self.vosk_model = Model(MODEL_PATH)
 
     async def _get_or_create_webhook(self, channel: discord.TextChannel) -> discord.Webhook:
         webhooks = await channel.webhooks()
@@ -303,6 +311,8 @@ class KaraokeCog(commands.Cog):
     @karaoke_group.command(name="start")
     @commands.guild_only()
     async def karaoke_start(self, ctx: commands.Context, *, target_lyrics: str):
+        if self.vosk_model is None:
+            return await ctx.send(embed=we("❌ カラオケ機能は現在利用できません。`vosk` と日本語モデルを設定してください。"))
         if not ctx.author.voice or not ctx.author.voice.channel:
             return await ctx.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"))
 
