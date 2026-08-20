@@ -5,7 +5,7 @@ matplotlib
 numpy
 supabase
 discord-ext-voice-recv
-yt-dlp
+yt-dlp[default,curl-cffi]>=2026.8.19
 google-genai
 scikit-learn>=1.4.0
 lightgbm>=4.0.0

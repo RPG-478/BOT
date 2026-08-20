@@ -9,6 +9,7 @@ import string
 import subprocess
 import json
 import io
+import os
 import shlex
 import tempfile
 import yt_dlp
@@ -28,14 +29,27 @@ import discord.opus
 logger = logging.getLogger(__name__)
  
 # yt-dlpの設定（ストリーミング再生用および検索用）
+# 2026年8月時点で android_vr クライアントのCDN URLが403となるケースがあるため、
+# 一時的な回避策としてプレーンな音声URLを返すAndroidクライアントを明示する。
 YTDL_OPTIONS = {
-    'format': 'bestaudio/best',
+    'format': 'bestaudio[acodec!=none]/bestaudio/best',
     'noplaylist': True,
     'quiet': True,
     'no_warnings': True,
-    'default_search': 'ytsearch',  # 'auto' から 'ytsearch' に変更（検索の有効化）
+    'default_search': 'ytsearch',
     'source_address': '0.0.0.0',
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['android'],
+        },
+    },
 }
+
+# CAPTCHA・年齢確認等でYouTubeがCookieを要求する環境では、Botの実行環境に
+# Netscape/Mozilla形式のcookies.txtを配置してYTDLP_COOKIE_FILEで指定する。
+YTDL_COOKIE_FILE = os.getenv('YTDLP_COOKIE_FILE')
+if YTDL_COOKIE_FILE:
+    YTDL_OPTIONS['cookiefile'] = YTDL_COOKIE_FILE
 # BASE62の定義
 BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
 
