@@ -92,24 +92,35 @@ class FFmpegPCMAudioDiagnostics(discord.FFmpegPCMAudio):
         super().__init__(source, stderr=self._diagnostic_stderr, **kwargs)
 
     def read(self):
-        data = super().read()
-        if data:
+        # discord.pyのバージョンにより、FFmpeg異常終了の通知方法が
+        # 例外・内部属性・無通知で異なる。基底クラスのread()を使わず、
+        # PCMの読み取りと終了診断をここで一貫して扱う。
+        frame_bytes = 3840  # 48 kHz / 16 bit / stereo / 20 ms
+        data = self._stdout.read(frame_bytes)
+        if len(data) == frame_bytes:
             return data
 
-        # discord.py 2.7以降はFFmpegの異常終了を例外送出ではなく
-        # _current_error に格納する。外側のAudioSourceへ渡せるよう、
-        # 一度ここで診断ログを補強して保持する。
-        process_error = getattr(self, "_current_error", None)
-        if process_error and not self._ffmpeg_error_raised:
+        process = getattr(self, "_process", None)
+        returncode = process.poll() if process else None
+        # stdoutのEOFが先に届き、Popen.returncode の反映がわずかに遅れる場合がある。
+        # 短時間だけ再確認して、非ゼロ終了を取りこぼさない。
+        if returncode is None and process:
+            for _ in range(10):
+                time.sleep(0.05)
+                returncode = process.poll()
+                if returncode is not None:
+                    break
+        if returncode not in (None, 0) and not self._ffmpeg_error_raised:
             self._ffmpeg_error_raised = True
-            # stderrを読むスレッドが書き終えるまで短時間待機する。
-            time.sleep(0.05)
+            # stderrをコピーするバックグラウンド処理が書き終えるのを待つ。
+            time.sleep(0.10)
             self._diagnostic_stderr.seek(0)
             diagnostic = self._diagnostic_stderr.read().decode("utf-8", errors="replace")[-2000:].strip()
+            message = f"FFmpeg exited with code {returncode}"
             if diagnostic:
-                logger.error("FFmpeg playback failure: %s | stderr: %s", process_error, diagnostic)
-            else:
-                logger.error("FFmpeg playback failure: %s", process_error)
+                message += f". Stderr: {diagnostic}"
+            self._current_error = RuntimeError(message)
+            logger.error("FFmpeg playback failure: %s", message)
         return b""
 
     def cleanup(self):
