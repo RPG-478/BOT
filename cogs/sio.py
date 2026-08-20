@@ -9,6 +9,8 @@ import string
 import subprocess
 import json
 import io
+import shlex
+import tempfile
 import yt_dlp
 import struct
 import math  # 追加: Timerクラスのサイン波計算で必要
@@ -22,6 +24,8 @@ import re
 import aiohttp
 import wave
 import discord.opus
+
+logger = logging.getLogger(__name__)
  
 # yt-dlpの設定（ストリーミング再生用および検索用）
 YTDL_OPTIONS = {
@@ -65,6 +69,56 @@ EQ_SETTINGS = {
     )
 }
 
+
+def build_ffmpeg_headers(headers: dict | None) -> str:
+    """yt-dlpがストリーム取得に使った安全なHTTPヘッダーをFFmpegへ引き継ぐ。"""
+    if not headers:
+        return ""
+
+    lines = []
+    for name, value in headers.items():
+        if not re.fullmatch(r"[A-Za-z0-9-]+", str(name)):
+            continue
+        safe_value = str(value).replace("\r", "").replace("\n", "")
+        lines.append(f"{name}: {safe_value}")
+    return "\r\n".join(lines) + ("\r\n" if lines else "")
+
+
+class FFmpegPCMAudioDiagnostics(discord.FFmpegPCMAudio):
+    """FFmpegの即時終了を再生エラーとして上位へ伝えるPCMソース。"""
+    def __init__(self, source, **kwargs):
+        self._diagnostic_stderr = tempfile.TemporaryFile(mode="w+b")
+        self._ffmpeg_error_raised = False
+        super().__init__(source, stderr=self._diagnostic_stderr, **kwargs)
+
+    def read(self):
+        data = super().read()
+        if data:
+            return data
+
+        # discord.py 2.7以降はFFmpegの異常終了を例外送出ではなく
+        # _current_error に格納する。外側のAudioSourceへ渡せるよう、
+        # 一度ここで診断ログを補強して保持する。
+        process_error = getattr(self, "_current_error", None)
+        if process_error and not self._ffmpeg_error_raised:
+            self._ffmpeg_error_raised = True
+            # stderrを読むスレッドが書き終えるまで短時間待機する。
+            time.sleep(0.05)
+            self._diagnostic_stderr.seek(0)
+            diagnostic = self._diagnostic_stderr.read().decode("utf-8", errors="replace")[-2000:].strip()
+            if diagnostic:
+                logger.error("FFmpeg playback failure: %s | stderr: %s", process_error, diagnostic)
+            else:
+                logger.error("FFmpeg playback failure: %s", process_error)
+        return b""
+
+    def cleanup(self):
+        try:
+            super().cleanup()
+        finally:
+            self._diagnostic_stderr.close()
+
+
 def encode_full_id(guild_id: int, channel_id: int, message_id: int) -> str:
     """サーバー・チャンネル・メッセージの3つのIDを1つの62進数に統合"""
     combined = (guild_id << 128) | (channel_id << 64) | message_id
@@ -100,6 +154,7 @@ class PythonSpatialAudioSource(discord.AudioSource):
         self.source = source
         self.state = state
         self.count = 0
+        self.has_output = False
         self.sr = 48000
         # --- 既存の初期化処理の中に追加・修正 ---
         # サンプリングレートの保持（未定義の場合は 48000 など適切な値を設定）
@@ -212,8 +267,14 @@ class PythonSpatialAudioSource(discord.AudioSource):
     def read(self):
         raw_data = self.source.read()
         if not raw_data:
+            # AudioPlayerは最外層のAudioSourceだけを確認するため、
+            # FFmpegソースで記録されたエラーをこのラッパーへ伝播する。
+            source_error = getattr(self.source, "_current_error", None)
+            if source_error:
+                self._current_error = source_error
             return b""
-        
+
+        self.has_output = True
         num_samples = len(raw_data) // 4
         fmt = f"<{num_samples * 2}h"
         samples = list(struct.unpack(fmt, raw_data))
@@ -1147,7 +1208,9 @@ class VoiceCog(commands.Cog):
                 'rec_start_time': 0,
                 'sink': None,
                 # YouTubeは再生用URLが短時間で失効するため、再取得用のページURLを別途保持する。
-                'current_yt_page_url': None
+                'current_yt_page_url': None,
+                # yt-dlpが取得したストリーム用HTTPヘッダーをFFmpegにも渡す。
+                'current_yt_headers': {}
             }
         return self.states[guild_id]
 
@@ -1457,6 +1520,7 @@ class VoiceCog(commands.Cog):
             'url': play_url,             # 再生で使うストリームURL
             'stream_url': play_url,      # 互換用
             'webpage_url': webpage_url,  # YouTube動画ページのURL
+            'http_headers': data.get('http_headers') or {},
             'title': data.get('title', 'Unknown Title'),
             'duration': data.get('duration', 0)
         }
@@ -1586,6 +1650,7 @@ class VoiceCog(commands.Cog):
                     # （例: "videoplayback"）になる場合があるため、保存済みのタイトルを優先する。
                     video_title = filename or info['title']
                     state['current_yt_page_url'] = info['webpage_url']
+                    state['current_yt_headers'] = info['http_headers']
                     state['current_track'] = (info['stream_url'], video_title, info['duration'], b62_id, is_yt)
                 except Exception as e:
                     logging.error(f"YouTube解析失敗: {e}")
@@ -1596,6 +1661,7 @@ class VoiceCog(commands.Cog):
             else:
                 duration = await self.get_duration(target_input)
                 state['current_yt_page_url'] = None
+                state['current_yt_headers'] = {}
                 state['current_track'] = (target_input, filename, duration, b62_id, is_yt) 
 
         url, filename, duration, b62_id, is_yt = state['current_track']
@@ -1608,13 +1674,18 @@ class VoiceCog(commands.Cog):
                     raise RuntimeError("YouTube動画ページURLが見つかりません。")
                 info = await self.get_yt_info(page_url)
                 url = info['stream_url']
+                state['current_yt_headers'] = info['http_headers']
             except Exception:
                 pass
 
         # --- 【FFmpeg基本設定】 ---
         before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
-        if b62_id:
-            before_options += ' -headers "User-Agent: Mozilla/5.0\r\n"'
+        stream_headers = state.get('current_yt_headers') or {}
+        if b62_id and not stream_headers:
+            stream_headers = {'User-Agent': 'Mozilla/5.0'}
+        ffmpeg_headers = build_ffmpeg_headers(stream_headers)
+        if ffmpeg_headers:
+            before_options += f' -headers {shlex.quote(ffmpeg_headers)}'
         
         if state.get('elapsed_offset', 0) > 0:
             before_options += f" -ss {state['elapsed_offset']}"
@@ -1622,8 +1693,8 @@ class VoiceCog(commands.Cog):
         options = "-vn -ar 48000 -ac 2"
 
         try:
-            # 1. FFmpegPCMAudio
-            raw_source = discord.FFmpegPCMAudio(url, before_options=before_options, options=options)
+            # 1. yt-dlpと同じHTTPヘッダーでFFmpegを起動し、即時終了を検知する。
+            raw_source = FFmpegPCMAudioDiagnostics(url, before_options=before_options, options=options)
             
             # 2. PythonSpatialAudioSource でラップ
             source = PythonSpatialAudioSource(raw_source, state)
@@ -1637,13 +1708,20 @@ class VoiceCog(commands.Cog):
             vc.play(source, after=lambda e: self.bot.loop.call_soon_threadsafe(self.play_next, guild_id, e))
             
             await self.update_panel(guild_id)
-            
-            if state.get('elapsed_offset', 0) < 1:
+
+            # FFmpegが少なくとも1フレームのPCMを出力するまで待つ。vc.play()直後の
+            # 表示では、URLの403やデコーダー失敗でも「再生中」と誤表示されるため。
+            for _ in range(20):
+                if source.has_output and vc.is_playing():
+                    break
+                if not vc.is_playing():
+                    break
+                await asyncio.sleep(0.1)
+
+            if source.has_output and vc.is_playing() and state.get('elapsed_offset', 0) < 1:
                 current_eq_mode = state.get('eq', 'flat')
                 eq_label = "custom" if current_eq_mode == "custom" else current_eq_mode
                 status = f"Speed: {state.get('speed', 1.0)}x / Vol: {state.get('volume', 1.0)} / EQ: {eq_label}"
-                
-                # 💡 メッセージ通知
                 await self._send_message(ctx_or_interaction, embed=we(f"🎵 再生中: **{filename}**\n`{status}`"))
         
         except Exception as e:
@@ -1672,7 +1750,27 @@ class VoiceCog(commands.Cog):
     def play_next(self, guild_id: int, error=None):
         state = self.get_state(guild_id)
         if error:
-            logging.error(f"Player error: {error}")
+            logger.error("Player error: %r", error)
+            failed_track = state.get('current_track')
+            failed_title = failed_track[1] if failed_track else '不明なトラック'
+            ctx_or_interaction = state.get('current_ctx') or state.get('current_interaction')
+            state['is_processing_queue'] = False
+            state['current_track'] = None
+            state['current_yt_page_url'] = None
+            state['current_yt_headers'] = {}
+            state['elapsed_offset'] = 0
+            state['retry_count'] = 0
+
+            async def report_failure_and_continue():
+                await self._send_message(
+                    ctx_or_interaction,
+                    embed=we(f"❌ **{failed_title}** の音声デコードに失敗しました。次のキューを確認します。")
+                )
+                await self.check_queue(guild_id)
+
+            loop = self.bot.loop if hasattr(self.bot, 'loop') else asyncio.get_event_loop()
+            loop.create_task(report_failure_and_continue())
+            return
 
         if state['is_paused'] or state['is_changing_setting']:
             state['is_processing_queue'] = False
