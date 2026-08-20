@@ -1338,16 +1338,27 @@ class VoiceCog(commands.Cog):
         guild = getattr(ctx_or_interaction, 'guild', None)
         if not guild:
             return
-        
+
         vc = guild.voice_client
         state = self.get_state(guild.id)
-        
-        if vc and vc.is_playing() and state['current_track']:
+
+        if vc and (vc.is_playing() or vc.is_paused()) and state['current_track']:
             actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
             state['elapsed_offset'] += actual_played
             state['is_changing_setting'] = True
             vc.stop()
-            await asyncio.sleep(0.2)
+
+            # afterコールバックが状態を解放する前に再生を開始すると、
+            # VoiceClient.play() が "Already playing audio" を送出する。
+            for _ in range(40):
+                if not vc.is_playing() and not vc.is_paused():
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                logging.error("設定変更後の音声停止がタイムアウトしました。")
+                state['is_changing_setting'] = False
+                return
+
             state['is_changing_setting'] = False
             await self.check_queue(guild.id)
         else:
@@ -1551,6 +1562,14 @@ class VoiceCog(commands.Cog):
             state['is_processing_queue'] = False
             return
 
+        # 同一ギルドで既に再生中・一時停止中なら、別経路からの二重開始を防ぐ。
+        if vc.is_playing() or vc.is_paused():
+            return
+
+        # yt-dlp取得などのawaitより前にフラグを確保する。
+        # これにより同時に到達したcheck_queue()が同じ曲でvc.play()を呼ばない。
+        state['is_processing_queue'] = True
+
         if state.get('current_track') is None:
             if state['queue'].empty():
                 state['is_processing_queue'] = False
@@ -1592,8 +1611,6 @@ class VoiceCog(commands.Cog):
             except Exception:
                 pass
 
-        state['is_processing_queue'] = True
-
         # --- 【FFmpeg基本設定】 ---
         before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
         if b62_id:
@@ -1611,6 +1628,11 @@ class VoiceCog(commands.Cog):
             # 2. PythonSpatialAudioSource でラップ
             source = PythonSpatialAudioSource(raw_source, state)
             
+            # 開始直前にも状態を確認し、外部イベントとの競合を吸収する。
+            if vc.is_playing() or vc.is_paused():
+                state['is_processing_queue'] = False
+                return
+
             state['start_time'] = time.time()
             vc.play(source, after=lambda e: self.bot.loop.call_soon_threadsafe(self.play_next, guild_id, e))
             
@@ -1627,6 +1649,10 @@ class VoiceCog(commands.Cog):
         except Exception as e:
             logging.error(f"Playback error: {e}")
             state['is_processing_queue'] = False
+            if "Already playing audio" in str(e):
+                # 既存の再生を壊したりキューを消費したりせず、競合が解消されるのを待つ。
+                await self.update_panel(guild_id)
+                return
             state['current_track'] = None
             await self.check_queue(guild_id)
 
