@@ -955,9 +955,9 @@ class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルタ�
             state['eq'] = "custom"
             state['custom_eq_filter'] = user_filter
             await interaction.response.send_message(f"⚙️ カスタムEQを設定しました:\n`{user_filter}`\n即時反映します。", ephemeral=True)
-            ctx = state['current_ctx'] or interaction
-            await self.cog.apply_immediate_setting(ctx)
 
+        ctx = state['current_ctx'] or interaction
+        await self.cog.apply_immediate_setting(ctx)
         await self.cog.update_panel(self.guild_id)
 
 
