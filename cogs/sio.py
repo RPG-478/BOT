@@ -103,6 +103,12 @@ EQ_SETTINGS = {
     )
 }
 
+# 通常EQはFFmpeg側で処理し、Pythonの20msフレーム処理を避ける。
+FFMPEG_REALTIME_PRESETS = {
+    key: EQ_SETTINGS[key]
+    for key in ('bass', 'echo', 'hall', 'vocal', 'superbass', 'live', 'rotate')
+}
+
 
 def build_ffmpeg_headers(headers: dict | None) -> str:
     """yt-dlpがストリーム取得に使った安全なHTTPヘッダーをFFmpegへ引き継ぐ。"""
@@ -123,6 +129,7 @@ class FFmpegPCMAudioDiagnostics(discord.FFmpegPCMAudio):
     def __init__(self, source, **kwargs):
         self._diagnostic_stderr = tempfile.TemporaryFile(mode="w+b")
         self._ffmpeg_error_raised = False
+        self.has_output = False
         super().__init__(source, stderr=self._diagnostic_stderr, **kwargs)
 
     def read(self):
@@ -132,6 +139,7 @@ class FFmpegPCMAudioDiagnostics(discord.FFmpegPCMAudio):
         frame_bytes = 3840  # 48 kHz / 16 bit / stereo / 20 ms
         data = self._stdout.read(frame_bytes)
         if len(data) == frame_bytes:
+            self.has_output = True
             return data
 
         process = getattr(self, "_process", None)
@@ -1794,18 +1802,24 @@ class VoiceCog(commands.Cog):
             before_options += f" -ss {state['elapsed_offset']}"
 
         speed = float(np.clip(state.get('speed', 1.0), 0.5, 2.0))
+        eq_mode = state.get('eq', 'flat')
         audio_filters = [f"atempo={speed:.3f}"]
-        custom_filter = state.get('custom_eq_filter')
-        if state.get('eq') == 'custom' and custom_filter and is_safe_custom_audio_filter(custom_filter):
-            audio_filters.append(custom_filter)
+        if eq_mode != 'spatial':
+            volume = float(np.clip(state.get('volume', 1.0), 0.0, 2.0))
+            audio_filters.append(f"volume={volume:.3f}")
+            if eq_mode == 'custom':
+                custom_filter = state.get('custom_eq_filter')
+                if custom_filter and is_safe_custom_audio_filter(custom_filter):
+                    audio_filters.append(custom_filter)
+            elif eq_mode in FFMPEG_REALTIME_PRESETS:
+                audio_filters.append(FFMPEG_REALTIME_PRESETS[eq_mode])
         options = f"-vn -ar 48000 -ac 2 -af {shlex.quote(','.join(audio_filters))}"
 
         try:
-            # 1. yt-dlpと同じHTTPヘッダーでFFmpegを起動し、即時終了を検知する。
+            # yt-dlpと同じHTTPヘッダーでFFmpegを起動する。Spatial以外は
+            # そのPCMを直接Discordへ渡し、Pythonのサンプル単位処理を回避する。
             raw_source = FFmpegPCMAudioDiagnostics(url, before_options=before_options, options=options)
-            
-            # 2. PythonSpatialAudioSource でラップ
-            source = PythonSpatialAudioSource(raw_source, state)
+            source = PythonSpatialAudioSource(raw_source, state) if eq_mode == 'spatial' else raw_source
             
             # 開始直前にも状態を確認し、外部イベントとの競合を吸収する。
             if vc.is_playing() or vc.is_paused():
