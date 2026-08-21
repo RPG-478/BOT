@@ -55,6 +55,7 @@ BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
 MAX_QUEUE_SIZE = 50
 MAX_PLAYLIST_ITEMS = 50
 MAX_TTS_CHARS = 300
+AUTO_LEAVE_SECONDS = 300
 PANEL_TIMEOUT_SECONDS = 900
 SAFE_CUSTOM_AUDIO_FILTERS = {
     'acompressor', 'aecho', 'alimiter', 'apulsator', 'bass', 'dynaudnorm',
@@ -1275,6 +1276,13 @@ class VoiceCog(commands.Cog):
         self.vv_host = "http://localhost:50021"
         self.recorders = {}
 
+    def cog_unload(self):
+        for state in self.states.values():
+            for task_name in ('idle_disconnect_task', 'playlist_load_task', 'progress_task'):
+                task = state.get(task_name)
+                if task and not task.done():
+                    task.cancel()
+
     def get_state(self, guild_id: int):
         if guild_id not in self.states:
             self.states[guild_id] = {
@@ -1300,9 +1308,182 @@ class VoiceCog(commands.Cog):
                 # YouTubeは再生用URLが短時間で失効するため、再取得用のページURLを別途保持する。
                 'current_yt_page_url': None,
                 # yt-dlpが取得したストリーム用HTTPヘッダーをFFmpegにも渡す。
-                'current_yt_headers': {}
+                'current_yt_headers': {},
+                'loop_mode': 'off',
+                'shuffle_enabled': False,
+                'idle_disconnect_task': None,
+                'playlist_load_task': None,
+                'progress_task': None,
             }
         return self.states[guild_id]
+
+    def _has_human_listeners(self, voice_client) -> bool:
+        channel = getattr(voice_client, 'channel', None)
+        return bool(channel and any(not member.bot for member in channel.members))
+
+    def cancel_auto_leave(self, guild_id: int):
+        state = self.get_state(guild_id)
+        task = state.get('idle_disconnect_task')
+        if task and not task.done():
+            task.cancel()
+        state['idle_disconnect_task'] = None
+
+    def schedule_auto_leave(self, guild_id: int):
+        self.cancel_auto_leave(guild_id)
+        state = self.get_state(guild_id)
+        state['idle_disconnect_task'] = asyncio.create_task(self._auto_leave_when_idle(guild_id))
+
+    async def _auto_leave_when_idle(self, guild_id: int):
+        try:
+            await asyncio.sleep(AUTO_LEAVE_SECONDS)
+            guild = self.bot.get_guild(guild_id)
+            vc = guild.voice_client if guild else None
+            if not vc or not vc.is_connected() or self._has_human_listeners(vc):
+                return
+            state = self.get_state(guild_id)
+            state['current_track'] = None
+            state['elapsed_offset'] = 0
+            state['is_paused'] = False
+            state['is_processing_queue'] = False
+            while not state['queue'].empty():
+                state['queue'].get_nowait()
+            await vc.disconnect(force=True)
+            await self._send_message(
+                state.get('current_ctx'),
+                embed=we(f"誰もいない状態が{AUTO_LEAVE_SECONDS // 60}分続いたため、ボイスチャンネルから退出しました。")
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Auto-leave task failed for guild %s", guild_id)
+        finally:
+            self.get_state(guild_id)['idle_disconnect_task'] = None
+
+    def _start_progress_task(self, guild_id: int):
+        state = self.get_state(guild_id)
+        task = state.get('progress_task')
+        if task and not task.done():
+            return
+        state['progress_task'] = asyncio.create_task(self._progress_loop(guild_id))
+
+    async def _progress_loop(self, guild_id: int):
+        try:
+            while True:
+                await asyncio.sleep(15)
+                guild = self.bot.get_guild(guild_id)
+                vc = guild.voice_client if guild else None
+                state = self.get_state(guild_id)
+                if not vc or not vc.is_connected() or not vc.is_playing() or not state.get('current_track'):
+                    return
+                await self.update_panel(guild_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Progress update task failed for guild %s", guild_id)
+        finally:
+            self.get_state(guild_id)['progress_task'] = None
+
+    async def _load_playlist_in_background(self, ctx, tracks, label: str, status_message):
+        """大規模プレイリストを応答期限に縛られず、キュー空き枠へ順次追加する。"""
+        guild_id = ctx.guild.id
+        state = self.get_state(guild_id)
+        total = len(tracks)
+        added = skipped = 0
+        last_status_update = 0.0
+        try:
+            for index, item in enumerate(tracks, start=1):
+                guild = self.bot.get_guild(guild_id)
+                vc = guild.voice_client if guild else None
+                if not vc or not vc.is_connected():
+                    break
+                while state['queue'].full():
+                    await asyncio.sleep(1)
+                    if not vc.is_connected():
+                        return
+
+                if isinstance(item, str):
+                    item = {'input': item, 'attachment_id': item, 'is_youtube': False}
+                is_yt = bool(item.get('is_youtube'))
+                source_input = item.get('input')
+                title = item.get('title') or '不明なタイトル'
+                b62_id = item.get('attachment_id')
+                if is_yt:
+                    if not source_input:
+                        skipped += 1
+                        continue
+                    track = (source_input, title, b62_id, True)
+                else:
+                    token = b62_id or source_input
+                    url, filename = await self.get_attachment_info(token, guild_id)
+                    if not url:
+                        skipped += 1
+                        continue
+                    track = (url, filename, token, False)
+
+                if await self.enqueue_track(guild_id, track):
+                    added += 1
+                    if not vc.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
+                        await self.check_queue(guild_id)
+                else:
+                    skipped += 1
+
+                now = time.monotonic()
+                if now - last_status_update >= 5:
+                    last_status_update = now
+                    try:
+                        await status_message.edit(
+                            content=f"プレイリスト `{label}` を読込中: {index}/{total} 件（追加 {added} / スキップ {skipped}）"
+                        )
+                    except discord.HTTPException:
+                        pass
+                await asyncio.sleep(0)
+
+            try:
+                await status_message.edit(
+                    content=f"プレイリスト `{label}` の読込完了: {total} 件中 {added} 件を追加、{skipped} 件をスキップしました。"
+                )
+            except discord.HTTPException:
+                pass
+        except asyncio.CancelledError:
+            try:
+                await status_message.edit(content=f"プレイリスト `{label}` の読込を中止しました（追加済み: {added} 件）。")
+            except discord.HTTPException:
+                pass
+            raise
+        except Exception:
+            logger.exception("Playlist background load failed")
+            try:
+                await status_message.edit(content=f"プレイリスト `{label}` の読込中にエラーが発生しました（追加済み: {added} 件）。")
+            except discord.HTTPException:
+                pass
+        finally:
+            state['playlist_load_task'] = None
+
+    async def start_playlist_load(self, ctx, tracks, label: str):
+        if not tracks:
+            return await ctx.send("有効な曲が見つかりませんでした。")
+        state = self.get_state(ctx.guild.id)
+        state['current_ctx'] = ctx
+        task = state.get('playlist_load_task')
+        if task and not task.done():
+            task.cancel()
+        status_message = await ctx.send(f"プレイリスト `{label}` の読込を開始します（全 {len(tracks)} 件）。")
+        state['playlist_load_task'] = asyncio.create_task(
+            self._load_playlist_in_background(ctx, tracks, label, status_message)
+        )
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        if member.bot:
+            return
+        guild = member.guild
+        vc = guild.voice_client
+        if not vc or not vc.is_connected():
+            return
+        if self._has_human_listeners(vc):
+            self.cancel_auto_leave(guild.id)
+        else:
+            self.schedule_auto_leave(guild.id)
 
     @commands.Cog.listener()
     async def on_command_error(self, ctx, error):
@@ -1383,6 +1564,7 @@ class VoiceCog(commands.Cog):
                     timeout=TIMEOUT_SECONDS
                 )
 
+            self.cancel_auto_leave(interaction.guild_id)
             await interaction.followup.send(f"🔊 **{channel.name}** に参加しました。")
 
         except asyncio.TimeoutError:
@@ -1394,8 +1576,13 @@ class VoiceCog(commands.Cog):
     async def leave_cmd(self, interaction: discord.Interaction):
         voice_client = interaction.guild.voice_client
         if voice_client:
-            await voice_client.disconnect()
+            self.cancel_auto_leave(interaction.guild_id)
             state = self.get_state(interaction.guild_id)
+            for task_name in ('playlist_load_task', 'progress_task'):
+                task = state.get(task_name)
+                if task and not task.done():
+                    task.cancel()
+            await voice_client.disconnect()
             while not state['queue'].empty():
                 state['queue'].get_nowait()
             state['current_track'] = None
@@ -1481,9 +1668,22 @@ class VoiceCog(commands.Cog):
             _, filename, duration, _, _ = state['current_track']
             m, s = divmod(int(duration), 60)
             duration_str = f"{m}:{s:02d}" if duration else "不明"
+            elapsed = state.get('elapsed_offset', 0.0)
+            if not state.get('is_paused'):
+                elapsed += max(0.0, time.time() - state.get('start_time', time.time())) * state.get('speed', 1.0)
+            elapsed = min(elapsed, duration) if duration else elapsed
+            elapsed_m, elapsed_s = divmod(int(elapsed), 60)
+            if duration:
+                ratio = min(1.0, elapsed / duration)
+                filled = round(ratio * 16)
+                progress_bar = '█' * filled + '░' * (16 - filled)
+                progress_info = f"`{elapsed_m}:{elapsed_s:02d}` {progress_bar} `{duration_str}`"
+            else:
+                progress_info = f"`{elapsed_m}:{elapsed_s:02d}` 再生位置を取得中"
             track_info = f"**{filename}** `[{duration_str}]`"
         else:
             track_info = "*楽曲が再生されていません*"
+            progress_info = "*進捗は再生開始後に表示されます*"
 
         queue_size = state['queue'].qsize()
         queue_info = f"`{queue_size} 件` の楽曲が待機中" if queue_size > 0 else "待機中の楽曲はありません"
@@ -1495,12 +1695,15 @@ class VoiceCog(commands.Cog):
         embed.add_field(name="現在のステータス", value=f"`{status_icon}`", inline=True)
         embed.add_field(name="オーディオパラメータ", value=f"🔊 Vol: `{int(state['volume']*100)}%` \n⚡ Speed: `{state['speed']}x` \n🎬 EQ: `{eq_label}`", inline=False)
         embed.add_field(name="現在ストリーミング中の楽曲", value=track_info, inline=False)
+        embed.add_field(name="再生進捗", value=progress_info, inline=False)
+        loop_label = {'off': 'OFF', 'track': '1曲', 'queue': 'キュー'}.get(state.get('loop_mode'), 'OFF')
+        shuffle_label = 'ON' if state.get('shuffle_enabled') else 'OFF'
+        embed.add_field(name="再生モード", value=f"ループ: `{loop_label}` / シャッフル: `{shuffle_label}`", inline=False)
         embed.add_field(name="予約キューリスト", value=queue_info, inline=False)
         embed.set_footer(text="下のインターフェースからリアルタイムに操作・検索できます。")
 
         try:
-            view = VoiceControlView(self, guild_id)
-            await msg.edit(embed=embed, view=view)
+            await msg.edit(embed=embed)
         except Exception as e:
             logging.error(f"Panel update failed: {e}")
 
@@ -1751,7 +1954,14 @@ class VoiceCog(commands.Cog):
                 await self.update_panel(guild_id)
                 return
             
-            target_input, filename, b62_id, is_yt = await state['queue'].get() 
+            queue = state['queue']
+            if state.get('shuffle_enabled') and queue.qsize() > 1:
+                queue_items = queue._queue
+                selected_index = random.randrange(len(queue_items))
+                target_input, filename, b62_id, is_yt = queue_items[selected_index]
+                del queue_items[selected_index]
+            else:
+                target_input, filename, b62_id, is_yt = await queue.get()
             
             if is_yt:
                 try:
@@ -1828,7 +2038,7 @@ class VoiceCog(commands.Cog):
 
             state['start_time'] = time.time()
             vc.play(source, after=lambda e: self.bot.loop.call_soon_threadsafe(self.play_next, guild_id, e))
-            
+            self._start_progress_task(guild_id)
             await self.update_panel(guild_id)
 
             # FFmpegが少なくとも1フレームのPCMを出力するまで待つ。vc.play()直後の
@@ -1869,6 +2079,17 @@ class VoiceCog(commands.Cog):
         except Exception as e:
             logging.error(f"送信エラー: {e}")
             
+    def _make_loop_track(self, state):
+        """失効しやすいYouTubeストリームURLではなく、再解析可能な入力を再投入する。"""
+        track = state.get('current_track')
+        if not track:
+            return None
+        stream_url, filename, _duration, b62_id, is_yt = track
+        source_input = state.get('current_yt_page_url') if is_yt else stream_url
+        if not source_input:
+            return None
+        return (source_input, filename, b62_id, is_yt)
+
     def play_next(self, guild_id: int, error=None):
         state = self.get_state(guild_id)
         if error:
@@ -1913,11 +2134,21 @@ class VoiceCog(commands.Cog):
         if is_interrupted and state['retry_count'] < 3 and state['current_track']:
             state['retry_count'] += 1
             asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), loop)
-        else:
-            state['current_track'] = None
-            state['elapsed_offset'] = 0
-            state['retry_count'] = 0
-            asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), loop)
+            return
+
+        loop_track = self._make_loop_track(state)
+        loop_mode = state.get('loop_mode', 'off')
+        if loop_track and loop_mode == 'track':
+            state['queue']._queue.appendleft(loop_track)
+        elif loop_track and loop_mode == 'queue':
+            state['queue']._queue.append(loop_track)
+
+        state['current_track'] = None
+        state['current_yt_page_url'] = None
+        state['current_yt_headers'] = {}
+        state['elapsed_offset'] = 0
+        state['retry_count'] = 0
+        asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), loop)
             
     @app_commands.command(name="play", description="添付ファイル、ユニバーサルID、YouTubeのURL/キーワードで音楽を再生します")
     @app_commands.describe(
@@ -2103,6 +2334,27 @@ class VoiceCog(commands.Cog):
         else:
             await interaction.response.send_message(embed=we("現在再生中の楽曲がありません。"))
 
+    @app_commands.command(name="loop", description="再生ループを切り替えます")
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="OFF", value="off"),
+        app_commands.Choice(name="1曲を繰り返す", value="track"),
+        app_commands.Choice(name="キュー全体を繰り返す", value="queue"),
+    ])
+    async def loop_cmd(self, interaction: discord.Interaction, mode: app_commands.Choice[str]):
+        state = self.get_state(interaction.guild_id)
+        state['loop_mode'] = mode.value
+        labels = {'off': 'OFF', 'track': '1曲ループ', 'queue': 'キューループ'}
+        await interaction.response.send_message(embed=we(f"ループ設定を **{labels[mode.value]}** に変更しました。"))
+        await self.update_panel(interaction.guild_id)
+
+    @app_commands.command(name="shuffle", description="キューのシャッフル再生を切り替えます")
+    async def shuffle_cmd(self, interaction: discord.Interaction):
+        state = self.get_state(interaction.guild_id)
+        state['shuffle_enabled'] = not state.get('shuffle_enabled', False)
+        label = 'ON' if state['shuffle_enabled'] else 'OFF'
+        await interaction.response.send_message(embed=we(f"シャッフル再生を **{label}** に変更しました。"))
+        await self.update_panel(interaction.guild_id)
+
     @commands.command()
     async def list(self, ctx, limit: int = 20):
         """このチャンネル内にアップロードされた音声のIDを20件表示します。"""
@@ -2153,25 +2405,13 @@ class VoiceCog(commands.Cog):
         else:
             return await ctx.send("プレイリスト名、ID、またはJSONファイルを指定してください。")
 
-        added = 0
-        skipped = 0
-        for token in tokens[:MAX_PLAYLIST_ITEMS]:
-            url, fname = await self.get_attachment_info(token, ctx.guild.id)
-            if url and await self.enqueue_track(ctx.guild.id, (url, fname, token, False)):
-                added += 1
-            else:
-                skipped += 1
-        skipped += max(0, len(tokens) - MAX_PLAYLIST_ITEMS)
-        
-        if added > 0:
-            suffix = f"（{skipped}件は無効IDまたはキュー上限のため追加しませんでした）" if skipped else ""
-            await ctx.send(f"✅ {added} 件をキューに追加しました。{suffix}")
-            if not ctx.voice_client.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
-                await self.check_queue(ctx.guild.id)
-            else:
-                await self.update_panel(ctx.guild.id)
-        else:
-            await ctx.send("有効なIDが見つかりませんでした。")
+        tracks = []
+        for token in tokens:
+            if isinstance(token, dict):
+                tracks.append(token)
+            elif isinstance(token, str) and token:
+                tracks.append({'input': token, 'attachment_id': token, 'is_youtube': False})
+        await self.start_playlist_load(ctx, tracks, input_data or 'JSONプレイリスト')
             
 
     @commands.command()
@@ -2202,6 +2442,95 @@ class VoiceCog(commands.Cog):
         except Exception as e:
             await ctx.send(f"エラー: {e}")
             
+
+    def _serialize_personal_playlist(self, guild_id: int):
+        """現在曲と待機キューを、再解析可能な入力だけで保存する。"""
+        state = self.get_state(guild_id)
+        tracks = []
+        current = state.get('current_track')
+        if current:
+            stream_url, title, _duration, b62_id, is_yt = current
+            source_input = state.get('current_yt_page_url') if is_yt else (b62_id or stream_url)
+            if source_input:
+                tracks.append({
+                    'input': source_input,
+                    'title': title,
+                    'attachment_id': b62_id,
+                    'is_youtube': bool(is_yt),
+                })
+        for source_input, title, b62_id, is_yt in list(state['queue']._queue):
+            tracks.append({
+                'input': source_input if is_yt else (b62_id or source_input),
+                'title': title,
+                'attachment_id': b62_id,
+                'is_youtube': bool(is_yt),
+            })
+        return tracks
+
+    @commands.command(name="plsave")
+    async def personal_playlist_save(self, ctx, *, name: str):
+        """現在の曲とキューを自分専用プレイリストへ保存します。"""
+        if not self.bot.supabase:
+            return await ctx.send("個人プレイリストを使うにはSupabaseを設定してください。")
+        tracks = self._serialize_personal_playlist(ctx.guild.id)
+        if not tracks:
+            return await ctx.send("保存できる曲がありません。")
+        try:
+            self.bot.supabase.table('user_music_playlists').upsert(
+                {
+                    'guild_id': ctx.guild.id,
+                    'owner_user_id': ctx.author.id,
+                    'name': name.strip(),
+                    'tracks': tracks,
+                },
+                on_conflict='guild_id,owner_user_id,name',
+            ).execute()
+            await ctx.send(f"個人プレイリスト `{name.strip()}` に {len(tracks)} 曲を保存しました。")
+        except Exception:
+            logger.exception("Failed to save personal playlist")
+            await ctx.send("個人プレイリストの保存に失敗しました。SQLを適用済みか確認してください。")
+
+    @commands.command(name="pllist")
+    async def personal_playlist_list(self, ctx):
+        """自分の個人プレイリストを一覧表示します。"""
+        if not self.bot.supabase:
+            return await ctx.send("個人プレイリストを使うにはSupabaseを設定してください。")
+        try:
+            result = self.bot.supabase.table('user_music_playlists').select(
+                'name,tracks,updated_at'
+            ).eq('guild_id', ctx.guild.id).eq('owner_user_id', ctx.author.id).order(
+                'updated_at', desc=True
+            ).execute()
+            rows = result.data or []
+            if not rows:
+                return await ctx.send("個人プレイリストはまだありません。`!plsave 名前` で保存できます。")
+            lines = [
+                f"• **{row['name']}** — {len(row.get('tracks') or [])} 曲"
+                for row in rows[:25]
+            ]
+            await ctx.send(embed=we(title='あなたの個人プレイリスト', description='\n'.join(lines)))
+        except Exception:
+            logger.exception("Failed to list personal playlists")
+            await ctx.send("個人プレイリストの取得に失敗しました。SQLを適用済みか確認してください。")
+
+    @commands.command(name="plplay")
+    async def personal_playlist_play(self, ctx, *, name: str):
+        """自分の個人プレイリストをバックグラウンドでキューへ追加します。"""
+        if not ctx.voice_client:
+            return await ctx.send("先に !join してください。")
+        if not self.bot.supabase:
+            return await ctx.send("個人プレイリストを使うにはSupabaseを設定してください。")
+        try:
+            result = self.bot.supabase.table('user_music_playlists').select('tracks').eq(
+                'guild_id', ctx.guild.id
+            ).eq('owner_user_id', ctx.author.id).eq('name', name.strip()).limit(1).execute()
+            rows = result.data or []
+            if not rows:
+                return await ctx.send(f"個人プレイリスト `{name.strip()}` が見つかりません。")
+            await self.start_playlist_load(ctx, rows[0].get('tracks') or [], name.strip())
+        except Exception:
+            logger.exception("Failed to play personal playlist")
+            await ctx.send("個人プレイリストの読込に失敗しました。SQLを適用済みか確認してください。")
 
     @app_commands.command(name="spatial", description="立体音響（リアルHRTF / FDN空間音響）の設定パネルを呼び出します")
     async def spatial_cmd(self, interaction: discord.Interaction):
