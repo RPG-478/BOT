@@ -1863,6 +1863,71 @@ class VoiceCog(commands.Cog):
             'duration': data.get('duration', 0)
         }
 
+    async def get_youtube_playlist_entries(self, playlist_url: str):
+        """個別の音声URLを解決せず、YouTubeプレイリストの曲ページURLだけを取得する。"""
+        loop = asyncio.get_running_loop()
+        options = YTDL_OPTIONS.copy()
+        options.update({
+            'noplaylist': False,
+            'extract_flat': 'in_playlist',
+            'lazy_playlist': True,
+            'skip_download': True,
+        })
+
+        def _extract():
+            with yt_dlp.YoutubeDL(options) as ydl:
+                data = ydl.extract_info(playlist_url, download=False)
+                entries = []
+                for entry in data.get('entries') or []:
+                    if not entry:
+                        continue
+                    webpage_url = entry.get('webpage_url') or entry.get('url')
+                    if not webpage_url:
+                        continue
+                    entries.append({
+                        'input': webpage_url,
+                        'title': entry.get('title') or '不明なタイトル',
+                        'is_youtube': True,
+                    })
+                return data.get('title') or 'YouTubeプレイリスト', entries
+
+        return await loop.run_in_executor(None, _extract)
+
+    async def _load_youtube_playlist_in_background(self, interaction, playlist_url: str, status_message):
+        state = self.get_state(interaction.guild_id)
+        try:
+            await status_message.edit(content='YouTubeプレイリストの曲一覧を取得しています…')
+            title, tracks = await self.get_youtube_playlist_entries(playlist_url)
+            if not tracks:
+                await status_message.edit(content='YouTubeプレイリストから再生可能な曲を取得できませんでした。')
+                return
+            await status_message.edit(content=f'プレイリスト `{title}` を取得しました（全 {len(tracks)} 件）。キューへ順次追加します…')
+            await self._load_playlist_in_background(interaction, tracks, title, status_message)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception('YouTube playlist extraction failed')
+            try:
+                await status_message.edit(content=f'YouTubeプレイリストの取得に失敗しました: {exc}')
+            except discord.HTTPException:
+                pass
+        finally:
+            state['playlist_load_task'] = None
+
+    async def start_youtube_playlist_load(self, interaction, playlist_url: str):
+        state = self.get_state(interaction.guild_id)
+        state['current_ctx'] = interaction
+        existing = state.get('playlist_load_task')
+        if existing and not existing.done():
+            existing.cancel()
+        status_message = await interaction.followup.send(
+            'YouTubeプレイリストの読込を受け付けました。バックグラウンドで曲一覧を取得します。',
+            wait=True,
+        )
+        state['playlist_load_task'] = asyncio.create_task(
+            self._load_youtube_playlist_in_background(interaction, playlist_url, status_message)
+        )
+
     class SearchView(discord.ui.View):
         def __init__(self, cog, guild_id, ctx, tracks):
             super().__init__(timeout=60.0)
@@ -2234,7 +2299,12 @@ class VoiceCog(commands.Cog):
         # YouTube関連ドメイン判定
         yt_pattern = re.compile(r'https?://(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)/', re.IGNORECASE)
 
-        # 1. YouTube URLが直接指定された場合
+        # 1. YouTubeプレイリストは曲一覧の取得が長時間化するため、即時受付してバックグラウンド処理へ渡す。
+        if input_str and yt_pattern.search(input_str) and re.search(r'[?&]list=[^&]+', input_str):
+            await self.start_youtube_playlist_load(interaction, input_str)
+            return
+
+        # 2. YouTube単曲URLが直接指定された場合
         if input_str and yt_pattern.search(input_str):
             await interaction.followup.send("⏳ YouTubeを解析中...")
             try:
