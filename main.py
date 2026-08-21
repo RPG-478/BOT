@@ -12,7 +12,10 @@ from collections import deque
 from supabase import create_client, Client
 
 SUPABASE_URL = os.getenv('SUPABASE_URL')
-SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+# Botはサーバー側プロセスでのみ使用する。RLS有効テーブルにはservice roleキーを優先する。
+SUPABASE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY') or os.getenv('SUPABASE_KEY')
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError('SUPABASE_URL と SUPABASE_SERVICE_ROLE_KEY を設定してください。')
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 NOTIFY_CHANNEL_ID = 1513038883787505764

@@ -2654,9 +2654,14 @@ class VoiceCog(commands.Cog):
                     on_conflict='guild_id,owner_user_id,name',
                 ).execute()
                 return await interaction.response.send_message(f"個人プレイリスト `{name.strip()}` に {len(tracks)} 曲を保存しました。", ephemeral=True)
-            except Exception:
+            except Exception as exc:
                 logger.exception("Failed to save personal playlist from slash command")
-                return await interaction.response.send_message("保存に失敗しました。", ephemeral=True)
+                detail = str(exc).lower()
+                if 'row-level security' in detail or 'permission denied' in detail or '42501' in detail:
+                    message = '保存権限がありません。Bot実行環境にSUPABASE_SERVICE_ROLE_KEYを設定して再起動してください。'
+                else:
+                    message = f'保存に失敗しました。Botログを確認してください。({type(exc).__name__})'
+                return await interaction.response.send_message(message, ephemeral=True)
         if action.value == 'list':
             try:
                 result = self.bot.supabase.table('user_music_playlists').select('name,tracks,updated_at').eq(
