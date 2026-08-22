@@ -55,6 +55,8 @@ BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
 MAX_QUEUE_SIZE = 50
 MAX_PLAYLIST_ITEMS = 50
 MAX_TTS_CHARS = 300
+MIN_PLAYBACK_SPEED = 0.5
+MAX_PLAYBACK_SPEED = 64.0
 AUTO_LEAVE_SECONDS = 300
 PANEL_TIMEOUT_SECONDS = 900
 SAFE_CUSTOM_AUDIO_FILTERS = {
@@ -62,6 +64,17 @@ SAFE_CUSTOM_AUDIO_FILTERS = {
     'equalizer', 'extrastereo', 'highpass', 'lowpass', 'loudnorm', 'treble',
     'tremolo', 'vibrato', 'volume',
 }
+
+
+def build_atempo_filters(speed: float) -> list[str]:
+    """0.5〜2.0のatempoを連結し、FFmpegで最大64倍速を表現する。"""
+    remaining = max(MIN_PLAYBACK_SPEED, min(MAX_PLAYBACK_SPEED, float(speed)))
+    filters: list[str] = []
+    while remaining > 2.0:
+        filters.append('atempo=2.0')
+        remaining /= 2.0
+    filters.append(f'atempo={remaining:.6f}')
+    return filters
 
 
 def is_safe_custom_audio_filter(filter_text: str) -> bool:
@@ -995,16 +1008,22 @@ class VoiceControlView(discord.ui.View):
                 discord.SelectOption(label="1.0x (標準)", value="1.0"),
                 discord.SelectOption(label="1.2x", value="1.2"),
                 discord.SelectOption(label="1.5x", value="1.5"),
-                discord.SelectOption(label="2.0x (倍速)", value="2.0"),
+                discord.SelectOption(label="2.0x", value="2.0"),
+                discord.SelectOption(label="4.0x", value="4.0"),
+                discord.SelectOption(label="8.0x", value="8.0"),
+                discord.SelectOption(label="16.0x", value="16.0"),
+                discord.SelectOption(label="32.0x", value="32.0"),
+                discord.SelectOption(label="64.0x", value="64.0"),
             ]
             super().__init__(placeholder=f"⚡ 速度変更 (現在: {state['speed']}x)", min_values=1, max_values=1, options=options, row=0)
 
         async def callback(self, interaction: discord.Interaction):
             state = self.cog.get_state(self.guild_id)
+            previous_speed = state.get('speed', 1.0)
             state['speed'] = float(self.values[0])
-            await interaction.response.send_message(f"⚡ 再生速度を `{state['speed']}` 倍に設定しました（即時反映）。", ephemeral=True)
+            await interaction.response.send_message(f"⚡ 再生速度を `{state['speed']}` 倍に設定しました（現在位置から即時反映）。", ephemeral=True)
             ctx = state['current_ctx'] or interaction
-            await self.cog.apply_immediate_setting(ctx)
+            await self.cog.apply_immediate_setting(ctx, elapsed_speed=previous_speed)
 
     class VolumeSelect(discord.ui.Select):
         def __init__(self, cog, guild_id):
@@ -1735,7 +1754,7 @@ class VoiceCog(commands.Cog):
         except Exception as e:
             logging.error(f"Panel update failed: {e}")
 
-    async def apply_immediate_setting(self, ctx_or_interaction):
+    async def apply_immediate_setting(self, ctx_or_interaction, elapsed_speed: float | None = None):
         guild = getattr(ctx_or_interaction, 'guild', None)
         if not guild:
             return
@@ -1744,7 +1763,8 @@ class VoiceCog(commands.Cog):
         state = self.get_state(guild.id)
 
         if vc and (vc.is_playing() or vc.is_paused()) and state['current_track']:
-            actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
+            playback_speed = elapsed_speed if elapsed_speed is not None else state.get('speed', 1.0)
+            actual_played = (time.time() - state['start_time']) * playback_speed
             state['elapsed_offset'] += actual_played
             state['is_changing_setting'] = True
             vc.stop()
@@ -1815,11 +1835,13 @@ class VoiceCog(commands.Cog):
     @commands.command()
     async def speed(self, ctx, speed: float):
         """再生速度を変更します"""
-        if not 0.5 <= speed <= 2.0: return await ctx.send(embed=we("速度は 0.5 から 2.0 の間で指定してください。"))
+        if not MIN_PLAYBACK_SPEED <= speed <= MAX_PLAYBACK_SPEED:
+            return await ctx.send(embed=we(f"速度は {MIN_PLAYBACK_SPEED} から {MAX_PLAYBACK_SPEED:g} の間で指定してください。"))
         state = self.get_state(ctx.guild.id)
+        previous_speed = state.get('speed', 1.0)
         state['speed'] = speed
-        await ctx.send(embed=we(f"⚡ 再生速度を `{speed}` 倍に設定しました。"))
-        await self.apply_immediate_setting(ctx)
+        await ctx.send(embed=we(f"⚡ 再生速度を `{speed}` 倍に設定しました（現在位置から反映）。"))
+        await self.apply_immediate_setting(ctx, elapsed_speed=previous_speed)
 
     async def get_yt_info(self, url_or_search):
         loop = asyncio.get_running_loop()
@@ -2104,9 +2126,9 @@ class VoiceCog(commands.Cog):
         if state.get('elapsed_offset', 0) > 0:
             before_options += f" -ss {state['elapsed_offset']}"
 
-        speed = float(np.clip(state.get('speed', 1.0), 0.5, 2.0))
+        speed = float(np.clip(state.get('speed', 1.0), MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED))
         eq_mode = state.get('eq', 'flat')
-        audio_filters = [f"atempo={speed:.3f}"]
+        audio_filters = build_atempo_filters(speed)
         if eq_mode != 'spatial':
             volume = float(np.clip(state.get('volume', 1.0), 0.0, 2.0))
             audio_filters.append(f"volume={volume:.3f}")
@@ -2269,13 +2291,15 @@ class VoiceCog(commands.Cog):
     @app_commands.command(name="play", description="添付ファイル、ユニバーサルID、YouTubeのURL/キーワードで音楽を再生します")
     @app_commands.describe(
         query="YouTube URL / 検索キーワード / ユニバーサルID",
-        file="音声/動画ファイルの添付（ファイル再生時）"
+        file="音声/動画ファイルの添付（ファイル再生時）",
+        start_at="開始位置（秒）。キューが空で再生を開始する場合のみ指定できます。"
     )
     async def play(
         self, 
         interaction: discord.Interaction, 
         query: str = None, 
-        file: discord.Attachment = None
+        file: discord.Attachment = None,
+        start_at: float | None = None,
     ):
         # 💡 1. 処理に時間がかかる可能性があるので、一番最初に defer() を実行
         await interaction.response.defer()
@@ -2286,6 +2310,11 @@ class VoiceCog(commands.Cog):
 
         state = self.get_state(interaction.guild_id)
         state['current_interaction'] = interaction
+        if start_at is not None and start_at < 0:
+            return await interaction.followup.send("開始位置は0秒以上で指定してください。", ephemeral=True)
+        can_apply_start_at = not state.get('current_track') and state['queue'].empty() and not state.get('is_processing_queue')
+        if start_at is not None and not can_apply_start_at:
+            return await interaction.followup.send("開始位置の指定は、再生中の曲と待機キューがない場合のみ使えます。再生中の曲は `/seek` を使ってください。", ephemeral=True)
 
         is_yt = False
         url, filename, final_id = None, None, None
@@ -2372,6 +2401,8 @@ class VoiceCog(commands.Cog):
             return await interaction.followup.send(embed=embed)
 
         # キューに追加（ギルド単位の上限を超える場合は受け付けない）
+        if start_at is not None:
+            state['elapsed_offset'] = start_at
         if not await self.enqueue_track(interaction.guild_id, (url, filename, final_id, is_yt)):
             return await interaction.followup.send(
                 f"❌ キューの上限（{MAX_QUEUE_SIZE}件）に達しています。再生完了または停止後に追加してください。",
@@ -2409,6 +2440,29 @@ class VoiceCog(commands.Cog):
             vc.stop()
             await ctx.send(embed=we("完全に停止し、キューをクリアしました。"))
             await self.update_panel(ctx.guild.id)
+
+    @app_commands.command(name="seek", description="現在の曲を指定した秒数へ移動します")
+    @app_commands.describe(seconds="移動先の位置（秒）")
+    async def seek_cmd(self, interaction: discord.Interaction, seconds: float):
+        if seconds < 0:
+            return await interaction.response.send_message("移動先は0秒以上で指定してください。", ephemeral=True)
+        state = self.get_state(interaction.guild_id)
+        vc = interaction.guild.voice_client
+        if not vc or not state.get('current_track'):
+            return await interaction.response.send_message("現在再生中の曲がありません。", ephemeral=True)
+        duration = state['current_track'][2] or 0
+        if duration and seconds >= duration:
+            return await interaction.response.send_message(f"移動先は曲の長さ（{int(duration)}秒）未満にしてください。", ephemeral=True)
+        state['elapsed_offset'] = seconds
+        state['is_changing_setting'] = True
+        vc.stop()
+        for _ in range(40):
+            if not vc.is_playing() and not vc.is_paused():
+                break
+            await asyncio.sleep(0.05)
+        state['is_changing_setting'] = False
+        await self.check_queue(interaction.guild_id)
+        await interaction.response.send_message(f"再生位置を `{int(seconds)}秒` に移動しました。", ephemeral=True)
 
     @app_commands.command(name="pause", description="音楽の再生／一時停止を切り替えます（トグル）")
     async def pause(self, interaction: discord.Interaction):
