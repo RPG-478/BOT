@@ -1,34 +1,39 @@
+import os
 import discord
 from discord.ext import commands
 
 
-class TestUpload(commands.Cog):
+class DirectSender(commands.Cog):
 
   def __init__(self, bot):
     self.bot = bot
 
   @discord.app_commands.command(
-      name="test_upload", description="ファイルをそのまま送信してアップロード制限を検証します"
+      name="send", description="ファイルをそのまま送信します"
   )
-  @discord.app_commands.describe(file="テストするファイル")
-  async def test_upload(
+  @discord.app_commands.describe(file="送信するファイル")
+  async def send(
       self, interaction: discord.Interaction, file: discord.Attachment
   ):
     await interaction.response.defer(thinking=True)
 
+    input_path = f"./temp_{file.filename}"
+    await file.save(input_path)
+
     try:
-      # 受け取ったファイルをそのままDiscordへ送り返す
-      file_bytes = await file.to_file()
-      await interaction.followup.send(
-          content=f"送信成功: {file.filename} ({file.size / 1024 / 1024:.2f} MB)",
-          file=file_bytes,
-      )
+      with open(input_path, "rb") as f:
+        discord_file = discord.File(f, filename=file.filename)
+        await interaction.followup.send(
+            content=f"{interaction.user.mention}からの送信", file=discord_file
+        )
+
     except Exception as e:
-      # 制限に引っかかった場合のエラー内容を確認
-      await interaction.followup.send(
-          f"送信失敗 (エラー発生): \n```python\n{e}\n```"
-      )
+      await interaction.followup.send(f"送信失敗: {e}")
+
+    finally:
+      if os.path.exists(input_path):
+        os.remove(input_path)
 
 
 async def setup(bot):
-  await bot.add_cog(TestUpload(bot))
+  await bot.add_cog(DirectSender(bot))
