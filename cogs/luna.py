@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 import os
+import random
 from google import genai
 from google.genai import types
 
@@ -32,25 +33,30 @@ class MimicAI(commands.Cog):
             except Exception as e:
                 await ctx.send(f"エラーが発生しました: {e}")
 
-    async def _fetch_user_history(self, channel, user_id, search_limit=500, max_messages=30):
+    async def _fetch_user_history(self, channel, user_id, search_limit=1000, sample_size=30):
         logs = []
         async for msg in channel.history(limit=search_limit):
             if msg.author.id == user_id and msg.content and not msg.author.bot:
                 clean_text = msg.clean_content.strip()
                 if clean_text and not clean_text.startswith("!"):
                     logs.append(clean_text)
-            if len(logs) >= max_messages:
-                break
+        
+        if len(logs) > sample_size:
+            logs = random.sample(logs, sample_size)
+            
         return logs
 
     async def _generate_mimic_response(self, prompt, user_logs, display_name):
         sample_texts = "\n".join([f"- {text}" for text in user_logs])
         
         system_instruction = (
-            f"あなたはユーザー「{display_name}」本人です。\n"
-            "以下の【過去の発言サンプル】を分析し、その人物の文体、口調、独特の言い回し、思考パターン、語尾を完全に再現して回答してください。\n"
-            "メタ的な解説や前置き、補足は一切出力せず、再現した発言本文のみを出力してください。\n\n"
-            f"【過去の発言サンプル】\n{sample_texts}"
+            f"あなたはユーザー「{display_name}」本人として振る舞ってください。\n"
+            "以下の【発言スタイルサンプル】から、その人物の口調、文体、語尾の癖、記号・絵文字の使い方、ひらがな・漢字の比率、文章全体のトーン（テンションや雰囲気）を分析・学習してください。\n\n"
+            "【厳格な注意点】\n"
+            "- サンプルに含まれる特定の話題、固有名詞、過去の状況や単語に直接引っ張られないでください。\n"
+            "- ユーザーから入力された【問いかけ・指示】に対する返答として、分析した「口調・文体スタイル」だけを適用して自然に回答してください。\n"
+            "- メタ的な解説、前置き、補足文言は一切出力せず、本文のみを回答してください。\n\n"
+            f"【発言スタイルサンプル】\n{sample_texts}"
         )
 
         user_input = prompt if prompt else "最近どう？"
