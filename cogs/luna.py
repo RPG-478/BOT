@@ -12,6 +12,58 @@ class PerfectMimicAI(commands.Cog):
         self.bot = bot
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg")
         self.gemini_client = genai.Client(api_key=self.gemini_api_key)
+        self.enabled_channels = set()
+
+    @commands.command(name="mimic_toggle")
+    @commands.has_permissions(manage_channels=True)
+    async def mimic_toggle(self, ctx):
+        channel_id = ctx.channel.id
+        if channel_id in self.enabled_channels:
+            self.enabled_channels.remove(channel_id)
+            await ctx.send("このチャンネルでの自動返信をオフにしました。")
+        else:
+            self.enabled_channels.add(channel_id)
+            await ctx.send("このチャンネルでの自動返信をオンにしました。")
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot or not message.guild:
+            return
+
+        is_mentioned = self.bot.user in message.mentions
+        is_reply_to_bot = (
+            message.reference 
+            and message.reference.resolved 
+            and isinstance(message.reference.resolved, discord.Message)
+            and message.reference.resolved.author.id == self.bot.user.id
+        )
+
+        should_respond = False
+        if is_mentioned or is_reply_to_bot:
+            should_respond = True
+        elif message.channel.id in self.enabled_channels:
+            if random.random() < 0.05:
+                should_respond = True
+
+        if should_respond:
+            async with message.channel.typing():
+                try:
+                    target_user = await self.bot.fetch_user(TARGET_USER_ID)
+                    member = message.guild.get_member(TARGET_USER_ID)
+                    display_name = member.display_name if member else target_user.display_name
+                    avatar_url = member.display_avatar.url if member else target_user.display_avatar.url
+
+                    user_logs = await self._fetch_stratified_history(message.channel, TARGET_USER_ID)
+                    
+                    if not user_logs:
+                        return
+
+                    prompt = message.clean_content.replace(f"@{self.bot.user.name}", "").strip()
+                    reply_text = await self._generate_mimic_response(prompt, user_logs, display_name)
+                    
+                    await self._send_as_webhook(message.channel, display_name, avatar_url, reply_text)
+                except Exception as e:
+                    print(f"Error in auto response: {e}")
 
     @commands.command(name="mimic")
     async def mimic(self, ctx, *, prompt: str = ""):
