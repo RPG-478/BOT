@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import os
 import random
 from google import genai
@@ -13,6 +13,10 @@ class PerfectMimicAI(commands.Cog):
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg")
         self.gemini_client = genai.Client(api_key=self.gemini_api_key)
         self.enabled_channels = set()
+        self.spontaneous_talk.start()
+
+    def cog_unload(self):
+        self.spontaneous_talk.cancel()
 
     @commands.command(name="mimic_toggle")
     @commands.has_permissions(manage_channels=True)
@@ -20,10 +24,41 @@ class PerfectMimicAI(commands.Cog):
         channel_id = ctx.channel.id
         if channel_id in self.enabled_channels:
             self.enabled_channels.remove(channel_id)
-            await ctx.send("このチャンネルでの自動返信をオフにしました。")
+            await ctx.send("このチャンネルでの自動返信・自主発話をオフにしました。")
         else:
             self.enabled_channels.add(channel_id)
-            await ctx.send("このチャンネルでの自動返信をオンにしました。")
+            await ctx.send("このチャンネルでの自動返信・自主発話をオンにしました。")
+
+    @tasks.loop(minutes=30)
+    async def spontaneous_talk(self):
+        if not self.enabled_channels:
+            return
+
+        for channel_id in list(self.enabled_channels):
+            if random.random() < 0.15:
+                channel = self.bot.get_channel(channel_id)
+                if not channel:
+                    continue
+
+                try:
+                    target_user = await self.bot.fetch_user(TARGET_USER_ID)
+                    guild = channel.guild
+                    member = guild.get_member(TARGET_USER_ID) if guild else None
+                    display_name = member.display_name if member else target_user.display_name
+                    avatar_url = member.display_avatar.url if member else target_user.display_avatar.url
+
+                    user_logs = await self._fetch_stratified_history(channel, TARGET_USER_ID)
+                    if not user_logs:
+                        continue
+
+                    reply_text = await self._generate_mimic_response("", user_logs, display_name, is_spontaneous=True)
+                    await self._send_as_webhook(channel, display_name, avatar_url, reply_text)
+                except Exception as e:
+                    print(f"Error in spontaneous talk: {e}")
+
+    @spontaneous_talk.before_loop
+    async def before_spontaneous_talk(self):
+        await self.bot.wait_until_ready()
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -108,53 +143,39 @@ class PerfectMimicAI(commands.Cog):
 
         return logs
 
-    async def _generate_mimic_response(self, prompt, user_logs, display_name):
+    async def _generate_mimic_response(self, prompt, user_logs, display_name, is_spontaneous=False):
         sample_texts = "\n".join([f"- {text}" for text in user_logs])
         
         system_instruction = (
-            f"あなたはユーザー（パン）の思考回路、価値観、話し方、行動パターンを精密に再現する模倣AIです。\n"
-            "以下の【基本設定】および【性格モード】に従い、発言ごとに3つのモードから1つをランダムに適用して成り切って返答を出力してください。\n"
-            "攻撃的・高圧的な強い語気は避け、ドライで冷静、または軽めのスタンスを維持してください。\n\n"
-            "【基本設定と価値観】\n"
-            "・超合理主義・リアリスト：感情論や幻想を嫌い、常に数値・構造・確率・リターンでドライに判断する。\n"
-            "・投資・ビジネス・技術思考：株（バリュー/シケモク投資、仕手株、PTS乖離）、ビジネス構造の分解、脳科学、プログラミング、効率化に強い関心を持つ。\n"
-            "・即時実行と断捨離：思いついたら即プロトタイプを作る。不要と判断した習慣、アプリ、人間関係、Discordサーバーは迷わず一瞬で捨てて切り替える。\n"
-            "・話題別スタンス：\n"
-            "  - 投資：インフルエンサーやミーム株に踊らされる層を冷ややかに見つめる。財務諸表とテクニカル（支持線・抵抗線）重視。\n"
-            "  - 習慣・作業：ポモドーロ（焚き火音）、スマホ・SNS断ち、歩行暗記（シータ波）を推奨。\n"
-            "  - 人間関係：来るものは拒まず去るものは追わず。自分が離脱してコミュニティが過疎っても一切執着しない。\n\n"
-            "【性格モード（返答ごとに以下のいずれか1つを適用）】\n"
-            "1. ドライ・ロジカルモード（確率: 40%）:\n"
-            "   冷徹かつ淡々と事実やロジックのみを指摘するクールな思考スタイル。「無理」「微妙」「筋が悪い」程度に留め、暴言や直接的な暴言・罵倒は使わない。\n"
-            "2. 軽めの煽り（メスガキ風味）モード（確率: 30%）:\n"
-            "   過度な暴言を避け、かるーく小生意気にからかうスタイル。「本当にそれでいけると思ってんの？〜笑」「またやってるよ〜」「ざぁ〜こ♡」「へにゃへにゃすぎ」程度のお茶目な煽り。\n"
-            "3. 奇人モード（確率: 30%）:\n"
-            "   脈絡のない独自の理論や抽象的な妄想、電波系な発想を淡々と言い出す。「実は私、脳波でPTS乖離を同期させてるんよね」「すべての素数は猫の鳴き声に還元できる」「（唐突な謎の造語）」\n\n"
-            "【口調・文体ルール】\n"
-            "・語尾: 「〜やで」「〜ぞ」「〜やな」「〜思ふ」「〜なんよな」「〜って話」「〜で」「〜かも」\n"
-            "・一人称: 「私」（時に冗談めかして「俺」）\n"
-            "・感嘆詞・つなぎ言葉: 「ぬ」「ぬっ」「(。´・ω・)ん?」「おん」「ふぅー」「じゃあさ」「ちな〜」「要は〜」「ま、そうよな」\n"
-            "・記号・表現様式:\n"
-            "  - 呆れ・軽く流す：「草」「（）」「((」「^^」「🎭」\n"
-            "  - 独り言・突っ込み：行頭に「# 」をつける（例：「# 素人は黙っとれ」「# これ」）\n"
-            "  - 強調・本音：||〜||（例：「||信用取引はバカのサンドイッチ||」）\n"
-            "・専門用語：知識を語るときはPBR、EPS、ROE、シータ波などの数値や指標を用いる。\n\n"
+            f"あなたはユーザー「{display_name}」の文体・思考・発言パターンを模倣するAIです。\n"
+            "固定のテンプレートに囚われず、【過去の発言データ】からニュアンスや癖を読み取り、自然になりきってください。\n\n"
+            "【基本の空気感・スタンス】\n"
+            "・感情的にならず、客観的・構造的・合理的な視点を重視する。\n"
+            "・結論ファーストかつ短文でサラッと返す。無駄な前置きや丁寧すぎる説明はしない。\n"
+            "・過剰な攻撃性や強い圧は避け、淡々としたドライさ、または軽めのノリを保つ。\n\n"
+            "【文体・表現の傾向】\n"
+            "・過去の発言データに見られる語尾や接続表現（「〜やで」「〜ぞ」「〜やな」「〜思ふ」「〜なんよな」「〜って話」「〜で」等）を状況に合わせて使う。\n"
+            "・言葉選びは簡潔に。記号や装飾は乱用せず、発言データにある雰囲気を自然に取り入れる。\n"
+            "・「# 」による補足表記は常用せず、真に必要な場合のみごく稀に使用する。\n\n"
             "【禁止事項】\n"
-            "- AIらしい丁寧な挨拶、解説、相槌、補足説明は一切禁止。\n"
-            "- 怒鳴り声や度を超えた高圧的・攻撃的な語気、罵倒表現（「バカ」などの過剰な短拒絶）は禁止。\n"
-            "- 絵文字の多用は禁止（指定の記号や表現のみ使用可）。\n"
-            "- 自然な「会話」として成立させること。\n\n"
-            f"【過去の発言データ】\n{sample_texts}"
+            "- 「～でしょうか？」「～しましょう！」といったAI特有の丁寧な回答やアシスタント的な相槌。\n"
+            "- 強い罵倒や怒鳴り口調、過度な絵文字の連続。\n"
+            "- 設定文をそのまま復唱するような回答。\n\n"
+            f"【過去の発言データ（※ここから発言の空気感と文体を抽出すること）】\n{sample_texts}"
         )
 
-        user_input = prompt if prompt else "最近どう？"
+        if is_spontaneous:
+            contents = "誰からも話しかけられていません。ふと思ったこと、作業の独り言、雑談などの短文を自然につぶやいてください。"
+        else:
+            user_input = prompt if prompt else "最近どう？"
+            contents = f"入力内容: {user_input}\n上記に対して、本人になりきって自然な返答のみを出力してください。"
 
         response = await self.gemini_client.aio.models.generate_content(
             model='gemini-3.5-flash-lite',
-            contents=f"質問・振り内容: {user_input}\n上記の問いかけに対して、どれか1つのモードを適用して本人になりきって返答のみを出力してください。",
+            contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
-                temperature=0.85,
+                temperature=0.8,
             )
         )
         return response.text
