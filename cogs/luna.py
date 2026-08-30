@@ -88,7 +88,7 @@ class PerfectMimicAI(commands.Cog):
         user_input = prompt if prompt else "最近どう？"
 
         response = await self.gemini_client.aio.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.5-flash-lite',
             contents=f"質問・振り内容: {user_input}\n上記の問いかけに対して、本人になりきって返答のみを出力してください。",
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
