@@ -97,6 +97,27 @@ class TaskManager:
 
 task_mgr = TaskManager()
 
+def print_tree(repo_name: str, path: str = "", depth: int = 2, branch: str = "main") -> str:
+    """リポジトリのツリーを表示する互換ツール。"""
+    try:
+        depth = max(0, min(int(depth), 6))
+        repo = github_client.get_repo(repo_name)
+        root = repo.get_contents(path, ref=branch)
+        if not isinstance(root, list):
+            root = [root]
+        lines = []
+        def walk(items, level):
+            for item in sorted(items, key=lambda entry: (entry.type != "dir", entry.path)):
+                prefix = "  " * level + ("└── " if level else "")
+                lines.append(f"{prefix}{item.path}")
+                if item.type == "dir" and level < depth:
+                    children = repo.get_contents(item.path, ref=branch)
+                    walk(children if isinstance(children, list) else [children], level + 1)
+        walk(root, 0)
+        return "\n".join(lines) or "指定されたパスは空です。"
+    except Exception as e:
+        return f"ツリー取得失敗: {str(e)}"
+
 def list_repository_files(repo_name: str, path: str = "", branch: str = "main") -> str:
     try:
         repo = github_client.get_repo(repo_name)
@@ -265,6 +286,7 @@ def create_task_plan(tasks: list[str]) -> str:
     return "計画が設定されました。"
 
 FUNCTION_MAP = {
+    "print_tree": print_tree,
     "list_repository_files": list_repository_files,
     "read_github_file": read_github_file,
     "search_code_in_repo": search_code_in_repo,
@@ -288,6 +310,23 @@ GROQ_TOOLS_SCHEMA = [
                 "type": "object",
                 "properties": {"tasks": {"type": "array", "items": {"type": "string"}}},
                 "required": ["tasks"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "print_tree",
+            "description": "GitHubリポジトリのファイルツリーを表示します。pathとdepthは省略可能です。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo_name": {"type": "string"},
+                    "path": {"type": "string"},
+                    "depth": {"type": "integer", "minimum": 0, "maximum": 6},
+                    "branch": {"type": "string"}
+                },
+                "required": []
             }
         }
     },
@@ -618,7 +657,13 @@ class AgentCog(commands.Cog):
                         logs.append(f"**計画立案:**\n```\n{plan_str}\n```")
                         result = plan_str
                     else:
-                        result = FUNCTION_MAP[func_name](**func_args) if func_name in FUNCTION_MAP else "不明な関数"
+                        if func_name == "print_tree":
+                            func_args.setdefault("repo_name", target_repo)
+                            func_args.setdefault("branch", branch)
+                        if func_name in FUNCTION_MAP:
+                            result = FUNCTION_MAP[func_name](**func_args)
+                        else:
+                            result = f"未登録のツールです: {func_name}。利用可能なツールを使って再試行してください。"
                         logs.append(f"**Action:** `{func_name}`")
 
                     status_embed.description = (
