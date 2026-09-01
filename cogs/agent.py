@@ -35,6 +35,21 @@ def _trim_for_llm(value: object, limit: int = TOOL_RESULT_MAX_CHARS) -> str:
     text = str(value)
     return text if len(text) <= limit else text[:limit] + "\\n…(長すぎるため省略)"
 
+def _groq_completion(**kwargs):
+    """一時的な429/5xx/413を短時間だけ再試行する。"""
+    last_error = None
+    for attempt in range(3):
+        try:
+            return groq_client.chat.completions.create(**kwargs)
+        except Exception as error:
+            last_error = error
+            error_text = str(error).lower()
+            retryable = any(marker in error_text for marker in ("rate_limit", "429", "500", "502", "503", "timeout"))
+            if not retryable or attempt == 2:
+                raise
+            time.sleep(2 ** attempt)
+    raise last_error
+
 def _message_to_dict(message: object) -> dict:
     """Groq SDKのPydanticメッセージをAPIへ渡せる辞書へ変換する。"""
     if hasattr(message, "model_dump"):
@@ -504,6 +519,19 @@ class AgentCog(commands.Cog):
         self.bot = bot
         self.last_edit_time = {}
 
+    def render_progress(self, embed, target_repo, branch, mode, phase, turn_count, max_turns, logs, commit_done=False):
+        """進捗をDiscord Embedの固定フィールドへ描画する。"""
+        completed = min(turn_count, max_turns)
+        bar_size = 12
+        filled = int((completed / max_turns) * bar_size) if max_turns else 0
+        progress_bar = "█" * filled + "░" * (bar_size - filled)
+        embed.description = f"**フェーズ:** {phase}\n`{progress_bar}` {completed}/{max_turns} steps"
+        embed.clear_fields()
+        embed.add_field(name="対象", value=f"`{target_repo}`\nブランチ: `{branch}`\nモード: `{mode}`", inline=True)
+        embed.add_field(name="状態", value=f"{phase}\nGitHubコミット: {'実行済み' if commit_done else '未実行'}", inline=True)
+        recent = "\n".join(logs[-3:]) if logs else "まだツール操作はありません。"
+        embed.add_field(name="直近の操作", value=_trim_for_llm(recent, 1000), inline=False)
+
     async def safe_edit_embed(self, message, embed, min_interval=2.0):
         now = time.time()
         msg_id = message.id
@@ -613,7 +641,7 @@ class AgentCog(commands.Cog):
         ]
 
         try:
-            plan_response = groq_client.chat.completions.create(
+            plan_response = _groq_completion(
                 model=PLANNER_MODEL,
                 messages=_compact_messages(planner_messages),
                 tools=GROQ_TOOLS_SCHEMA,
@@ -636,9 +664,14 @@ class AgentCog(commands.Cog):
                 {"role": "user", "content": full_prompt}
             ]
 
-            logs = []
+            logs = ["計画策定が完了しました。実行フェーズへ移行します。"]
             commit_actions = []
+            completed_tools = set()
+            repeated_calls = {}
             turn_count = 0
+            self.render_progress(status_embed, target_repo, branch, mode, "実行準備完了", turn_count, max_turns, logs)
+            status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
+            await self.safe_edit_embed(status_message, status_embed)
 
             while turn_count < max_turns:
                 if not task_mgr.active_tasks.get(channel_id, False):
@@ -647,7 +680,7 @@ class AgentCog(commands.Cog):
 
                 turn_count += 1
 
-                response = groq_client.chat.completions.create(
+                response = _groq_completion(
                     model=ENGINEER_MODEL,
                     messages=_compact_messages(engineer_messages),
                     tools=GROQ_TOOLS_SCHEMA,
@@ -665,12 +698,8 @@ class AgentCog(commands.Cog):
                         final_text += "\\n\\n注意: コミットツールが実行されていないため、GitHubへの変更コミットはありません。"
                     status_embed.color = discord.Color.green() if (not effective_auto_commit or mode != "normal" or commit_done) else discord.Color.gold()
                     status_embed.title = "Task Completed" if (not effective_auto_commit or mode != "normal" or commit_done) else "Task Completed (No Commit)"
-                    status_embed.description = (
-                        f"**リポジトリ:** `{target_repo}` (`{branch}`)\n\n"
-                        + task_mgr.get_formatted_plan(channel_id) + "\n\n"
-                        f"**全工程が完了しました。 (試行回数: {turn_count}/{max_turns})**\\n"
-                        f"**GitHubコミット:** {'実行済み' if commit_done else '未実行'}"
-                    )
+                    self.render_progress(status_embed, target_repo, branch, mode, "完了", turn_count, max_turns, logs, commit_done)
+                    status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
                     await self.safe_edit_embed(status_message, status_embed)
 
                     if len(final_text) > 1900:
@@ -684,7 +713,13 @@ class AgentCog(commands.Cog):
                     func_name = tool_call.function.name
                     func_args = json.loads(tool_call.function.arguments)
 
-                    if func_name == "create_task_plan":
+                    call_key = json.dumps({"name": func_name, "args": func_args}, ensure_ascii=False, sort_keys=True)
+                    repeated_calls[call_key] = repeated_calls.get(call_key, 0) + 1
+                    if repeated_calls[call_key] >= 3:
+                        result = "同じツール呼び出しが3回続いたため停止しました。別の調査方法、より狭いpath、またはline_start/line_endを指定してください。"
+                        logs.append(f"**Loop guard:** `{func_name}` の重複呼び出しを停止")
+                        task_mgr.update_status(channel_id, 1, "失敗")
+                    elif func_name == "create_task_plan":
                         plan_str = task_mgr.set_plan(channel_id, func_args.get("tasks", []))
                         logs.append(f"**計画立案:**\n```\n{plan_str}\n```")
                         result = plan_str
@@ -695,17 +730,16 @@ class AgentCog(commands.Cog):
                         if func_name in FUNCTION_MAP:
                             result = FUNCTION_MAP[func_name](**func_args)
                             if func_name in {"patch_github_file", "commit_file_to_github"}:
-                                commit_actions.append({"tool": func_name, "result": str(result)})
+                                result_text = str(result)
+                                if any(marker in result_text for marker in ("コミットしました", "更新コミットしました", "新規作成コミットしました")):
+                                    commit_actions.append({"tool": func_name, "result": result_text})
+                                    completed_tools.add(func_name)
                         else:
                             result = f"未登録のツールです: {func_name}。利用可能なツールを使って再試行してください。"
                         logs.append(f"**Action:** `{func_name}`")
 
-                    status_embed.description = (
-                        f"**リポジトリ:** `{target_repo}` (`{branch}`)\n"
-                        f"**Step:** {turn_count}/{max_turns}\n\n"
-                        + task_mgr.get_formatted_plan(channel_id) + "\n\n"
-                        + "\n".join(logs[-4:])
-                    )
+                    self.render_progress(status_embed, target_repo, branch, mode, f"ツール実行中: {func_name}", turn_count, max_turns, logs, bool(commit_actions))
+                    status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
                     await self.safe_edit_embed(status_message, status_embed)
 
                     engineer_messages.append({
@@ -717,7 +751,8 @@ class AgentCog(commands.Cog):
 
             status_embed.color = discord.Color.gold()
             status_embed.title = "Max Turns Reached"
-            status_embed.description = f"設定された最大ターン数 ({max_turns}) に達したため処理を中断しました。"
+            self.render_progress(status_embed, target_repo, branch, mode, "最大ステップ数に到達", turn_count, max_turns, logs, bool(commit_actions))
+            status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
             await self.safe_edit_embed(status_message, status_embed)
 
         except Exception as e:
@@ -734,7 +769,7 @@ class AgentCog(commands.Cog):
                         {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ_ENGINEER},
                         {"role": "user", "content": _trim_for_llm(full_prompt, 5000)}
                     ]
-                    fallback_response = groq_client.chat.completions.create(
+                    fallback_response = _groq_completion(
                         model=MODEL_FALLBACK,
                         messages=_compact_messages(fallback_messages),
                         tools=GROQ_TOOLS_SCHEMA,
