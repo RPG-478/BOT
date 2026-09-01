@@ -35,12 +35,31 @@ def _trim_for_llm(value: object, limit: int = TOOL_RESULT_MAX_CHARS) -> str:
     text = str(value)
     return text if len(text) <= limit else text[:limit] + "\\n…(長すぎるため省略)"
 
+def _message_to_dict(message: object) -> dict:
+    """Groq SDKのPydanticメッセージをAPIへ渡せる辞書へ変換する。"""
+    if hasattr(message, "model_dump"):
+        data = message.model_dump(exclude_none=True)
+    elif isinstance(message, dict):
+        data = dict(message)
+    else:
+        data = {"role": getattr(message, "role", "assistant"), "content": getattr(message, "content", None)}
+        tool_calls = getattr(message, "tool_calls", None)
+        if tool_calls:
+            data["tool_calls"] = [
+                call.model_dump(exclude_none=True) if hasattr(call, "model_dump") else call
+                for call in tool_calls
+            ]
+    if data.get("content") is None:
+        data["content"] = ""
+    return data
+
 def _compact_messages(messages: list[dict], keep_last: int = 8) -> list[dict]:
     """モデルへ送る履歴を圧縮し、TPM超過を抑える。"""
-    if len(messages) <= keep_last + 2:
-        return messages
-    head = messages[:2]
-    tail = messages[-keep_last:]
+    normalized = [_message_to_dict(message) for message in messages]
+    if len(normalized) <= keep_last + 2:
+        return normalized
+    head = normalized[:2]
+    tail = normalized[-keep_last:]
     compacted = head + [{**message, "content": _trim_for_llm(message.get("content", ""), 3500)} for message in tail]
     return compacted
 
@@ -548,7 +567,7 @@ class AgentCog(commands.Cog):
                 )
 
                 response_message = response.choices[0].message
-                engineer_messages.append(response_message)
+                engineer_messages.append(_message_to_dict(response_message))
 
                 if not response_message.tool_calls:
                     final_text = response_message.content or "タスクが完了しました。"
