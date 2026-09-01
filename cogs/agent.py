@@ -1,16 +1,21 @@
 import json
 import ast
+import sys
+import io
+import contextlib
 import discord
 from discord.ext import commands
 from github import Github, GithubException
 import google.generativeai as genai
+import requests
+from bs4 import BeautifulSoup
+from duckduckgo_search import DDGS
 
 GEMINI_API_KEY = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
 GITHUB_ACCESS_TOKEN = "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"
 
 github_client = Github(GITHUB_ACCESS_TOKEN)
 
-# --- 許可されたユーザーのみ実行可能にするデコレータ ---
 ALLOWED_USER_ID = 1320705325686587408
 
 def is_authorized_user():
@@ -18,7 +23,7 @@ def is_authorized_user():
         return ctx.author.id == ALLOWED_USER_ID
     return commands.check(predicate)
 
-# --- エージェント用の各種ツール定義 ---
+# --- GitHub 関連ツール ---
 
 def list_repository_files(repo_name: str, path: str = "", branch: str = "main") -> str:
     try:
@@ -40,12 +45,15 @@ def read_github_file(repo_name: str, file_path: str, branch: str = "main") -> st
     except Exception as e:
         return f"ファイル読み込み失敗: {str(e)}"
 
-def check_python_syntax(code_string: str) -> str:
+def search_code_in_repo(repo_name: str, query: str) -> str:
     try:
-        ast.parse(code_string)
-        return "構文チェック結果: エラーなし (Python Syntax OK)"
-    except SyntaxError as e:
-        return f"構文エラー検出: 行 {e.lineno}, 列 {e.offset}: {e.msg}\n該当コード箇所: {e.text}"
+        results = github_client.search_code(f"{query} repo:{repo_name}")
+        matches = []
+        for file in results[:10]:
+            matches.append(f"ファイル: {file.path}")
+        return "\n".join(matches) if matches else "該当するコードは見つかりませんでした。"
+    except Exception as e:
+        return f"コード検索失敗: {str(e)}"
 
 def commit_file_to_github(repo_name: str, file_path: str, content: str, commit_message: str, branch: str = "main") -> str:
     try:
@@ -74,28 +82,138 @@ def commit_file_to_github(repo_name: str, file_path: str, content: str, commit_m
     except Exception as e:
         return f"コミット失敗: {str(e)}"
 
+def delete_github_file(repo_name: str, file_path: str, commit_message: str, branch: str = "main") -> str:
+    try:
+        repo = github_client.get_repo(repo_name)
+        file_to_delete = repo.get_contents(file_path, ref=branch)
+        repo.delete_file(
+            path=file_path,
+            message=commit_message,
+            sha=file_to_delete.sha,
+            branch=branch
+        )
+        return f"ファイル '{file_path}' を削除しました。"
+    except Exception as e:
+        return f"ファイル削除失敗: {str(e)}"
+
+def create_github_branch(repo_name: str, new_branch: str, source_branch: str = "main") -> str:
+    try:
+        repo = github_client.get_repo(repo_name)
+        source_ref = repo.get_git_ref(f"heads/{source_branch}")
+        repo.create_git_ref(f"refs/heads/{new_branch}", source_ref.object.sha)
+        return f"ブランチ '{new_branch}' を作成しました。"
+    except Exception as e:
+        return f"ブランチ作成失敗: {str(e)}"
+
+# --- Web 検索 & 閲覧ツール ---
+
+def search_web(query: str) -> str:
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=5))
+        if not results:
+            return "検索結果が見つかりませんでした。"
+        
+        output = []
+        for r in results:
+            output.append(f"タイトル: {r.get('title')}\nURL: {r.get('href')}\n概要: {r.get('body')}\n---")
+        return "\n".join(output)
+    except Exception as e:
+        return f"Web検索エラー: {str(e)}"
+
+def fetch_web_page_text(url: str) -> str:
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, "html.parser")
+        for script in soup(["script", "style"]):
+            script.extract()
+            
+        text = soup.get_text(separator="\n")
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        cleaned_text = "\n".join(lines)
+        
+        return cleaned_text[:3000] + ("\n...(以下省略)" if len(cleaned_text) > 3000 else "")
+    except Exception as e:
+        return f"Webページ取得エラー: {str(e)}"
+
+# --- コード検証 & 実行ツール ---
+
+def check_python_syntax(code_string: str) -> str:
+    try:
+        ast.parse(code_string)
+        return "構文チェック結果: エラーなし (Python Syntax OK)"
+    except SyntaxError as e:
+        return f"構文エラー検出: 行 {e.lineno}, 列 {e.offset}: {e.msg}\n該当コード箇所: {e.text}"
+
+def execute_python_code(code_string: str) -> str:
+    stdout_capture = io.StringIO()
+    stderr_capture = io.StringIO()
+    global_vars = {"__name__": "__main__"}
+    
+    try:
+        with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
+            exec(code_string, global_vars)
+        
+        output = stdout_capture.getvalue()
+        errors = stderr_capture.getvalue()
+        
+        result = ""
+        if output:
+            result += f"【標準出力】\n{output}\n"
+        if errors:
+            result += f"【標準エラー出力】\n{errors}\n"
+        if not output and not errors:
+            result = "コード実行完了（出力なし）"
+            
+        return result
+    except Exception as e:
+        return f"実行時エラー (Runtime Error):\n{type(e).__name__}: {str(e)}"
+
 TOOLS = [
     list_repository_files,
     read_github_file,
+    search_code_in_repo,
+    commit_file_to_github,
+    delete_github_file,
+    create_github_branch,
+    search_web,
+    fetch_web_page_text,
     check_python_syntax,
-    commit_file_to_github
+    execute_python_code
 ]
 
 FUNCTION_MAP = {
     "list_repository_files": list_repository_files,
     "read_github_file": read_github_file,
+    "search_code_in_repo": search_code_in_repo,
+    "commit_file_to_github": commit_file_to_github,
+    "delete_github_file": delete_github_file,
+    "create_github_branch": create_github_branch,
+    "search_web": search_web,
+    "fetch_web_page_text": fetch_web_page_text,
     "check_python_syntax": check_python_syntax,
-    "commit_file_to_github": commit_file_to_github
+    "execute_python_code": execute_python_code
 }
 
 SYSTEM_INSTRUCTION = """
-あなたは高い自律性と粘り強さを持ったソフトウェアエンジニアエージェントです。
-目的を達成するために、自ら思考し、以下の能力を駆使して粘り強く解決策を実行してください。
+あなたは高い自律性と粘り強さを持ったフルス택・ソフトウェアエンジニアエージェントです。
+指示された目標を達成するために、以下の自律プロセスを駆使して自力で問題を解決してください。
 
-1. **探索**: リポジトリ構造が分からない場合は `list_repository_files` や `read_github_file` を使い、自発的にコードを調査・取得してください。
-2. **検証**: Pythonコードを作成・修正した際は、コミットする前に必ず `check_python_syntax` を使って構文エラー（バグ）がないかを検証してください。
-3. **試行錯誤**: エラーが検出されたり失敗した場合は、妥協せず原因を分析し、修正案を考えて再実行・再検証を行ってください。
-4. **適用**: バグがないことを確認できたら `commit_file_to_github` で変更をコミットしてください。
+【機能・ツールの使い分け】
+1. **情報収集・調査**:
+   - リポジトリ内部: `list_repository_files`, `read_github_file`, `search_code_in_repo`
+   - 外部・Web検索: わからないライブラリやエラーの解決策は `search_web`, `fetch_web_page_text` で調査
+2. **検証**:
+   - 静的チェック: コミット前に必ず `check_python_syntax` を実行
+   - 動的テスト: `execute_python_code` を呼び出して動作確認やテストを実行
+3. **リポジトリ操作**:
+   - 新機能や大規模修正時は必要に応じて `create_github_branch` で作業ブランチを作成
+   - 確証が得られたら `commit_file_to_github` や `delete_github_file` で反映
+
+エラーや予期せぬ挙動が発生した場合は、妥協せず原因をWebで調べたり試行錯誤しながら完遂してください。
 """
 
 class AgentCog(commands.Cog):
@@ -123,7 +241,7 @@ class AgentCog(commands.Cog):
         try:
             response = chat.send_message(prompt)
             logs = []
-            max_turns = 15
+            max_turns = 20
             turn_count = 0
 
             while turn_count < max_turns:
