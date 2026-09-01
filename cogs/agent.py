@@ -219,7 +219,7 @@ class AgentCog(commands.Cog):
         self.bot = bot
         genai.configure(api_key=GEMINI_API_KEY)
         self.model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
+            model_name="gemini-3.5-flash-lite",
             tools=TOOLS,
             system_instruction=SYSTEM_INSTRUCTION
         )
