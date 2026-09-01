@@ -156,7 +156,7 @@ def main() -> int:
     parser.add_argument("--read", metavar="PATH", help="ファイルを表示")
     parser.add_argument("--search", metavar="QUERY", help="コードを検索")
     parser.add_argument("--check", action="store_true", help="構文・テストを確認")
-    parser.add_argument("--max-turns", type=int, default=8, choices=range(1, 21))
+    parser.add_argument("--max-turns", type=int, default=30, choices=range(1, 31))
     args = parser.parse_args()
     if args.list:
         print(list_files()); return 0

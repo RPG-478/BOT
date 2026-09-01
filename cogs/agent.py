@@ -106,10 +106,30 @@ def list_repository_files(repo_name: str, path: str = "", branch: str = "main") 
     except Exception as e:
         return f"ファイル一覧取得失敗: {str(e)}"
 
-def read_github_file(repo_name: str, file_path: str, branch: str = "main") -> str:
+def read_github_file(
+    repo_name: str,
+    file_path: str,
+    branch: str = "main",
+    line_start: Optional[int] = None,
+    line_end: Optional[int] = None,
+) -> str:
+    """GitHubファイルを読み込む。line_start/line_endは1始まりの行番号。"""
     try:
+        if line_start is not None and line_start < 1:
+            return "ファイル読み込み失敗: line_startは1以上で指定してください。"
+        if line_end is not None and line_end < 1:
+            return "ファイル読み込み失敗: line_endは1以上で指定してください。"
+        if line_start is not None and line_end is not None and line_start > line_end:
+            return "ファイル読み込み失敗: line_startはline_end以下にしてください。"
         repo = github_client.get_repo(repo_name)
-        return repo.get_contents(file_path, ref=branch).decoded_content.decode("utf-8")
+        content = repo.get_contents(file_path, ref=branch).decoded_content.decode("utf-8")
+        if line_start is None and line_end is None:
+            return content[:20000] + ("\\n…(長すぎるため省略)" if len(content) > 20000 else "")
+        lines = content.splitlines()
+        start = (line_start or 1) - 1
+        end = line_end or len(lines)
+        selected = lines[start:end]
+        return "\\n".join(f"{start + index + 1}: {line}" for index, line in enumerate(selected)) or "指定範囲に行がありません。"
     except Exception as e:
         return f"ファイル読み込み失敗: {str(e)}"
 
@@ -297,7 +317,9 @@ GROQ_TOOLS_SCHEMA = [
                 "properties": {
                     "repo_name": {"type": "string"},
                     "file_path": {"type": "string"},
-                    "branch": {"type": "string"}
+                    "branch": {"type": "string"},
+                    "line_start": {"type": "integer", "description": "開始行（1始まり、省略可）"},
+                    "line_end": {"type": "integer", "description": "終了行（含む、省略可）"}
                 },
                 "required": ["repo_name", "file_path"]
             }
@@ -466,7 +488,7 @@ class AgentCog(commands.Cog):
         mode="動作モード (normal: 通常実行, dry_run: 修正案のみ提示, review: コードレビューのみ)",
         auto_commit="ファイル編集後に自動コミットするか (デフォルト: True)",
         issue_number="関連するGitHub Issue番号",
-        max_turns="最大ループ試行回数 (1-30, デフォルト: 20)",
+        max_turns="最大ループ試行回数 (1-30, デフォルト: 30)",
         verbose="詳細な思考ログを表示するか (デフォルト: True)"
     )
     @app_commands.check(is_authorized_user)
@@ -479,7 +501,7 @@ class AgentCog(commands.Cog):
         mode: Literal["normal", "dry_run", "review"] = "normal",
         auto_commit: bool = True,
         issue_number: Optional[int] = None,
-        max_turns: app_commands.Range[int, 1, 30] = 20,
+        max_turns: app_commands.Range[int, 1, 30] = 30,
         verbose: bool = True
     ):
         if groq_client is None:
