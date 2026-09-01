@@ -708,6 +708,8 @@ class AgentCog(commands.Cog):
             completed_tools = set()
             repeated_calls = {}
             commit_reminders = 0
+            fallback_used = False
+            current_model = ENGINEER_MODEL
             turn_count = 0
             self.render_progress(status_embed, target_repo, branch, mode, "実行準備完了", turn_count, max_turns, logs)
             status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
@@ -720,13 +722,30 @@ class AgentCog(commands.Cog):
 
                 turn_count += 1
 
-                response = _groq_completion(
-                    model=ENGINEER_MODEL,
-                    messages=_compact_messages(engineer_messages),
-                    tools=GROQ_TOOLS_SCHEMA,
-                    tool_choice="auto",
-                    max_tokens=ENGINEER_MAX_TOKENS
-                )
+                try:
+                    response = _groq_completion(
+                        model=current_model,
+                        messages=_compact_messages(engineer_messages),
+                        tools=GROQ_TOOLS_SCHEMA,
+                        tool_choice="auto",
+                        max_tokens=ENGINEER_MAX_TOKENS if current_model == ENGINEER_MODEL else 800
+                    )
+                except Exception as model_error:
+                    error_text = str(model_error)
+                    retryable_model_error = any(marker in error_text for marker in (
+                        "model_not_found", "does not exist", "do not have access",
+                        "rate_limit_exceeded", "Request too large", "413", "TPM",
+                        "tool_use_failed", "invalid_request_error"
+                    ))
+                    if not fallback_used and current_model != MODEL_FALLBACK and retryable_model_error:
+                        fallback_used = True
+                        current_model = MODEL_FALLBACK
+                        logs.append(f"モデルエラーを検出。計画と履歴を保持したまま `{MODEL_FALLBACK}` へ切替")
+                        self.render_progress(status_embed, target_repo, branch, mode, "フォールバックへ切替・処理継続", turn_count, max_turns, logs, bool(commit_actions))
+                        status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
+                        await self.safe_edit_embed(status_message, status_embed)
+                        continue
+                    raise
 
                 response_message = response.choices[0].message
                 engineer_messages.append(_message_to_dict(response_message))
@@ -812,7 +831,7 @@ class AgentCog(commands.Cog):
                     or "413" in error_text or "TPM" in error_text):
                 try:
                     status_embed.title = "Model fallback"
-                    status_embed.description = f"`{PLANNER_MODEL}` または `{ENGINEER_MODEL}` が利用できないため `{MODEL_FALLBACK}` で再試行します。"
+                    status_embed.description = f"Planner初期化エラーのため `{MODEL_FALLBACK}` で計画を再構成します。"
                     await self.safe_edit_embed(status_message, status_embed)
                     fallback_messages = [
                         {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ_ENGINEER},
