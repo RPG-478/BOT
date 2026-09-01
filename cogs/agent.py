@@ -50,6 +50,12 @@ def _groq_completion(**kwargs):
             time.sleep(2 ** attempt)
     raise last_error
 
+def _tool_result_payload(tool_name: str, result: object) -> str:
+    """ツール結果をモデルが再判断しやすいJSON互換形式へ統一する。"""
+    text = str(result)
+    failed = any(marker in text for marker in ("失敗", "エラー", "見つかりません", "中断"))
+    return json.dumps({"tool": tool_name, "ok": not failed, "result": _trim_for_llm(text)}, ensure_ascii=False)
+
 def _message_to_dict(message: object) -> dict:
     """Groq SDKのPydanticメッセージをAPIへ渡せる辞書へ変換する。"""
     if hasattr(message, "model_dump"):
@@ -541,6 +547,7 @@ SYSTEM_INSTRUCTION_GROQ_PLANNER = """
 SYSTEM_INSTRUCTION_GROQ_ENGINEER = """
 あなたは高度なメインエンジニアエージェントです。
 必ずタスクを調査・検証してから結論を出してください。
+各ターンで、内部の逐語的な思考ではなく、ユーザーに見せてよい短い「判断サマリー」をcontentへ1〜2文で記載してください。内容は目的、根拠、次の行動のいずれかに限定してください。
 動作モードがnormalで自動コミット許可がTrueの場合、コード変更を行ったら必ず
 patch_github_fileまたはcommit_file_to_githubを実行し、その戻り値で成功を確認してください。
 コミットツールを実行していないのに「コミットした」「変更を反映した」と報告してはいけません。
@@ -708,6 +715,9 @@ class AgentCog(commands.Cog):
             completed_tools = set()
             repeated_calls = {}
             commit_reminders = 0
+            replan_count = 0
+            changes_made = False
+            validation_done = False
             fallback_used = False
             current_model = ENGINEER_MODEL
             turn_count = 0
@@ -753,6 +763,14 @@ class AgentCog(commands.Cog):
                 if not response_message.tool_calls:
                     final_text = response_message.content or "タスクが完了しました。"
                     commit_done = bool(commit_actions)
+                    if changes_made and not validation_done and replan_count < 2:
+                        replan_count += 1
+                        logs.append(f"検証未完了のため再計画 ({replan_count}/2)")
+                        engineer_messages.append({"role": "user", "content": "変更が検出されています。完了前に必ずcheck_python_syntax等で検証し、検証結果を確認してください。検証に失敗した場合は修正して再検証してください。"})
+                        self.render_progress(status_embed, target_repo, branch, mode, "検証不足・再計画中", turn_count, max_turns, logs, commit_done)
+                        status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
+                        await self.safe_edit_embed(status_message, status_embed)
+                        continue
                     if effective_auto_commit and mode == "normal" and not commit_done and commit_reminders < 2:
                         commit_reminders += 1
                         logs.append(f"コミット確認を再要求 ({commit_reminders}/2)")
@@ -776,6 +794,9 @@ class AgentCog(commands.Cog):
                         await interaction.followup.send(final_text)
                     return
 
+                if response_message.content:
+                    summary = _trim_for_llm(response_message.content, 700).replace("```", "'''")
+                    logs.append(f"**判断サマリー:** {summary}")
                 for tool_call in response_message.tool_calls:
                     func_name = tool_call.function.name
                     func_args = json.loads(tool_call.function.arguments)
@@ -797,11 +818,14 @@ class AgentCog(commands.Cog):
                         if func_name in FUNCTION_MAP:
                             task_mgr.mark_progress_for_tool(channel_id, func_name)
                             result = FUNCTION_MAP[func_name](**func_args)
-                            if func_name in {"patch_github_file", "commit_file_to_github"}:
-                                result_text = str(result)
-                                if any(marker in result_text for marker in ("コミットしました", "更新コミットしました", "新規作成コミットしました")):
-                                    commit_actions.append({"tool": func_name, "result": result_text})
-                                    completed_tools.add(func_name)
+                            result_text = str(result)
+                            if func_name in {"patch_github_file", "commit_file_to_github"} and any(marker in result_text for marker in ("コミットしました", "更新コミットしました", "新規作成コミットしました")):
+                                commit_actions.append({"tool": func_name, "result": result_text})
+                                completed_tools.add(func_name)
+                            if func_name == "patch_github_file" and "失敗" not in result_text and "エラー" not in result_text:
+                                changes_made = True
+                            if func_name == "check_python_syntax" and "エラーなし" in result_text:
+                                validation_done = True
                         else:
                             result = f"未登録のツールです: {func_name}。利用可能なツールを使って再試行してください。"
                         logs.append(f"**Action:** `{func_name}`")
@@ -814,7 +838,7 @@ class AgentCog(commands.Cog):
                         "tool_call_id": tool_call.id,
                         "role": "tool",
                         "name": func_name,
-                        "content": _trim_for_llm(result)
+                        "content": _tool_result_payload(func_name, result)
                     })
 
             status_embed.color = discord.Color.gold()
