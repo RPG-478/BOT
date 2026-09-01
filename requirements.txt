@@ -22,3 +22,4 @@ pandas
 scipy
 vosk
 yfinance
+duckduckgo-search

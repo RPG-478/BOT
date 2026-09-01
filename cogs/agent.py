@@ -18,10 +18,10 @@ from groq import Groq
 
 load_dotenv()
 
-GITHUB_ACCESS_TOKEN = "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"
-
-github_client = Github(GITHUB_ACCESS_TOKEN)
-groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+GITHUB_ACCESS_TOKEN = os.getenv("GITHUB_ACCESS_TOKEN")
+github_client = Github(GITHUB_ACCESS_TOKEN) if GITHUB_ACCESS_TOKEN else None
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 ALLOWED_USER_ID = 1320705325686587408
 DEFAULT_REPO_NAME = "owner/default-repo"
@@ -442,6 +442,12 @@ class AgentCog(commands.Cog):
         max_turns: app_commands.Range[int, 1, 30] = 20,
         verbose: bool = True
     ):
+        if groq_client is None:
+            await interaction.response.send_message("GROQ_API_KEYが未設定のためAgentコマンドを利用できません。環境変数を設定してください。", ephemeral=True)
+            return
+        if github_client is None and (repo_name or DEFAULT_REPO_NAME):
+            await interaction.response.send_message("GITHUB_ACCESS_TOKENが未設定のためGitHub操作を利用できません。環境変数を設定してください。", ephemeral=True)
+            return
         await interaction.response.defer()
         
         channel_id = interaction.channel.id
