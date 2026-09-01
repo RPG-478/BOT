@@ -277,7 +277,7 @@ SYSTEM_INSTRUCTION_GROQ = """
 """
 
 SYSTEM_INSTRUCTION_GEMINI = """
-あなたはManus級の思考・完遂能力を持つメインエンジニアエージェント（Gemini 3.5 Flash）です。
+あなたはManus級の思考・完遂能力を持つメインエンジニアエージェント（Gemini 3.5 Flash Lite）です。
 
 【思考と行動の自律サイクル (ReAct Framework)】
 各ステップで必ず以下の思考プロセスを内部展開して行動してください：
@@ -299,7 +299,7 @@ class AgentCog(commands.Cog):
         self.bot = bot
         genai.configure(api_key=GEMINI_API_KEY)
         self.gemini_model = genai.GenerativeModel(
-            model_name="gemini-3.5-flash",
+            model_name="gemini-3.5-flash-lite",
             tools=GEMINI_TOOLS,
             system_instruction=SYSTEM_INSTRUCTION_GEMINI
         )
@@ -402,7 +402,7 @@ class AgentCog(commands.Cog):
                     return
 
                 response = groq_client.chat.completions.create(
-                    model="openai/gpt-oss-120b",
+                    model="llama-3.3-70b-versatile",
                     messages=messages,
                     tools=GROQ_TOOLS_SCHEMA,
                     tool_choice="auto"
@@ -458,7 +458,7 @@ class AgentCog(commands.Cog):
                 gemini_summary = "初期解析完了"
                 gemini_instruction = full_prompt
 
-            status_embed.title = "Agent Active (Gemini 3.5 Flash)"
+            status_embed.title = "Agent Active (Gemini 3.5 Flash Lite)"
             status_embed.color = discord.Color.blue()
             await self.safe_edit_embed(status_message, status_embed)
 
