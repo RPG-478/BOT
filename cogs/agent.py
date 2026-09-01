@@ -205,7 +205,7 @@ def read_github_file(
     except Exception as e:
         return f"ファイル読み込み失敗: {str(e)}"
 
-def search_code_in_repo(repo_name: str, query: str, path: str = "") -> str:
+def search_code_in_repo(repo_name: str, query: str, path: str = "", branch: str = "main") -> str:
     """GitHubコード検索。pathは任意のディレクトリ絞り込みに対応する。"""
     try:
         search_query = f"{query} repo:{repo_name}"
@@ -217,7 +217,7 @@ def search_code_in_repo(repo_name: str, query: str, path: str = "") -> str:
     except Exception as e:
         return f"コード検索失敗: {str(e)}"
 
-def get_github_issue(repo_name: str, issue_number: int) -> str:
+def get_github_issue(repo_name: str, issue_number: int, branch: str = "main") -> str:
     try:
         repo = github_client.get_repo(repo_name)
         issue = repo.get_issue(number=issue_number)
@@ -429,7 +429,8 @@ GROQ_TOOLS_SCHEMA = [
                 "properties": {
                     "repo_name": {"type": "string"},
                     "query": {"type": "string"},
-                    "path": {"type": "string", "description": "検索対象ディレクトリ（省略可）"}
+                    "path": {"type": "string", "description": "検索対象ディレクトリ（省略可）"},
+                    "branch": {"type": "string", "description": "対象ブランチ（互換引数、省略可）"}
                 },
                 "required": ["repo_name", "query"]
             }
@@ -444,7 +445,8 @@ GROQ_TOOLS_SCHEMA = [
                 "type": "object",
                 "properties": {
                     "repo_name": {"type": "string"},
-                    "issue_number": {"type": "integer"}
+                    "issue_number": {"type": "integer"},
+                    "branch": {"type": "string", "description": "対象ブランチ（互換引数、省略可）"}
                 },
                 "required": ["repo_name", "issue_number"]
             }
