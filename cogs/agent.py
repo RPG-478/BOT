@@ -492,6 +492,11 @@ SYSTEM_INSTRUCTION_GROQ_PLANNER = """
 
 SYSTEM_INSTRUCTION_GROQ_ENGINEER = """
 あなたは高度なメインエンジニアエージェントです。
+必ずタスクを調査・検証してから結論を出してください。
+動作モードがnormalで自動コミット許可がTrueの場合、コード変更を行ったら必ず
+patch_github_fileまたはcommit_file_to_githubを実行し、その戻り値で成功を確認してください。
+コミットツールを実行していないのに「コミットした」「変更を反映した」と報告してはいけません。
+dry_runまたはreviewではファイル変更・コミットを行わず、提案やレビュー結果だけを返してください。
 """
 
 class AgentCog(commands.Cog):
@@ -549,7 +554,7 @@ class AgentCog(commands.Cog):
         mode="動作モード (normal: 通常実行, dry_run: 修正案のみ提示, review: コードレビューのみ)",
         auto_commit="ファイル編集後に自動コミットするか (デフォルト: True)",
         issue_number="関連するGitHub Issue番号",
-        max_turns="最大ループ試行回数 (1-30, デフォルト: 30)",
+        max_turns="最大ループ試行回数 (1-60, デフォルト: 60)",
         verbose="詳細な思考ログを表示するか (デフォルト: True)"
     )
     @app_commands.check(is_authorized_user)
@@ -562,7 +567,7 @@ class AgentCog(commands.Cog):
         mode: Literal["normal", "dry_run", "review"] = "normal",
         auto_commit: bool = True,
         issue_number: Optional[int] = None,
-        max_turns: app_commands.Range[int, 1, 30] = 30,
+        max_turns: app_commands.Range[int, 1, 60] = 60,
         verbose: bool = True
     ):
         if groq_client is None:
@@ -632,6 +637,7 @@ class AgentCog(commands.Cog):
             ]
 
             logs = []
+            commit_actions = []
             turn_count = 0
 
             while turn_count < max_turns:
@@ -654,12 +660,16 @@ class AgentCog(commands.Cog):
 
                 if not response_message.tool_calls:
                     final_text = response_message.content or "タスクが完了しました。"
-                    status_embed.color = discord.Color.green()
-                    status_embed.title = "Task Completed"
+                    commit_done = bool(commit_actions)
+                    if effective_auto_commit and mode == "normal" and not commit_done:
+                        final_text += "\\n\\n注意: コミットツールが実行されていないため、GitHubへの変更コミットはありません。"
+                    status_embed.color = discord.Color.green() if (not effective_auto_commit or mode != "normal" or commit_done) else discord.Color.gold()
+                    status_embed.title = "Task Completed" if (not effective_auto_commit or mode != "normal" or commit_done) else "Task Completed (No Commit)"
                     status_embed.description = (
                         f"**リポジトリ:** `{target_repo}` (`{branch}`)\n\n"
                         + task_mgr.get_formatted_plan(channel_id) + "\n\n"
-                        f"**全工程が完了しました。 (試行回数: {turn_count}/{max_turns})**"
+                        f"**全工程が完了しました。 (試行回数: {turn_count}/{max_turns})**\\n"
+                        f"**GitHubコミット:** {'実行済み' if commit_done else '未実行'}"
                     )
                     await self.safe_edit_embed(status_message, status_embed)
 
@@ -684,6 +694,8 @@ class AgentCog(commands.Cog):
                             func_args.setdefault("branch", branch)
                         if func_name in FUNCTION_MAP:
                             result = FUNCTION_MAP[func_name](**func_args)
+                            if func_name in {"patch_github_file", "commit_file_to_github"}:
+                                commit_actions.append({"tool": func_name, "result": str(result)})
                         else:
                             result = f"未登録のツールです: {func_name}。利用可能なツールを使って再試行してください。"
                         logs.append(f"**Action:** `{func_name}`")
