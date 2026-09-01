@@ -4,6 +4,8 @@ import ast
 import io
 import asyncio
 import contextlib
+import re
+import time
 import discord
 from discord.ext import commands
 from github import Github, GithubException
@@ -16,8 +18,8 @@ from groq import Groq
 
 load_dotenv()
 
-GEMINI_API_KEY = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
-GITHUB_ACCESS_TOKEN = "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"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GITHUB_ACCESS_TOKEN = os.getenv("GITHUB_ACCESS_TOKEN")
 
 github_client = Github(GITHUB_ACCESS_TOKEN)
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
@@ -29,29 +31,33 @@ def is_authorized_user():
         return ctx.author.id == ALLOWED_USER_ID
     return commands.check(predicate)
 
-GLOBAL_TASK_PLAN = []
+class TaskManager:
+    def __init__(self):
+        self.plans = {}
+        self.active_tasks = {}
 
-def create_task_plan(tasks: list[str]) -> str:
-    global GLOBAL_TASK_PLAN
-    GLOBAL_TASK_PLAN = [{"id": i + 1, "task": task, "status": "未着手"} for i, task in enumerate(tasks)]
-    formatted = "【作成されたタスク計画】\n"
-    for t in GLOBAL_TASK_PLAN:
-        formatted += f"{t['id']}. [{t['status']}] {t['task']}\n"
-    return formatted
+    def set_plan(self, channel_id: int, tasks: list[str]) -> str:
+        self.plans[channel_id] = [{"id": i + 1, "task": task, "status": "未着手"} for i, task in enumerate(tasks)]
+        return self.get_formatted_plan(channel_id)
 
-def update_task_status(task_id: int, status: str) -> str:
-    global GLOBAL_TASK_PLAN
-    for t in GLOBAL_TASK_PLAN:
-        if t["id"] == task_id:
-            t["status"] = status
-            break
-    formatted = "【現在の進捗状況】\n"
-    for t in GLOBAL_TASK_PLAN:
-        formatted += f"{t['id']}. [{t['status']}] {t['task']}\n"
-    return formatted
+    def update_status(self, channel_id: int, task_id: int, status: str) -> str:
+        if channel_id in self.plans:
+            for t in self.plans[channel_id]:
+                if t["id"] == task_id:
+                    t["status"] = status
+                    break
+        return self.get_formatted_plan(channel_id)
 
-def wait_seconds(seconds: int) -> str:
-    return f"{seconds}秒間のタイマーをセットしました。"
+    def get_formatted_plan(self, channel_id: int) -> str:
+        if channel_id not in self.plans or not self.plans[channel_id]:
+            return "計画なし"
+        formatted = "【現在のタスク計画】\n"
+        for t in self.plans[channel_id]:
+            symbol = "▶" if t["status"] == "進行中" else "✓" if t["status"] == "完了" else "×" if t["status"] == "失敗" else "•"
+            formatted += f"{symbol} {t['id']}. [{t['status']}] {t['task']}\n"
+        return formatted
+
+task_mgr = TaskManager()
 
 def list_repository_files(repo_name: str, path: str = "", branch: str = "main") -> str:
     try:
@@ -77,39 +83,73 @@ def search_code_in_repo(repo_name: str, query: str) -> str:
     except Exception as e:
         return f"コード検索失敗: {str(e)}"
 
+def check_python_syntax(code_string: str) -> str:
+    try:
+        ast.parse(code_string)
+        return "構文チェック結果: エラーなし (Python Syntax OK)"
+    except SyntaxError as e:
+        return f"構文エラー検出: 行 {e.lineno}, 列 {e.offset}: {e.msg}\n該当コード箇所: {e.text}"
+
+def patch_github_file(repo_name: str, file_path: str, target_code: str, replacement_code: str, commit_message: str, branch: str = "main") -> str:
+    try:
+        repo = github_client.get_repo(repo_name)
+        existing_file = repo.get_contents(file_path, ref=branch)
+        current_content = existing_file.decoded_content.decode("utf-8")
+
+        if target_code in current_content:
+            new_content = current_content.replace(target_code, replacement_code, 1)
+        else:
+            lines_current = current_content.splitlines()
+            lines_target = target_code.strip().splitlines()
+            
+            matched_start = -1
+            for i in range(len(lines_current) - len(lines_target) + 1):
+                match = True
+                for j in range(len(lines_target)):
+                    if lines_current[i + j].strip() != lines_target[j].strip():
+                        match = False
+                        break
+                if match:
+                    matched_start = i
+                    break
+            
+            if matched_start != -1:
+                lines_replacement = replacement_code.splitlines()
+                lines_current[matched_start:matched_start + len(lines_target)] = lines_replacement
+                new_content = "\n".join(lines_current)
+            else:
+                return f"エラー: 置換対象コード(target_code)が '{file_path}' 内で見つかりません。対象コードの指定を再確認してください。"
+
+        if file_path.endswith(".py"):
+            syntax_result = check_python_syntax(new_content)
+            if "構文エラー検出" in syntax_result:
+                return f"パッチ適用失敗（構文エラー検知）:\n{syntax_result}\n修正案を再考してください。"
+
+        repo.update_file(path=file_path, message=commit_message, content=new_content, sha=existing_file.sha, branch=branch)
+        return f"ファイル '{file_path}' の指定部分を差分更新してコミットしました。"
+    except Exception as e:
+        return f"パッチ適用失敗: {str(e)}"
+
 def commit_file_to_github(repo_name: str, file_path: str, content: str, commit_message: str, branch: str = "main") -> str:
     try:
         repo = github_client.get_repo(repo_name)
+        if file_path.endswith(".py"):
+            syntax_result = check_python_syntax(content)
+            if "構文エラー検出" in syntax_result:
+                return f"コミット中断（構文エラー）:\n{syntax_result}"
+
         try:
             existing_file = repo.get_contents(file_path, ref=branch)
             repo.update_file(path=file_path, message=commit_message, content=content, sha=existing_file.sha, branch=branch)
-            return f"ファイル '{file_path}' を更新してコミットしました。"
+            return f"ファイル '{file_path}' を更新コミットしました。"
         except GithubException as e:
             if e.status == 404:
                 repo.create_file(path=file_path, message=commit_message, content=content, branch=branch)
-                return f"ファイル '{file_path}' を新規作成してコミットしました。"
+                return f"ファイル '{file_path}' を新規作成コミットしました。"
             else:
                 raise e
     except Exception as e:
         return f"コミット失敗: {str(e)}"
-
-def delete_github_file(repo_name: str, file_path: str, commit_message: str, branch: str = "main") -> str:
-    try:
-        repo = github_client.get_repo(repo_name)
-        file_to_delete = repo.get_contents(file_path, ref=branch)
-        repo.delete_file(path=file_path, message=commit_message, sha=file_to_delete.sha, branch=branch)
-        return f"ファイル '{file_path}' を削除しました。"
-    except Exception as e:
-        return f"ファイル削除失敗: {str(e)}"
-
-def create_github_branch(repo_name: str, new_branch: str, source_branch: str = "main") -> str:
-    try:
-        repo = github_client.get_repo(repo_name)
-        source_ref = repo.get_git_ref(f"heads/{source_branch}")
-        repo.create_git_ref(f"refs/heads/{new_branch}", source_ref.object.sha)
-        return f"ブランチ '{new_branch}' を作成しました。"
-    except Exception as e:
-        return f"ブランチ作成失敗: {str(e)}"
 
 def search_web(query: str) -> str:
     try:
@@ -137,13 +177,6 @@ def fetch_web_page_text(url: str) -> str:
     except Exception as e:
         return f"Webページ取得エラー: {str(e)}"
 
-def check_python_syntax(code_string: str) -> str:
-    try:
-        ast.parse(code_string)
-        return "構文チェック結果: エラーなし (Python Syntax OK)"
-    except SyntaxError as e:
-        return f"構文エラー検出: 行 {e.lineno}, 列 {e.offset}: {e.msg}\n該当コード箇所: {e.text}"
-
 def execute_python_code(code_string: str) -> str:
     stdout_capture = io.StringIO()
     stderr_capture = io.StringIO()
@@ -162,27 +195,26 @@ def execute_python_code(code_string: str) -> str:
     except Exception as e:
         return f"実行時エラー (Runtime Error):\n{type(e).__name__}: {str(e)}"
 
+def delegate_heavy_task_to_gemini(summary_of_executed_steps: str, instructions_for_gemini: str) -> str:
+    return f"【Gemini引継ぎ要求】\n要約:\n{summary_of_executed_steps}\n指示:\n{instructions_for_gemini}"
+
 GEMINI_TOOLS = [
-    create_task_plan, update_task_status, wait_seconds,
     list_repository_files, read_github_file, search_code_in_repo,
-    commit_file_to_github, delete_github_file, create_github_branch,
+    commit_file_to_github, patch_github_file,
     search_web, fetch_web_page_text, check_python_syntax, execute_python_code
 ]
 
 FUNCTION_MAP = {
-    "create_task_plan": create_task_plan,
-    "update_task_status": update_task_status,
-    "wait_seconds": wait_seconds,
     "list_repository_files": list_repository_files,
     "read_github_file": read_github_file,
     "search_code_in_repo": search_code_in_repo,
     "commit_file_to_github": commit_file_to_github,
-    "delete_github_file": delete_github_file,
-    "create_github_branch": create_github_branch,
+    "patch_github_file": patch_github_file,
     "search_web": search_web,
     "fetch_web_page_text": fetch_web_page_text,
     "check_python_syntax": check_python_syntax,
-    "execute_python_code": execute_python_code
+    "execute_python_code": execute_python_code,
+    "delegate_heavy_task_to_gemini": delegate_heavy_task_to_gemini
 }
 
 GROQ_TOOLS_SCHEMA = [
@@ -201,131 +233,6 @@ GROQ_TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
-            "name": "update_task_status",
-            "description": "指定されたタスクの進捗ステータスを変更します。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "task_id": {"type": "integer"},
-                    "status": {"type": "string", "enum": ["未着手", "進行中", "完了", "失敗"]}
-                },
-                "required": ["task_id", "status"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "wait_seconds",
-            "description": "指定秒数待機します。",
-            "parameters": {
-                "type": "object",
-                "properties": {"seconds": {"type": "integer"}},
-                "required": ["seconds"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_repository_files",
-            "description": "GitHubリポジトリの指定パスのファイル一覧を取得します。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo_name": {"type": "string"},
-                    "path": {"type": "string"},
-                    "branch": {"type": "string"}
-                },
-                "required": ["repo_name"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_github_file",
-            "description": "GitHub上のファイル内容を取得します。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo_name": {"type": "string"},
-                    "file_path": {"type": "string"},
-                    "branch": {"type": "string"}
-                },
-                "required": ["repo_name", "file_path"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_code_in_repo",
-            "description": "GitHubリポジトリ内のコード内容を検索します。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo_name": {"type": "string"},
-                    "query": {"type": "string"}
-                },
-                "required": ["repo_name", "query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "commit_file_to_github",
-            "description": "GitHubにファイルを更新または作成してコミットします。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo_name": {"type": "string"},
-                    "file_path": {"type": "string"},
-                    "content": {"type": "string"},
-                    "commit_message": {"type": "string"},
-                    "branch": {"type": "string"}
-                },
-                "required": ["repo_name", "file_path", "content", "commit_message"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "delete_github_file",
-            "description": "GitHub上のファイルを削除します。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo_name": {"type": "string"},
-                    "file_path": {"type": "string"},
-                    "commit_message": {"type": "string"},
-                    "branch": {"type": "string"}
-                },
-                "required": ["repo_name", "file_path", "commit_message"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_github_branch",
-            "description": "新しいGitHubブランチを作成します。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "repo_name": {"type": "string"},
-                    "new_branch": {"type": "string"},
-                    "source_branch": {"type": "string"}
-                },
-                "required": ["repo_name", "new_branch"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "search_web",
             "description": "DuckDuckGoでWeb検索を行います。",
             "parameters": {
@@ -338,45 +245,40 @@ GROQ_TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
-            "name": "fetch_web_page_text",
-            "description": "指定URLのWebページからプレーンテキストを取得します。",
+            "name": "delegate_heavy_task_to_gemini",
+            "description": "コード修正や長時間推論が必要なタスクをGeminiに委任します。",
             "parameters": {
                 "type": "object",
-                "properties": {"url": {"type": "string"}},
-                "required": ["url"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "check_python_syntax",
-            "description": "Pythonコードの構文エラーを自動検査します。",
-            "parameters": {
-                "type": "object",
-                "properties": {"code_string": {"type": "string"}},
-                "required": ["code_string"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "execute_python_code",
-            "description": "Pythonコードを分離環境でテスト実行します。",
-            "parameters": {
-                "type": "object",
-                "properties": {"code_string": {"type": "string"}},
-                "required": ["code_string"]
+                "properties": {
+                    "summary_of_executed_steps": {"type": "string", "description": "調査結果や進行状態の要約"},
+                    "instructions_for_gemini": {"type": "string", "description": "Geminiへの具体的な指示"}
+                },
+                "required": ["summary_of_executed_steps", "instructions_for_gemini"]
             }
         }
     }
 ]
 
-SYSTEM_INSTRUCTION = """
-あなたはManusクラスの超高度な自律型エンジニアエージェントです。
-複雑な指示を受けた場合、作業開始前に必ず create_task_plan でタスクを分割し、進捗を update_task_status で更新しながら、
-コード作成後は check_python_syntax と execute_python_code を用いてテスト実行し、自律的に完遂してください。
+SYSTEM_INSTRUCTION_GROQ = """
+あなたは自律型フロントエージェント（Groq）です。
+【行動指針】
+1. 思考プロセスとして、何を行うべきかを明確に意識してください。
+2. 最初に `create_task_plan` でタスクを細分化・計画立案してください。
+3. 初期調査（Web検索等）を行ったら、その結果と「次に何をすべきか」の思考を含めて `delegate_heavy_task_to_gemini` でGeminiへ引き継いでください。
+"""
+
+SYSTEM_INSTRUCTION_GEMINI = """
+あなたはManus級の思考・完遂能力を持つメインエンジニアエージェント（Gemini 3.5 Flash）です。
+
+【思考と行動の自律サイクル (ReAct Framework)】
+各ステップで必ず以下の思考プロセスを内部展開して行動してください：
+- **Thought (思考)**: 現在の状況、ツールの実行結果、次に必要な検証や実装手順についての推論。
+- **Action (行動)**: 目的達成のために最適と判断したツールの実行。
+- **Observation (観察)**: ツール結果の確認と不具合時の自己修復思考。
+
+【開発ルール】
+- 既存ファイルの変更は `commit_file_to_github`（全書き換え）ではなく、原則 `patch_github_file` で最小差分適用を行ってください。
+- パッチ適用失敗や構文エラーが発生した場合、直ちに原因を思考(Thought)し、修正パッチを再作成してください。
 """
 
 class AgentCog(commands.Cog):
@@ -386,127 +288,63 @@ class AgentCog(commands.Cog):
         self.gemini_model = genai.GenerativeModel(
             model_name="gemini-3.5-flash",
             tools=GEMINI_TOOLS,
-            system_instruction=SYSTEM_INSTRUCTION
+            system_instruction=SYSTEM_INSTRUCTION_GEMINI
         )
+        self.last_edit_time = {}
+
+    async def safe_edit_embed(self, status_message, embed, min_interval=2.0):
+        now = time.time()
+        msg_id = status_message.id
+        if msg_id in self.last_edit_time:
+            elapsed = now - self.last_edit_time[msg_id]
+            if elapsed < min_interval:
+                await asyncio.sleep(min_interval - elapsed)
+        try:
+            if embed.description and len(embed.description) > 3900:
+                embed.description = embed.description[-3900:]
+            await status_message.edit(embed=embed)
+            self.last_edit_time[msg_id] = time.time()
+        except Exception:
+            pass
+
+    @commands.command(name="agent_stop")
+    @is_authorized_user()
+    async def agent_stop_command(self, ctx):
+        channel_id = ctx.channel.id
+        if task_mgr.active_tasks.get(channel_id, False):
+            task_mgr.active_tasks[channel_id] = False
+            await ctx.send("実行中のエージェントタスクに停止シグナルを送信しました。")
+        else:
+            await ctx.send("現在実行中のタスクはありません。")
 
     @commands.command(name="agent")
     @is_authorized_user()
     async def agent_command(self, ctx, *, prompt: str):
-        global GLOBAL_TASK_PLAN
-        GLOBAL_TASK_PLAN = []
+        channel_id = ctx.channel.id
+        task_mgr.active_tasks[channel_id] = True
 
         status_embed = discord.Embed(
-            title="Agent Active (Gemini 3.5 Flash)",
-            description="思考中...",
-            color=discord.Color.blue()
-        )
-        status_message = await ctx.send(embed=status_embed)
-        chat = self.gemini_model.start_chat(enable_automatic_function_calling=False)
-        
-        try:
-            response = chat.send_message(prompt)
-            logs = []
-            max_turns = 25
-            turn_count = 0
-
-            while turn_count < max_turns:
-                turn_count += 1
-                function_call = None
-                
-                if response.candidates and response.candidates[0].content.parts:
-                    for part in response.candidates[0].content.parts:
-                        if part.function_call:
-                            function_call = part.function_call
-                            break
-
-                if not function_call:
-                    final_text = response.text
-                    status_embed.color = discord.Color.green()
-                    status_embed.title = "Task Completed"
-                    plan_summary = ""
-                    if GLOBAL_TASK_PLAN:
-                        plan_summary = "**【最終計画状況】**\n" + "\n".join([f"{t['id']}. [{t['status']}] {t['task']}" for t in GLOBAL_TASK_PLAN]) + "\n\n"
-                    status_embed.description = plan_summary + ("\n".join(logs[-6:]) if logs else "処理完了")
-                    await status_message.edit(embed=status_embed)
-                    
-                    if len(final_text) > 2000:
-                        for chunk in [final_text[i:i+1900] for i in range(0, len(final_text), 1900)]:
-                            await ctx.send(chunk)
-                    else:
-                        await ctx.send(final_text)
-                    return
-
-                func_name = function_call.name
-                func_args = dict(function_call.args)
-                
-                if func_name == "wait_seconds":
-                    sec = int(func_args.get("seconds", 1))
-                    logs.append(f"**Step {turn_count} - Wait:** `{sec}秒間スリープ中...`\n---")
-                    status_embed.description = "\n".join(logs[-6:])
-                    await status_message.edit(embed=status_embed)
-                    await asyncio.sleep(sec)
-                    result = f"{sec}秒間の待機が完了しました。"
-                else:
-                    logs.append(f"**Step {turn_count} - Tool:** `{func_name}`\n```json\n{json.dumps(func_args, ensure_ascii=False, indent=2)}\n```")
-                    plan_view = ""
-                    if GLOBAL_TASK_PLAN:
-                        plan_view = "【タスク進捗】\n" + "\n".join([f"{'▶' if t['status']=='進行中' else '✓' if t['status']=='完了' else '•'} {t['task']}" for t in GLOBAL_TASK_PLAN]) + "\n\n"
-                    status_embed.description = plan_view + "\n".join(logs[-4:]) + f"\n\n*実行中... (Step {turn_count}/{max_turns})*"
-                    await status_message.edit(embed=status_embed)
-
-                    result = FUNCTION_MAP[func_name](**func_args) if func_name in FUNCTION_MAP else f"Error: {func_name} undefined"
-
-                logs.append(f"**Result:** `{str(result)[:300]}`\n---")
-                
-                response = chat.send_message(
-                    genai.protos.Content(
-                        parts=[
-                            genai.protos.Part(
-                                function_response=genai.protos.FunctionResponse(
-                                    name=func_name,
-                                    response={"result": result}
-                                )
-                            )
-                        ]
-                    )
-                )
-
-            status_embed.color = discord.Color.gold()
-            status_embed.title = "Step Limit Reached"
-            status_embed.description = f"最大試行回数 ({max_turns} 回) に達しました。"
-            await status_message.edit(embed=status_embed)
-
-        except Exception as e:
-            status_embed.color = discord.Color.red()
-            status_embed.title = "Error"
-            status_embed.description = f"エラー発生:\n```\n{str(e)}\n```"
-            await status_message.edit(embed=status_embed)
-
-    @commands.command(name="agent_groq")
-    @is_authorized_user()
-    async def agent_groq_command(self, ctx, *, prompt: str):
-        global GLOBAL_TASK_PLAN
-        GLOBAL_TASK_PLAN = []
-
-        status_embed = discord.Embed(
-            title="Fast Agent Active (Groq LPU)",
-            description="思考中...",
+            title="Agent Active",
+            description="[Phase 1: Groq] タスク分析・計画策定中...",
             color=discord.Color.purple()
         )
         status_message = await ctx.send(embed=status_embed)
 
         messages = [
-            {"role": "system", "content": SYSTEM_INSTRUCTION},
+            {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ},
             {"role": "user", "content": prompt}
         ]
 
-        try:
-            logs = []
-            max_turns = 20
-            turn_count = 0
+        logs = []
+        handoff_requested = False
+        gemini_summary = ""
+        gemini_instruction = ""
 
-            while turn_count < max_turns:
-                turn_count += 1
+        try:
+            for turn in range(1, 6):
+                if not task_mgr.active_tasks.get(channel_id, False):
+                    await ctx.send("ユーザーによって処理が中断されました。")
+                    return
 
                 response = groq_client.chat.completions.create(
                     model="openai/gpt-oss-120b",
@@ -521,42 +359,31 @@ class AgentCog(commands.Cog):
                 if not response_message.tool_calls:
                     final_text = response_message.content or "完了しました。"
                     status_embed.color = discord.Color.green()
-                    status_embed.title = "Task Completed"
-                    plan_summary = ""
-                    if GLOBAL_TASK_PLAN:
-                        plan_summary = "**【最終計画状況】**\n" + "\n".join([f"{t['id']}. [{t['status']}] {t['task']}" for t in GLOBAL_TASK_PLAN]) + "\n\n"
-                    status_embed.description = plan_summary + ("\n".join(logs[-6:]) if logs else "処理完了")
-                    await status_message.edit(embed=status_embed)
-
-                    if len(final_text) > 2000:
-                        for chunk in [final_text[i:i+1900] for i in range(0, len(final_text), 1900)]:
-                            await ctx.send(chunk)
-                    else:
-                        await ctx.send(final_text)
+                    status_embed.title = "Task Completed (Groq)"
+                    await self.safe_edit_embed(status_message, status_embed)
+                    await ctx.send(final_text[:1900])
                     return
 
                 for tool_call in response_message.tool_calls:
                     func_name = tool_call.function.name
                     func_args = json.loads(tool_call.function.arguments)
 
-                    if func_name == "wait_seconds":
-                        sec = int(func_args.get("seconds", 1))
-                        logs.append(f"**Step {turn_count} - Wait:** `{sec}秒間スリープ中...`\n---")
-                        status_embed.description = "\n".join(logs[-6:])
-                        await status_message.edit(embed=status_embed)
-                        await asyncio.sleep(sec)
-                        result = f"{sec}秒間の待機が完了しました。"
+                    if func_name == "create_task_plan":
+                        plan_str = task_mgr.set_plan(channel_id, func_args.get("tasks", []))
+                        logs.append(f"**計画立案:**\n```\n{plan_str}\n```")
+                        result = plan_str
+                    elif func_name == "delegate_heavy_task_to_gemini":
+                        handoff_requested = True
+                        gemini_summary = func_args.get("summary_of_executed_steps", "")
+                        gemini_instruction = func_args.get("instructions_for_gemini", prompt)
+                        logs.append("**Geminiへ引き継ぎ実行**")
+                        result = "引き継ぎ了解"
                     else:
-                        logs.append(f"**Step {turn_count} - Tool:** `{func_name}`\n```json\n{json.dumps(func_args, ensure_ascii=False, indent=2)}\n```")
-                        plan_view = ""
-                        if GLOBAL_TASK_PLAN:
-                            plan_view = "【タスク進捗】\n" + "\n".join([f"{'▶' if t['status']=='進行中' else '✓' if t['status']=='完了' else '•'} {t['task']}" for t in GLOBAL_TASK_PLAN]) + "\n\n"
-                        status_embed.description = plan_view + "\n".join(logs[-4:]) + f"\n\n*Groq高速実行中... (Step {turn_count}/{max_turns})*"
-                        await status_message.edit(embed=status_embed)
+                        result = FUNCTION_MAP[func_name](**func_args) if func_name in FUNCTION_MAP else "不明な関数"
+                        logs.append(f"**Groq Tool:** `{func_name}`")
 
-                        result = FUNCTION_MAP[func_name](**func_args) if func_name in FUNCTION_MAP else f"Error: {func_name} undefined"
-
-                    logs.append(f"**Result:** `{str(result)[:300]}`\n---")
+                    status_embed.description = (task_mgr.get_formatted_plan(channel_id) + "\n\n" + "\n".join(logs[-3:]))
+                    await self.safe_edit_embed(status_message, status_embed)
 
                     messages.append({
                         "tool_call_id": tool_call.id,
@@ -565,19 +392,91 @@ class AgentCog(commands.Cog):
                         "content": str(result)
                     })
 
-            status_embed.color = discord.Color.gold()
-            status_embed.title = "Step Limit Reached"
-            status_embed.description = f"最大試行回数 ({max_turns} 回) に達しました。"
-            await status_message.edit(embed=status_embed)
+                if handoff_requested:
+                    break
+
+            if not handoff_requested:
+                gemini_summary = "初期解析完了"
+                gemini_instruction = f"要件: {prompt}"
+
+            status_embed.title = "Agent Active (Gemini 3.5 Flash)"
+            status_embed.color = discord.Color.blue()
+            await self.safe_edit_embed(status_message, status_embed)
+
+            chat = self.gemini_model.start_chat(enable_automatic_function_calling=False)
+            
+            handoff_prompt = (
+                f"【タスク引継ぎ】\n"
+                f"現在の計画:\n{task_mgr.get_formatted_plan(channel_id)}\n\n"
+                f"これまでの進捗要約:\n{gemini_summary}\n\n"
+                f"実行指示:\n{gemini_instruction}\n\n"
+                f"思考(Thought)を展開した上で、必要なアクションを開始してください。"
+            )
+
+            response = chat.send_message(handoff_prompt)
+            max_turns = 20
+            turn_count = 0
+
+            while turn_count < max_turns:
+                if not task_mgr.active_tasks.get(channel_id, False):
+                    await ctx.send("ユーザーによって処理が中断されました。")
+                    return
+
+                turn_count += 1
+                function_call = None
+
+                if response.candidates and response.candidates[0].content.parts:
+                    for part in response.candidates[0].content.parts:
+                        if part.text:
+                            thought_text = part.text.strip()
+                            if thought_text:
+                                logs.append(f"**Thought (思考):** {thought_text[:150]}...")
+                        if part.function_call:
+                            function_call = part.function_call
+
+                if not function_call:
+                    final_text = response.text or "タスクが完了しました。"
+                    status_embed.color = discord.Color.green()
+                    status_embed.title = "Task Completed"
+                    status_embed.description = task_mgr.get_formatted_plan(channel_id) + "\n\n**全工程が正常完了しました。**"
+                    await self.safe_edit_embed(status_message, status_embed)
+
+                    if len(final_text) > 1900:
+                        for chunk in [final_text[i:i+1900] for i in range(0, len(final_text), 1900)]:
+                            await ctx.send(chunk)
+                    else:
+                        await ctx.send(final_text)
+                    return
+
+                func_name = function_call.name
+                func_args = dict(function_call.args)
+
+                logs.append(f"**Action (行動):** `{func_name}`")
+                status_embed.description = task_mgr.get_formatted_plan(channel_id) + "\n\n" + "\n".join(logs[-4:])
+                await self.safe_edit_embed(status_message, status_embed)
+
+                result = FUNCTION_MAP[func_name](**func_args) if func_name in FUNCTION_MAP else f"Error: {func_name} undefined"
+
+                response = chat.send_message({
+                    "role": "function",
+                    "parts": [{
+                        "function_response": {
+                            "name": func_name,
+                            "response": {"result": str(result)}
+                        }
+                    }]
+                })
 
         except Exception as e:
             status_embed.color = discord.Color.red()
             status_embed.title = "Error"
-            status_embed.description = f"エラー発生:\n```\n{str(e)}\n```"
-            await status_message.edit(embed=status_embed)
+            status_embed.description = f"エラーにより処理停止:\n```\n{str(e)[:1800]}\n```"
+            await self.safe_edit_embed(status_message, status_embed)
+        finally:
+            task_mgr.active_tasks[channel_id] = False
 
     @agent_command.error
-    @agent_groq_command.error
+    @agent_stop_command.error
     async def agent_command_error(self, ctx, error):
         if isinstance(error, commands.CheckFailure):
             await ctx.send("このコマンドを実行する権限がありません。")
