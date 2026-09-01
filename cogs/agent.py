@@ -93,6 +93,26 @@ class TaskManager:
         self.plans[channel_id] = [{"id": i + 1, "task": task, "status": "未着手"} for i, task in enumerate(tasks)]
         return self.get_formatted_plan(channel_id)
 
+    def mark_next_in_progress(self, channel_id: int) -> str:
+        if channel_id in self.plans:
+            for task in self.plans[channel_id]:
+                if task["status"] == "未着手":
+                    task["status"] = "進行中"
+                    break
+        return self.get_formatted_plan(channel_id)
+    def mark_progress_for_tool(self, channel_id: int, tool_name: str) -> str:
+        if channel_id not in self.plans:
+            return self.get_formatted_plan(channel_id)
+        keywords = {
+            "read_github_file": "調査", "list_repository_files": "調査", "print_tree": "調査",
+            "search_code_in_repo": "調査", "check_python_syntax": "検証",
+            "patch_github_file": "実装", "commit_file_to_github": "コミット",
+        }
+        for task in self.plans[channel_id]:
+            if task["status"] == "進行中" and keywords.get(tool_name, "") in task["task"]:
+                task["status"] = "完了"
+                break
+        return self.mark_next_in_progress(channel_id)
     def update_status(self, channel_id: int, task_id: int, status: str) -> str:
         if channel_id in self.plans:
             for t in self.plans[channel_id]:
@@ -101,6 +121,8 @@ class TaskManager:
                     break
         return self.get_formatted_plan(channel_id)
 
+    def has_plan(self, channel_id: int) -> bool:
+        return bool(self.plans.get(channel_id))
     def get_formatted_plan(self, channel_id: int) -> str:
         if channel_id not in self.plans or not self.plans[channel_id]:
             return "計画なし"
@@ -111,6 +133,14 @@ class TaskManager:
         return formatted
 
 task_mgr = TaskManager()
+
+def build_default_plan(mode: str) -> list[str]:
+    """モデルが計画ツールを呼ばない場合にも表示できる最低限の実行計画。"""
+    if mode == "review":
+        return ["対象ファイルと構成を調査", "問題箇所を再現・分析", "修正案と影響範囲を整理", "レビュー結果を報告"]
+    if mode == "dry_run":
+        return ["対象ファイルと要件を確認", "変更案を設計", "構文・影響を検証", "実施手順を報告"]
+    return ["対象ファイルと要件を確認", "必要な変更を実装", "構文・動作を検証", "GitHubへコミット", "結果を報告"]
 
 def print_tree(repo_name: str, path: str = "", depth: int = 2, branch: str = "main") -> str:
     """リポジトリのツリーを表示する互換ツール。"""
@@ -503,6 +533,9 @@ GROQ_TOOLS_SCHEMA = [
 
 SYSTEM_INSTRUCTION_GROQ_PLANNER = """
 あなたは超高速なフロント・プランニングエージェントです。
+ユーザーの依頼を実行可能な3〜7個の具体的な手順へ分解してください。
+必ずcreate_task_planツールを1回呼び出し、tasks配列に計画を渡してください。
+計画を作らずに回答を終了してはいけません。
 """
 
 SYSTEM_INSTRUCTION_GROQ_ENGINEER = """
@@ -654,20 +687,27 @@ class AgentCog(commands.Cog):
                 for tc in planner_msg.tool_calls:
                     if tc.function.name == "create_task_plan":
                         args = json.loads(tc.function.arguments)
-                        task_mgr.set_plan(channel_id, args.get("tasks", []))
+                        tasks = [str(task).strip() for task in args.get("tasks", []) if str(task).strip()]
+                        if tasks:
+                            task_mgr.set_plan(channel_id, tasks[:7])
+            if not task_mgr.has_plan(channel_id):
+                task_mgr.set_plan(channel_id, build_default_plan(mode))
 
+            plan_context = task_mgr.get_formatted_plan(channel_id)
+            full_prompt_with_plan = f"{full_prompt}\\n\\n【確定した実行計画】\\n{plan_context}"
             status_embed.title = "Agent Active (Groq Engineer)"
             status_embed.color = discord.Color.blue()
             
             engineer_messages = [
                 {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ_ENGINEER},
-                {"role": "user", "content": full_prompt}
+                {"role": "user", "content": full_prompt_with_plan}
             ]
 
             logs = ["計画策定が完了しました。実行フェーズへ移行します。"]
             commit_actions = []
             completed_tools = set()
             repeated_calls = {}
+            commit_reminders = 0
             turn_count = 0
             self.render_progress(status_embed, target_repo, branch, mode, "実行準備完了", turn_count, max_turns, logs)
             status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
@@ -694,6 +734,14 @@ class AgentCog(commands.Cog):
                 if not response_message.tool_calls:
                     final_text = response_message.content or "タスクが完了しました。"
                     commit_done = bool(commit_actions)
+                    if effective_auto_commit and mode == "normal" and not commit_done and commit_reminders < 2:
+                        commit_reminders += 1
+                        logs.append(f"コミット確認を再要求 ({commit_reminders}/2)")
+                        engineer_messages.append({"role": "user", "content": "完了判定の前に実変更を確認してください。normalモードで変更が必要だった場合は、必ずpatch_github_fileまたはcommit_file_to_githubを実行し、成功結果を確認してから完了してください。変更不要なら、その理由を明記してください。"})
+                        self.render_progress(status_embed, target_repo, branch, mode, "コミット確認・再検証中", turn_count, max_turns, logs, commit_done)
+                        status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
+                        await self.safe_edit_embed(status_message, status_embed)
+                        continue
                     if effective_auto_commit and mode == "normal" and not commit_done:
                         final_text += "\\n\\n注意: コミットツールが実行されていないため、GitHubへの変更コミットはありません。"
                     status_embed.color = discord.Color.green() if (not effective_auto_commit or mode != "normal" or commit_done) else discord.Color.gold()
@@ -724,10 +772,11 @@ class AgentCog(commands.Cog):
                         logs.append(f"**計画立案:**\n```\n{plan_str}\n```")
                         result = plan_str
                     else:
-                        if func_name == "print_tree":
+                        if func_name in {"print_tree", "list_repository_files", "read_github_file", "search_code_in_repo", "patch_github_file", "commit_file_to_github", "get_github_issue"}:
                             func_args.setdefault("repo_name", target_repo)
                             func_args.setdefault("branch", branch)
                         if func_name in FUNCTION_MAP:
+                            task_mgr.mark_progress_for_tool(channel_id, func_name)
                             result = FUNCTION_MAP[func_name](**func_args)
                             if func_name in {"patch_github_file", "commit_file_to_github"}:
                                 result_text = str(result)
