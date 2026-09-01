@@ -10,7 +10,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from github import Github, GithubException
-import google.generativeai as genai
 import requests
 from bs4 import BeautifulSoup
 from duckduckgo_search import DDGS
@@ -19,7 +18,6 @@ from groq import Groq
 
 load_dotenv()
 
-GEMINI_API_KEY = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
 GITHUB_ACCESS_TOKEN = "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"
 
 github_client = Github(GITHUB_ACCESS_TOKEN)
@@ -203,14 +201,8 @@ def execute_python_code(code_string: str) -> str:
     except Exception as e:
         return f"実行時エラー (Runtime Error):\n{type(e).__name__}: {str(e)}"
 
-def delegate_heavy_task_to_gemini(summary_of_executed_steps: str, instructions_for_gemini: str) -> str:
-    return f"【Gemini引継ぎ要求】\n要約:\n{summary_of_executed_steps}\n指示:\n{instructions_for_gemini}"
-
-GEMINI_TOOLS = [
-    list_repository_files, read_github_file, search_code_in_repo, get_github_issue,
-    commit_file_to_github, patch_github_file,
-    search_web, fetch_web_page_text, check_python_syntax, execute_python_code
-]
+def create_task_plan(tasks: list[str]) -> str:
+    return "計画が設定されました。"
 
 FUNCTION_MAP = {
     "list_repository_files": list_repository_files,
@@ -223,7 +215,7 @@ FUNCTION_MAP = {
     "fetch_web_page_text": fetch_web_page_text,
     "check_python_syntax": check_python_syntax,
     "execute_python_code": execute_python_code,
-    "delegate_heavy_task_to_gemini": delegate_heavy_task_to_gemini
+    "create_task_plan": create_task_plan
 }
 
 GROQ_TOOLS_SCHEMA = [
@@ -242,8 +234,107 @@ GROQ_TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "list_repository_files",
+            "description": "リポジトリ内のファイル一覧を取得します。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo_name": {"type": "string"},
+                    "path": {"type": "string"},
+                    "branch": {"type": "string"}
+                },
+                "required": ["repo_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_github_file",
+            "description": "GitHub上のファイルを読み込みます。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo_name": {"type": "string"},
+                    "file_path": {"type": "string"},
+                    "branch": {"type": "string"}
+                },
+                "required": ["repo_name", "file_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_code_in_repo",
+            "description": "リポジトリ内をコード検索します。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo_name": {"type": "string"},
+                    "query": {"type": "string"}
+                },
+                "required": ["repo_name", "query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_github_issue",
+            "description": "GitHubのIssue情報を取得します。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo_name": {"type": "string"},
+                    "issue_number": {"type": "integer"}
+                },
+                "required": ["repo_name", "issue_number"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "patch_github_file",
+            "description": "既存のGitHubファイルを部分置換して更新します。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo_name": {"type": "string"},
+                    "file_path": {"type": "string"},
+                    "target_code": {"type": "string"},
+                    "replacement_code": {"type": "string"},
+                    "commit_message": {"type": "string"},
+                    "branch": {"type": "string"}
+                },
+                "required": ["repo_name", "file_path", "target_code", "replacement_code", "commit_message"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "commit_file_to_github",
+            "description": "GitHubにファイルを新規または更新コミットします。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo_name": {"type": "string"},
+                    "file_path": {"type": "string"},
+                    "content": {"type": "string"},
+                    "commit_message": {"type": "string"},
+                    "branch": {"type": "string"}
+                },
+                "required": ["repo_name", "file_path", "content", "commit_message"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_web",
-            "description": "DuckDuckGoでWeb検索を行います。",
+            "description": "Web検索を行います。",
             "parameters": {
                 "type": "object",
                 "properties": {"query": {"type": "string"}},
@@ -254,55 +345,52 @@ GROQ_TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
-            "name": "delegate_heavy_task_to_gemini",
-            "description": "コード修正や長時間推論が必要なタスクをGeminiに委任します。",
+            "name": "fetch_web_page_text",
+            "description": "Webページのテキストを取得します。",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "summary_of_executed_steps": {"type": "string", "description": "調査結果や進行状態の要約"},
-                    "instructions_for_gemini": {"type": "string", "description": "Geminiへの具体的な指示"}
-                },
-                "required": ["summary_of_executed_steps", "instructions_for_gemini"]
+                "properties": {"url": {"type": "string"}},
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_python_syntax",
+            "description": "Pythonコードの構文チェックを行います。",
+            "parameters": {
+                "type": "object",
+                "properties": {"code_string": {"type": "string"}},
+                "required": ["code_string"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_python_code",
+            "description": "Pythonコードを実行します。",
+            "parameters": {
+                "type": "object",
+                "properties": {"code_string": {"type": "string"}},
+                "required": ["code_string"]
             }
         }
     }
 ]
 
-SYSTEM_INSTRUCTION_GROQ = """
-あなたは自律型フロントエージェント（Groq）です。
-【行動指針】
-1. 思考プロセスとして、何を行うべきかを明確に意識してください。
-2. 最初に `create_task_plan` でタスクを細分化・計画立案してください。
-3. 初期調査（Web検索等）を行ったら、その結果と「次に何をすべきか」の思考を含めて `delegate_heavy_task_to_gemini` でGeminiへ引き継いでください。
+SYSTEM_INSTRUCTION_GROQ_PLANNER = """
+あなたは超高速なフロント・プランニングエージェントです。
 """
 
-SYSTEM_INSTRUCTION_GEMINI = """
-あなたはManus級の思考・完遂能力を持つメインエンジニアエージェント（Gemini 3.5 Flash Lite）です。
-
-【思考と行動の自律サイクル (ReAct Framework)】
-各ステップで必ず以下の思考プロセスを内部展開して行動してください：
-- **Thought (思考)**: 現在の状況、ツールの実行結果、次に必要な検証や実装手順についての推論。
-- **Action (行動)**: 目的達成のために最適と判断したツールの実行。
-- **Observation (観察)**: ツール結果の確認と不具合時の自己修復思考。
-
-【開発・制約ルール】
-- GitHubを操作する関数を呼ぶ際は、特に指示がない限りプロンプトで指定された `repo_name` と `branch` を使用してください。
-- 動作モード(mode)の遵守:
-  - `dry_run`: ファイル変更・コミット関数(`patch_github_file`, `commit_file_to_github`)を一切呼び出さず、変更計画と修正コード案の提示にとどめてください。
-  - `review`: コードの分析・検証のみを行い、改善点やコードレビュー結果を出力してください。
-  - `normal`: 指示通りコード修正・パッチ適用を行ってください。
-- 自動コミット(auto_commit)が False の場合も、GitHubへの書き込み関数は使用せず、コード変更案を直接テキスト出力してください。
+SYSTEM_INSTRUCTION_GROQ_ENGINEER = """
+あなたは高度なメインエンジニアエージェントです。
 """
 
 class AgentCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        genai.configure(api_key=GEMINI_API_KEY)
-        self.gemini_model = genai.GenerativeModel(
-            model_name="gemini-3.5-flash-lite",
-            tools=GEMINI_TOOLS,
-            system_instruction=SYSTEM_INSTRUCTION_GEMINI
-        )
         self.last_edit_time = {}
 
     async def safe_edit_embed(self, message, embed, min_interval=2.0):
@@ -330,7 +418,7 @@ class AgentCog(commands.Cog):
         else:
             await interaction.response.send_message("現在実行中のタスクはありません。", ephemeral=True)
 
-    @app_commands.command(name="agent", description="エージェントに自律タスクを実行させます")
+    @app_commands.command(name="agent", description="Groq単体で自律タスクを実行させます")
     @app_commands.describe(
         prompt="実行したいタスクの内容",
         repo_name="対象のGitHubリポジトリ (例: owner/repo)",
@@ -338,8 +426,8 @@ class AgentCog(commands.Cog):
         mode="動作モード (normal: 通常実行, dry_run: 修正案のみ提示, review: コードレビューのみ)",
         auto_commit="ファイル編集後に自動コミットするか (デフォルト: True)",
         issue_number="関連するGitHub Issue番号",
-        max_turns="Geminiの最大ループ試行回数 (1-30, デフォルト: 20)",
-        verbose="詳細な思考ログ(Thought)を表示するか (デフォルト: True)"
+        max_turns="最大ループ試行回数 (1-30, デフォルト: 20)",
+        verbose="詳細な思考ログを表示するか (デフォルト: True)"
     )
     @app_commands.check(is_authorized_user)
     async def agent_command(
@@ -375,104 +463,45 @@ class AgentCog(commands.Cog):
         full_prompt = f"{context_header}\n【指示内容】\n{prompt}"
 
         status_embed = discord.Embed(
-            title="Agent Active",
+            title="Agent Active (Groq Planner)",
             description=(
                 f"**リポジトリ:** `{target_repo}` (`{branch}`)\n"
                 f"**モード:** `{mode}` | **コミット:** `{effective_auto_commit}`\n\n"
-                f"[Phase 1: Groq] タスク分析・計画策定中..."
+                f"[Phase 1] 高速モデルによるタスク分析・計画策定中..."
             ),
             color=discord.Color.purple()
         )
         status_message = await interaction.followup.send(embed=status_embed)
 
-        messages = [
-            {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ},
+        planner_messages = [
+            {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ_PLANNER},
             {"role": "user", "content": full_prompt}
         ]
 
-        logs = []
-        handoff_requested = False
-        gemini_summary = ""
-        gemini_instruction = ""
-
         try:
-            for turn in range(1, 6):
-                if not task_mgr.active_tasks.get(channel_id, False):
-                    await interaction.followup.send("ユーザーによって処理が中断されました。")
-                    return
-
-                response = groq_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=messages,
-                    tools=GROQ_TOOLS_SCHEMA,
-                    tool_choice="auto"
-                )
-
-                response_message = response.choices[0].message
-                messages.append(response_message)
-
-                if not response_message.tool_calls:
-                    final_text = response_message.content or "完了しました。"
-                    status_embed.color = discord.Color.green()
-                    status_embed.title = "Task Completed (Groq)"
-                    await self.safe_edit_embed(status_message, status_embed)
-                    await interaction.followup.send(final_text[:1900])
-                    return
-
-                for tool_call in response_message.tool_calls:
-                    func_name = tool_call.function.name
-                    func_args = json.loads(tool_call.function.arguments)
-
-                    if func_name == "create_task_plan":
-                        plan_str = task_mgr.set_plan(channel_id, func_args.get("tasks", []))
-                        logs.append(f"**計画立案:**\n```\n{plan_str}\n```")
-                        result = plan_str
-                    elif func_name == "delegate_heavy_task_to_gemini":
-                        handoff_requested = True
-                        gemini_summary = func_args.get("summary_of_executed_steps", "")
-                        gemini_instruction = func_args.get("instructions_for_gemini", full_prompt)
-                        logs.append("**Geminiへ引き継ぎ実行**")
-                        result = "引き継ぎ了解"
-                    else:
-                        result = FUNCTION_MAP[func_name](**func_args) if func_name in FUNCTION_MAP else "不明な関数"
-                        logs.append(f"**Groq Tool:** `{func_name}`")
-
-                    status_embed.description = (
-                        f"**リポジトリ:** `{target_repo}` (`{branch}`)\n\n"
-                        + task_mgr.get_formatted_plan(channel_id) + "\n\n"
-                        + "\n".join(logs[-3:])
-                    )
-                    await self.safe_edit_embed(status_message, status_embed)
-
-                    messages.append({
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": func_name,
-                        "content": str(result)
-                    })
-
-                if handoff_requested:
-                    break
-
-            if not handoff_requested:
-                gemini_summary = "初期解析完了"
-                gemini_instruction = full_prompt
-
-            status_embed.title = "Agent Active (Gemini 3.5 Flash Lite)"
-            status_embed.color = discord.Color.blue()
-            await self.safe_edit_embed(status_message, status_embed)
-
-            chat = self.gemini_model.start_chat(enable_automatic_function_calling=False)
-            
-            handoff_prompt = (
-                f"{context_header}\n"
-                f"現在の計画:\n{task_mgr.get_formatted_plan(channel_id)}\n\n"
-                f"これまでの進捗要約:\n{gemini_summary}\n\n"
-                f"実行指示:\n{gemini_instruction}\n\n"
-                f"思考(Thought)を展開した上で、必要なアクションを開始してください。"
+            plan_response = groq_client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=planner_messages,
+                tools=GROQ_TOOLS_SCHEMA,
+                tool_choice="auto"
             )
+            
+            planner_msg = plan_response.choices[0].message
+            if planner_msg.tool_calls:
+                for tc in planner_msg.tool_calls:
+                    if tc.function.name == "create_task_plan":
+                        args = json.loads(tc.function.arguments)
+                        task_mgr.set_plan(channel_id, args.get("tasks", []))
 
-            response = chat.send_message(handoff_prompt)
+            status_embed.title = "Agent Active (Groq Engineer)"
+            status_embed.color = discord.Color.blue()
+            
+            engineer_messages = [
+                {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ_ENGINEER},
+                {"role": "user", "content": full_prompt}
+            ]
+
+            logs = []
             turn_count = 0
 
             while turn_count < max_turns:
@@ -481,19 +510,19 @@ class AgentCog(commands.Cog):
                     return
 
                 turn_count += 1
-                function_call = None
 
-                if response.candidates and response.candidates[0].content.parts:
-                    for part in response.candidates[0].content.parts:
-                        if part.text:
-                            thought_text = part.text.strip()
-                            if thought_text and verbose:
-                                logs.append(f"**Thought:** {thought_text[:150]}...")
-                        if part.function_call:
-                            function_call = part.function_call
+                response = groq_client.chat.completions.create(
+                    model="llama-4-scout",
+                    messages=engineer_messages,
+                    tools=GROQ_TOOLS_SCHEMA,
+                    tool_choice="auto"
+                )
 
-                if not function_call:
-                    final_text = response.text or "タスクが完了しました。"
+                response_message = response.choices[0].message
+                engineer_messages.append(response_message)
+
+                if not response_message.tool_calls:
+                    final_text = response_message.content or "タスクが完了しました。"
                     status_embed.color = discord.Color.green()
                     status_embed.title = "Task Completed"
                     status_embed.description = (
@@ -510,29 +539,32 @@ class AgentCog(commands.Cog):
                         await interaction.followup.send(final_text)
                     return
 
-                func_name = function_call.name
-                func_args = dict(function_call.args)
+                for tool_call in response_message.tool_calls:
+                    func_name = tool_call.function.name
+                    func_args = json.loads(tool_call.function.arguments)
 
-                logs.append(f"**Action:** `{func_name}`")
-                status_embed.description = (
-                    f"**リポジトリ:** `{target_repo}` (`{branch}`)\n"
-                    f"**Step:** {turn_count}/{max_turns}\n\n"
-                    + task_mgr.get_formatted_plan(channel_id) + "\n\n"
-                    + "\n".join(logs[-4:])
-                )
-                await self.safe_edit_embed(status_message, status_embed)
+                    if func_name == "create_task_plan":
+                        plan_str = task_mgr.set_plan(channel_id, func_args.get("tasks", []))
+                        logs.append(f"**計画立案:**\n```\n{plan_str}\n```")
+                        result = plan_str
+                    else:
+                        result = FUNCTION_MAP[func_name](**func_args) if func_name in FUNCTION_MAP else "不明な関数"
+                        logs.append(f"**Action:** `{func_name}`")
 
-                result = FUNCTION_MAP[func_name](**func_args) if func_name in FUNCTION_MAP else f"Error: {func_name} undefined"
+                    status_embed.description = (
+                        f"**リポジトリ:** `{target_repo}` (`{branch}`)\n"
+                        f"**Step:** {turn_count}/{max_turns}\n\n"
+                        + task_mgr.get_formatted_plan(channel_id) + "\n\n"
+                        + "\n".join(logs[-4:])
+                    )
+                    await self.safe_edit_embed(status_message, status_embed)
 
-                response = chat.send_message({
-                    "role": "function",
-                    "parts": [{
-                        "function_response": {
-                            "name": func_name,
-                            "response": {"result": str(result)}
-                        }
-                    }]
-                })
+                    engineer_messages.append({
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": func_name,
+                        "content": str(result)
+                    })
 
             status_embed.color = discord.Color.gold()
             status_embed.title = "Max Turns Reached"
