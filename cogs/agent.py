@@ -4,9 +4,10 @@ import ast
 import io
 import asyncio
 import contextlib
-import re
 import time
+from typing import Optional, Literal
 import discord
+from discord import app_commands
 from discord.ext import commands
 from github import Github, GithubException
 import google.generativeai as genai
@@ -25,11 +26,10 @@ github_client = Github(GITHUB_ACCESS_TOKEN)
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 ALLOWED_USER_ID = 1320705325686587408
+DEFAULT_REPO_NAME = "owner/default-repo"
 
-def is_authorized_user():
-    async def predicate(ctx):
-        return ctx.author.id == ALLOWED_USER_ID
-    return commands.check(predicate)
+def is_authorized_user(interaction: discord.Interaction) -> bool:
+    return interaction.user.id == ALLOWED_USER_ID
 
 class TaskManager:
     def __init__(self):
@@ -83,6 +83,14 @@ def search_code_in_repo(repo_name: str, query: str) -> str:
     except Exception as e:
         return f"コード検索失敗: {str(e)}"
 
+def get_github_issue(repo_name: str, issue_number: int) -> str:
+    try:
+        repo = github_client.get_repo(repo_name)
+        issue = repo.get_issue(number=issue_number)
+        return f"Issue #{issue.number}: {issue.title}\nStatus: {issue.state}\nBody:\n{issue.body}"
+    except Exception as e:
+        return f"Issue取得失敗: {str(e)}"
+
 def check_python_syntax(code_string: str) -> str:
     try:
         ast.parse(code_string)
@@ -118,7 +126,7 @@ def patch_github_file(repo_name: str, file_path: str, target_code: str, replacem
                 lines_current[matched_start:matched_start + len(lines_target)] = lines_replacement
                 new_content = "\n".join(lines_current)
             else:
-                return f"エラー: 置換対象コード(target_code)が '{file_path}' 内で見つかりません。対象コードの指定を再確認してください。"
+                return f"エラー: 置換対象コード(target_code)が '{file_path}' 内で見つかりません。"
 
         if file_path.endswith(".py"):
             syntax_result = check_python_syntax(new_content)
@@ -199,7 +207,7 @@ def delegate_heavy_task_to_gemini(summary_of_executed_steps: str, instructions_f
     return f"【Gemini引継ぎ要求】\n要約:\n{summary_of_executed_steps}\n指示:\n{instructions_for_gemini}"
 
 GEMINI_TOOLS = [
-    list_repository_files, read_github_file, search_code_in_repo,
+    list_repository_files, read_github_file, search_code_in_repo, get_github_issue,
     commit_file_to_github, patch_github_file,
     search_web, fetch_web_page_text, check_python_syntax, execute_python_code
 ]
@@ -208,6 +216,7 @@ FUNCTION_MAP = {
     "list_repository_files": list_repository_files,
     "read_github_file": read_github_file,
     "search_code_in_repo": search_code_in_repo,
+    "get_github_issue": get_github_issue,
     "commit_file_to_github": commit_file_to_github,
     "patch_github_file": patch_github_file,
     "search_web": search_web,
@@ -276,9 +285,13 @@ SYSTEM_INSTRUCTION_GEMINI = """
 - **Action (行動)**: 目的達成のために最適と判断したツールの実行。
 - **Observation (観察)**: ツール結果の確認と不具合時の自己修復思考。
 
-【開発ルール】
-- 既存ファイルの変更は `commit_file_to_github`（全書き換え）ではなく、原則 `patch_github_file` で最小差分適用を行ってください。
-- パッチ適用失敗や構文エラーが発生した場合、直ちに原因を思考(Thought)し、修正パッチを再作成してください。
+【開発・制約ルール】
+- GitHubを操作する関数を呼ぶ際は、特に指示がない限りプロンプトで指定された `repo_name` と `branch` を使用してください。
+- 動作モード(mode)の遵守:
+  - `dry_run`: ファイル変更・コミット関数(`patch_github_file`, `commit_file_to_github`)を一切呼び出さず、変更計画と修正コード案の提示にとどめてください。
+  - `review`: コードの分析・検証のみを行い、改善点やコードレビュー結果を出力してください。
+  - `normal`: 指示通りコード修正・パッチ適用を行ってください。
+- 自動コミット(auto_commit)が False の場合も、GitHubへの書き込み関数は使用せず、コード変更案を直接テキスト出力してください。
 """
 
 class AgentCog(commands.Cog):
@@ -292,9 +305,9 @@ class AgentCog(commands.Cog):
         )
         self.last_edit_time = {}
 
-    async def safe_edit_embed(self, status_message, embed, min_interval=2.0):
+    async def safe_edit_embed(self, message, embed, min_interval=2.0):
         now = time.time()
-        msg_id = status_message.id
+        msg_id = message.id
         if msg_id in self.last_edit_time:
             elapsed = now - self.last_edit_time[msg_id]
             if elapsed < min_interval:
@@ -302,37 +315,79 @@ class AgentCog(commands.Cog):
         try:
             if embed.description and len(embed.description) > 3900:
                 embed.description = embed.description[-3900:]
-            await status_message.edit(embed=embed)
+            await message.edit(embed=embed)
             self.last_edit_time[msg_id] = time.time()
         except Exception:
             pass
 
-    @commands.command(name="agent_stop")
-    @is_authorized_user()
-    async def agent_stop_command(self, ctx):
-        channel_id = ctx.channel.id
+    @app_commands.command(name="agent_stop", description="実行中のエージェントタスクを停止します")
+    @app_commands.check(is_authorized_user)
+    async def agent_stop_command(self, interaction: discord.Interaction):
+        channel_id = interaction.channel.id
         if task_mgr.active_tasks.get(channel_id, False):
             task_mgr.active_tasks[channel_id] = False
-            await ctx.send("実行中のエージェントタスクに停止シグナルを送信しました。")
+            await interaction.response.send_message("実行中のエージェントタスクに停止シグナルを送信しました。")
         else:
-            await ctx.send("現在実行中のタスクはありません。")
+            await interaction.response.send_message("現在実行中のタスクはありません。", ephemeral=True)
 
-    @commands.command(name="agent")
-    @is_authorized_user()
-    async def agent_command(self, ctx, *, prompt: str):
-        channel_id = ctx.channel.id
+    @app_commands.command(name="agent", description="エージェントに自律タスクを実行させます")
+    @app_commands.describe(
+        prompt="実行したいタスクの内容",
+        repo_name="対象のGitHubリポジトリ (例: owner/repo)",
+        branch="対象Gitブランチ (デフォルト: main)",
+        mode="動作モード (normal: 通常実行, dry_run: 修正案のみ提示, review: コードレビューのみ)",
+        auto_commit="ファイル編集後に自動コミットするか (デフォルト: True)",
+        issue_number="関連するGitHub Issue番号",
+        max_turns="Geminiの最大ループ試行回数 (1-30, デフォルト: 20)",
+        verbose="詳細な思考ログ(Thought)を表示するか (デフォルト: True)"
+    )
+    @app_commands.check(is_authorized_user)
+    async def agent_command(
+        self,
+        interaction: discord.Interaction,
+        prompt: str,
+        repo_name: Optional[str] = None,
+        branch: str = "main",
+        mode: Literal["normal", "dry_run", "review"] = "normal",
+        auto_commit: bool = True,
+        issue_number: Optional[int] = None,
+        max_turns: app_commands.Range[int, 1, 30] = 20,
+        verbose: bool = True
+    ):
+        await interaction.response.defer()
+        
+        channel_id = interaction.channel.id
         task_mgr.active_tasks[channel_id] = True
+
+        target_repo = repo_name or DEFAULT_REPO_NAME
+        effective_auto_commit = auto_commit if mode == "normal" else False
+
+        context_header = (
+            f"【タスク設定情報】\n"
+            f"- 対象リポジトリ: {target_repo}\n"
+            f"- 対象ブランチ: {branch}\n"
+            f"- 動作モード: {mode}\n"
+            f"- 自動コミット許可: {effective_auto_commit}\n"
+        )
+        if issue_number:
+            context_header += f"- 関連Issue: #{issue_number}\n"
+
+        full_prompt = f"{context_header}\n【指示内容】\n{prompt}"
 
         status_embed = discord.Embed(
             title="Agent Active",
-            description="[Phase 1: Groq] タスク分析・計画策定中...",
+            description=(
+                f"**リポジトリ:** `{target_repo}` (`{branch}`)\n"
+                f"**モード:** `{mode}` | **コミット:** `{effective_auto_commit}`\n\n"
+                f"[Phase 1: Groq] タスク分析・計画策定中..."
+            ),
             color=discord.Color.purple()
         )
-        status_message = await ctx.send(embed=status_embed)
+        status_message = await interaction.followup.send(embed=status_embed)
 
         messages = [
             {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ},
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": full_prompt}
         ]
 
         logs = []
@@ -343,7 +398,7 @@ class AgentCog(commands.Cog):
         try:
             for turn in range(1, 6):
                 if not task_mgr.active_tasks.get(channel_id, False):
-                    await ctx.send("ユーザーによって処理が中断されました。")
+                    await interaction.followup.send("ユーザーによって処理が中断されました。")
                     return
 
                 response = groq_client.chat.completions.create(
@@ -361,7 +416,7 @@ class AgentCog(commands.Cog):
                     status_embed.color = discord.Color.green()
                     status_embed.title = "Task Completed (Groq)"
                     await self.safe_edit_embed(status_message, status_embed)
-                    await ctx.send(final_text[:1900])
+                    await interaction.followup.send(final_text[:1900])
                     return
 
                 for tool_call in response_message.tool_calls:
@@ -375,14 +430,18 @@ class AgentCog(commands.Cog):
                     elif func_name == "delegate_heavy_task_to_gemini":
                         handoff_requested = True
                         gemini_summary = func_args.get("summary_of_executed_steps", "")
-                        gemini_instruction = func_args.get("instructions_for_gemini", prompt)
+                        gemini_instruction = func_args.get("instructions_for_gemini", full_prompt)
                         logs.append("**Geminiへ引き継ぎ実行**")
                         result = "引き継ぎ了解"
                     else:
                         result = FUNCTION_MAP[func_name](**func_args) if func_name in FUNCTION_MAP else "不明な関数"
                         logs.append(f"**Groq Tool:** `{func_name}`")
 
-                    status_embed.description = (task_mgr.get_formatted_plan(channel_id) + "\n\n" + "\n".join(logs[-3:]))
+                    status_embed.description = (
+                        f"**リポジトリ:** `{target_repo}` (`{branch}`)\n\n"
+                        + task_mgr.get_formatted_plan(channel_id) + "\n\n"
+                        + "\n".join(logs[-3:])
+                    )
                     await self.safe_edit_embed(status_message, status_embed)
 
                     messages.append({
@@ -397,7 +456,7 @@ class AgentCog(commands.Cog):
 
             if not handoff_requested:
                 gemini_summary = "初期解析完了"
-                gemini_instruction = f"要件: {prompt}"
+                gemini_instruction = full_prompt
 
             status_embed.title = "Agent Active (Gemini 3.5 Flash)"
             status_embed.color = discord.Color.blue()
@@ -406,7 +465,7 @@ class AgentCog(commands.Cog):
             chat = self.gemini_model.start_chat(enable_automatic_function_calling=False)
             
             handoff_prompt = (
-                f"【タスク引継ぎ】\n"
+                f"{context_header}\n"
                 f"現在の計画:\n{task_mgr.get_formatted_plan(channel_id)}\n\n"
                 f"これまでの進捗要約:\n{gemini_summary}\n\n"
                 f"実行指示:\n{gemini_instruction}\n\n"
@@ -414,12 +473,11 @@ class AgentCog(commands.Cog):
             )
 
             response = chat.send_message(handoff_prompt)
-            max_turns = 20
             turn_count = 0
 
             while turn_count < max_turns:
                 if not task_mgr.active_tasks.get(channel_id, False):
-                    await ctx.send("ユーザーによって処理が中断されました。")
+                    await interaction.followup.send("ユーザーによって処理が中断されました。")
                     return
 
                 turn_count += 1
@@ -429,8 +487,8 @@ class AgentCog(commands.Cog):
                     for part in response.candidates[0].content.parts:
                         if part.text:
                             thought_text = part.text.strip()
-                            if thought_text:
-                                logs.append(f"**Thought (思考):** {thought_text[:150]}...")
+                            if thought_text and verbose:
+                                logs.append(f"**Thought:** {thought_text[:150]}...")
                         if part.function_call:
                             function_call = part.function_call
 
@@ -438,21 +496,30 @@ class AgentCog(commands.Cog):
                     final_text = response.text or "タスクが完了しました。"
                     status_embed.color = discord.Color.green()
                     status_embed.title = "Task Completed"
-                    status_embed.description = task_mgr.get_formatted_plan(channel_id) + "\n\n**全工程が正常完了しました。**"
+                    status_embed.description = (
+                        f"**リポジトリ:** `{target_repo}` (`{branch}`)\n\n"
+                        + task_mgr.get_formatted_plan(channel_id) + "\n\n"
+                        f"**全工程が完了しました。 (試行回数: {turn_count}/{max_turns})**"
+                    )
                     await self.safe_edit_embed(status_message, status_embed)
 
                     if len(final_text) > 1900:
                         for chunk in [final_text[i:i+1900] for i in range(0, len(final_text), 1900)]:
-                            await ctx.send(chunk)
+                            await interaction.followup.send(chunk)
                     else:
-                        await ctx.send(final_text)
+                        await interaction.followup.send(final_text)
                     return
 
                 func_name = function_call.name
                 func_args = dict(function_call.args)
 
-                logs.append(f"**Action (行動):** `{func_name}`")
-                status_embed.description = task_mgr.get_formatted_plan(channel_id) + "\n\n" + "\n".join(logs[-4:])
+                logs.append(f"**Action:** `{func_name}`")
+                status_embed.description = (
+                    f"**リポジトリ:** `{target_repo}` (`{branch}`)\n"
+                    f"**Step:** {turn_count}/{max_turns}\n\n"
+                    + task_mgr.get_formatted_plan(channel_id) + "\n\n"
+                    + "\n".join(logs[-4:])
+                )
                 await self.safe_edit_embed(status_message, status_embed)
 
                 result = FUNCTION_MAP[func_name](**func_args) if func_name in FUNCTION_MAP else f"Error: {func_name} undefined"
@@ -467,6 +534,11 @@ class AgentCog(commands.Cog):
                     }]
                 })
 
+            status_embed.color = discord.Color.gold()
+            status_embed.title = "Max Turns Reached"
+            status_embed.description = f"設定された最大ターン数 ({max_turns}) に達したため処理を中断しました。"
+            await self.safe_edit_embed(status_message, status_embed)
+
         except Exception as e:
             status_embed.color = discord.Color.red()
             status_embed.title = "Error"
@@ -477,9 +549,12 @@ class AgentCog(commands.Cog):
 
     @agent_command.error
     @agent_stop_command.error
-    async def agent_command_error(self, ctx, error):
-        if isinstance(error, commands.CheckFailure):
-            await ctx.send("このコマンドを実行する権限がありません。")
+    async def agent_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.CheckFailure):
+            if interaction.response.is_done():
+                await interaction.followup.send("このコマンドを実行する権限がありません。", ephemeral=True)
+            else:
+                await interaction.response.send_message("このコマンドを実行する権限がありません。", ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(AgentCog(bot))
