@@ -154,9 +154,13 @@ def read_github_file(
     except Exception as e:
         return f"ファイル読み込み失敗: {str(e)}"
 
-def search_code_in_repo(repo_name: str, query: str) -> str:
+def search_code_in_repo(repo_name: str, query: str, path: str = "") -> str:
+    """GitHubコード検索。pathは任意のディレクトリ絞り込みに対応する。"""
     try:
-        results = github_client.search_code(f"{query} repo:{repo_name}")
+        search_query = f"{query} repo:{repo_name}"
+        if path:
+            search_query += f" path:{path.strip().strip('/') }"
+        results = github_client.search_code(search_query)
         matches = [f"ファイル: {f.path}" for f in results[:10]]
         return "\n".join(matches) if matches else "該当するコードは見つかりませんでした。"
     except Exception as e:
@@ -373,7 +377,8 @@ GROQ_TOOLS_SCHEMA = [
                 "type": "object",
                 "properties": {
                     "repo_name": {"type": "string"},
-                    "query": {"type": "string"}
+                    "query": {"type": "string"},
+                    "path": {"type": "string", "description": "検索対象ディレクトリ（省略可）"}
                 },
                 "required": ["repo_name", "query"]
             }
@@ -502,8 +507,25 @@ class AgentCog(commands.Cog):
             if elapsed < min_interval:
                 await asyncio.sleep(min_interval - elapsed)
         try:
-            if embed.description and len(embed.description) > 3900:
-                embed.description = embed.description[-3900:]
+            # Discord Embedの各上限と全体上限（6000文字）を超えないよう整形する。
+            if embed.title:
+                embed.title = embed.title[:256]
+            if embed.description:
+                embed.description = embed.description[:4096]
+            for field in embed.fields:
+                field.name = (field.name or "")[:256]
+                field.value = (field.value or "")[:1024]
+            if embed.footer and embed.footer.text:
+                embed.set_footer(text=embed.footer.text[:2048], icon_url=embed.footer.icon_url)
+            if embed.author and embed.author.name:
+                embed.set_author(name=embed.author.name[:256], url=embed.author.url, icon_url=embed.author.icon_url)
+            total = len(embed.title or "") + len(embed.description or "")
+            total += sum(len(field.name or "") + len(field.value or "") for field in embed.fields)
+            total += len(embed.footer.text or "") if embed.footer else 0
+            total += len(embed.author.name or "") if embed.author else 0
+            if total > 6000 and embed.description:
+                allowed = max(0, 6000 - (total - len(embed.description)))
+                embed.description = embed.description[:allowed]
             await message.edit(embed=embed)
             self.last_edit_time[msg_id] = time.time()
         except Exception:
