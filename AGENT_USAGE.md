@@ -14,10 +14,13 @@ python3 Agent.py "このリポジトリの構成と注意点を要約して"
 python3 Agent.py --interactive
 ```
 
-`GROQ_API_KEY` を設定すると、依頼内容に応じてエージェントが読み取り・検索・検査ツールを選択します。モデルは `GROQ_MODEL` で変更でき、既定値は `llama-3.3-70b-versatile` です。
+`GROQ_API_KEY` を設定すると、依頼内容に応じてエージェントが読み取り・検索・検査ツールを選択します。Discord版のモデルは次の環境変数で変更できます。既定値は、計画用が `openai/gpt-oss-20b`、実行用が `openai/gpt-oss-120b`、失敗時のフォールバックが `openai/gpt-oss-20b` です。
 
 ```bash
 export GROQ_API_KEY="your-key"
+export GROQ_PLANNER_MODEL="openai/gpt-oss-20b"
+export GROQ_ENGINEER_MODEL="openai/gpt-oss-120b"
+export GROQ_MODEL_FALLBACK="openai/gpt-oss-20b"
 python3 Agent.py "Agent.pyの改善点を調べて"
 ```
 

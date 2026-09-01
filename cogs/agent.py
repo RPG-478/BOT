@@ -21,6 +21,10 @@ load_dotenv()
 GITHUB_ACCESS_TOKEN = "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"
 github_client = Github(GITHUB_ACCESS_TOKEN) if GITHUB_ACCESS_TOKEN else None
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# Groqのモデルはアカウント・時期により利用可否が変わるため、環境変数で上書き可能にする。
+PLANNER_MODEL = os.getenv("GROQ_PLANNER_MODEL", "openai/gpt-oss-20b")
+ENGINEER_MODEL = os.getenv("GROQ_ENGINEER_MODEL", "openai/gpt-oss-120b")
+MODEL_FALLBACK = os.getenv("GROQ_MODEL_FALLBACK", "openai/gpt-oss-20b")
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 ALLOWED_USER_ID = 1320705325686587408
@@ -486,7 +490,7 @@ class AgentCog(commands.Cog):
 
         try:
             plan_response = groq_client.chat.completions.create(
-                model="llama-3.1-8b-instant",
+                model=PLANNER_MODEL,
                 messages=planner_messages,
                 tools=GROQ_TOOLS_SCHEMA,
                 tool_choice="auto"
@@ -518,7 +522,7 @@ class AgentCog(commands.Cog):
                 turn_count += 1
 
                 response = groq_client.chat.completions.create(
-                    model="llama-4-scout",
+                    model=ENGINEER_MODEL,
                     messages=engineer_messages,
                     tools=GROQ_TOOLS_SCHEMA,
                     tool_choice="auto"
@@ -578,9 +582,35 @@ class AgentCog(commands.Cog):
             await self.safe_edit_embed(status_message, status_embed)
 
         except Exception as e:
+            # モデルが廃止・権限外の場合は、安定した小型モデルで一度だけ再試行する。
+            error_text = str(e)
+            if "model_not_found" in error_text or "does not exist" in error_text or "do not have access" in error_text:
+                try:
+                    status_embed.title = "Model fallback"
+                    status_embed.description = f"`{PLANNER_MODEL}` または `{ENGINEER_MODEL}` が利用できないため `{MODEL_FALLBACK}` で再試行します。"
+                    await self.safe_edit_embed(status_message, status_embed)
+                    fallback_messages = [
+                        {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ_ENGINEER},
+                        {"role": "user", "content": full_prompt}
+                    ]
+                    fallback_response = groq_client.chat.completions.create(
+                        model=MODEL_FALLBACK,
+                        messages=fallback_messages,
+                        tools=GROQ_TOOLS_SCHEMA,
+                        tool_choice="auto"
+                    )
+                    fallback_text = fallback_response.choices[0].message.content or "フォールバックモデルで処理が完了しました。"
+                    status_embed.color = discord.Color.green()
+                    status_embed.title = "Task Completed (Fallback Model)"
+                    status_embed.description = f"使用モデル: `{MODEL_FALLBACK}`"
+                    await self.safe_edit_embed(status_message, status_embed)
+                    await interaction.followup.send(fallback_text[:1900])
+                    return
+                except Exception as fallback_error:
+                    error_text = f"初回: {error_text}\nフォールバック: {fallback_error}"
             status_embed.color = discord.Color.red()
             status_embed.title = "Error"
-            status_embed.description = f"エラーにより処理停止:\n```\n{str(e)[:1800]}\n```"
+            status_embed.description = f"エラーにより処理停止:\n```\n{error_text[:1800]}\n```"
             await self.safe_edit_embed(status_message, status_embed)
         finally:
             task_mgr.active_tasks[channel_id] = False
