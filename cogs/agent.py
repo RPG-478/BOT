@@ -25,7 +25,24 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PLANNER_MODEL = os.getenv("GROQ_PLANNER_MODEL", "openai/gpt-oss-20b")
 ENGINEER_MODEL = os.getenv("GROQ_ENGINEER_MODEL", "openai/gpt-oss-120b")
 MODEL_FALLBACK = os.getenv("GROQ_MODEL_FALLBACK", "openai/gpt-oss-20b")
+# 無料/On-Demand枠のTPM超過を避けるため、既定の生成量を小さくする。
+PLANNER_MAX_TOKENS = int(os.getenv("GROQ_PLANNER_MAX_TOKENS", "600"))
+ENGINEER_MAX_TOKENS = int(os.getenv("GROQ_ENGINEER_MAX_TOKENS", "1600"))
+TOOL_RESULT_MAX_CHARS = int(os.getenv("GROQ_TOOL_RESULT_MAX_CHARS", "6000"))
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+
+def _trim_for_llm(value: object, limit: int = TOOL_RESULT_MAX_CHARS) -> str:
+    text = str(value)
+    return text if len(text) <= limit else text[:limit] + "\\n…(長すぎるため省略)"
+
+def _compact_messages(messages: list[dict], keep_last: int = 8) -> list[dict]:
+    """モデルへ送る履歴を圧縮し、TPM超過を抑える。"""
+    if len(messages) <= keep_last + 2:
+        return messages
+    head = messages[:2]
+    tail = messages[-keep_last:]
+    compacted = head + [{**message, "content": _trim_for_llm(message.get("content", ""), 3500)} for message in tail]
+    return compacted
 
 ALLOWED_USER_ID = 1320705325686587408
 DEFAULT_REPO_NAME = "owner/default-repo"
@@ -491,9 +508,10 @@ class AgentCog(commands.Cog):
         try:
             plan_response = groq_client.chat.completions.create(
                 model=PLANNER_MODEL,
-                messages=planner_messages,
+                messages=_compact_messages(planner_messages),
                 tools=GROQ_TOOLS_SCHEMA,
-                tool_choice="auto"
+                tool_choice="auto",
+                max_tokens=PLANNER_MAX_TOKENS
             )
             
             planner_msg = plan_response.choices[0].message
@@ -523,9 +541,10 @@ class AgentCog(commands.Cog):
 
                 response = groq_client.chat.completions.create(
                     model=ENGINEER_MODEL,
-                    messages=engineer_messages,
+                    messages=_compact_messages(engineer_messages),
                     tools=GROQ_TOOLS_SCHEMA,
-                    tool_choice="auto"
+                    tool_choice="auto",
+                    max_tokens=ENGINEER_MAX_TOKENS
                 )
 
                 response_message = response.choices[0].message
@@ -573,7 +592,7 @@ class AgentCog(commands.Cog):
                         "tool_call_id": tool_call.id,
                         "role": "tool",
                         "name": func_name,
-                        "content": str(result)
+                        "content": _trim_for_llm(result)
                     })
 
             status_embed.color = discord.Color.gold()
@@ -584,20 +603,23 @@ class AgentCog(commands.Cog):
         except Exception as e:
             # モデルが廃止・権限外の場合は、安定した小型モデルで一度だけ再試行する。
             error_text = str(e)
-            if "model_not_found" in error_text or "does not exist" in error_text or "do not have access" in error_text:
+            if ("model_not_found" in error_text or "does not exist" in error_text or "do not have access" in error_text
+                    or "rate_limit_exceeded" in error_text or "Request too large" in error_text
+                    or "413" in error_text or "TPM" in error_text):
                 try:
                     status_embed.title = "Model fallback"
                     status_embed.description = f"`{PLANNER_MODEL}` または `{ENGINEER_MODEL}` が利用できないため `{MODEL_FALLBACK}` で再試行します。"
                     await self.safe_edit_embed(status_message, status_embed)
                     fallback_messages = [
                         {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ_ENGINEER},
-                        {"role": "user", "content": full_prompt}
+                        {"role": "user", "content": _trim_for_llm(full_prompt, 5000)}
                     ]
                     fallback_response = groq_client.chat.completions.create(
                         model=MODEL_FALLBACK,
-                        messages=fallback_messages,
+                        messages=_compact_messages(fallback_messages),
                         tools=GROQ_TOOLS_SCHEMA,
-                        tool_choice="auto"
+                        tool_choice="auto",
+                        max_tokens=800
                     )
                     fallback_text = fallback_response.choices[0].message.content or "フォールバックモデルで処理が完了しました。"
                     status_embed.color = discord.Color.green()

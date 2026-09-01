@@ -21,8 +21,14 @@ export GROQ_API_KEY="your-key"
 export GROQ_PLANNER_MODEL="openai/gpt-oss-20b"
 export GROQ_ENGINEER_MODEL="openai/gpt-oss-120b"
 export GROQ_MODEL_FALLBACK="openai/gpt-oss-20b"
+# Discord版のTPM超過を抑える設定（必要時のみ調整）
+export GROQ_PLANNER_MAX_TOKENS="600"
+export GROQ_ENGINEER_MAX_TOKENS="1600"
+export GROQ_TOOL_RESULT_MAX_CHARS="6000"
 python3 Agent.py "Agent.pyの改善点を調べて"
 ```
+
+Discord版では、モデルへの履歴とツール結果を自動的に圧縮し、TPM制限に近づかないよう出力トークン数も制限しています。413または `rate_limit_exceeded` が発生した場合は、小型モデルへ1回だけフォールバックします。
 
 現在のCLIは意図しない変更やコミットを行いません。作業ディレクトリ外のパス、任意のシェルコマンド、外部へのファイル送信は扱わない設計です。ファイル編集やGitHubへのコミットを追加する場合は、必ず差分確認と明示的な承認を挟む拡張にしてください。
 
