@@ -18,10 +18,11 @@ MODEL_NAME = "openai/gpt-oss-20b"
 
 SENSITIVE_PATTERNS = [
     r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+',
-    r'https?://\S+',
     r'\b\d{3}-\d{4}-\d{4}\b|\b\d{10,11}\b',
     r'([a-zA-Z0-9_-]{24,28}\.[a-zA-Z0-9_-]{6}\.[a-zA-Z0-9_-]{27,38})'
 ]
+
+URL_PATTERN = r'https?://\S+'
 
 def sanitize_text(text: str) -> str:
     cleaned = text
@@ -141,21 +142,39 @@ class AdvancedDoppelganger(commands.Cog):
         target_id = str(target.id)
         conversations = []
         total_msg_count = 0
+        MAX_TARGET_MESSAGES = 2000
 
         for ch in channel.guild.text_channels:
+            if total_msg_count >= MAX_TARGET_MESSAGES:
+                break
+
             try:
-                prev_msg = None
-                async for msg in ch.history(limit=None, oldest_first=True):
+                prev_msg_author_id = None
+                prev_msg_author_name = None
+                prev_msg_content = None
+
+                async for msg in ch.history(limit=2000, oldest_first=False):
+                    if total_msg_count >= MAX_TARGET_MESSAGES:
+                        break
+
+                    if msg.attachments or re.search(URL_PATTERN, msg.content):
+                        continue
+
                     if msg.author.id == target.id and not msg.content.startswith("/"):
-                        cleaned = sanitize_text(msg.content)
-                        if cleaned.strip():
+                        cleaned = sanitize_text(msg.content).strip()
+                        if cleaned:
                             total_msg_count += 1
-                            if prev_msg and prev_msg.author.id != target.id:
-                                conversations.append(f"Context (by {prev_msg.author.name}): {sanitize_text(prev_msg.content)}\nTarget Response: {cleaned}")
+                            if prev_msg_author_id and prev_msg_author_id != target.id:
+                                conversations.append(f"Context (by {prev_msg_author_name}): {prev_msg_content}\nTarget Response: {cleaned}")
                             else:
                                 conversations.append(f"Target Statement: {cleaned}")
-                    prev_msg = msg
-                    await asyncio.sleep(0.01)
+
+                    cleaned_prev = sanitize_text(msg.content).strip()
+                    if cleaned_prev:
+                        prev_msg_author_id = msg.author.id
+                        prev_msg_author_name = msg.author.name
+                        prev_msg_content = cleaned_prev
+
             except (discord.Forbidden, discord.HTTPException):
                 continue
 
@@ -200,7 +219,7 @@ class AdvancedDoppelganger(commands.Cog):
             }, on_conflict="user_id").execute()
         )
 
-        await channel.send(f"✨ {target.mention} (計 {total_msg_count} 発言を解析) のドッペルゲンガープロンプトの全量蒸留・保存が完了しました！")
+        await channel.send(f"✨ {target.mention} (計 {total_msg_count} 発言を解析) のドッペルゲンガープロンプトの蒸留・保存が完了しました！")
 
     @app_commands.command(name="doppel_collect", description="指定したユーザーの発言ログからドッペルゲンガーを蒸留します。")
     @app_commands.describe(target="解析・蒸留対象のユーザーを指定してください")
@@ -214,7 +233,7 @@ class AdvancedDoppelganger(commands.Cog):
             await interaction.response.send_message(f"{target.mention} は機能利用に同意していません（`/doppel_optin` が必要です）。")
             return
 
-        await interaction.response.send_message(f"⚙️ {target.mention} のサーバー全発言ログの走査を開始しました。全件取得のため完了まで時間がかかります。完了時にこのチャンネルへ通知します。")
+        await interaction.response.send_message(f"⚙️ {target.mention} の発言ログ解析を開始しました（上限2,000件、画像/動画/URL除外）。完了時に通知します。")
         asyncio.create_task(self._background_collect(interaction.channel, target))
 
     @app_commands.command(name="doppel", description="指定ユーザーのドッペルゲンガーを呼び出して対話します。")
