@@ -1,9 +1,7 @@
 import os
 import json
 import ast
-import io
 import asyncio
-import contextlib
 import time
 import re
 import sys
@@ -25,7 +23,7 @@ except Exception:
     project_config = None
 
 def load_github_token_from_supabase() -> Optional[str]:
-    token = "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"
+    token = os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_ACCESS_TOKEN")
     if token:
         return token.strip()
     client = getattr(project_config, "supabase", None) if project_config else None
@@ -47,6 +45,7 @@ github_client = Github(GITHUB_ACCESS_TOKEN) if GITHUB_ACCESS_TOKEN else None
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PLANNER_MODEL = os.getenv("GROQ_PLANNER_MODEL", "openai/gpt-oss-20b")
 ENGINEER_MODEL = os.getenv("GROQ_ENGINEER_MODEL", "openai/gpt-oss-120b")
+CRITIC_MODEL = os.getenv("GROQ_CRITIC_MODEL", "openai/gpt-oss-20b")
 MODEL_FALLBACK = os.getenv("GROQ_MODEL_FALLBACK", "openai/gpt-oss-20b")
 PLANNER_MAX_TOKENS = int(os.getenv("GROQ_PLANNER_MAX_TOKENS", "600"))
 ENGINEER_MAX_TOKENS = int(os.getenv("GROQ_ENGINEER_MAX_TOKENS", "1600"))
@@ -662,25 +661,59 @@ GROQ_TOOLS_SCHEMA = [
 SYSTEM_INSTRUCTION_GROQ_PLANNER = """
 あなたは超高速なフロント・プランニングエージェントです。
 ユーザーの依頼を実行可能な3〜7個の具体的な手順へ分解してください。
-必ずcreate_task_planツールを1回呼び出し、tasks配列に計画を渡してください。
+思考プロセスでは必ず Tree/Chain of Thought を展開し、最小限のステップで目標を達成できる経路を算出して決定してください。
+回答時には、必ずcreate_task_planツールを1回呼び出し、tasks配列に計画を渡してください。
 計画を作らずに回答を終了してはいけません。
 """
 
 SYSTEM_INSTRUCTION_GROQ_ENGINEER = """
-あなたは高度なメインエンジニアエージェントです。
-必ずタスクを調査・検証してから結論を出してください。
-各ターンで、内部の逐語的な思考ではなく、ユーザーに見せてよい短い「判断サマリー」をcontentへ1〜2文で記載してください。内容は目的、根拠、次の行動のいずれかに限定してください。
-1つの計画項目は複数のツール操作で構成されます。各操作ごとに完了扱いにせず、論理的な作業単位が完了した時だけupdate_task_statusを使ってください。
+あなたは高度なメインエンジニアエージェントです（ReActアーキテクチャ準拠）。
+各ステップで【思考(Thought)】→【行動(Action)】→【観察(Observation)】を厳格に適用してください。
+事実根拠（Grounding）の存在しない仮定によるコード変更や報告、ハルシネーションは禁じられています。
+不明な要素は必ずツール呼び出し（read_github_file, search_code_in_repoなど）により取得した事実情報のみをソースとして行動してください。
+
+各ターンで、内部の逐語的な思考ではなく、ユーザーに見せてよい短い「判断サマリー」をcontentへ1〜2文で記載してください。
+1つの計画項目は複数のツール操作で構成されます。論理的な作業単位が完了した時だけupdate_task_statusを使ってください。
 動作モードがnormalで自動コミット許可がTrueの場合、コード変更を行ったら必ず
 patch_github_fileまたはcommit_file_to_githubを実行し、その戻り値で成功を確認してください。
 コミットツールを実行していないのに「コミットした」「変更を反映した」と報告してはいけません。
 dry_runまたはreviewではファイル変更・コミットを行わず、提案やレビュー結果だけを返してください。
 """
 
+SYSTEM_INSTRUCTION_GROQ_CRITIC = """
+あなたは批評・検証（Critic）エージェントです。
+メインエンジニアが出力した最終成果物および動作ログを厳密にレビューしてください。
+以下の観点で検証します：
+1. ツール取得結果と最終回答の間に、根拠のないハルシネーション（嘘の仕様、存在しない変数や関数）が含まれていないか。
+2. 指示されたファイル変更・更新が正しく実行・コミットされているか。
+3. コード構文や整合性に不備がないか。
+
+検証結果を評価し、不整合があれば拒否し修正要求を出力してください。
+問題がなければ「PASS」と出力してください。
+"""
+
 class AgentCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.last_edit_time = {}
+
+    async def verify_hallucination_and_correctness(self, prompt: str, final_response: str, logs: list[str]) -> tuple[bool, str]:
+        critic_messages = [
+            {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ_CRITIC},
+            {"role": "user", "content": f"【元の要求】\n{prompt}\n\n【実行ログ】\n" + "\n".join(logs[-10:]) + f"\n\n【最終回答】\n{final_response}"}
+        ]
+        try:
+            critic_res = await _groq_completion(
+                model=CRITIC_MODEL,
+                messages=_compact_messages_atomic(critic_messages),
+                max_tokens=600
+            )
+            content = critic_res.choices[0].message.content or ""
+            if "PASS" in content:
+                return True, "検証合格"
+            return False, content
+        except Exception as e:
+            return True, f"Criticによる検証スキップ ({e})"
 
     def render_progress(self, embed, target_repo, branch, mode, phase, turn_count, max_turns, logs, commit_done=False):
         completed = min(turn_count, max_turns)
@@ -839,6 +872,7 @@ class AgentCog(commands.Cog):
                 repeated_calls = {}
                 commit_reminders = 0
                 replan_count = 0
+                critic_retries = 0
                 changes_made = False
                 validation_done = False
                 fallback_used = False
@@ -898,6 +932,17 @@ class AgentCog(commands.Cog):
                             status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
                             await self.safe_edit_embed(status_message, status_embed)
                             continue
+
+                        pass_critic, critic_reason = await self.verify_hallucination_and_correctness(prompt, final_text, logs)
+                        if not pass_critic and critic_retries < 2:
+                            critic_retries += 1
+                            logs.append(f"Criticによる指摘（修正指示 {critic_retries}/2）")
+                            engineer_messages.append({"role": "user", "content": f"【検証拒否・修正指示】\nCritic Agentにより以下の不整合・不備が検出されました:\n{critic_reason}\n内容を確認し、矛盾や不備のない正確な出力へ自己修正してください。"})
+                            self.render_progress(status_embed, target_repo, branch, mode, "Critic指摘・自己修正中", turn_count, max_turns, logs, commit_done)
+                            status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
+                            await self.safe_edit_embed(status_message, status_embed)
+                            continue
+
                         if effective_auto_commit and mode == "normal" and not commit_done:
                             final_text += "\n\n注意: コミットツールが実行されていないため、GitHubへの変更コミットはありません。"
                         status_embed.color = discord.Color.green() if (not effective_auto_commit or mode != "normal" or commit_done) else discord.Color.gold()
@@ -1012,22 +1057,20 @@ class AgentCog(commands.Cog):
                         error_text = f"初回: {error_text}\nフォールバック: {fallback_error}"
                 status_embed.color = discord.Color.red()
                 status_embed.title = "Error"
-                status_embed.description = f"エラーにより処理停止:\n```\n{error_text[:1800]}\n```"
+                status_embed.description = f"エラーにより処理停止:\n
                 await self.safe_edit_embed(status_message, status_embed)
-        except asyncio.CancelledError:
-            await interaction.followup.send("タスクが外部操作により即時強制終了されました。")
-            raise
-        finally:
-            task_mgr.running_tasks.pop(channel_id, None)
-
-    @agent_command.error
-    @agent_stop_command.error
-    async def agent_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        if isinstance(error, app_commands.CheckFailure):
-            if interaction.response.is_done():
-                await interaction.followup.send("このコマンドを実行する権限がありません。", ephemeral=True)
-            else:
-                await interaction.response.send_message("このコマンドを実行する権限がありません。", ephemeral=True)
-
+except asyncio.CancelledError:
+await interaction.followup.send("タスクが外部操作により即時強制終了されました。")
+raise
+finally:
+task_mgr.running_tasks.pop(channel_id, None)
+@agent_command.error
+@agent_stop_command.error
+async def agent_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+if isinstance(error, app_commands.CheckFailure):
+if interaction.response.is_done():
+await interaction.followup.send("このコマンドを実行する権限がありません。", ephemeral=True)
+else:
+await interaction.response.send_message("このコマンドを実行する権限がありません。", ephemeral=True)
 async def setup(bot):
-    await bot.add_cog(AgentCog(bot))
+await bot.add_cog(AgentCog(bot))
