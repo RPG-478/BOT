@@ -18,8 +18,32 @@ from dotenv import load_dotenv
 from groq import Groq
 
 load_dotenv()
+try:
+    import config as project_config
+except Exception:
+    project_config = None
 
-GITHUB_ACCESS_TOKEN = os.getenv("GITHUB_ACCESS_TOKEN")
+def load_github_token_from_supabase() -> Optional[str]:
+    """環境変数を優先し、未設定時だけSupabase Vault RPCから取得する。"""
+    token = os.getenv("GITHUB_ACCESS_TOKEN")
+    if token:
+        return token.strip()
+    client = getattr(project_config, "supabase", None) if project_config else None
+    if client is None:
+        return None
+    try:
+        response = client.rpc("get_github_access_token", {}).execute()
+        value = response.data
+        if isinstance(value, list):
+            value = value[0] if value else None
+        if isinstance(value, dict):
+            value = value.get("get_github_access_token") or value.get("decrypted_secret")
+        return str(value).strip() if value else None
+    except Exception:
+        # 起動時にBot全体を落とさず、GitHub操作時に設定不足を通知する。
+        return None
+
+GITHUB_ACCESS_TOKEN = load_github_token_from_supabase()
 github_client = Github(GITHUB_ACCESS_TOKEN) if GITHUB_ACCESS_TOKEN else None
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # Groqのモデルはアカウント・時期により利用可否が変わるため、環境変数で上書き可能にする。
