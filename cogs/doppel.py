@@ -9,7 +9,7 @@ from groq import Groq
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_API_KEY = "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"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 groq_client: Groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
