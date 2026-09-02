@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import time
 import re
+import sys
 from typing import Optional, Literal
 import discord
 from discord import app_commands
@@ -24,8 +25,7 @@ except Exception:
     project_config = None
 
 def load_github_token_from_supabase() -> Optional[str]:
-    """環境変数を優先し、未設定時だけSupabase Vault RPCから取得する。"""
-    token = "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"
+    token = os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_ACCESS_TOKEN")
     if token:
         return token.strip()
     client = getattr(project_config, "supabase", None) if project_config else None
@@ -40,17 +40,14 @@ def load_github_token_from_supabase() -> Optional[str]:
             value = value.get("get_github_access_token") or value.get("decrypted_secret")
         return str(value).strip() if value else None
     except Exception:
-        # 起動時にBot全体を落とさず、GitHub操作時に設定不足を通知する。
         return None
 
 GITHUB_ACCESS_TOKEN = load_github_token_from_supabase()
 github_client = Github(GITHUB_ACCESS_TOKEN) if GITHUB_ACCESS_TOKEN else None
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-# Groqのモデルはアカウント・時期により利用可否が変わるため、環境変数で上書き可能にする。
 PLANNER_MODEL = os.getenv("GROQ_PLANNER_MODEL", "openai/gpt-oss-20b")
 ENGINEER_MODEL = os.getenv("GROQ_ENGINEER_MODEL", "openai/gpt-oss-120b")
 MODEL_FALLBACK = os.getenv("GROQ_MODEL_FALLBACK", "openai/gpt-oss-20b")
-# 無料/On-Demand枠のTPM超過を避けるため、既定の生成量を小さくする。
 PLANNER_MAX_TOKENS = int(os.getenv("GROQ_PLANNER_MAX_TOKENS", "600"))
 ENGINEER_MAX_TOKENS = int(os.getenv("GROQ_ENGINEER_MAX_TOKENS", "1600"))
 TOOL_RESULT_MAX_CHARS = int(os.getenv("GROQ_TOOL_RESULT_MAX_CHARS", "6000"))
@@ -58,10 +55,12 @@ groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 def _trim_for_llm(value: object, limit: int = TOOL_RESULT_MAX_CHARS) -> str:
     text = str(value)
-    return text if len(text) <= limit else text[:limit] + "\\n…(長すぎるため省略)"
+    return text if len(text) <= limit else text[:limit] + "\n…(長すぎるため省略)"
 
-def _groq_completion(**kwargs):
-    """一時的な429/5xx/413を短時間だけ再試行する。"""
+async def run_blocking_func(func, *args, **kwargs):
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+def _groq_completion_sync(**kwargs):
     last_error = None
     for attempt in range(3):
         try:
@@ -77,8 +76,10 @@ def _groq_completion(**kwargs):
             time.sleep(2 ** attempt)
     raise last_error
 
+async def _groq_completion(**kwargs):
+    return await run_blocking_func(_groq_completion_sync, **kwargs)
+
 def normalize_tool_name(raw_name: object) -> str:
-    """モデルが付加したチャネル制御文字列を除去し、登録済みツール名へ戻す。"""
     name = str(raw_name or "").strip()
     name = re.split(r"<\|[^>]*\|>", name, maxsplit=1)[0].strip()
     name = name.split("<|", 1)[0].strip()
@@ -90,13 +91,11 @@ def normalize_tool_name(raw_name: object) -> str:
     return name
 
 def _tool_result_payload(tool_name: str, result: object) -> str:
-    """ツール結果をモデルが再判断しやすいJSON互換形式へ統一する。"""
     text = str(result)
     failed = any(marker in text for marker in ("失敗", "エラー", "見つかりません", "中断"))
     return json.dumps({"tool": tool_name, "ok": not failed, "result": _trim_for_llm(text)}, ensure_ascii=False)
 
 def _message_to_dict(message: object) -> dict:
-    """Groq SDKのPydanticメッセージをAPIへ渡せる辞書へ変換する。"""
     if hasattr(message, "model_dump"):
         data = message.model_dump(exclude_none=True)
     elif isinstance(message, dict):
@@ -113,14 +112,42 @@ def _message_to_dict(message: object) -> dict:
         data["content"] = ""
     return data
 
-def _compact_messages(messages: list[dict], keep_last: int = 8) -> list[dict]:
-    """モデルへ送る履歴を圧縮し、TPM超過を抑える。"""
-    normalized = [_message_to_dict(message) for message in messages]
-    if len(normalized) <= keep_last + 2:
+def _compact_messages_atomic(messages: list[dict], keep_last_units: int = 4) -> list[dict]:
+    normalized = [_message_to_dict(m) for m in messages]
+    if len(normalized) <= 3:
         return normalized
-    head = normalized[:2]
-    tail = normalized[-keep_last:]
-    compacted = head + [{**message, "content": _trim_for_llm(message.get("content", ""), 3500)} for message in tail]
+
+    system_msg = normalized[0]
+    user_init = normalized[1]
+    history = normalized[2:]
+
+    units = []
+    curr_unit = []
+    for msg in history:
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            if curr_unit:
+                units.append(curr_unit)
+            curr_unit = [msg]
+        elif role == "tool":
+            curr_unit.append(msg)
+        else:
+            if curr_unit:
+                units.append(curr_unit)
+                curr_unit = []
+            units.append([msg])
+    if curr_unit:
+        units.append(curr_unit)
+
+    kept_units = units[-keep_last_units:] if len(units) > keep_last_units else units
+    compacted = [system_msg, user_init]
+    for u in kept_units:
+        for m in u:
+            m_copy = dict(m)
+            if isinstance(m_copy.get("content"), str):
+                m_copy["content"] = _trim_for_llm(m_copy["content"], 3500)
+            compacted.append(m_copy)
+
     return compacted
 
 ALLOWED_USER_ID = 1320705325686587408
@@ -132,7 +159,14 @@ def is_authorized_user(interaction: discord.Interaction) -> bool:
 class TaskManager:
     def __init__(self):
         self.plans = {}
-        self.active_tasks = {}
+        self.running_tasks: dict[int, asyncio.Task] = {}
+
+    def cancel_task(self, channel_id: int) -> bool:
+        task = self.running_tasks.get(channel_id)
+        if task and not task.done():
+            task.cancel()
+            return True
+        return False
 
     def set_plan(self, channel_id: int, tasks: list[str]) -> str:
         self.plans[channel_id] = [{"id": i + 1, "task": task, "status": "未着手"} for i, task in enumerate(tasks)]
@@ -145,15 +179,15 @@ class TaskManager:
                     task["status"] = "進行中"
                     break
         return self.get_formatted_plan(channel_id)
+
     def mark_progress_for_tool(self, channel_id: int, tool_name: str) -> str:
-        """1つの計画項目を複数アクションで進める。通常の調査では完了へ進めない。"""
         if channel_id not in self.plans:
             return self.get_formatted_plan(channel_id)
         if not any(task["status"] == "進行中" for task in self.plans[channel_id]):
             self.mark_next_in_progress(channel_id)
         return self.get_formatted_plan(channel_id)
+
     def complete_for_tool(self, channel_id: int, tool_name: str, success: bool = True) -> str:
-        """明確なマイルストーンだけ計画項目を完了させ、次項目へ進める。"""
         if not success or channel_id not in self.plans:
             return self.get_formatted_plan(channel_id)
         tasks = self.plans[channel_id]
@@ -168,6 +202,7 @@ class TaskManager:
                 task["status"] = "完了"
                 break
         return self.mark_next_in_progress(channel_id)
+
     def update_status(self, channel_id: int, task_id: int, status: str) -> str:
         if channel_id in self.plans:
             for t in self.plans[channel_id]:
@@ -178,6 +213,7 @@ class TaskManager:
 
     def has_plan(self, channel_id: int) -> bool:
         return bool(self.plans.get(channel_id))
+
     def get_formatted_plan(self, channel_id: int) -> str:
         if channel_id not in self.plans or not self.plans[channel_id]:
             return "計画なし"
@@ -190,7 +226,6 @@ class TaskManager:
 task_mgr = TaskManager()
 
 def build_default_plan(mode: str) -> list[str]:
-    """モデルが計画ツールを呼ばない場合にも表示できる最低限の実行計画。"""
     if mode == "review":
         return ["対象ファイルと構成を調査", "問題箇所を再現・分析", "修正案と影響範囲を整理", "レビュー結果を報告"]
     if mode == "dry_run":
@@ -198,7 +233,6 @@ def build_default_plan(mode: str) -> list[str]:
     return ["対象ファイルと要件を確認", "必要な変更を実装", "構文・動作を検証", "GitHubへコミット", "結果を報告"]
 
 def print_tree(repo_name: str, path: str = "", depth: int = 2, branch: str = "main") -> str:
-    """Git Trees APIでブランチ全体を取得し、指定深度の正確な構成を表示する。"""
     try:
         depth = max(0, min(int(depth), 6))
         path = path.strip("/")
@@ -246,7 +280,6 @@ def read_github_file(
     line_start: Optional[int] = None,
     line_end: Optional[int] = None,
 ) -> str:
-    """GitHubファイルを読み込む。line_start/line_endは1始まりの行番号。"""
     try:
         if line_start is not None and line_start < 1:
             return "ファイル読み込み失敗: line_startは1以上で指定してください。"
@@ -257,17 +290,16 @@ def read_github_file(
         repo = github_client.get_repo(repo_name)
         content = repo.get_contents(file_path, ref=branch).decoded_content.decode("utf-8")
         if line_start is None and line_end is None:
-            return content[:20000] + ("\\n…(長すぎるため省略)" if len(content) > 20000 else "")
+            return content[:20000] + ("\n…(長すぎるため省略)" if len(content) > 20000 else "")
         lines = content.splitlines()
         start = (line_start or 1) - 1
         end = line_end or len(lines)
         selected = lines[start:end]
-        return "\\n".join(f"{start + index + 1}: {line}" for index, line in enumerate(selected)) or "指定範囲に行がありません。"
+        return "\n".join(f"{start + index + 1}: {line}" for index, line in enumerate(selected)) or "指定範囲に行がありません。"
     except Exception as e:
         return f"ファイル読み込み失敗: {str(e)}"
 
 def search_code_in_repo(repo_name: str, query: str, path: str = "", branch: str = "main") -> str:
-    """GitHubコード検索。pathは任意のディレクトリ絞り込みに対応する。"""
     try:
         search_query = f"{query} repo:{repo_name}"
         if path:
@@ -380,23 +412,31 @@ def fetch_web_page_text(url: str) -> str:
     except Exception as e:
         return f"Webページ取得エラー: {str(e)}"
 
-def execute_python_code(code_string: str) -> str:
-    stdout_capture = io.StringIO()
-    stderr_capture = io.StringIO()
-    global_vars = {"__name__": "__main__"}
+async def execute_python_code(code_string: str, timeout: float = 5.0) -> str:
+    cmd = [sys.executable, "-c", code_string]
     try:
-        with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
-            exec(code_string, global_vars)
-        output = stdout_capture.getvalue()
-        errors = stderr_capture.getvalue()
-        result = ""
-        if output:
-            result += f"【標準出力】\n{output}\n"
-        if errors:
-            result += f"【標準エラー出力】\n{errors}\n"
-        return result if result else "コード実行完了（出力なし）"
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        out_str = stdout.decode('utf-8', errors='replace')
+        err_str = stderr.decode('utf-8', errors='replace')
+        res = ""
+        if out_str:
+            res += f"【標準出力】\n{out_str}\n"
+        if err_str:
+            res += f"【標準エラー出力】\n{err_str}\n"
+        return res if res else "コード実行完了（出力なし）"
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return f"実行エラー: 制限時間（{timeout}秒）を超過したため処理を強制終了しました。"
     except Exception as e:
-        return f"実行時エラー (Runtime Error):\n{type(e).__name__}: {str(e)}"
+        return f"実行時エラー: {type(e).__name__}: {str(e)}"
 
 def create_task_plan(tasks: list[str]) -> str:
     return "計画が設定されました。"
@@ -643,7 +683,6 @@ class AgentCog(commands.Cog):
         self.last_edit_time = {}
 
     def render_progress(self, embed, target_repo, branch, mode, phase, turn_count, max_turns, logs, commit_done=False):
-        """進捗をDiscord Embedの固定フィールドへ描画する。"""
         completed = min(turn_count, max_turns)
         bar_size = 12
         filled = int((completed / max_turns) * bar_size) if max_turns else 0
@@ -663,7 +702,6 @@ class AgentCog(commands.Cog):
             if elapsed < min_interval:
                 await asyncio.sleep(min_interval - elapsed)
         try:
-            # Discord Embedの各上限と全体上限（6000文字）を超えないよう整形する。
             if embed.title:
                 embed.title = embed.title[:256]
             if embed.description:
@@ -691,9 +729,8 @@ class AgentCog(commands.Cog):
     @app_commands.check(is_authorized_user)
     async def agent_stop_command(self, interaction: discord.Interaction):
         channel_id = interaction.channel.id
-        if task_mgr.active_tasks.get(channel_id, False):
-            task_mgr.active_tasks[channel_id] = False
-            await interaction.response.send_message("実行中のエージェントタスクに停止シグナルを送信しました。")
+        if task_mgr.cancel_task(channel_id):
+            await interaction.response.send_message("実行中のタスクを即時キャンセルしました。")
         else:
             await interaction.response.send_message("現在実行中のタスクはありません。", ephemeral=True)
 
@@ -727,256 +764,261 @@ class AgentCog(commands.Cog):
         if github_client is None and (repo_name or DEFAULT_REPO_NAME):
             await interaction.response.send_message("GitHubトークンを取得できないためGitHub操作を利用できません。SUPABASE_URLとSUPABASE_SERVICE_ROLE_KEY（またはSUPABASE_KEY）、およびVault RPC get_github_access_tokenの設定を確認してください。", ephemeral=True)
             return
-        await interaction.response.defer()
-        
+
         channel_id = interaction.channel.id
-        task_mgr.active_tasks[channel_id] = True
+        current_task = asyncio.current_task()
+        task_mgr.running_tasks[channel_id] = current_task
 
-        target_repo = repo_name or DEFAULT_REPO_NAME
-        effective_auto_commit = auto_commit if mode == "normal" else False
-
-        context_header = (
-            f"【タスク設定情報】\n"
-            f"- 対象リポジトリ: {target_repo}\n"
-            f"- 対象ブランチ: {branch}\n"
-            f"- 動作モード: {mode}\n"
-            f"- 自動コミット許可: {effective_auto_commit}\n"
-        )
-        if issue_number:
-            context_header += f"- 関連Issue: #{issue_number}\n"
-
-        full_prompt = f"{context_header}\n【指示内容】\n{prompt}"
-
-        status_embed = discord.Embed(
-            title="Agent Active (Groq Planner)",
-            description=(
-                f"**リポジトリ:** `{target_repo}` (`{branch}`)\n"
-                f"**モード:** `{mode}` | **コミット:** `{effective_auto_commit}`\n\n"
-                f"[Phase 1] 高速モデルによるタスク分析・計画策定中..."
-            ),
-            color=discord.Color.purple()
-        )
-        status_message = await interaction.followup.send(embed=status_embed)
-
-        planner_messages = [
-            {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ_PLANNER},
-            {"role": "user", "content": full_prompt}
-        ]
+        await interaction.response.defer()
 
         try:
-            plan_response = _groq_completion(
-                model=PLANNER_MODEL,
-                messages=_compact_messages(planner_messages),
-                tools=GROQ_TOOLS_SCHEMA,
-                tool_choice="auto",
-                max_tokens=PLANNER_MAX_TOKENS
-            )
-            
-            planner_msg = plan_response.choices[0].message
-            if planner_msg.tool_calls:
-                for tc in planner_msg.tool_calls:
-                    if tc.function.name == "create_task_plan":
-                        args = json.loads(tc.function.arguments)
-                        tasks = [str(task).strip() for task in args.get("tasks", []) if str(task).strip()]
-                        if tasks:
-                            task_mgr.set_plan(channel_id, tasks[:7])
-            if not task_mgr.has_plan(channel_id):
-                task_mgr.set_plan(channel_id, build_default_plan(mode))
+            target_repo = repo_name or DEFAULT_REPO_NAME
+            effective_auto_commit = auto_commit if mode == "normal" else False
 
-            plan_context = task_mgr.get_formatted_plan(channel_id)
-            full_prompt_with_plan = f"{full_prompt}\\n\\n【確定した実行計画】\\n{plan_context}"
-            status_embed.title = "Agent Active (Groq Engineer)"
-            status_embed.color = discord.Color.blue()
-            
-            engineer_messages = [
-                {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ_ENGINEER},
-                {"role": "user", "content": full_prompt_with_plan}
+            context_header = (
+                f"【タスク設定情報】\n"
+                f"- 対象リポジトリ: {target_repo}\n"
+                f"- 対象ブランチ: {branch}\n"
+                f"- 動作モード: {mode}\n"
+                f"- 自動コミット許可: {effective_auto_commit}\n"
+            )
+            if issue_number:
+                context_header += f"- 関連Issue: #{issue_number}\n"
+
+            full_prompt = f"{context_header}\n【指示内容】\n{prompt}"
+
+            status_embed = discord.Embed(
+                title="Agent Active (Groq Planner)",
+                description=(
+                    f"**リポジトリ:** `{target_repo}` (`{branch}`)\n"
+                    f"**モード:** `{mode}` | **コミット:** `{effective_auto_commit}`\n\n"
+                    f"[Phase 1] 高速モデルによるタスク分析・計画策定中..."
+                ),
+                color=discord.Color.purple()
+            )
+            status_message = await interaction.followup.send(embed=status_embed)
+
+            planner_messages = [
+                {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ_PLANNER},
+                {"role": "user", "content": full_prompt}
             ]
 
-            logs = ["計画策定が完了しました。実行フェーズへ移行します。"]
-            commit_actions = []
-            completed_tools = set()
-            repeated_calls = {}
-            commit_reminders = 0
-            replan_count = 0
-            changes_made = False
-            validation_done = False
-            fallback_used = False
-            current_model = ENGINEER_MODEL
-            turn_count = 0
-            self.render_progress(status_embed, target_repo, branch, mode, "実行準備完了", turn_count, max_turns, logs)
-            status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
-            await self.safe_edit_embed(status_message, status_embed)
+            try:
+                plan_response = await _groq_completion(
+                    model=PLANNER_MODEL,
+                    messages=_compact_messages_atomic(planner_messages),
+                    tools=GROQ_TOOLS_SCHEMA,
+                    tool_choice="auto",
+                    max_tokens=PLANNER_MAX_TOKENS
+                )
+                
+                planner_msg = plan_response.choices[0].message
+                if planner_msg.tool_calls:
+                    for tc in planner_msg.tool_calls:
+                        if tc.function.name == "create_task_plan":
+                            args = json.loads(tc.function.arguments)
+                            tasks = [str(task).strip() for task in args.get("tasks", []) if str(task).strip()]
+                            if tasks:
+                                task_mgr.set_plan(channel_id, tasks[:7])
+                if not task_mgr.has_plan(channel_id):
+                    task_mgr.set_plan(channel_id, build_default_plan(mode))
 
-            while turn_count < max_turns:
-                if not task_mgr.active_tasks.get(channel_id, False):
-                    await interaction.followup.send("ユーザーによって処理が中断されました。")
-                    return
+                plan_context = task_mgr.get_formatted_plan(channel_id)
+                full_prompt_with_plan = f"{full_prompt}\n\n【確定した実行計画】\n{plan_context}"
+                status_embed.title = "Agent Active (Groq Engineer)"
+                status_embed.color = discord.Color.blue()
+                
+                engineer_messages = [
+                    {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ_ENGINEER},
+                    {"role": "user", "content": full_prompt_with_plan}
+                ]
 
-                turn_count += 1
+                logs = ["計画策定が完了しました。実行フェーズへ移行します。"]
+                commit_actions = []
+                completed_tools = set()
+                repeated_calls = {}
+                commit_reminders = 0
+                replan_count = 0
+                changes_made = False
+                validation_done = False
+                fallback_used = False
+                current_model = ENGINEER_MODEL
+                turn_count = 0
+                self.render_progress(status_embed, target_repo, branch, mode, "実行準備完了", turn_count, max_turns, logs)
+                status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
+                await self.safe_edit_embed(status_message, status_embed)
 
-                try:
-                    response = _groq_completion(
-                        model=current_model,
-                        messages=_compact_messages(engineer_messages),
-                        tools=GROQ_TOOLS_SCHEMA,
-                        tool_choice="auto",
-                        max_tokens=ENGINEER_MAX_TOKENS if current_model == ENGINEER_MODEL else 800
-                    )
-                except Exception as model_error:
-                    error_text = str(model_error)
-                    retryable_model_error = any(marker in error_text for marker in (
-                        "model_not_found", "does not exist", "do not have access",
-                        "rate_limit_exceeded", "Request too large", "413", "TPM",
-                        "tool_use_failed", "invalid_request_error"
-                    ))
-                    if not fallback_used and current_model != MODEL_FALLBACK and retryable_model_error:
-                        fallback_used = True
-                        current_model = MODEL_FALLBACK
-                        logs.append(f"モデルエラーを検出。計画と履歴を保持したまま `{MODEL_FALLBACK}` へ切替")
-                        self.render_progress(status_embed, target_repo, branch, mode, "フォールバックへ切替・処理継続", turn_count, max_turns, logs, bool(commit_actions))
+                while turn_count < max_turns:
+                    turn_count += 1
+
+                    try:
+                        response = await _groq_completion(
+                            model=current_model,
+                            messages=_compact_messages_atomic(engineer_messages),
+                            tools=GROQ_TOOLS_SCHEMA,
+                            tool_choice="auto",
+                            max_tokens=ENGINEER_MAX_TOKENS if current_model == ENGINEER_MODEL else 800
+                        )
+                    except Exception as model_error:
+                        error_text = str(model_error)
+                        retryable_model_error = any(marker in error_text for marker in (
+                            "model_not_found", "does not exist", "do not have access",
+                            "rate_limit_exceeded", "Request too large", "413", "TPM",
+                            "tool_use_failed", "invalid_request_error"
+                        ))
+                        if not fallback_used and current_model != MODEL_FALLBACK and retryable_model_error:
+                            fallback_used = True
+                            current_model = MODEL_FALLBACK
+                            logs.append(f"モデルエラーを検出。計画と履歴を保持したまま `{MODEL_FALLBACK}` へ切替")
+                            self.render_progress(status_embed, target_repo, branch, mode, "フォールバックへ切替・処理継続", turn_count, max_turns, logs, bool(commit_actions))
+                            status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
+                            await self.safe_edit_embed(status_message, status_embed)
+                            continue
+                        raise
+
+                    response_message = response.choices[0].message
+                    engineer_messages.append(_message_to_dict(response_message))
+
+                    if not response_message.tool_calls:
+                        final_text = response_message.content or "タスクが完了しました。"
+                        commit_done = bool(commit_actions)
+                        if changes_made and not validation_done and replan_count < 2:
+                            replan_count += 1
+                            logs.append(f"検証未完了のため再計画 ({replan_count}/2)")
+                            engineer_messages.append({"role": "user", "content": "変更が検出されています。完了前に必ずcheck_python_syntax等で検証し、検証結果を確認してください。検証に失敗した場合は修正して再検証してください。"})
+                            self.render_progress(status_embed, target_repo, branch, mode, "検証不足・再計画中", turn_count, max_turns, logs, commit_done)
+                            status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
+                            await self.safe_edit_embed(status_message, status_embed)
+                            continue
+                        if effective_auto_commit and mode == "normal" and not commit_done and commit_reminders < 2:
+                            commit_reminders += 1
+                            logs.append(f"コミット確認を再要求 ({commit_reminders}/2)")
+                            engineer_messages.append({"role": "user", "content": "完了判定の前に実変更を確認してください。normalモードで変更が必要だった場合は、必ずpatch_github_fileまたはcommit_file_to_githubを実行し、成功結果を確認してから完了してください。変更不要なら、その理由を明記してください。"})
+                            self.render_progress(status_embed, target_repo, branch, mode, "コミット確認・再検証中", turn_count, max_turns, logs, commit_done)
+                            status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
+                            await self.safe_edit_embed(status_message, status_embed)
+                            continue
+                        if effective_auto_commit and mode == "normal" and not commit_done:
+                            final_text += "\n\n注意: コミットツールが実行されていないため、GitHubへの変更コミットはありません。"
+                        status_embed.color = discord.Color.green() if (not effective_auto_commit or mode != "normal" or commit_done) else discord.Color.gold()
+                        status_embed.title = "Task Completed" if (not effective_auto_commit or mode != "normal" or commit_done) else "Task Completed (No Commit)"
+                        self.render_progress(status_embed, target_repo, branch, mode, "完了", turn_count, max_turns, logs, commit_done)
                         status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
                         await self.safe_edit_embed(status_message, status_embed)
-                        continue
-                    raise
 
-                response_message = response.choices[0].message
-                engineer_messages.append(_message_to_dict(response_message))
-
-                if not response_message.tool_calls:
-                    final_text = response_message.content or "タスクが完了しました。"
-                    commit_done = bool(commit_actions)
-                    if changes_made and not validation_done and replan_count < 2:
-                        replan_count += 1
-                        logs.append(f"検証未完了のため再計画 ({replan_count}/2)")
-                        engineer_messages.append({"role": "user", "content": "変更が検出されています。完了前に必ずcheck_python_syntax等で検証し、検証結果を確認してください。検証に失敗した場合は修正して再検証してください。"})
-                        self.render_progress(status_embed, target_repo, branch, mode, "検証不足・再計画中", turn_count, max_turns, logs, commit_done)
-                        status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
-                        await self.safe_edit_embed(status_message, status_embed)
-                        continue
-                    if effective_auto_commit and mode == "normal" and not commit_done and commit_reminders < 2:
-                        commit_reminders += 1
-                        logs.append(f"コミット確認を再要求 ({commit_reminders}/2)")
-                        engineer_messages.append({"role": "user", "content": "完了判定の前に実変更を確認してください。normalモードで変更が必要だった場合は、必ずpatch_github_fileまたはcommit_file_to_githubを実行し、成功結果を確認してから完了してください。変更不要なら、その理由を明記してください。"})
-                        self.render_progress(status_embed, target_repo, branch, mode, "コミット確認・再検証中", turn_count, max_turns, logs, commit_done)
-                        status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
-                        await self.safe_edit_embed(status_message, status_embed)
-                        continue
-                    if effective_auto_commit and mode == "normal" and not commit_done:
-                        final_text += "\\n\\n注意: コミットツールが実行されていないため、GitHubへの変更コミットはありません。"
-                    status_embed.color = discord.Color.green() if (not effective_auto_commit or mode != "normal" or commit_done) else discord.Color.gold()
-                    status_embed.title = "Task Completed" if (not effective_auto_commit or mode != "normal" or commit_done) else "Task Completed (No Commit)"
-                    self.render_progress(status_embed, target_repo, branch, mode, "完了", turn_count, max_turns, logs, commit_done)
-                    status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
-                    await self.safe_edit_embed(status_message, status_embed)
-
-                    if len(final_text) > 1900:
-                        for chunk in [final_text[i:i+1900] for i in range(0, len(final_text), 1900)]:
-                            await interaction.followup.send(chunk)
-                    else:
-                        await interaction.followup.send(final_text)
-                    return
-
-                if response_message.content:
-                    summary = _trim_for_llm(response_message.content, 700).replace("```", "'''")
-                    logs.append(f"**判断サマリー:** {summary}")
-                for tool_call in response_message.tool_calls:
-                    raw_func_name = tool_call.function.name
-                    func_name = normalize_tool_name(raw_func_name)
-                    if func_name != raw_func_name:
-                        logs.append(f"ツール名を正規化: `{raw_func_name}` → `{func_name}`")
-                    func_args = json.loads(tool_call.function.arguments)
-
-                    call_key = json.dumps({"name": func_name, "args": func_args}, ensure_ascii=False, sort_keys=True)
-                    repeated_calls[call_key] = repeated_calls.get(call_key, 0) + 1
-                    if repeated_calls[call_key] >= 3:
-                        result = "同じツール呼び出しが3回続いたため停止しました。別の調査方法、より狭いpath、またはline_start/line_endを指定してください。"
-                        logs.append(f"**Loop guard:** `{func_name}` の重複呼び出しを停止")
-                        task_mgr.update_status(channel_id, 1, "失敗")
-                    elif func_name == "create_task_plan":
-                        tasks = [str(task).strip() for task in func_args.get("tasks", []) if str(task).strip()]
-                        plan_str = task_mgr.set_plan(channel_id, tasks[:7]) if tasks else task_mgr.set_plan(channel_id, build_default_plan(mode))
-                        logs.append(f"**計画立案:**\n```\n{plan_str}\n```")
-                        result = plan_str
-                    elif func_name == "update_task_status":
-                        task_id = int(func_args.get("task_id", 0))
-                        status = str(func_args.get("status", "進行中"))
-                        result = task_mgr.update_status(channel_id, task_id, status)
-                        logs.append(f"**計画更新:** タスク{task_id} → {status}")
-                    else:
-                        if func_name in {"print_tree", "list_repository_files", "read_github_file", "search_code_in_repo", "patch_github_file", "commit_file_to_github", "get_github_issue"}:
-                            func_args.setdefault("repo_name", target_repo)
-                            func_args.setdefault("branch", branch)
-                        if func_name in FUNCTION_MAP:
-                            task_mgr.mark_progress_for_tool(channel_id, func_name)
-                            result = FUNCTION_MAP[func_name](**func_args)
-                            result_text = str(result)
-                            result_ok = not any(marker in result_text for marker in ("失敗", "エラー", "中断"))
-                            task_mgr.complete_for_tool(channel_id, func_name, result_ok)
-                            if func_name in {"patch_github_file", "commit_file_to_github"} and any(marker in result_text for marker in ("コミットしました", "更新コミットしました", "新規作成コミットしました")):
-                                commit_actions.append({"tool": func_name, "result": result_text})
-                                completed_tools.add(func_name)
-                            if func_name == "patch_github_file" and "失敗" not in result_text and "エラー" not in result_text:
-                                changes_made = True
-                            if func_name == "check_python_syntax" and "エラーなし" in result_text:
-                                validation_done = True
+                        if len(final_text) > 1900:
+                            for chunk in [final_text[i:i+1900] for i in range(0, len(final_text), 1900)]:
+                                await interaction.followup.send(chunk)
                         else:
-                            result = f"未登録のツールです: {func_name}。利用可能なツールを使って再試行してください。"
-                        logs.append(f"**Action:** `{func_name}`")
+                            await interaction.followup.send(final_text)
+                        return
 
-                    self.render_progress(status_embed, target_repo, branch, mode, f"ツール実行中: {func_name}", turn_count, max_turns, logs, bool(commit_actions))
-                    status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
-                    await self.safe_edit_embed(status_message, status_embed)
+                    if response_message.content:
+                        summary = _trim_for_llm(response_message.content, 700).replace("```", "'''")
+                        logs.append(f"**判断サマリー:** {summary}")
+                    for tool_call in response_message.tool_calls:
+                        raw_func_name = tool_call.function.name
+                        func_name = normalize_tool_name(raw_func_name)
+                        if func_name != raw_func_name:
+                            logs.append(f"ツール名を正規化: `{raw_func_name}` → `{func_name}`")
+                        func_args = json.loads(tool_call.function.arguments)
 
-                    engineer_messages.append({
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": func_name,
-                        "content": _tool_result_payload(func_name, result)
-                    })
+                        call_key = json.dumps({"name": func_name, "args": func_args}, ensure_ascii=False, sort_keys=True)
+                        repeated_calls[call_key] = repeated_calls.get(call_key, 0) + 1
+                        if repeated_calls[call_key] >= 3:
+                            result = "同じツール呼び出しが3回続いたため停止しました。別の調査方法、より狭いpath、またはline_start/line_endを指定してください。"
+                            logs.append(f"**Loop guard:** `{func_name}` の重複呼び出しを停止")
+                            task_mgr.update_status(channel_id, 1, "失敗")
+                        elif func_name == "create_task_plan":
+                            tasks = [str(task).strip() for task in func_args.get("tasks", []) if str(task).strip()]
+                            plan_str = task_mgr.set_plan(channel_id, tasks[:7]) if tasks else task_mgr.set_plan(channel_id, build_default_plan(mode))
+                            logs.append(f"**計画立案:**\n```\n{plan_str}\n```")
+                            result = plan_str
+                        elif func_name == "update_task_status":
+                            task_id = int(func_args.get("task_id", 0))
+                            status = str(func_args.get("status", "進行中"))
+                            result = task_mgr.update_status(channel_id, task_id, status)
+                            logs.append(f"**計画更新:** タスク{task_id} → {status}")
+                        else:
+                            if func_name in {"print_tree", "list_repository_files", "read_github_file", "search_code_in_repo", "patch_github_file", "commit_file_to_github", "get_github_issue"}:
+                                func_args.setdefault("repo_name", target_repo)
+                                func_args.setdefault("branch", branch)
+                            if func_name in FUNCTION_MAP:
+                                task_mgr.mark_progress_for_tool(channel_id, func_name)
+                                func = FUNCTION_MAP[func_name]
+                                if asyncio.iscoroutinefunction(func):
+                                    result = await func(**func_args)
+                                else:
+                                    result = await run_blocking_func(func, **func_args)
+                                result_text = str(result)
+                                result_ok = not any(marker in result_text for marker in ("失敗", "エラー", "中断"))
+                                task_mgr.complete_for_tool(channel_id, func_name, result_ok)
+                                if func_name in {"patch_github_file", "commit_file_to_github"} and any(marker in result_text for marker in ("コミットしました", "更新コミットしました", "新規作成コミットしました")):
+                                    commit_actions.append({"tool": func_name, "result": result_text})
+                                    completed_tools.add(func_name)
+                                if func_name == "patch_github_file" and "失敗" not in result_text and "エラー" not in result_text:
+                                    changes_made = True
+                                if func_name == "check_python_syntax" and "エラーなし" in result_text:
+                                    validation_done = True
+                            else:
+                                result = f"未登録のツールです: {func_name}。利用可能なツールを使って再試行してください。"
+                            logs.append(f"**Action:** `{func_name}`")
 
-            status_embed.color = discord.Color.gold()
-            status_embed.title = "Max Turns Reached"
-            self.render_progress(status_embed, target_repo, branch, mode, "最大ステップ数に到達", turn_count, max_turns, logs, bool(commit_actions))
-            status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
-            await self.safe_edit_embed(status_message, status_embed)
+                        self.render_progress(status_embed, target_repo, branch, mode, f"ツール実行中: {func_name}", turn_count, max_turns, logs, bool(commit_actions))
+                        status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
+                        await self.safe_edit_embed(status_message, status_embed)
 
-        except Exception as e:
-            # モデルが廃止・権限外の場合は、安定した小型モデルで一度だけ再試行する。
-            error_text = str(e)
-            if ("model_not_found" in error_text or "does not exist" in error_text or "do not have access" in error_text
-                    or "rate_limit_exceeded" in error_text or "Request too large" in error_text
-                    or "413" in error_text or "TPM" in error_text):
-                try:
-                    status_embed.title = "Model fallback"
-                    status_embed.description = f"Planner初期化エラーのため `{MODEL_FALLBACK}` で計画を再構成します。"
-                    await self.safe_edit_embed(status_message, status_embed)
-                    fallback_messages = [
-                        {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ_ENGINEER},
-                        {"role": "user", "content": _trim_for_llm(full_prompt, 5000)}
-                    ]
-                    fallback_response = _groq_completion(
-                        model=MODEL_FALLBACK,
-                        messages=_compact_messages(fallback_messages),
-                        tools=GROQ_TOOLS_SCHEMA,
-                        tool_choice="auto",
-                        max_tokens=800
-                    )
-                    fallback_text = fallback_response.choices[0].message.content or "フォールバックモデルで処理が完了しました。"
-                    status_embed.color = discord.Color.green()
-                    status_embed.title = "Task Completed (Fallback Model)"
-                    status_embed.description = f"使用モデル: `{MODEL_FALLBACK}`"
-                    await self.safe_edit_embed(status_message, status_embed)
-                    await interaction.followup.send(fallback_text[:1900])
-                    return
-                except Exception as fallback_error:
-                    error_text = f"初回: {error_text}\nフォールバック: {fallback_error}"
-            status_embed.color = discord.Color.red()
-            status_embed.title = "Error"
-            status_embed.description = f"エラーにより処理停止:\n```\n{error_text[:1800]}\n```"
-            await self.safe_edit_embed(status_message, status_embed)
+                        engineer_messages.append({
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": func_name,
+                            "content": _tool_result_payload(func_name, result)
+                        })
+
+                status_embed.color = discord.Color.gold()
+                status_embed.title = "Max Turns Reached"
+                self.render_progress(status_embed, target_repo, branch, mode, "最大ステップ数に到達", turn_count, max_turns, logs, bool(commit_actions))
+                status_embed.add_field(name="計画", value=_trim_for_llm(task_mgr.get_formatted_plan(channel_id), 1000), inline=False)
+                await self.safe_edit_embed(status_message, status_embed)
+
+            except Exception as e:
+                error_text = str(e)
+                if ("model_not_found" in error_text or "does not exist" in error_text or "do not have access" in error_text
+                        or "rate_limit_exceeded" in error_text or "Request too large" in error_text
+                        or "413" in error_text or "TPM" in error_text):
+                    try:
+                        status_embed.title = "Model fallback"
+                        status_embed.description = f"Planner初期化エラーのため `{MODEL_FALLBACK}` で計画を再構成します。"
+                        await self.safe_edit_embed(status_message, status_embed)
+                        fallback_messages = [
+                            {"role": "system", "content": SYSTEM_INSTRUCTION_GROQ_ENGINEER},
+                            {"role": "user", "content": _trim_for_llm(full_prompt, 5000)}
+                        ]
+                        fallback_response = await _groq_completion(
+                            model=MODEL_FALLBACK,
+                            messages=_compact_messages_atomic(fallback_messages),
+                            tools=GROQ_TOOLS_SCHEMA,
+                            tool_choice="auto",
+                            max_tokens=800
+                        )
+                        fallback_text = fallback_response.choices[0].message.content or "フォールバックモデルで処理が完了しました。"
+                        status_embed.color = discord.Color.green()
+                        status_embed.title = "Task Completed (Fallback Model)"
+                        status_embed.description = f"使用モデル: `{MODEL_FALLBACK}`"
+                        await self.safe_edit_embed(status_message, status_embed)
+                        await interaction.followup.send(fallback_text[:1900])
+                        return
+                    except Exception as fallback_error:
+                        error_text = f"初回: {error_text}\nフォールバック: {fallback_error}"
+                status_embed.color = discord.Color.red()
+                status_embed.title = "Error"
+                status_embed.description = f"エラーにより処理停止:\n```\n{error_text[:1800]}\n```"
+                await self.safe_edit_embed(status_message, status_embed)
+        except asyncio.CancelledError:
+            await interaction.followup.send("タスクが外部操作により即時強制終了されました。")
+            raise
         finally:
-            task_mgr.active_tasks[channel_id] = False
+            task_mgr.running_tasks.pop(channel_id, None)
 
     @agent_command.error
     @agent_stop_command.error
