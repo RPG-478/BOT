@@ -133,7 +133,7 @@ class PerfectMimicAI(commands.Cog):
             except Exception as e:
                 await ctx.send(f"エラーが発生しました: {e}")
 
-    async def _fetch_conversation_context(self, message: discord.Message, limit=6):
+    async def _fetch_conversation_context(self, message: discord.Message, limit=14):
         context_messages = []
         curr = message
         while curr and len(context_messages) < limit:
