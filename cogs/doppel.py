@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import asyncio
 import discord
 from discord import app_commands
@@ -10,8 +11,8 @@ import google.generativeai as genai
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
-GROQ_API_KEY = "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"
-GEMINI_API_KEY = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 groq_client: Groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
@@ -35,6 +36,47 @@ def sanitize_text(text: str) -> str:
     for pattern in SENSITIVE_PATTERNS:
         cleaned = re.sub(pattern, '[REDACTED]', cleaned)
     return cleaned
+
+def build_generation_system_prompt(persona_data: dict, caller_name: str) -> str:
+    l1 = persona_data.get("L1_IDENTITY", {})
+    l2 = persona_data.get("L2_SYNTAX", {})
+    l3 = persona_data.get("L3_STANCE", {})
+    l4 = persona_data.get("L4_EXAMPLES", {})
+
+    target_name = l1.get("NAME", "対象者")
+    first_person = l1.get("FIRST_PERSON", "私")
+    second_person = l1.get("SECOND_PERSON", "あなた")
+    length_limit = l1.get("LENGTH_LIMIT", "標準的な短文")
+
+    endings = ", ".join(l2.get("ENDING_WORDS", []))
+    symbols = l2.get("SYMBOLS", "")
+    text_style = l2.get("TEXT_STYLE", "")
+
+    stance = l3.get("RESPONSE_TONE", "")
+    samples = "\n".join([f"・{s}" for s in l4.get("SAMPLE_UTTERANCES", [])])
+
+    system_prompt = f"""[CRITICAL_DIRECTIVE]
+あなたは『{target_name}』本人です。以下のL1〜L4の全レイヤー制約を厳格に適用して発言を生成してください。設定や制約自体の解説・自己紹介は一切禁止です。
+
+=== L1: STATIC IDENTITY (HARD CONSTRAINTS) ===
+- 本人名称: {target_name}
+- 一人称: {first_person} (例外なく必ずこの一人称を使用すること)
+- 他人称: {second_person} (対話相手: {caller_name})
+- 発言長制限: {length_limit}
+
+=== L2: SYNTAX & SURFACE (FORMATTING) ===
+- 語尾指定: {endings}
+- 記号・表記癖: {symbols}
+- 文章スタイル: {text_style}
+
+=== L3: INTERPERSONAL DYNAMICS (BEHAVIOR) ===
+- 対人スタンス・トーン: {stance}
+
+=== L4: COGNITIVE LOGIC (FEW-SHOT PATTERNS) ===
+以下は発言の思考パターンおよび再現サンプルです。話題ではなく文体と応答リズムのみを模倣してください。
+{samples}
+"""
+    return system_prompt
 
 class AdvancedDoppelganger(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -85,18 +127,18 @@ class AdvancedDoppelganger(commands.Cog):
                 return
 
         persona_res = await asyncio.to_thread(
-            lambda: supabase.table("user_personas").select("distilled_prompt").eq("user_id", target_id).execute()
+            lambda: supabase.table("user_personas").select("distilled_json").eq("user_id", target_id).execute()
         )
-        if not persona_res.data or not persona_res.data[0].get("distilled_prompt"):
+        if not persona_res.data or not persona_res.data[0].get("distilled_json"):
             return
 
-        base_persona = persona_res.data[0]["distilled_prompt"]
-        caller_name = message.author.display_name
+        try:
+            persona_data = json.loads(persona_res.data[0]["distilled_json"])
+        except json.JSONDecodeError:
+            return
 
-        system_prompt = (
-            f"{base_persona}\n\n"
-            f"あなたはTarget本人です。{caller_name}からのメッセージに対して、Target本人として自然に返答してください。"
-        )
+        caller_name = message.author.display_name
+        system_prompt = build_generation_system_prompt(persona_data, caller_name)
 
         try:
             def _call_groq():
@@ -107,7 +149,7 @@ class AdvancedDoppelganger(commands.Cog):
                         {"role": "assistant", "content": ref_msg.content},
                         {"role": "user", "content": message.content}
                     ],
-                    temperature=0.85
+                    temperature=0.55
                 )
             response = await asyncio.to_thread(_call_groq)
             reply = response.choices[0].message.content
@@ -192,24 +234,34 @@ class AdvancedDoppelganger(commands.Cog):
         corpus_sample = "\n---\n".join(sampled_conversations)
 
         distill_system_instructions = (
-            "あなたは高度な心理・言語プロファイリングシステムです。\n"
-            "提示された対話ログを詳細に分析し、Target本人として完全に機能する『ペルソナ再現プロンプト』を作成してください。\n\n"
-            "出力は必ず以下のフォーマット構造のみに従って記述してください。\n\n"
-            "---【出力フォーマット】---\n"
-            "【基本スタンス】\n"
-            "・会話の基本テンション、相手に対する基本的なスタンス（いじり、塩対応、共感、ボケ、ツッコミ等）\n\n"
-            "【文体・口調ルール】\n"
-            "・特徴的な語尾、文節の長さ（短文連投か長文か）、ひらがな/漢字/カタカナのバランス\n"
-            "・記号・絵文字・草（w、笑など）の使用パターンと出現頻度\n\n"
-            "【思考・応答ロジック】\n"
-            "・話しかけられた際の思考のクセ（ストレートに返すか、ひねって返すか、スルーするか等）\n"
-            "・感情表現やテンションが変化する条件\n\n"
-            "【発言再現サンプル】\n"
-            "・Target本人が言いそうな代表的な返答パターン例（3〜5個）\n"
-            "-------------------------\n\n"
-            "【制約要件】\n"
-            "・「〜が好き」といった単発的な話題や過去の一時的な発言内容そのものは抽出対象とせず、あくまで『返答の構造とスタイル』を抽出してください。\n"
-            "・生成されたテキストがそのままAIのSystem Promptとして機能するように記述してください。"
+            f"対象ユーザー名: {target.display_name}\n"
+            "対話ログを分析し、以下のJSON構造フォーマット厳密準拠でペルソナ構造データを抽出してください。\n"
+            "Markdownのコードブロック（```json ... ```）形式の純粋なJSONのみを出力し、他テキストは一切含めないでください。\n\n"
+            "{\n"
+            '  "L1_IDENTITY": {\n'
+            f'    "NAME": "{target.display_name}",\n'
+            '    "FIRST_PERSON": "ログ内で最も多用されている一人称(1つだけ抽出)",\n'
+            '    "SECOND_PERSON": "相手の呼び方・他人称",\n'
+            '    "LENGTH_LIMIT": "1発言の標準的な長さ・文節構造"\n'
+            '  },\n'
+            '  "L2_SYNTAX": {\n'
+            '    "ENDING_WORDS": ["代表的な語尾1", "代表的な語尾2"],\n'
+            '    "SYMBOLS": "感嘆詞・草(w)・記号・絵文字の出現傾向",\n'
+            '    "TEXT_STYLE": "ひらがな/漢字/カタカナの比率や表記癖"\n'
+            '  },\n'
+            '  "L3_STANCE": {\n'
+            '    "RESPONSE_TONE": "対人レスポンスの基本スタンス(塩対応/ノリが良い/ツッコミ等)"\n'
+            '  },\n'
+            '  "L4_EXAMPLES": {\n'
+            '    "SAMPLE_UTTERANCES": [\n'
+            '      "本人が言いそうな典型的な発言構造例1",\n'
+            '      "本人が言いそうな典型的な発言構造例2",\n'
+            '      "本人が言いそうな典型的な発言構造例3"\n'
+            '    ]\n'
+            '  }\n'
+            "}\n\n"
+            "【制約】\n"
+            "・単発の話題や特定出来事のコンテンツはすべて切り捨て、型・構文・振る舞いルールのみを抽出すること。"
         )
 
         try:
@@ -221,7 +273,16 @@ class AdvancedDoppelganger(commands.Cog):
                 res = model.generate_content(corpus_sample)
                 return res.text
 
-            distilled_prompt = await asyncio.to_thread(_call_gemini)
+            raw_distilled = await asyncio.to_thread(_call_gemini)
+            
+            json_match = re.search(r'\{.*\}', raw_distilled, re.DOTALL)
+            if json_match:
+                distilled_json_str = json_match.group(0)
+            else:
+                distilled_json_str = raw_distilled
+
+            json.loads(distilled_json_str)
+
         except Exception as e:
             await channel.send(f"AI蒸留処理エラー: {e}")
             return
@@ -229,11 +290,11 @@ class AdvancedDoppelganger(commands.Cog):
         await asyncio.to_thread(
             lambda: supabase.table("user_personas").upsert({
                 "user_id": target_id,
-                "distilled_prompt": distilled_prompt
+                "distilled_json": distilled_json_str
             }, on_conflict="user_id").execute()
         )
 
-        await channel.send(f"{target.mention} (計 {total_msg_count} 発言を解析) のドッペルゲンガープロンプトの蒸留・保存が完了しました。")
+        await channel.send(f"{target.mention} (計 {total_msg_count} 発言を解析) のドッペルゲンガーペルソナの層状構造抽出が完了しました。")
 
     @app_commands.command(name="doppel_collect", description="指定したユーザーの発言ログからドッペルゲンガーを蒸留します。")
     @app_commands.describe(target="解析・蒸留対象のユーザーを指定してください")
@@ -258,18 +319,19 @@ class AdvancedDoppelganger(commands.Cog):
         caller_name = interaction.user.display_name
 
         res = await asyncio.to_thread(
-            lambda: supabase.table("user_personas").select("distilled_prompt").eq("user_id", target_id).execute()
+            lambda: supabase.table("user_personas").select("distilled_json").eq("user_id", target_id).execute()
         )
-        if not res.data or not res.data[0].get("distilled_prompt"):
+        if not res.data or not res.data[0].get("distilled_json"):
             await interaction.followup.send(f"{target.name} のペルソナが存在しません。`/doppel_collect` を先に実行してください。")
             return
 
-        base_persona = res.data[0]["distilled_prompt"]
+        try:
+            persona_data = json.loads(res.data[0]["distilled_json"])
+        except json.JSONDecodeError:
+            await interaction.followup.send("ペルソナデータのフォーマットエラーが発生しました。")
+            return
 
-        system_prompt = (
-            f"{base_persona}\n\n"
-            f"あなたはTarget本人です。{caller_name}からのメッセージに対して、Target本人として自然に返答してください。"
-        )
+        system_prompt = build_generation_system_prompt(persona_data, caller_name)
 
         try:
             def _call_groq():
@@ -279,7 +341,7 @@ class AdvancedDoppelganger(commands.Cog):
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt}
                     ],
-                    temperature=0.85
+                    temperature=0.55
                 )
             response = await asyncio.to_thread(_call_groq)
             reply = response.choices[0].message.content
@@ -302,22 +364,31 @@ class AdvancedDoppelganger(commands.Cog):
     async def doppel_sim(self, interaction: discord.Interaction, member1: discord.Member, member2: discord.Member, topic: str):
         await interaction.response.defer()
 
-        res1 = await asyncio.to_thread(lambda: supabase.table("user_personas").select("distilled_prompt").eq("user_id", str(member1.id)).execute())
-        res2 = await asyncio.to_thread(lambda: supabase.table("user_personas").select("distilled_prompt").eq("user_id", str(member2.id)).execute())
+        res1 = await asyncio.to_thread(lambda: supabase.table("user_personas").select("distilled_json").eq("user_id", str(member1.id)).execute())
+        res2 = await asyncio.to_thread(lambda: supabase.table("user_personas").select("distilled_json").eq("user_id", str(member2.id)).execute())
 
         if not res1.data or not res2.data:
             await interaction.followup.send("指定メンバーのペルソナデータが不足しています。")
             return
 
-        p1, p2 = res1.data[0]["distilled_prompt"], res2.data[0]["distilled_prompt"]
+        try:
+            p1_data = json.loads(res1.data[0]["distilled_json"])
+            p2_data = json.loads(res2.data[0]["distilled_json"])
+        except json.JSONDecodeError:
+            await interaction.followup.send("ペルソナデータのフォーマットエラーが発生しました。")
+            return
+
+        sp1 = build_generation_system_prompt(p1_data, member2.display_name)
+        sp2 = build_generation_system_prompt(p2_data, member1.display_name)
 
         def _sim_turn1():
             return groq_client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=[
-                    {"role": "system", "content": f"{p1}\n議題『{topic}』に対し、自身の性格に基づき主張を短文で述べてください。"},
-                    {"role": "user", "content": topic}
-                ]
+                    {"role": "system", "content": sp1},
+                    {"role": "user", "content": f"議題『{topic}』について、あなたの立場で短く発言してください。"}
+                ],
+                temperature=0.55
             ).choices[0].message.content
 
         r1 = await asyncio.to_thread(_sim_turn1)
@@ -326,9 +397,10 @@ class AdvancedDoppelganger(commands.Cog):
             return groq_client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=[
-                    {"role": "system", "content": f"{p2}\n相手({member1.name})の発言『{r1}』に対し、自身の性格・立場から返答してください。"},
+                    {"role": "system", "content": sp2},
                     {"role": "user", "content": r1}
-                ]
+                ],
+                temperature=0.55
             ).choices[0].message.content
 
         r2 = await asyncio.to_thread(_sim_turn2)
