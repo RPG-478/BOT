@@ -6,15 +6,21 @@ from discord import app_commands
 from discord.ext import commands
 from supabase import create_client, Client
 from groq import Groq
+import google.generativeai as genai
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
-GROQ_API_KEY = "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"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 groq_client: Groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+
 MODEL_NAME = "openai/gpt-oss-20b"
+GEMINI_MODEL_NAME = "gemini-3.5-flash"
 
 SENSITIVE_PATTERNS = [
     r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+',
@@ -142,7 +148,7 @@ class AdvancedDoppelganger(commands.Cog):
         target_id = str(target.id)
         conversations = []
         total_msg_count = 0
-        MAX_TARGET_MESSAGES = 1000
+        MAX_TARGET_MESSAGES = 2000
 
         for ch in channel.guild.text_channels:
             if total_msg_count >= MAX_TARGET_MESSAGES:
@@ -153,7 +159,7 @@ class AdvancedDoppelganger(commands.Cog):
                 prev_msg_author_name = None
                 prev_msg_content = None
 
-                async for msg in ch.history(limit=1000, oldest_first=False):
+                async for msg in ch.history(limit=2000, oldest_first=False):
                     if total_msg_count >= MAX_TARGET_MESSAGES:
                         break
 
@@ -182,7 +188,7 @@ class AdvancedDoppelganger(commands.Cog):
             await channel.send(f"{target.mention} の有効な会話データが見つかりませんでした。")
             return
 
-        corpus_sample = "\n---\n".join(conversations[-1500:])
+        corpus_sample = "\n---\n".join(conversations[-2000:])
 
         distill_system_instructions = (
             "あなたは高度な心理分析官およびAIパーソナリティ設計者です。"
@@ -197,17 +203,15 @@ class AdvancedDoppelganger(commands.Cog):
         )
 
         try:
-            def _call_groq():
-                return groq_client.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=[
-                        {"role": "system", "content": distill_system_instructions},
-                        {"role": "user", "content": corpus_sample}
-                    ],
-                    temperature=0.7
+            def _call_gemini():
+                model = genai.GenerativeModel(
+                    model_name=GEMINI_MODEL_NAME,
+                    system_instruction=distill_system_instructions
                 )
-            response = await asyncio.to_thread(_call_groq)
-            distilled_prompt = response.choices[0].message.content
+                res = model.generate_content(corpus_sample)
+                return res.text
+
+            distilled_prompt = await asyncio.to_thread(_call_gemini)
         except Exception as e:
             await channel.send(f"AI蒸留処理エラー: {e}")
             return
@@ -219,7 +223,7 @@ class AdvancedDoppelganger(commands.Cog):
             }, on_conflict="user_id").execute()
         )
 
-        await channel.send(f"✨ {target.mention} (計 {total_msg_count} 発言を解析) のドッペルゲンガープロンプトの蒸留・保存が完了しました！")
+        await channel.send(f"{target.mention} (計 {total_msg_count} 発言を解析) のドッペルゲンガープロンプトの蒸留・保存が完了しました。")
 
     @app_commands.command(name="doppel_collect", description="指定したユーザーの発言ログからドッペルゲンガーを蒸留します。")
     @app_commands.describe(target="解析・蒸留対象のユーザーを指定してください")
@@ -233,7 +237,7 @@ class AdvancedDoppelganger(commands.Cog):
             await interaction.response.send_message(f"{target.mention} は機能利用に同意していません（`/doppel_optin` が必要です）。")
             return
 
-        await interaction.response.send_message(f"⚙️ {target.mention} の発言ログ解析を開始しました（上限2,000件、画像/動画/URL除外）。完了時に通知します。")
+        await interaction.response.send_message(f"{target.mention} の発言ログ解析を開始しました（上限2,000件、画像/動画/URL除外）。完了時に通知します。")
         asyncio.create_task(self._background_collect(interaction.channel, target))
 
     @app_commands.command(name="doppel", description="指定ユーザーのドッペルゲンガーを呼び出して対話します。")
@@ -321,7 +325,7 @@ class AdvancedDoppelganger(commands.Cog):
 
         r2 = await asyncio.to_thread(_sim_turn2)
 
-        await interaction.followup.send(f"🗣️ **議論シミュレーションの開始: {topic}**")
+        await interaction.followup.send(f"**議論シミュレーションの開始: {topic}**")
         
         msg1 = await self._send_as_webhook(interaction.channel, member1, f"【議題: {topic}】\n{r1}")
         msg2 = await self._send_as_webhook(interaction.channel, member2, r2)
