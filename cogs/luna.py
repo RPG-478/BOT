@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands, tasks
 import os
 import random
+from collections import deque
 from google import genai
 from google.genai import types
 
@@ -13,6 +14,7 @@ class PerfectMimicAI(commands.Cog):
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg")
         self.gemini_client = genai.Client(api_key=self.gemini_api_key)
         self.enabled_channels = set()
+        self.sent_webhook_message_ids = deque(maxlen=200)
         self.spontaneous_talk.start()
 
     def cog_unload(self):
@@ -66,15 +68,15 @@ class PerfectMimicAI(commands.Cog):
             return
 
         is_mentioned = self.bot.user in message.mentions
-        is_reply_to_bot = (
-            message.reference 
-            and message.reference.resolved 
-            and isinstance(message.reference.resolved, discord.Message)
-            and message.reference.resolved.author.id == self.bot.user.id
-        )
+        
+        is_reply_to_mimic = False
+        if message.reference and message.reference.resolved and isinstance(message.reference.resolved, discord.Message):
+            ref_msg = message.reference.resolved
+            if ref_msg.id in self.sent_webhook_message_ids or ref_msg.author.id == self.bot.user.id:
+                is_reply_to_mimic = True
 
         should_respond = False
-        if is_mentioned or is_reply_to_bot:
+        if is_mentioned or is_reply_to_mimic:
             should_respond = True
         elif message.channel.id in self.enabled_channels:
             if random.random() < 0.05:
@@ -89,12 +91,18 @@ class PerfectMimicAI(commands.Cog):
                     avatar_url = member.display_avatar.url if member else target_user.display_avatar.url
 
                     user_logs = await self._fetch_stratified_history(message.channel, TARGET_USER_ID)
-                    
                     if not user_logs:
                         return
 
+                    conversation_context = await self._fetch_conversation_context(message)
                     prompt = message.clean_content.replace(f"@{self.bot.user.name}", "").strip()
-                    reply_text = await self._generate_mimic_response(prompt, user_logs, display_name)
+                    
+                    reply_text = await self._generate_mimic_response(
+                        prompt, 
+                        user_logs, 
+                        display_name, 
+                        conversation_context=conversation_context
+                    )
                     
                     await self._send_as_webhook(message.channel, display_name, avatar_url, reply_text)
                 except Exception as e:
@@ -110,15 +118,41 @@ class PerfectMimicAI(commands.Cog):
                 avatar_url = member.display_avatar.url if member else target_user.display_avatar.url
 
                 user_logs = await self._fetch_stratified_history(ctx.channel, TARGET_USER_ID)
-                
                 if not user_logs:
                     await ctx.send("対象ユーザーの過去メッセージが見つかりませんでした。")
                     return
 
-                reply_text = await self._generate_mimic_response(prompt, user_logs, display_name)
+                conversation_context = await self._fetch_conversation_context(ctx.message)
+                reply_text = await self._generate_mimic_response(
+                    prompt, 
+                    user_logs, 
+                    display_name, 
+                    conversation_context=conversation_context
+                )
                 await self._send_as_webhook(ctx.channel, display_name, avatar_url, reply_text)
             except Exception as e:
                 await ctx.send(f"エラーが発生しました: {e}")
+
+    async def _fetch_conversation_context(self, message: discord.Message, limit=6):
+        context_messages = []
+        curr = message
+        while curr and len(context_messages) < limit:
+            context_messages.append(curr)
+            if curr.reference and curr.reference.resolved and isinstance(curr.reference.resolved, discord.Message):
+                curr = curr.reference.resolved
+            else:
+                break
+
+        context_messages.reverse()
+        
+        formatted_history = []
+        for msg in context_messages:
+            author_name = msg.author.display_name
+            clean_content = msg.clean_content.replace(f"@{self.bot.user.name}", "").strip()
+            if clean_content:
+                formatted_history.append(f"{author_name}: {clean_content}")
+
+        return "\n".join(formatted_history)
 
     async def _fetch_stratified_history(self, channel, user_id, search_limit=1500, sample_size=40):
         logs = []
@@ -143,7 +177,7 @@ class PerfectMimicAI(commands.Cog):
 
         return logs
 
-    async def _generate_mimic_response(self, prompt, user_logs, display_name, is_spontaneous=False):
+    async def _generate_mimic_response(self, prompt, user_logs, display_name, conversation_context="", is_spontaneous=False):
         sample_texts = "\n".join([f"- {text}" for text in user_logs])
         
         system_instruction = (
@@ -167,8 +201,11 @@ class PerfectMimicAI(commands.Cog):
         if is_spontaneous:
             contents = "誰からも話しかけられていません。ふと思ったこと、作業の独り言、雑談などの短文を自然につぶやいてください。"
         else:
-            user_input = prompt if prompt else "最近どう？"
-            contents = f"入力内容: {user_input}\n上記に対して、本人になりきって自然な返答のみを出力してください。"
+            if conversation_context:
+                contents = f"【これまでの文脈・会話の流れ】\n{conversation_context}\n\n上記を踏まえ、{display_name}本人として最新のメッセージに対する返答のみを出力してください。"
+            else:
+                user_input = prompt if prompt else "最近どう？"
+                contents = f"入力内容: {user_input}\n上記に対して、本人になりきって自然な返答のみを出力してください。"
 
         response = await self.gemini_client.aio.models.generate_content(
             model='gemini-3.5-flash-lite',
@@ -189,9 +226,13 @@ class PerfectMimicAI(commands.Cog):
         if len(text) > 2000:
             chunks = [text[i:i+2000] for i in range(0, len(text), 2000)]
             for chunk in chunks:
-                await webhook.send(content=chunk, username=username, avatar_url=avatar_url)
+                sent_msg = await webhook.send(content=chunk, username=username, avatar_url=avatar_url, wait=True)
+                if sent_msg:
+                    self.sent_webhook_message_ids.append(sent_msg.id)
         else:
-            await webhook.send(content=text, username=username, avatar_url=avatar_url)
+            sent_msg = await webhook.send(content=text, username=username, avatar_url=avatar_url, wait=True)
+            if sent_msg:
+                self.sent_webhook_message_ids.append(sent_msg.id)
 
 async def setup(bot):
     await bot.add_cog(PerfectMimicAI(bot))
