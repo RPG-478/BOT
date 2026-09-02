@@ -5,6 +5,7 @@ import io
 import asyncio
 import contextlib
 import time
+import re
 from typing import Optional, Literal
 import discord
 from discord import app_commands
@@ -18,7 +19,7 @@ from groq import Groq
 
 load_dotenv()
 
-GITHUB_ACCESS_TOKEN = "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"
+GITHUB_ACCESS_TOKEN = os.getenv("GITHUB_ACCESS_TOKEN")
 github_client = Github(GITHUB_ACCESS_TOKEN) if GITHUB_ACCESS_TOKEN else None
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # Groqのモデルはアカウント・時期により利用可否が変わるため、環境変数で上書き可能にする。
@@ -44,11 +45,25 @@ def _groq_completion(**kwargs):
         except Exception as error:
             last_error = error
             error_text = str(error).lower()
-            retryable = any(marker in error_text for marker in ("rate_limit", "429", "500", "502", "503", "timeout"))
-            if not retryable or attempt == 2:
+            retryable = any(marker in error_text for marker in ("rate_limit", "429", "500", "502", "503", "timeout", "tool_use_failed", "invalid_request_error"))
+            if "tool_use_failed" in error_text and attempt == 0 and kwargs.get("model") != MODEL_FALLBACK:
+                kwargs = {**kwargs, "model": MODEL_FALLBACK, "max_tokens": min(int(kwargs.get("max_tokens", 800)), 800)}
+            elif not retryable or attempt == 2:
                 raise
             time.sleep(2 ** attempt)
     raise last_error
+
+def normalize_tool_name(raw_name: object) -> str:
+    """モデルが付加したチャネル制御文字列を除去し、登録済みツール名へ戻す。"""
+    name = str(raw_name or "").strip()
+    name = re.split(r"<\|[^>]*\|>", name, maxsplit=1)[0].strip()
+    name = name.split("<|", 1)[0].strip()
+    if name in FUNCTION_MAP:
+        return name
+    for known in sorted(FUNCTION_MAP, key=len, reverse=True):
+        if name.startswith(known):
+            return known
+    return name
 
 def _tool_result_payload(tool_name: str, result: object) -> str:
     """ツール結果をモデルが再判断しやすいJSON互換形式へ統一する。"""
@@ -842,7 +857,10 @@ class AgentCog(commands.Cog):
                     summary = _trim_for_llm(response_message.content, 700).replace("```", "'''")
                     logs.append(f"**判断サマリー:** {summary}")
                 for tool_call in response_message.tool_calls:
-                    func_name = tool_call.function.name
+                    raw_func_name = tool_call.function.name
+                    func_name = normalize_tool_name(raw_func_name)
+                    if func_name != raw_func_name:
+                        logs.append(f"ツール名を正規化: `{raw_func_name}` → `{func_name}`")
                     func_args = json.loads(tool_call.function.arguments)
 
                     call_key = json.dumps({"name": func_name, "args": func_args}, ensure_ascii=False, sort_keys=True)
