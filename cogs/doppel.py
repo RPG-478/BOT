@@ -52,10 +52,7 @@ class AdvancedDoppelganger(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot:
-            return
-
-        if not message.reference or not message.reference.message_id:
+        if message.author.bot or not message.reference or not message.reference.message_id:
             return
 
         try:
@@ -73,7 +70,6 @@ class AdvancedDoppelganger(commands.Cog):
             return
 
         target_id = map_res.data[0]["target_id"]
-        
         target_member = message.guild.get_member(int(target_id))
         if not target_member:
             try:
@@ -141,26 +137,15 @@ class AdvancedDoppelganger(commands.Cog):
         )
         await interaction.response.send_message(f"{interaction.user.mention} 同意を撤回し、すべてのペルソナデータを削除しました。")
 
-    @app_commands.command(name="doppel_collect", description="指定したユーザーの発言ログからドッペルゲンガーを蒸留します。")
-    @app_commands.describe(target="解析・蒸留対象のユーザーを指定してください")
-    async def doppel_collect(self, interaction: discord.Interaction, target: discord.Member):
-        await interaction.response.defer()
+    async def _background_collect(self, channel: discord.TextChannel, target: discord.Member):
         target_id = str(target.id)
-
-        opt_res = await asyncio.to_thread(
-            lambda: supabase.table("user_optins").select("opted_in").eq("user_id", target_id).execute()
-        )
-        if not opt_res.data or not opt_res.data[0].get("opted_in"):
-            await interaction.followup.send(f"{target.mention} は機能利用に同意していません（`/doppel_optin` が必要です）。")
-            return
-
         conversations = []
         total_msg_count = 0
 
-        for channel in interaction.guild.text_channels:
+        for ch in channel.guild.text_channels:
             try:
                 prev_msg = None
-                async for msg in channel.history(limit=None, oldest_first=True):
+                async for msg in ch.history(limit=None, oldest_first=True):
                     if msg.author.id == target.id and not msg.content.startswith("/"):
                         cleaned = sanitize_text(msg.content)
                         if cleaned.strip():
@@ -170,11 +155,12 @@ class AdvancedDoppelganger(commands.Cog):
                             else:
                                 conversations.append(f"Target Statement: {cleaned}")
                     prev_msg = msg
+                    await asyncio.sleep(0.01)
             except (discord.Forbidden, discord.HTTPException):
                 continue
 
         if not conversations:
-            await interaction.followup.send(f"{target.name} の有効な会話データが見つかりませんでした。")
+            await channel.send(f"{target.mention} の有効な会話データが見つかりませんでした。")
             return
 
         corpus_sample = "\n---\n".join(conversations[-1500:])
@@ -204,7 +190,7 @@ class AdvancedDoppelganger(commands.Cog):
             response = await asyncio.to_thread(_call_groq)
             distilled_prompt = response.choices[0].message.content
         except Exception as e:
-            await interaction.followup.send(f"AI蒸留処理エラー: {e}")
+            await channel.send(f"AI蒸留処理エラー: {e}")
             return
 
         await asyncio.to_thread(
@@ -214,7 +200,22 @@ class AdvancedDoppelganger(commands.Cog):
             }, on_conflict="user_id").execute()
         )
 
-        await interaction.followup.send(f"✨ {target.name} (計 {total_msg_count} 発言) のドッペルゲンガープロンプトの蒸留・保存が完了しました。")
+        await channel.send(f"✨ {target.mention} (計 {total_msg_count} 発言を解析) のドッペルゲンガープロンプトの全量蒸留・保存が完了しました！")
+
+    @app_commands.command(name="doppel_collect", description="指定したユーザーの発言ログからドッペルゲンガーを蒸留します。")
+    @app_commands.describe(target="解析・蒸留対象のユーザーを指定してください")
+    async def doppel_collect(self, interaction: discord.Interaction, target: discord.Member):
+        target_id = str(target.id)
+
+        opt_res = await asyncio.to_thread(
+            lambda: supabase.table("user_optins").select("opted_in").eq("user_id", target_id).execute()
+        )
+        if not opt_res.data or not opt_res.data[0].get("opted_in"):
+            await interaction.response.send_message(f"{target.mention} は機能利用に同意していません（`/doppel_optin` が必要です）。")
+            return
+
+        await interaction.response.send_message(f"⚙️ {target.mention} のサーバー全発言ログの走査を開始しました。全件取得のため完了まで時間がかかります。完了時にこのチャンネルへ通知します。")
+        asyncio.create_task(self._background_collect(interaction.channel, target))
 
     @app_commands.command(name="doppel", description="指定ユーザーのドッペルゲンガーを呼び出して対話します。")
     @app_commands.describe(target="呼び出すドッペルゲンガーの対象ユーザー", prompt="話しかける内容")
