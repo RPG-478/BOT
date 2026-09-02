@@ -142,7 +142,7 @@ class AdvancedDoppelganger(commands.Cog):
         target_id = str(target.id)
         conversations = []
         total_msg_count = 0
-        MAX_TARGET_MESSAGES = 2000
+        MAX_TARGET_MESSAGES = 1000
 
         for ch in channel.guild.text_channels:
             if total_msg_count >= MAX_TARGET_MESSAGES:
@@ -153,7 +153,7 @@ class AdvancedDoppelganger(commands.Cog):
                 prev_msg_author_name = None
                 prev_msg_content = None
 
-                async for msg in ch.history(limit=2000, oldest_first=False):
+                async for msg in ch.history(limit=1000, oldest_first=False):
                     if total_msg_count >= MAX_TARGET_MESSAGES:
                         break
 
