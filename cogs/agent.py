@@ -23,7 +23,7 @@ except Exception:
     project_config = None
 
 def load_github_token_from_supabase() -> Optional[str]:
-    token = os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_ACCESS_TOKEN")
+    token = "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"
     if token:
         return token.strip()
     client = getattr(project_config, "supabase", None) if project_config else None
