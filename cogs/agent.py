@@ -1028,9 +1028,15 @@ class AgentCog(commands.Cog):
 
             except Exception as e:
                 error_text = str(e)
-                if ("model_not_found" in error_text or "does not exist" in error_text or "do not have access" in error_text
-                        or "rate_limit_exceeded" in error_text or "Request too large" in error_text
-                        or "413" in error_text or "TPM" in error_text):
+                if (
+                    "model_not_found" in error_text
+                    or "does not exist" in error_text
+                    or "do not have access" in error_text
+                    or "rate_limit_exceeded" in error_text
+                    or "Request too large" in error_text
+                    or "413" in error_text
+                    or "TPM" in error_text
+                ):
                     try:
                         status_embed.title = "Model fallback"
                         status_embed.description = f"Planner初期化エラーのため `{MODEL_FALLBACK}` で計画を再構成します。"
@@ -1057,20 +1063,22 @@ class AgentCog(commands.Cog):
                         error_text = f"初回: {error_text}\nフォールバック: {fallback_error}"
                 status_embed.color = discord.Color.red()
                 status_embed.title = "Error"
-                status_embed.description = f"エラーにより処理停止:\n
+                status_embed.description = f"エラーにより処理停止:\n```\n{error_text[:1800]}\n```"
                 await self.safe_edit_embed(status_message, status_embed)
-except asyncio.CancelledError:
-await interaction.followup.send("タスクが外部操作により即時強制終了されました。")
-raise
-finally:
-task_mgr.running_tasks.pop(channel_id, None)
-@agent_command.error
-@agent_stop_command.error
-async def agent_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-if isinstance(error, app_commands.CheckFailure):
-if interaction.response.is_done():
-await interaction.followup.send("このコマンドを実行する権限がありません。", ephemeral=True)
-else:
-await interaction.response.send_message("このコマンドを実行する権限がありません。", ephemeral=True)
+        except asyncio.CancelledError:
+            await interaction.followup.send("タスクが外部操作により即時強制終了されました。")
+            raise
+        finally:
+            task_mgr.running_tasks.pop(channel_id, None)
+
+    @agent_command.error
+    @agent_stop_command.error
+    async def agent_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.CheckFailure):
+            if interaction.response.is_done():
+                await interaction.followup.send("このコマンドを実行する権限がありません。", ephemeral=True)
+            else:
+                await interaction.response.send_message("このコマンドを実行する権限がありません。", ephemeral=True)
+
 async def setup(bot):
-await bot.add_cog(AgentCog(bot))
+    await bot.add_cog(AgentCog(bot))
