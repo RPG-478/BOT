@@ -107,15 +107,25 @@ class TaskManager:
                     break
         return self.get_formatted_plan(channel_id)
     def mark_progress_for_tool(self, channel_id: int, tool_name: str) -> str:
+        """1つの計画項目を複数アクションで進める。通常の調査では完了へ進めない。"""
         if channel_id not in self.plans:
             return self.get_formatted_plan(channel_id)
-        keywords = {
-            "read_github_file": "調査", "list_repository_files": "調査", "print_tree": "調査",
-            "search_code_in_repo": "調査", "check_python_syntax": "検証",
-            "patch_github_file": "実装", "commit_file_to_github": "コミット",
-        }
-        for task in self.plans[channel_id]:
-            if task["status"] == "進行中" and keywords.get(tool_name, "") in task["task"]:
+        if not any(task["status"] == "進行中" for task in self.plans[channel_id]):
+            self.mark_next_in_progress(channel_id)
+        return self.get_formatted_plan(channel_id)
+    def complete_for_tool(self, channel_id: int, tool_name: str, success: bool = True) -> str:
+        """明確なマイルストーンだけ計画項目を完了させ、次項目へ進める。"""
+        if not success or channel_id not in self.plans:
+            return self.get_formatted_plan(channel_id)
+        tasks = self.plans[channel_id]
+        if tool_name in {"patch_github_file", "commit_file_to_github"}:
+            candidates = ("実装", "変更", "コミット")
+        elif tool_name == "check_python_syntax":
+            candidates = ("実装", "変更", "検証")
+        else:
+            candidates = ()
+        for task in tasks:
+            if task["status"] == "進行中" and candidates and any(word in task["task"] for word in candidates):
                 task["status"] = "完了"
                 break
         return self.mark_next_in_progress(channel_id)
@@ -149,23 +159,35 @@ def build_default_plan(mode: str) -> list[str]:
     return ["対象ファイルと要件を確認", "必要な変更を実装", "構文・動作を検証", "GitHubへコミット", "結果を報告"]
 
 def print_tree(repo_name: str, path: str = "", depth: int = 2, branch: str = "main") -> str:
-    """リポジトリのツリーを表示する互換ツール。"""
+    """Git Trees APIでブランチ全体を取得し、指定深度の正確な構成を表示する。"""
     try:
         depth = max(0, min(int(depth), 6))
+        path = path.strip("/")
         repo = github_client.get_repo(repo_name)
-        root = repo.get_contents(path, ref=branch)
-        if not isinstance(root, list):
-            root = [root]
-        lines = []
-        def walk(items, level):
-            for item in sorted(items, key=lambda entry: (entry.type != "dir", entry.path)):
-                prefix = "  " * level + ("└── " if level else "")
-                lines.append(f"{prefix}{item.path}")
-                if item.type == "dir" and level < depth:
-                    children = repo.get_contents(item.path, ref=branch)
-                    walk(children if isinstance(children, list) else [children], level + 1)
-        walk(root, 0)
-        return "\n".join(lines) or "指定されたパスは空です。"
+        branch_ref = repo.get_branch(branch)
+        tree = repo.get_git_tree(branch_ref.commit.sha, recursive=True)
+        prefix = f"{path}/" if path else ""
+        entries = []
+        for item in tree.tree:
+            item_path = item.path.strip("/")
+            if prefix and not (item_path == path or item_path.startswith(prefix)):
+                continue
+            relative = item_path[len(prefix):] if prefix else item_path
+            if not relative:
+                continue
+            parts = relative.split("/")
+            if len(parts) > depth + 1:
+                continue
+            kind = "DIR" if item.type == "tree" else "FILE"
+            entries.append((item_path, kind, len(parts), item.type))
+        entries.sort(key=lambda row: (row[0].lower(), row[1]))
+        lines = [f"Repository: {repo_name} @ {branch}", f"Root: /{path}" if path else "Root: /"]
+        for item_path, kind, levels, item_type in entries:
+            relative = item_path[len(prefix):] if prefix else item_path
+            lines.append(f"{'  ' * (levels - 1)}{'└── ' if levels > 1 else ''}[{kind}] {relative}")
+        if getattr(tree, "truncated", False):
+            lines.append("[注意] GitHub側でツリーが切り詰められています。pathを絞って再取得してください。")
+        return "\n".join(lines) if entries else "指定されたパスに構成がありません。"
     except Exception as e:
         return f"ツリー取得失敗: {str(e)}"
 
@@ -340,6 +362,9 @@ def execute_python_code(code_string: str) -> str:
 def create_task_plan(tasks: list[str]) -> str:
     return "計画が設定されました。"
 
+def update_task_status(task_id: int, status: str) -> str:
+    return f"タスク {task_id} を {status} に更新します。"
+
 FUNCTION_MAP = {
     "print_tree": print_tree,
     "list_repository_files": list_repository_files,
@@ -352,10 +377,26 @@ FUNCTION_MAP = {
     "fetch_web_page_text": fetch_web_page_text,
     "check_python_syntax": check_python_syntax,
     "execute_python_code": execute_python_code,
-    "create_task_plan": create_task_plan
+    "create_task_plan": create_task_plan,
+    "update_task_status": update_task_status
 }
 
 GROQ_TOOLS_SCHEMA = [
+    {
+        "type": "function",
+        "function": {
+            "name": "update_task_status",
+            "description": "複数のツール操作が完了した後、計画項目の状態を更新します。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer", "minimum": 1},
+                    "status": {"type": "string", "enum": ["進行中", "完了", "失敗"]}
+                },
+                "required": ["task_id", "status"]
+            }
+        }
+    },
     {
         "type": "function",
         "function": {
@@ -550,6 +591,7 @@ SYSTEM_INSTRUCTION_GROQ_ENGINEER = """
 あなたは高度なメインエンジニアエージェントです。
 必ずタスクを調査・検証してから結論を出してください。
 各ターンで、内部の逐語的な思考ではなく、ユーザーに見せてよい短い「判断サマリー」をcontentへ1〜2文で記載してください。内容は目的、根拠、次の行動のいずれかに限定してください。
+1つの計画項目は複数のツール操作で構成されます。各操作ごとに完了扱いにせず、論理的な作業単位が完了した時だけupdate_task_statusを使ってください。
 動作モードがnormalで自動コミット許可がTrueの場合、コード変更を行ったら必ず
 patch_github_fileまたはcommit_file_to_githubを実行し、その戻り値で成功を確認してください。
 コミットツールを実行していないのに「コミットした」「変更を反映した」と報告してはいけません。
@@ -810,9 +852,15 @@ class AgentCog(commands.Cog):
                         logs.append(f"**Loop guard:** `{func_name}` の重複呼び出しを停止")
                         task_mgr.update_status(channel_id, 1, "失敗")
                     elif func_name == "create_task_plan":
-                        plan_str = task_mgr.set_plan(channel_id, func_args.get("tasks", []))
+                        tasks = [str(task).strip() for task in func_args.get("tasks", []) if str(task).strip()]
+                        plan_str = task_mgr.set_plan(channel_id, tasks[:7]) if tasks else task_mgr.set_plan(channel_id, build_default_plan(mode))
                         logs.append(f"**計画立案:**\n```\n{plan_str}\n```")
                         result = plan_str
+                    elif func_name == "update_task_status":
+                        task_id = int(func_args.get("task_id", 0))
+                        status = str(func_args.get("status", "進行中"))
+                        result = task_mgr.update_status(channel_id, task_id, status)
+                        logs.append(f"**計画更新:** タスク{task_id} → {status}")
                     else:
                         if func_name in {"print_tree", "list_repository_files", "read_github_file", "search_code_in_repo", "patch_github_file", "commit_file_to_github", "get_github_issue"}:
                             func_args.setdefault("repo_name", target_repo)
@@ -821,6 +869,8 @@ class AgentCog(commands.Cog):
                             task_mgr.mark_progress_for_tool(channel_id, func_name)
                             result = FUNCTION_MAP[func_name](**func_args)
                             result_text = str(result)
+                            result_ok = not any(marker in result_text for marker in ("失敗", "エラー", "中断"))
+                            task_mgr.complete_for_tool(channel_id, func_name, result_ok)
                             if func_name in {"patch_github_file", "commit_file_to_github"} and any(marker in result_text for marker in ("コミットしました", "更新コミットしました", "新規作成コミットしました")):
                                 commit_actions.append({"tool": func_name, "result": result_text})
                                 completed_tools.add(func_name)
