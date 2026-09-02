@@ -33,7 +33,7 @@ class AdvancedDoppelganger(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    async def _send_as_webhook(self, channel: discord.TextChannel, member: discord.Member, content: str):
+    async def _send_as_webhook(self, channel: discord.TextChannel, member: discord.Member, content: str) -> discord.Message:
         webhooks = await channel.webhooks()
         webhook = discord.utils.get(webhooks, name="Doppelganger-Webhook")
         if not webhook:
@@ -42,11 +42,85 @@ class AdvancedDoppelganger(commands.Cog):
         avatar_url = member.display_avatar.url
         user_name = member.display_name
 
-        await webhook.send(
+        sent_msg = await webhook.send(
             content=content,
             username=user_name,
-            avatar_url=avatar_url
+            avatar_url=avatar_url,
+            wait=True
         )
+        return sent_msg
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot:
+            return
+
+        if not message.reference or not message.reference.message_id:
+            return
+
+        try:
+            ref_msg = await message.channel.fetch_message(message.reference.message_id)
+        except (discord.NotFound, discord.HTTPException):
+            return
+
+        if not ref_msg.webhook_id:
+            return
+
+        map_res = await asyncio.to_thread(
+            lambda: supabase.table("doppel_messages").select("target_id").eq("message_id", str(ref_msg.id)).execute()
+        )
+        if not map_res.data:
+            return
+
+        target_id = map_res.data[0]["target_id"]
+        
+        target_member = message.guild.get_member(int(target_id))
+        if not target_member:
+            try:
+                target_member = await message.guild.fetch_member(int(target_id))
+            except (discord.NotFound, discord.HTTPException):
+                return
+
+        persona_res = await asyncio.to_thread(
+            lambda: supabase.table("user_personas").select("distilled_prompt").eq("user_id", target_id).execute()
+        )
+        if not persona_res.data or not persona_res.data[0].get("distilled_prompt"):
+            return
+
+        base_persona = persona_res.data[0]["distilled_prompt"]
+        caller_name = message.author.display_name
+
+        system_prompt = (
+            f"{base_persona}\n\n"
+            "【ダイナミクスおよび安全ガイドライン】\n"
+            f"・現在、あなたは『{caller_name}』から返信を受けて会話を継続しています。文脈および人間関係に応じた自然なスタンスで応答してください。\n"
+            "・公序良俗に反する発言、個人情報の漏洩、直接的なヘイトスピーチは自動ガードレールにより制限されます。"
+        )
+
+        try:
+            def _call_groq():
+                return groq_client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "assistant", "content": ref_msg.content},
+                        {"role": "user", "content": message.content}
+                    ],
+                    temperature=0.85
+                )
+            response = await asyncio.to_thread(_call_groq)
+            reply = response.choices[0].message.content
+
+            new_sent_msg = await self._send_as_webhook(message.channel, target_member, reply)
+
+            await asyncio.to_thread(
+                lambda: supabase.table("doppel_messages").insert({
+                    "message_id": str(new_sent_msg.id),
+                    "target_id": target_id
+                }).execute()
+            )
+        except Exception as e:
+            await message.channel.send(f"応答生成エラー: {e}")
 
     @app_commands.command(name="doppel_optin", description="ドッペルゲンガー機能のデータ収集に同意します。")
     async def doppel_optin(self, interaction: discord.Interaction):
@@ -178,7 +252,15 @@ class AdvancedDoppelganger(commands.Cog):
             response = await asyncio.to_thread(_call_groq)
             reply = response.choices[0].message.content
 
-            await self._send_as_webhook(interaction.channel, target, reply)
+            new_sent_msg = await self._send_as_webhook(interaction.channel, target, reply)
+
+            await asyncio.to_thread(
+                lambda: supabase.table("doppel_messages").insert({
+                    "message_id": str(new_sent_msg.id),
+                    "target_id": target_id
+                }).execute()
+            )
+
             await interaction.followup.send(f"{target.display_name} のドッペルゲンガーとして送信しました。", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"応答生成エラー: {e}")
@@ -220,8 +302,16 @@ class AdvancedDoppelganger(commands.Cog):
         r2 = await asyncio.to_thread(_sim_turn2)
 
         await interaction.followup.send(f"🗣️ **議論シミュレーションの開始: {topic}**")
-        await self._send_as_webhook(interaction.channel, member1, f"【議題: {topic}】\n{r1}")
-        await self._send_as_webhook(interaction.channel, member2, r2)
+        
+        msg1 = await self._send_as_webhook(interaction.channel, member1, f"【議題: {topic}】\n{r1}")
+        msg2 = await self._send_as_webhook(interaction.channel, member2, r2)
+
+        await asyncio.to_thread(
+            lambda: supabase.table("doppel_messages").insert([
+                {"message_id": str(msg1.id), "target_id": str(member1.id)},
+                {"message_id": str(msg2.id), "target_id": str(member2.id)}
+            ]).execute()
+        )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AdvancedDoppelganger(bot))
