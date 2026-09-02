@@ -39,10 +39,12 @@ class AdvancedDoppelganger(commands.Cog):
         if not webhook:
             webhook = await channel.create_webhook(name="Doppelganger-Webhook")
         
-        avatar_url = member.avatar.url if member.avatar else member.default_avatar.url
+        avatar_url = member.display_avatar.url
+        user_name = member.display_name
+
         await webhook.send(
             content=content,
-            username=f"{member.display_name} (Doppelganger)",
+            username=user_name,
             avatar_url=avatar_url
         )
 
@@ -143,7 +145,7 @@ class AdvancedDoppelganger(commands.Cog):
     @app_commands.command(name="doppel", description="指定ユーザーのドッペルゲンガーを呼び出して対話します。")
     @app_commands.describe(target="呼び出すドッペルゲンガーの対象ユーザー", prompt="話しかける内容")
     async def doppel(self, interaction: discord.Interaction, target: discord.Member, prompt: str):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         target_id = str(target.id)
         caller_name = interaction.user.display_name
 
@@ -176,8 +178,8 @@ class AdvancedDoppelganger(commands.Cog):
             response = await asyncio.to_thread(_call_groq)
             reply = response.choices[0].message.content
 
-            await interaction.followup.send(f"**[Command Execution]** Prompt sent to {target.display_name}'s Doppelganger.", ephemeral=True)
             await self._send_as_webhook(interaction.channel, target, reply)
+            await interaction.followup.send(f"{target.display_name} のドッペルゲンガーとして送信しました。", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"応答生成エラー: {e}")
 
