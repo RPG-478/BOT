@@ -10,7 +10,7 @@ import google.generativeai as genai
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_API_KEY = "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"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
