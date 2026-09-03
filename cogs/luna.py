@@ -2,11 +2,14 @@ import discord
 from discord.ext import commands, tasks
 import os
 import random
+import sqlite3
+import re
 from collections import deque
 from google import genai
 from google.genai import types
 
 TARGET_USER_ID = 1320705325686587408
+DB_PATH = "mimic_memory.db"
 
 class PerfectMimicAI(commands.Cog):
     def __init__(self, bot):
@@ -15,10 +18,79 @@ class PerfectMimicAI(commands.Cog):
         self.gemini_client = genai.Client(api_key=self.gemini_api_key)
         self.enabled_channels = set()
         self.sent_webhook_message_ids = deque(maxlen=200)
+        
+        self._init_memory_db()
         self.spontaneous_talk.start()
 
     def cog_unload(self):
         self.spontaneous_talk.cancel()
+
+    # --- 長期記憶用ローカルSQLite (FTS5) モジュール ---
+
+    def _init_memory_db(self):
+        """SQLite FTS5テーブルの初期化（API消費0）"""
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS long_term_memory USING fts5(
+                channel_id,
+                author_id,
+                author_name,
+                content,
+                timestamp
+            );
+        """)
+        conn.commit()
+        conn.close()
+
+    def _tokenize(self, text: str) -> str:
+        """API・外部ライブラリを使わずにFTS5用キーワード列を作成（N-gram + 単語分解）"""
+        clean_text = re.sub(r'https?://\S+|[^\w\s]', ' ', text)
+        words = clean_text.split()
+        bigrams = [text[i:i+2] for i in range(len(text)-1) if not text[i:i+2].isspace()]
+        tokens = list(set(words + bigrams))
+        return " ".join(tokens)
+
+    def _save_memory(self, channel_id: int, author_id: int, author_name: str, content: str, timestamp: str):
+        """発言データをローカルDBに保存"""
+        if not content or len(content) < 2 or content.startswith("!"):
+            return
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO long_term_memory (channel_id, author_id, author_name, content, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+        """, (str(channel_id), str(author_id), author_name, content, timestamp))
+        conn.commit()
+        conn.close()
+
+    def _search_memories(self, query: str, limit: int = 4) -> list:
+        """クエリから関連記憶を高速全文検索"""
+        tokens = self._tokenize(query)
+        if not tokens.strip():
+            return []
+        
+        keywords = [f'"{token}"' for token in tokens.split() if len(token) >= 2]
+        if not keywords:
+            return []
+            
+        fts_query = " OR ".join(keywords[:10])
+        
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                SELECT author_name, content FROM long_term_memory
+                WHERE long_term_memory MATCH ?
+                ORDER BY rank LIMIT ?
+            """, (fts_query, limit))
+            results = cursor.fetchall()
+        except sqlite3.OperationalError:
+            results = []
+        conn.close()
+        return [f"{row[0]}: {row[1]}" for row in results]
+
+    # --- Cog コマンド & イベント処理 ---
 
     @commands.command(name="mimic_toggle")
     @commands.has_permissions(manage_channels=True)
@@ -54,7 +126,10 @@ class PerfectMimicAI(commands.Cog):
                         continue
 
                     reply_text = await self._generate_mimic_response("", user_logs, display_name, is_spontaneous=True)
-                    await self._send_as_webhook(channel, display_name, avatar_url, reply_text)
+                    sent_msg = await self._send_as_webhook(channel, display_name, avatar_url, reply_text)
+                    
+                    if sent_msg:
+                        self._save_memory(channel.id, TARGET_USER_ID, display_name, reply_text, str(sent_msg.created_at))
                 except Exception as e:
                     print(f"Error in spontaneous talk: {e}")
 
@@ -66,6 +141,16 @@ class PerfectMimicAI(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
             return
+
+        # 1. 受け取った全メッセージをローカル長期記憶に完全無料保存
+        clean_content = message.clean_content.replace(f"@{self.bot.user.name}", "").strip()
+        self._save_memory(
+            message.channel.id, 
+            message.author.id, 
+            message.author.display_name, 
+            clean_content, 
+            str(message.created_at)
+        )
 
         is_mentioned = self.bot.user in message.mentions
         
@@ -95,16 +180,22 @@ class PerfectMimicAI(commands.Cog):
                         return
 
                     conversation_context = await self._fetch_conversation_context(message)
-                    prompt = message.clean_content.replace(f"@{self.bot.user.name}", "").strip()
+                    prompt = clean_content
                     
+                    # ローカルSQLiteから関連記憶を抽出 (API消費0)
+                    retrieved_memories = self._search_memories(prompt)
+
                     reply_text = await self._generate_mimic_response(
                         prompt, 
                         user_logs, 
                         display_name, 
-                        conversation_context=conversation_context
+                        conversation_context=conversation_context,
+                        memories=retrieved_memories
                     )
                     
-                    await self._send_as_webhook(message.channel, display_name, avatar_url, reply_text)
+                    sent_msg = await self._send_as_webhook(message.channel, display_name, avatar_url, reply_text)
+                    if sent_msg:
+                        self._save_memory(message.channel.id, TARGET_USER_ID, display_name, reply_text, str(sent_msg.created_at))
                 except Exception as e:
                     print(f"Error in auto response: {e}")
 
@@ -123,13 +214,20 @@ class PerfectMimicAI(commands.Cog):
                     return
 
                 conversation_context = await self._fetch_conversation_context(ctx.message)
+                
+                # ローカルSQLiteから関連記憶を抽出 (API消費0)
+                retrieved_memories = self._search_memories(prompt) if prompt else []
+
                 reply_text = await self._generate_mimic_response(
                     prompt, 
                     user_logs, 
                     display_name, 
-                    conversation_context=conversation_context
+                    conversation_context=conversation_context,
+                    memories=retrieved_memories
                 )
-                await self._send_as_webhook(ctx.channel, display_name, avatar_url, reply_text)
+                sent_msg = await self._send_as_webhook(ctx.channel, display_name, avatar_url, reply_text)
+                if sent_msg:
+                    self._save_memory(ctx.channel.id, TARGET_USER_ID, display_name, reply_text, str(sent_msg.created_at))
             except Exception as e:
                 await ctx.send(f"エラーが発生しました: {e}")
 
@@ -177,9 +275,14 @@ class PerfectMimicAI(commands.Cog):
 
         return logs
 
-    async def _generate_mimic_response(self, prompt, user_logs, display_name, conversation_context="", is_spontaneous=False):
+    async def _generate_mimic_response(self, prompt, user_logs, display_name, conversation_context="", memories=None, is_spontaneous=False):
         sample_texts = "\n".join([f"- {text}" for text in user_logs])
         
+        memory_section = ""
+        if memories:
+            formatted_memories = "\n".join([f"・{m}" for m in memories])
+            memory_section = f"\n【関連する過去の出来事・会話の記憶】\n{formatted_memories}\n"
+
         system_instruction = (
             f"あなたはユーザー「{display_name}」の文体・思考・発言パターンを模倣するAIです。\n"
             "固定のテンプレートに囚われず、【過去の発言データ】からニュアンスや癖を読み取り、自然になりきってください。\n\n"
@@ -190,12 +293,14 @@ class PerfectMimicAI(commands.Cog):
             "【文体・表現の傾向】\n"
             "・過去の発言データに見られる語尾や接続表現（「〜やで」「〜ぞ」「〜やな」「〜思ふ」「〜なんよな」「〜って話」「〜で」等）を状況に合わせて使う。\n"
             "・言葉選びは簡潔に。記号や装飾は乱用せず、発言データにある雰囲気を自然に取り入れる。\n"
-            "・「# 」による補足表記は常用せず、真に必要な場合のみごく稀に使用する。\n\n"
+            "・「# 」による補足表記は常用せず、真に必要な場合のみごく稀に使用する。\n"
+            "・ひらがな多めのニュアンスや表記の揺らぎを自然に反映する。\n\n"
             "【禁止事項】\n"
             "- 「～でしょうか？」「～しましょう！」といったAI特有の丁寧な回答やアシスタント的な相槌。\n"
             "- 強い罵倒や怒鳴り口調、過度な絵文字の連続。\n"
             "- 設定文をそのまま復唱するような回答。\n\n"
             f"【過去の発言データ（※ここから発言の空気感と文体を抽出すること）】\n{sample_texts}"
+            f"{memory_section}"
         )
 
         if is_spontaneous:
@@ -223,16 +328,21 @@ class PerfectMimicAI(commands.Cog):
         if not webhook:
             webhook = await channel.create_webhook(name="MimicWebhook")
 
+        last_sent_msg = None
         if len(text) > 2000:
             chunks = [text[i:i+2000] for i in range(0, len(text), 2000)]
             for chunk in chunks:
                 sent_msg = await webhook.send(content=chunk, username=username, avatar_url=avatar_url, wait=True)
                 if sent_msg:
                     self.sent_webhook_message_ids.append(sent_msg.id)
+                    last_sent_msg = sent_msg
         else:
             sent_msg = await webhook.send(content=text, username=username, avatar_url=avatar_url, wait=True)
             if sent_msg:
                 self.sent_webhook_message_ids.append(sent_msg.id)
+                last_sent_msg = sent_msg
+        
+        return last_sent_msg
 
 async def setup(bot):
     await bot.add_cog(PerfectMimicAI(bot))
