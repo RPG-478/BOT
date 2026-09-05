@@ -10,7 +10,7 @@ from supabase import create_client, Client
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 genai.configure(api_key=GEMINI_API_KEY)
@@ -110,7 +110,7 @@ class AppraisalCog(commands.Cog):
         return scaled
 
     async def generate_ai_monster(self, image_bytes: bytes, dice: dict) -> dict:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-3.5-flash-lite")
         
         prompt = f"""
 あなたはゲーム「DDD (dot discord)」の鑑定AIです。
