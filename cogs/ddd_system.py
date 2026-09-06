@@ -38,6 +38,13 @@ TECHNIQUES = {
     "回復": {"category": "status", "effect": "heal", "description": "変化 / HPを25%回復。1戦3回まで。"},
     "防御": {"category": "status", "effect": "guard", "description": "変化 / 次に受けるダメージを半減。"},
     "毒": {"category": "status", "effect": "poison", "accuracy": 85, "description": "変化 / 命中85。相手に3回の毒ダメージ。"},
+    "特殊攻撃1": {"category": "special", "power": 30, "accuracy": 90, "effect_after": "attack_up", "description": "特殊 / 威力30 / 命中90。攻撃後に攻撃+1。"},
+    "ヒール強化": {"category": "status", "effect": "heal_big", "description": "変化 / HPを50%回復。1戦3回まで。"},
+    "強攻撃1": {"category": "physical", "power": 140, "accuracy": 80, "effect_after": "stun", "description": "物理 / 威力140 / 命中80。攻撃後に1ターン動けない。"},
+    "特殊攻撃2": {"category": "special", "power": 25, "accuracy": 100, "effect_after": "random_switch", "description": "特殊 / 威力25 / 命中100。攻撃後にランダム交代。"},
+    "特殊攻撃3": {"category": "special", "power": 40, "accuracy": 90, "effect_after": "drain", "description": "特殊 / 威力40 / 命中90。与えたダメージ分回復。"},
+    "特殊1": {"category": "status", "effect": "entry_hazard", "description": "変化 / 登場した相手に最大HPの1/8ダメージ。"},
+    "特殊2": {"category": "status", "effect": "revenge_bomb", "description": "変化 / 次に戦闘不能になったとき相手へ最大HP50%ダメージ。"},
     "絡みつき": {"category": "status", "effect": "bind", "accuracy": 85, "description": "変化 / 命中85。相手を3ターン拘束する。"},
     "締め付け": {"category": "status", "effect": "bind", "accuracy": 80, "description": "変化 / 命中80。相手を4ターン拘束する。"},
     "くさむすび": {"category": "special", "power": 55, "accuracy": 90, "description": "特殊 / 威力55 / 命中90。蔦を絡めて攻撃。"},
@@ -52,7 +59,7 @@ TECHNIQUES = {
 def exchange_values(amount: int, direction: str, level: int, exp: int, balance: int) -> tuple[int, int, int]:
     """既存モンスターEXPとago coinの交換結果を計算する。"""
     amount = int(amount)
-    level = max(1, min(30, int(level or 1)))
+    level = max(1, min(50, int(level or 1)))
     exp = max(0, int(exp or 0))
     balance = max(0, int(balance or 0))
     if amount <= 0:
@@ -62,8 +69,8 @@ def exchange_values(amount: int, direction: str, level: int, exp: int, balance: 
             raise ValueError(f"モンスターEXPが不足しています（現在: {exp} EXP）。")
         return level, exp - amount, balance + amount * COINS_PER_EXP
     if direction == "coin_to_exp":
-        if level >= 30:
-            raise ValueError("Lv.30のモンスターには追加EXPを交換できません。")
+        if level >= 50:
+            raise ValueError("Lv.50のモンスターには追加EXPを交換できません。")
         required = amount * COINS_PER_EXP
         if balance < required:
             raise ValueError(f"ago coinが不足しています（所持: {balance} / 必要: {required}）。")
@@ -81,7 +88,7 @@ def monster_embed(monster):
     if monster.get("image_url"):
         embed.set_image(url=monster["image_url"])
     exp = max(0, min(100, monster.get("current_exp") or 0))
-    progress = "MAX LEVEL" if level >= 30 else f"`{'█' * (exp // 10)}{'░' * (10 - exp // 10)}` {exp}/100 EXP"
+    progress = "MAX LEVEL" if level >= 50 else f"EXP {monster.get('current_exp', 0)} / 次Lv必要値"
     embed.add_field(name="成長", value=f"{progress}\nパレット {monster.get('canvas_size', '8x8')} / 才能 {monster.get('dice_talent', '-')}", inline=False)
     stats = [(name, monster.get(f"max_{key}", 10)) for name, key in [("HP", "hp"), ("攻撃", "attack"), ("防御", "defense"), ("特攻", "sp_atk"), ("特防", "sp_def"), ("素早さ", "speed")]]
     embed.add_field(name="現在の能力値 / Lv.30の上限", value="\n".join(f"**{name}** {calc_stat(value, level)} / {value}" for name, value in stats), inline=True)
@@ -532,7 +539,7 @@ class SystemCog(commands.Cog):
             move = dict(moves[move_slot - 1])
             if move.get("category") == "status":
                 raise ValueError("変化技には威力の振り直しを適用できません。攻撃技を選んでください。")
-            move["power"] = random.randint(1, 110)
+            move["power"] = random.randint(60, 110)
             move["accuracy"] = random.randint(50, 100)
             moves[move_slot - 1] = move
             query = supabase.table("monsters").update({"moves": moves}).eq("id", monster_id).eq("user_id", user_id)
@@ -588,7 +595,7 @@ class SystemCog(commands.Cog):
         embed = discord.Embed(title="DDD | 小さなドットから、自分だけの物語を。", color=0x45E1AD,
                               description="描いて、組み合わせて、戦わせる。Discordがあなたのドット絵工房になります。")
         embed.add_field(name="01 / 相棒を作る", value="`/ddd_create` で8×8の工房を開く。5つのキャラベースと白紙、5色、5属性、5スタイルからカスタム。数字の編集で全64ドットを描けます。", inline=False)
-        embed.add_field(name="02 / 戦い方を決める", value="`/ddd_box` でIDを確認し `/ddd_loadout` で3枠の技を編成。物理・特殊・回復・毒・能力アップなど11種類。性能合計は無料作成で全員360です。", inline=False)
+        embed.add_field(name="02 / 戦い方を決める", value="`/ddd_box` でIDを確認し `/ddd_loadout` で3枠の技を編成。物理・特殊・回復・毒・拘束・反撃など追加技を含む。性能合計は無料作成で全員360です。", inline=False)
         embed.add_field(name="03 / ひとりで腕試し", value="`/ddd_practice` は1匹から遊べる無料のCPU戦。草原・遺跡・鏡の3コース。練習なので経験値・コインは変動しません。", inline=False)
         embed.add_field(name="04 / 友達と対戦・育成", value="`/ddd_battle` で招待。双方の直近3匹が出場し、速い先頭が先攻。勝利パーティ全員に50 EXP、100 EXPでレベルアップ（Lv.30まで）。期限切れは `/ddd_resume`。", inline=False)
         embed.add_field(name="戦術ノート", value="虚⇔実・正⇔負はお互いに2倍、同属性は半減（無を除く）。一致属性技は1.5倍。防御でダメージ半減、交代で能力ランク解除。回復は3回まで。80手で引き分け。", inline=False)

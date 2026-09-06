@@ -15,8 +15,12 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 logger = logging.getLogger(__name__)
 
 TYPE_CHART = {
-    "虚": {"実": 2.0, "虚": 0.5}, "実": {"虚": 2.0, "実": 0.5},
-    "正": {"負": 2.0, "正": 0.5}, "負": {"正": 2.0, "負": 0.5}, "無": {},
+    # 虚→実→正→負→虚。攻撃側が有利なら1.5倍、逆側は0.5倍。
+    "虚": {"実": 1.5, "負": 0.5},
+    "実": {"正": 1.5, "虚": 0.5},
+    "正": {"負": 1.5, "実": 0.5},
+    "負": {"虚": 1.5, "正": 0.5},
+    "無": {},
 }
 STAT_KEYS = ("hp", "attack", "defense", "sp_atk", "sp_def", "speed")
 MAX_ACTIONS = 80
@@ -37,8 +41,15 @@ def integer(value, default=0, low=0, high=9999):
 
 
 def calc_stat(max_stat: int, level: int) -> int:
-    """Preserve the existing 20% base growth curve; clamp legacy data safely."""
-    return max(1, int(integer(max_stat, 10, 1) * (0.2 + 0.8 * integer(level, 1, 1, 30) / 30)))
+    """Lv.30を基準に、Lv.40で1.2倍、Lv.50でLv.40の1.2倍へ伸ばす。"""
+    level = integer(level, 1, 1, 50)
+    if level <= 30:
+        multiplier = 0.2 + 0.8 * level / 30
+    elif level <= 40:
+        multiplier = 1.0 + 0.2 * (level - 30) / 10
+    else:
+        multiplier = 1.2 + 0.24 * (level - 40) / 10
+    return max(1, int(integer(max_stat, 10, 1) * multiplier))
 
 
 def get_type_multiplier(atk_type: str, def_type: str) -> float:
@@ -61,7 +72,7 @@ def normalize_moves(moves):
         result.append({**move, "name": str(move.get("name") or "たいあたり")[:20],
                        "type": move.get("type") if move.get("type") in TYPE_CHART else "無",
                        "category": category,
-                       "power": 0 if category == "status" else integer(move.get("power", 40), 40, 1, 120),
+                       "power": 0 if category == "status" else integer(move.get("power", 40), 40, 1, 140),
                        "accuracy": integer(move.get("accuracy", 100), 100, 1, 100)})
     return result
 
@@ -69,13 +80,14 @@ def normalize_moves(moves):
 def prepare_party(party):
     party = copy.deepcopy(party)
     for monster in party:
-        monster["current_level"] = integer(monster.get("current_level"), 1, 1, 30)
+        monster["current_level"] = integer(monster.get("current_level"), 1, 1, 50)
         for key in STAT_KEYS:
             monster[f"max_{key}"] = integer(monster.get(f"max_{key}"), 10, 1)
         monster["moves"] = normalize_moves(monster.get("moves"))
         monster["trait_id"] = monster.get("trait_id") if monster.get("trait_id") in SAFE_TRAITS else "none"
         monster["current_hp"] = calc_stat(monster["max_hp"], monster["current_level"])
-        monster.update(ranks={}, guarding=False, poison=0, heals=3)
+        monster.update(ranks={}, guarding=False, poison=0, heals=3, stunned=0, bound=0,
+                       entry_hazard=False, revenge_bomb=False)
     return party
 
 
@@ -87,7 +99,7 @@ def calculate_damage(attacker, defender, move, rng=None, critical=False):
     atk_key, def_key = ("sp_atk", "sp_def") if move.get("category") == "special" else ("attack", "defense")
     atk = calc_stat(attacker[f"max_{atk_key}"], attacker["current_level"]) * rank_multiplier(attacker.get("ranks", {}).get(atk_key, 0))
     defense = calc_stat(defender[f"max_{def_key}"], defender["current_level"]) * rank_multiplier(defender.get("ranks", {}).get(def_key, 0))
-    power = integer(move.get("power", 40), 40, 1, 120)
+    power = integer(move.get("power", 40), 40, 1, 140)
     base = ((attacker["current_level"] * 2 / 5 + 2) * power * atk / max(1, defense)) / 50 + 2
     stab = 1.5 if move.get("type") == attacker["element_type"] else 1.0
     trait_multiplier = 1.1 if attacker.get("trait_id") == "valor" and attacker.get("current_hp", 0) <= calc_stat(attacker["max_hp"], attacker["current_level"]) // 2 else 1.0
@@ -95,13 +107,19 @@ def calculate_damage(attacker, defender, move, rng=None, critical=False):
     return max(1, int(base * mult * stab * rng.uniform(0.85, 1) * (1.5 if critical else 1) * (0.5 if defender.get("guarding") else 1) * trait_multiplier)), mult
 
 
+def experience_required(level):
+    """次レベルまでの必要EXP。Lv.30までは100、31〜40は1000、41〜50は10000。"""
+    level = integer(level, 1, 1, 50)
+    return 100 if level < 30 else 1000 if level < 40 else 10000
+
+
 def add_experience(level, experience, amount):
-    level = integer(level, 1, 1, 30)
-    total = integer(experience) + max(0, amount)
-    while total >= 100 and level < 30:
+    level = integer(level, 1, 1, 50)
+    total = max(0, integer(experience)) + max(0, int(amount))
+    while level < 50 and total >= experience_required(level):
+        total -= experience_required(level)
         level += 1
-        total -= 100
-    return level, 0 if level == 30 else total
+    return level, 0 if level == 50 else total
 
 
 def hp_bar(monster):
@@ -129,6 +147,11 @@ def resolve_action(state, side, action, rng=None):
             raise ValueError("技は1〜3から選んでください。")
     logs = state.setdefault("logs", [])
     actor["guarding"] = False
+    was_stunned = actor.get("stunned", 0) > 0 and action != "surrender"
+    if was_stunned:
+        actor["stunned"] = 0
+        logs.append(f"{actor['name']} は動けない！")
+        action = "guard"
     if actor.get("trait_id") == "regen":
         maximum = calc_stat(actor["max_hp"], actor["current_level"])
         recovered = min(maximum - actor["current_hp"], max(1, maximum // 12))
@@ -141,7 +164,12 @@ def resolve_action(state, side, action, rng=None):
     if action.startswith("switch:"):
         actor["ranks"] = {}
         team["active_idx"] = index
-        logs.append(f"{actor['name']} → {team['party'][index]['name']} に交代！")
+        entrant = team["party"][index]
+        if team.get("entry_hazard"):
+            hazard = max(1, calc_stat(entrant["max_hp"], entrant["current_level"]) // 8)
+            entrant["current_hp"] = max(0, entrant["current_hp"] - hazard)
+            logs.append(f"{entrant['name']}は登場時に罠のダメージ {hazard}！")
+        logs.append(f"{actor['name']} → {entrant['name']} に交代！")
     elif action == "guard":
         actor["guarding"] = True
         logs.append(f"{actor['name']} は防御。次の被ダメージを半減！")
@@ -152,10 +180,11 @@ def resolve_action(state, side, action, rng=None):
             logs.append(f"{actor['name']} の {move['name']} は外れた！")
         elif move["category"] == "status":
             effect = move.get("effect")
-            if effect == "heal":
+            if effect in ("heal", "heal_big"):
                 maximum = calc_stat(actor["max_hp"], actor["current_level"])
                 if actor["heals"] > 0:
-                    recovered = min(maximum - actor["current_hp"], max(1, maximum // 4))
+                    heal_fraction = 2 if effect == "heal_big" else 4
+                    recovered = min(maximum - actor["current_hp"], max(1, maximum // heal_fraction))
                     actor["current_hp"] += recovered
                     actor["heals"] -= 1
                     logs.append(f"{actor['name']} はHPを{recovered}回復！ 残り{actor['heals']}回")
@@ -172,6 +201,12 @@ def resolve_action(state, side, action, rng=None):
                 duration = 4 if move.get("name") == "締め付け" else 3
                 target["bound"] = max(target.get("bound", 0), duration)
                 logs.append(f"{target['name']} は {move['name']} に絡め取られた！ {duration}ターン拘束。")
+            elif effect == "entry_hazard":
+                enemy["entry_hazard"] = True
+                logs.append(f"{target['name']}の陣地に特殊な罠を設置した！")
+            elif effect == "revenge_bomb":
+                actor["revenge_bomb"] = True
+                logs.append(f"{actor['name']}は戦闘不能時の反撃を準備した！")
             elif effect == "guard":
                 actor["guarding"] = True
                 logs.append(f"{actor['name']} は {move['name']} で防御！")
@@ -182,6 +217,23 @@ def resolve_action(state, side, action, rng=None):
             damage, mult = calculate_damage(actor, target, move, rng, critical)
             target["current_hp"] = max(0, target["current_hp"] - damage)
             target["guarding"] = False
+            if target["current_hp"] > 0 and move.get("effect_after") == "attack_up":
+                actor["ranks"]["attack"] = min(6, actor["ranks"].get("attack", 0) + 1)
+                logs.append(f"{actor['name']} の攻撃が1段階上昇！")
+            if target["current_hp"] > 0 and move.get("effect_after") == "drain":
+                maximum = calc_stat(actor["max_hp"], actor["current_level"])
+                recovered = min(maximum - actor["current_hp"], damage)
+                actor["current_hp"] += recovered
+                logs.append(f"{actor['name']} は与えたダメージ分のHPを回復！")
+            if target["current_hp"] > 0 and move.get("effect_after") == "stun":
+                actor["stunned"] = 1
+                logs.append(f"{actor['name']} は反動で1ターン動けない！")
+            if target["current_hp"] > 0 and move.get("effect_after") == "random_switch":
+                choices = [i for i, m in enumerate(team["party"]) if i != team["active_idx"] and m["current_hp"] > 0]
+                if choices:
+                    team["active_idx"] = rng.choice(choices)
+                    team["party"][team["active_idx"]]["ranks"] = {}
+                    logs.append(f"{actor['name']} は攻撃後に交代！")
             notes = (" 急所！" if critical else "") + (" 弱点！" if mult > 1 else " 耐性あり" if mult < 1 else "")
             logs.append(f"{actor['name']} の {move['name']} → {target['name']} に{damage}！{notes}")
     if actor.get("poison", 0) and actor["current_hp"] > 0:
@@ -189,6 +241,16 @@ def resolve_action(state, side, action, rng=None):
         actor["current_hp"] = max(0, actor["current_hp"] - damage)
         actor["poison"] -= 1
         logs.append(f"{actor['name']} に毒のダメージ {damage}")
+    for key in ("p1", "p2"):
+        fallen = state[key]["party"]
+        enemy_team = state["p2" if key == "p1" else "p1"]
+        for fallen_monster in fallen:
+            if fallen_monster.get("revenge_bomb") and fallen_monster["current_hp"] <= 0:
+                target_monster = enemy_team["party"][enemy_team["active_idx"]]
+                damage = max(1, calc_stat(fallen_monster["max_hp"], fallen_monster["current_level"]) // 2)
+                target_monster["current_hp"] = max(0, target_monster["current_hp"] - damage)
+                fallen_monster["revenge_bomb"] = False
+                logs.append(f"{fallen_monster['name']}の反撃で{target_monster['name']}に{damage}ダメージ！")
     alive = {}
     for key in ("p1", "p2"):
         party = state[key]["party"]
@@ -229,11 +291,11 @@ def battle_embed(state, practice=False):
 
 
 class BattleView(discord.ui.View):
-    def __init__(self, cog, battle_id, state, turn_user_id, p1_id, p2_id, practice=False, mode="battle"):
+    def __init__(self, cog, battle_id, state, turn_user_id, p1_id, p2_id, practice=False, mode="battle", match_type="normal"):
         super().__init__(timeout=180)
         self.cog, self.battle_id, self.state = cog, battle_id, state
         self.turn_user_id, self.p1_id, self.p2_id = turn_user_id, p1_id, p2_id
-        self.practice, self.mode, self.version = practice, mode, state.get("version", 0)
+        self.practice, self.mode, self.match_type, self.version = practice, mode, match_type, state.get("version", 0)
         self.lock = asyncio.Lock()
         self.used = False
         self.message = None
@@ -310,13 +372,14 @@ class BattleView(discord.ui.View):
                 elif self.mode == "random" and winner == "p1":
                     try:
                         await asyncio.to_thread(self.award_random_match, state["p1"]["party"][0])
-                        state["logs"].append("勝利報酬としてEXP 15、コイン100を獲得しました。")
+                        reward = {"normal": (10, 50), "elite": (30, 300), "boss": (100, 1000)}[self.match_type]
+                        state["logs"].append(f"勝利報酬としてEXP {reward[0]}、コイン{reward[1]}を獲得しました。")
                     except Exception:
                         logger.exception("DDD random match reward failed")
                         state["logs"].append("勝利しましたが、報酬の保存に失敗しました。")
                 view = None
             else:
-                view = BattleView(self.cog, self.battle_id, state, next_id, self.p1_id, self.p2_id, self.practice, self.mode)
+                view = BattleView(self.cog, self.battle_id, state, next_id, self.p1_id, self.p2_id, self.practice, self.mode, self.match_type)
             await interaction.edit_original_response(content="対戦終了" if winner else f"<@{next_id}> のターン", embed=battle_embed(state, self.practice), view=view,
                                                      allowed_mentions=discord.AllowedMentions.none())
             if view:
@@ -342,13 +405,14 @@ class BattleView(discord.ui.View):
         if not result.data:
             raise RuntimeError("Selected monster no longer exists")
         old = result.data[0]
-        level, exp = add_experience(old["current_level"], old.get("current_exp", 0), 15)
+        exp_reward, coin_reward = {"normal": (10, 50), "elite": (30, 300), "boss": (100, 1000)}[self.match_type]
+        level, exp = add_experience(old["current_level"], old.get("current_exp", 0), exp_reward)
         updated = supabase.table("monsters").update({"current_level": level, "current_exp": exp}).eq("id", monster["id"]).eq("user_id", self.p1_id).eq("current_level", old["current_level"]).eq("current_exp", old.get("current_exp", 0)).execute()
         if not updated.data:
             raise RuntimeError("Concurrent EXP update; manual reconciliation needed")
         profile = supabase.table("users").select("balance").eq("user_id", self.p1_id).execute()
         balance = int(profile.data[0].get("balance") or 0) if profile.data else 0
-        updated_user = supabase.table("users").update({"balance": balance + 100}).eq("user_id", self.p1_id).eq("balance", balance).execute()
+        updated_user = supabase.table("users").update({"balance": balance + coin_reward}).eq("user_id", self.p1_id).eq("balance", balance).execute()
         if not updated_user.data:
             raise RuntimeError("Concurrent balance update; manual reconciliation needed")
 
@@ -608,35 +672,59 @@ class BattleCog(commands.Cog):
         view.message = await interaction.followup.send(content=f"<@{view.turn_user_id}> のターン", embed=battle_embed(state), view=view, ephemeral=False, wait=True,
                                                        allowed_mentions=discord.AllowedMentions.none())
 
-    @app_commands.command(name="ddd_random_match", description="1体を選んで全キャラから抽選された相手と戦います。勝利報酬あり")
-    @app_commands.describe(monster_id="使用する相棒のID")
-    async def random_match(self, interaction: discord.Interaction, monster_id: str):
+    @app_commands.command(name="ddd_random_match", description="通常・エリート・ボスの3種から選ぶ報酬ランダムマッチ")
+    @app_commands.describe(monster_id="使用する相棒のID", match_type="挑戦するマッチ種別")
+    @app_commands.choices(match_type=[
+        app_commands.Choice(name="通常マッチ（Lv.30以下）", value="normal"),
+        app_commands.Choice(name="エリートマッチ（Lv.30以上）", value="elite"),
+        app_commands.Choice(name="ボスマッチ（Lv.30以上）", value="boss"),
+    ])
+    async def random_match(self, interaction: discord.Interaction, monster_id: str, match_type: str = "normal"):
         await interaction.response.defer()
         uid = str(interaction.user.id)
-
         def load():
             own = supabase.table("monsters").select("*").eq("id", monster_id).eq("user_id", uid).execute().data
             all_monsters = supabase.table("monsters").select("*").execute().data
             return own, all_monsters
-
         own, all_monsters = await asyncio.to_thread(load)
         if not own:
             await interaction.followup.send("指定した相棒が見つかりません。/ddd_boxでIDを確認してください。", ephemeral=True)
             return
+        if match_type not in ("normal", "elite", "boss"):
+            await interaction.followup.send("マッチ種別が不正です。", ephemeral=True)
+            return
+        player_level = int(own[0].get("current_level") or 1)
+        if match_type == "normal" and player_level > 30:
+            await interaction.followup.send("通常マッチはLv.30以下の相棒専用です。", ephemeral=True)
+            return
+        if match_type in ("elite", "boss") and player_level < 30:
+            await interaction.followup.send("エリート・ボスマッチはLv.30以上の相棒専用です。", ephemeral=True)
+            return
         if not all_monsters:
             await interaction.followup.send("対戦相手になるキャラがまだいません。", ephemeral=True)
             return
-
+        candidates = [m for m in all_monsters if (int(m.get("current_level") or 1) <= 30 if match_type == "normal" else int(m.get("current_level") or 1) >= 30)]
+        opponent = random.choice(candidates or all_monsters)
         player = prepare_party([own[0]])
-        opponent = random.choice(all_monsters)
         enemy = prepare_party([copy.deepcopy(opponent)])
+        reward = {"normal": (10, 50), "elite": (30, 300), "boss": (100, 1000)}[match_type]
+        if match_type == "boss":
+            boss_hp_multiplier = random.randint(3, 5)
+            boss = enemy[0]
+            boss["max_hp"] = min(9999, boss["max_hp"] * boss_hp_multiplier)
+            for key in ("attack", "defense", "sp_atk", "sp_def", "speed"):
+                boss[f"max_{key}"] = min(9999, int(boss[f"max_{key}"] * 1.5))
+            boss["current_hp"] = calc_stat(boss["max_hp"], boss["current_level"])
+            boss_label = f" HP{boss_hp_multiplier}倍 / その他能力1.5倍"
+        else:
+            boss_label = ""
+        labels = {"normal": "通常マッチ", "elite": "エリートマッチ", "boss": "ボスマッチ"}
         state = {
-            "p1": {"party": player, "active_idx": 0},
-            "p2": {"party": enemy, "active_idx": 0},
-            "version": 0,
-            "logs": [f"ランダムマッチ開始。{opponent['name']}が対戦相手に選ばれました。勝利報酬: EXP 15 / コイン100。"],
+            "p1": {"party": player, "active_idx": 0}, "p2": {"party": enemy, "active_idx": 0},
+            "version": 0, "match_type": match_type,
+            "logs": [f"{labels[match_type]}開始。{opponent['name']}が対戦相手に選ばれました。{boss_label} 勝利報酬: EXP {reward[0]} / コイン{reward[1]}。"],
         }
-        view = BattleView(self, None, state, uid, uid, "RANDOM_CPU", practice=True, mode="random")
+        view = BattleView(self, None, state, uid, uid, "RANDOM_CPU", practice=True, mode="random", match_type=match_type)
         view.message = await interaction.followup.send(embed=battle_embed(state, True), view=view, wait=True)
 
     @app_commands.command(name="ddd_practice", description="自分の相棒でCPUと無料の練習戦。経験値・コイン変動なし")

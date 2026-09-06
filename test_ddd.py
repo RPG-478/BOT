@@ -126,7 +126,7 @@ class PixelTests(unittest.TestCase):
 class EngineTests(unittest.TestCase):
     def test_level_clamps_and_existing_curve(self):
         self.assertEqual(battle.calc_stat(100, 30), 100)
-        self.assertEqual(battle.calc_stat(100, 99), 100)
+        self.assertEqual(battle.calc_stat(100, 99), 144)
         self.assertEqual(battle.calc_stat(100, -1), battle.calc_stat(100, 1))
         self.assertGreaterEqual(battle.calc_stat(None, None), 1)
 
@@ -261,7 +261,7 @@ class EngineTests(unittest.TestCase):
     def test_exp_carryover_and_cap(self):
         self.assertEqual(battle.add_experience(5, 80, 50), (6, 30))
         self.assertEqual(battle.add_experience(5, 80, 250), (8, 30))
-        self.assertEqual(battle.add_experience(29, 80, 250), (30, 0))
+        self.assertEqual(battle.add_experience(29, 80, 250), (30, 230))
 
     def test_all_loadout_effects_are_supported(self):
         for name, technique in system.TECHNIQUES.items():
