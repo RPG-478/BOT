@@ -35,12 +35,12 @@ Bot は Discord の Slash Command と Button UI を入口とし、Cogs ごとに
 | `ddd_battle.py` | 3 対 3 の状態管理、ターン処理、技選択、ダメージ、勝敗、経験値 | `battles`、`monsters` |
 | `ddd_system.py` | ボックス表示、容量拡張、パレット解放、プロフィール、モンスター削除 | `users`、`monsters`、`transaction_history` |
 | Supabase PostgreSQL | ユーザー・モンスター・対戦・経済情報の永続化 | リレーショナルデータ |
-| Supabase Storage | 鑑定元画像の保存 | `dot_images` バケット |
+| Supabase Storage | 鑑定元画像の保存 | `dot_images` バケット。未作成時は `sql/ddd_storage.sql` を実行 |
 | Gemini Vision | ドット絵からモンスター情報を構造化生成 | JSON 形式の AI 出力 |
 
 ### 2.2 データ整合性の原則
 
-鑑定費用の引き落としは鑑定処理の開始前に行う。AI 解析、ストレージ保存、モンスター登録のいずれかが失敗した場合、処理済みの費用を返金し、ユーザーに失敗理由を通知する。将来の本格リリースでは、決済・モンスター登録・返金の冪等性をデータベース側でも保証する。
+鑑定費用の引き落としは鑑定処理の開始前に行う。AI 解析、ストレージ保存、モンスター登録のいずれかが失敗した場合、処理済みの費用を返金し、ユーザーに失敗理由を通知する。画像保存には `dot_images` という公開バケットを使用し、バケットが存在しない場合はリポジトリの `sql/ddd_storage.sql` を Supabase SQL Editor で実行する。Bot は `SUPABASE_SERVICE_ROLE_KEY` を使用し、許可 MIME は PNG、JPEG、WebP、GIF、最大5 MiBとする。将来の本格リリースでは、決済・モンスター登録・返金の冪等性をデータベース側でも保証する。
 
 ## 3. 経済・システムパラメータ
 
@@ -217,10 +217,13 @@ DDD は「AIが生成して終わるゲーム」ではなく、AIが提案した
 
 [4]: https://github.com/deshihito/BOT "deshihito/BOT リポジトリ"
 
+[5]: https://github.com/deshihito/BOT/blob/main/sql/ddd_storage.sql "DDD Storage バケット作成SQL"
+
 ## 変更履歴
 
 | 版 | 日付 | 内容 |
 |---|---|---|
+| 1.2.0 | 2026-09-06 | `dot_images` Storage バケット作成SQL、MIME制限、一意画像パス、復旧手順を追加 |
 | 1.1.0 | 2026-09-06 | 技3枠固定、dot名・技名・特性名変更、創作インターフェース、残存ギャップを追加 |
 | 1.0.0 | 2026-09-06 | 確定製品仕様、現行実装、機能ギャップ、受け入れ条件、ロードマップを統合 |
 

@@ -2,6 +2,7 @@ import io
 import json
 import random
 import os
+import uuid
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -236,9 +237,15 @@ class AppraisalCog(commands.Cog):
             return
 
         # 6. 画像保存（エラー時は全額返金）
-        file_path = f"monsters/{user_id}_{int(interaction.created_at.timestamp())}.png"
+        # 同一ユーザーが同じ秒に複数回鑑定しても画像が衝突しないようUUIDを付与する。
+        file_ext = ".png"
+        allowed_content_types = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+        content_type = attachment.content_type if attachment.content_type in allowed_content_types else "image/png"
+        if content_type != "image/png":
+            file_ext = "." + content_type.split("/", 1)[1]
+        file_path = f"monsters/{user_id}/{uuid.uuid4().hex}{file_ext}"
         try:
-            supabase.storage.from_("dot_images").upload(file_path, image_bytes, {"content-type": "image/png"})
+            supabase.storage.from_("dot_images").upload(file_path, image_bytes, {"content-type": content_type, "upsert": "false"})
             public_url = supabase.storage.from_("dot_images").get_public_url(file_path)
         except Exception as e:
             self.refund_coins(user_id, APPRAISAL_COST, reason="upload_failed_refund")
