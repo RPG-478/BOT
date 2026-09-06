@@ -16,7 +16,7 @@ from supabase import create_client, Client
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 # 既存環境ではSUPABASE_URLとSUPABASE_KEYを使用する。
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
