@@ -2712,7 +2712,7 @@ class VoiceCog(commands.Cog):
                 logger.exception("Failed to save personal playlist from slash command")
                 detail = str(exc).lower()
                 if 'row-level security' in detail or 'permission denied' in detail or '42501' in detail:
-                    message = '保存権限がありません。Bot実行環境にSUPABASE_SERVICE_ROLE_KEYを設定して再起動してください。'
+                    message = '保存権限がありません。SupabaseのRLSポリシーと、Botに設定したSUPABASE_KEY（公開キー）の権限を確認してください。'
                 else:
                     message = f'保存に失敗しました。Botログを確認してください。({type(exc).__name__})'
                 return await interaction.response.send_message(message, ephemeral=True)

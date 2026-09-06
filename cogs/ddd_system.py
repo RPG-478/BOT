@@ -1,14 +1,14 @@
 import os
 import asyncio
-from .ddd_battle import calc_stat, normalize_moves, TYPE_CHART
+from .ddd_battle import calc_stat, normalize_moves, TYPE_CHART, add_experience
 import discord
 from discord import app_commands
 from discord.ext import commands
 from supabase import create_client, Client
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-# BotのStorage・DB操作ではService Role Keyを優先する。
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
+# Botは公開可能なSupabaseキーのみを使用する。サービスロールキーは使用しない。
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # 定数設定
@@ -23,6 +23,7 @@ RENAME_MOVE_COST = 200     # 技名変更
 RENAME_ABILITY_COST = 250  # 特性名・説明変更
 MAX_RENAME_LENGTH = 20
 MAX_ABILITY_LENGTH = 60
+COINS_PER_EXP = 50
 
 ELEMENT_COLORS = {"虚": 0xA185F7, "実": 0x45E1AD, "正": 0xF7BE3E, "負": 0xF677A4, "無": 0x52A7FF}
 TECHNIQUES = {
@@ -38,6 +39,29 @@ TECHNIQUES = {
     "アーマー": {"category": "status", "effect": "defense_up", "description": "防御1段階上昇。交代で解除"},
     "マジックアーマー": {"category": "status", "effect": "sp_def_up", "description": "特防1段階上昇。交代で解除"},
 }
+
+
+def exchange_values(amount: int, direction: str, level: int, exp: int, balance: int) -> tuple[int, int, int]:
+    """既存モンスターEXPとago coinの交換結果を計算する。"""
+    amount = int(amount)
+    level = max(1, min(30, int(level or 1)))
+    exp = max(0, int(exp or 0))
+    balance = max(0, int(balance or 0))
+    if amount <= 0:
+        raise ValueError("交換量は1以上の整数で指定してください。")
+    if direction == "exp_to_coin":
+        if exp < amount:
+            raise ValueError(f"モンスターEXPが不足しています（現在: {exp} EXP）。")
+        return level, exp - amount, balance + amount * COINS_PER_EXP
+    if direction == "coin_to_exp":
+        if level >= 30:
+            raise ValueError("Lv.30のモンスターには追加EXPを交換できません。")
+        required = amount * COINS_PER_EXP
+        if balance < required:
+            raise ValueError(f"ago coinが不足しています（所持: {balance} / 必要: {required}）。")
+        new_level, new_exp = add_experience(level, exp, amount)
+        return new_level, new_exp, balance - required
+    raise ValueError("交換方向が不正です。")
 
 
 def monster_embed(monster):
@@ -198,6 +222,64 @@ class SystemCog(commands.Cog):
             return False
 
     # --- Commands ---
+
+    def exchange_monster(self, user_id: str, monster_id: str, direction: str, amount: int) -> dict:
+        profile = supabase.table("users").select("balance").eq("user_id", user_id).execute()
+        balance = int(profile.data[0].get("balance") or 0) if profile.data else 0
+        monster_result = (supabase.table("monsters")
+                          .select("id,name,current_level,current_exp")
+                          .eq("id", monster_id).eq("user_id", user_id).execute())
+        if not monster_result.data:
+            raise ValueError("指定したモンスターが見つかりません。`/ddd_box`でIDを確認してください。")
+        monster = monster_result.data[0]
+        old_level = int(monster.get("current_level") or 1)
+        old_exp = int(monster.get("current_exp") or 0)
+        new_level, new_exp, new_balance = exchange_values(amount, direction, old_level, old_exp, balance)
+
+        updated_monster = (supabase.table("monsters").update({"current_level": new_level, "current_exp": new_exp})
+                           .eq("id", monster_id).eq("user_id", user_id)
+                           .eq("current_level", old_level).eq("current_exp", old_exp).execute())
+        if not updated_monster.data:
+            raise RuntimeError("モンスター情報が変化したため、交換を中止しました。")
+        updated_user = (supabase.table("users").update({"balance": new_balance})
+                        .eq("user_id", user_id).eq("balance", balance).execute())
+        if not updated_user.data:
+            (supabase.table("monsters").update({"current_level": old_level, "current_exp": old_exp})
+             .eq("id", monster_id).eq("user_id", user_id)
+             .eq("current_level", new_level).eq("current_exp", new_exp).execute())
+            raise RuntimeError("残高が変化したため、交換を中止しました。")
+
+        coin_delta = new_balance - balance
+        supabase.table("transaction_history").insert({
+            "sender_id": user_id if coin_delta < 0 else "SYSTEM_DDD",
+            "receiver_id": "SYSTEM_DDD" if coin_delta < 0 else user_id,
+            "amount": abs(coin_delta),
+            "reason": f"ddd_exchange_{direction}",
+        }).execute()
+        return {"name": monster["name"], "old_level": old_level, "old_exp": old_exp,
+                "new_level": new_level, "new_exp": new_exp, "old_balance": balance,
+                "new_balance": new_balance}
+
+    @app_commands.command(name="ddd_exchange", description="指定モンスターのEXPとago coinを50:1で交換します")
+    @app_commands.describe(monster_id="/ddd_boxに表示されるモンスターID", direction="交換方向", amount="EXPの数量")
+    @app_commands.choices(direction=[
+        app_commands.Choice(name="モンスターEXP → ago coin", value="exp_to_coin"),
+        app_commands.Choice(name="ago coin → モンスターEXP", value="coin_to_exp"),
+    ])
+    async def exchange(self, interaction: discord.Interaction, monster_id: str, direction: str, amount: int):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            result = await asyncio.to_thread(self.exchange_monster, str(interaction.user.id), monster_id, direction, amount)
+            level = f"Lv.{result['old_level']} → Lv.{result['new_level']}" if result["old_level"] != result["new_level"] else f"Lv.{result['new_level']}"
+            await interaction.followup.send(
+                f"**{result['name']}** の交換が完了しました。\\n"
+                f"モンスターEXP: **{result['old_exp']} → {result['new_exp']}**（{level}）\\n"
+                f"ago coin: **{result['old_balance']} → {result['new_balance']}**\\n"
+                f"レート: **50 ago coin = 1 EXP**", ephemeral=True)
+        except (ValueError, TypeError, RuntimeError) as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+        except Exception:
+            await interaction.followup.send("交換に失敗しました。残高とモンスターIDを確認してください。", ephemeral=True)
 
     @app_commands.command(name="ddd_box", description="所持しているモンスター一覧を確認・詳細表示します")
     @app_commands.describe(search="名前の部分一致", element="属性で絞り込む", order="並び順")

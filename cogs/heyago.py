@@ -11,7 +11,7 @@ from google.genai import types
 class AdaptiveAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.gemini_api_key = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg")
+        self.gemini_api_key = os.environ.get("GEMINI_API_KEY")
         self.gemini_client = genai.Client(api_key=self.gemini_api_key)
 
     @commands.Cog.listener()

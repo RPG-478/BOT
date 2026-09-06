@@ -10,7 +10,7 @@ from discord.ext import commands
 from supabase import create_client, Client
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 logger = logging.getLogger(__name__)
 
@@ -102,13 +102,11 @@ def hp_bar(monster):
 
 
 def resolve_action(state, side, action, rng=None):
-    """Pure turn engine shared by PvP and practice. Returns p1/p2/draw/None."""
     rng = rng or random
     other = "p2" if side == "p1" else "p1"
     team, enemy = state[side], state[other]
     actor = team["party"][team["active_idx"]]
     target = enemy["party"][enemy["active_idx"]]
-    # Validate before mutating anything, including guard and status durations.
     if actor["current_hp"] <= 0:
         raise ValueError("倒れている相棒は行動できません。")
     if action.startswith("switch:"):
@@ -255,7 +253,6 @@ class BattleView(discord.ui.View):
                 winner = resolve_action(state, side, action)
                 if self.practice and winner is None:
                     cpu = state["p2"]["party"][state["p2"]["active_idx"]]
-                    # Predictable CPU: heal when hurt, otherwise choose an attack.
                     healing = next((i for i, m in enumerate(cpu["moves"]) if m.get("effect") == "heal"), None)
                     hurt = cpu["current_hp"] < calc_stat(cpu["max_hp"], cpu["current_level"]) // 2
                     choice = healing if healing is not None and hurt and cpu["heals"] else random.choice([i for i, m in enumerate(cpu["moves"]) if m["category"] != "status"] or [0])
@@ -298,7 +295,6 @@ class BattleView(discord.ui.View):
                 view.message = interaction.message
 
     def save_turn(self, state, next_id, finished):
-        # JSON version is an optimistic lock: even old buttons from two turns ago cannot replay.
         query = supabase.table("battles").update({"battle_state": state, "turn_user_id": next_id, "is_finished": finished})
         return query.eq("id", self.battle_id).eq("is_finished", False).eq("turn_user_id", self.turn_user_id).eq("battle_state->>version", str(self.version)).execute().data
 
@@ -314,7 +310,6 @@ class BattleView(discord.ui.View):
                 raise RuntimeError("Concurrent EXP update; manual reconciliation needed")
 
     async def on_timeout(self):
-        # PvP remains resumable in DB rather than silently granting timeout rewards.
         for child in self.children:
             child.disabled = True
         if self.message:
@@ -323,6 +318,116 @@ class BattleView(discord.ui.View):
             except discord.HTTPException:
                 pass
 
+
+# --- パーティ選出用コンポーネント ---
+
+class PartyDropdown(discord.ui.Select):
+    def __init__(self, monsters, parent_view, user_id):
+        self.parent_view = parent_view
+        self.user_id = user_id
+        options = []
+        for m in monsters[:25]:
+            hp = calc_stat(m.get("max_hp", 10), m.get("current_level", 1))
+            options.append(discord.SelectOption(
+                label=f"{m['name']} Lv.{m.get('current_level', 1)}"[:100],
+                value=str(m["id"]),
+                description=f"属性:{m.get('element_type', '無')} / HP:{hp}"[:100]
+            ))
+        super().__init__(
+            placeholder="対戦に出す3体（先発順）を選択...",
+            min_values=3,
+            max_values=3,
+            options=options
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        side = "p1" if self.user_id == self.parent_view.p1_id else "p2"
+        await self.parent_view.set_selection(interaction, side, self.values)
+
+
+class EphemeralSelectView(discord.ui.View):
+    def __init__(self, monsters, parent_view, user_id):
+        super().__init__(timeout=60)
+        self.add_item(PartyDropdown(monsters, parent_view, user_id))
+
+
+class PartySelectView(discord.ui.View):
+    def __init__(self, cog, p1_id, p2_id, p1_monsters, p2_monsters):
+        super().__init__(timeout=120)
+        self.cog, self.p1_id, self.p2_id = cog, p1_id, p2_id
+        self.p1_monsters, self.p2_monsters = p1_monsters, p2_monsters
+        self.p1_selection = None
+        self.p2_selection = None
+        self.lock = asyncio.Lock()
+        self.message = None
+
+    @discord.ui.button(label="手持ちから3体選ぶ", style=discord.ButtonStyle.primary)
+    async def select_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        uid = str(interaction.user.id)
+        if uid not in (self.p1_id, self.p2_id):
+            await interaction.response.send_message("対戦参加者のみ選出できます。", ephemeral=True)
+            return
+
+        if uid == self.p1_id and self.p1_selection:
+            await interaction.response.send_message("あなたは既に3体選出済みです。", ephemeral=True)
+            return
+        if uid == self.p2_id and self.p2_selection:
+            await interaction.response.send_message("あなたは既に3体選出済みです。", ephemeral=True)
+            return
+
+        monsters = self.p1_monsters if uid == self.p1_id else self.p2_monsters
+        view = EphemeralSelectView(monsters, self, uid)
+        await interaction.response.send_message("対戦に出す3体をドロップダウンから選択してください（選択順が先発順になります）:", view=view, ephemeral=True)
+
+    async def set_selection(self, interaction: discord.Interaction, side: str, selected_ids: list):
+        async with self.lock:
+            if side == "p1":
+                self.p1_selection = selected_ids
+            else:
+                self.p2_selection = selected_ids
+
+            p1_status = "選出完了！" if self.p1_selection else "選出中..."
+            p2_status = "選出完了！" if self.p2_selection else "選出中..."
+
+            await interaction.response.send_message("3体の選出を完了しました！相手の完了を待っています...", ephemeral=True)
+
+            embed = discord.Embed(
+                title="DDD ARENA | パーティ選出フェーズ",
+                description=f"下のボタンを押して手持ちから対戦に出す3体を選択してください。\n\n<@{self.p1_id}>: {p1_status}\n<@{self.p2_id}>: {p2_status}",
+                color=0x8B7CF8
+            )
+
+            if self.p1_selection and self.p2_selection:
+                self.stop()
+                try:
+                    record = await asyncio.to_thread(
+                        self.cog.start_battle, self.p1_id, self.p2_id, self.p1_selection, self.p2_selection
+                    )
+                    battle_view = BattleView(self.cog, record["id"], record["battle_state"], str(record["turn_user_id"]), self.p1_id, self.p2_id)
+                    battle_view.message = self.message
+                    await self.message.edit(
+                        content=f"<@{battle_view.turn_user_id}> の先攻です。",
+                        embed=battle_embed(battle_view.state),
+                        view=battle_view,
+                        allowed_mentions=discord.AllowedMentions.none()
+                    )
+                except Exception:
+                    logger.exception("DDD party select start battle failed")
+                    self.cog.busy.difference_update((self.p1_id, self.p2_id))
+                    await self.message.edit(content="対戦の開始に失敗しました。", embed=None, view=None)
+            else:
+                await self.message.edit(embed=embed, view=self)
+
+    async def on_timeout(self):
+        self.cog.busy.difference_update((self.p1_id, self.p2_id))
+        if self.message:
+            try:
+                await self.message.edit(content="選出の制限時間が切れました。対戦をキャンセルします。", embed=None, view=None)
+            except discord.HTTPException:
+                pass
+
+
+# --- 挑戦招待用コンポーネント ---
 
 class ChallengeView(discord.ui.View):
     def __init__(self, cog, p1_id, p2_id):
@@ -346,29 +451,40 @@ class ChallengeView(discord.ui.View):
         self.stop()
         await interaction.response.defer()
         try:
-            record = await asyncio.to_thread(self.cog.start_battle, self.p1_id, self.p2_id)
-            view = BattleView(self.cog, record["id"], record["battle_state"], str(record["turn_user_id"]), self.p1_id, self.p2_id)
+            # 双方のモンスターを取得して選出準備
+            p1_monsters = await asyncio.to_thread(lambda: supabase.table("monsters").select("*").eq("user_id", self.p1_id).order("created_at", desc=True).limit(25).execute().data)
+            p2_monsters = await asyncio.to_thread(lambda: supabase.table("monsters").select("*").eq("user_id", self.p2_id).order("created_at", desc=True).limit(25).execute().data)
+
+            if len(p1_monsters) < 3 or len(p2_monsters) < 3:
+                self.cog.busy.difference_update((self.p1_id, self.p2_id))
+                await interaction.edit_original_response(content="対戦を開始できませんでした。双方3匹以上の所持が必要です。", embed=None, view=None)
+                return
+
+            select_view = PartySelectView(self.cog, self.p1_id, self.p2_id, p1_monsters, p2_monsters)
+            embed = discord.Embed(
+                title="DDD ARENA | パーティ選出フェーズ",
+                description=f"下のボタンを押して手持ちから対戦に出す3体を選択してください。\n\n<@{self.p1_id}>: 選出中...\n<@{self.p2_id}>: 選出中...",
+                color=0x8B7CF8
+            )
+            await interaction.edit_original_response(content="【パーティ選出フェーズ】", embed=embed, view=select_view)
+            select_view.message = interaction.message
         except Exception:
-            logger.exception("DDD challenge could not start")
+            logger.exception("DDD challenge accept failed")
             self.cog.busy.difference_update((self.p1_id, self.p2_id))
-            await interaction.edit_original_response(content="開始できませんでした。双方3匹以上の所持と未完了対戦を確認してください。", view=None)
-            return
-        view.message = interaction.message
-        await interaction.edit_original_response(content=f"<@{view.turn_user_id}> の先攻です。", embed=battle_embed(view.state), view=view,
-                                                 allowed_mentions=discord.AllowedMentions.none())
+            await interaction.edit_original_response(content="開始処理中にエラーが発生しました。", embed=None, view=None)
 
     @discord.ui.button(label="今回はやめる", style=discord.ButtonStyle.secondary)
     async def decline(self, interaction, button):
         self.claimed = True
         self.stop()
         self.cog.busy.difference_update((self.p1_id, self.p2_id))
-        await interaction.response.edit_message(content="招待を取り消しました。", view=None)
+        await interaction.response.edit_message(content="招待を取り消しました。", embed=None, view=None)
 
     async def on_timeout(self):
         self.cog.busy.difference_update((self.p1_id, self.p2_id))
         if self.message:
             try:
-                await self.message.edit(content="対戦招待の期限が切れました。", view=None)
+                await self.message.edit(content="対戦招待の期限が切れました。", embed=None, view=None)
             except discord.HTTPException:
                 pass
 
@@ -381,22 +497,34 @@ class BattleCog(commands.Cog):
     def active_battle(self, user_id):
         return supabase.table("battles").select("*").eq("is_finished", False).or_(f"player1_id.eq.{user_id},player2_id.eq.{user_id}").limit(1).execute().data
 
-    def start_battle(self, p1_id, p2_id):
+    def start_battle(self, p1_id, p2_id, p1_monster_ids=None, p2_monster_ids=None):
         if self.active_battle(p1_id) or self.active_battle(p2_id):
             raise ValueError("active battle")
-        parties = [supabase.table("monsters").select("*").eq("user_id", uid).order("created_at", desc=True).limit(3).execute().data for uid in (p1_id, p2_id)]
-        if any(len(party) < 3 for party in parties):
+
+        def fetch_party(uid, m_ids):
+            if m_ids:
+                res = supabase.table("monsters").select("*").in_("id", m_ids).eq("user_id", uid).execute().data
+                m_map = {str(m["id"]): m for m in res}
+                party = [m_map[mid] for mid in m_ids if mid in m_map]
+                if len(party) == 3:
+                    return party
+            return supabase.table("monsters").select("*").eq("user_id", uid).order("created_at", desc=True).limit(3).execute().data
+
+        p1_data = fetch_party(p1_id, p1_monster_ids)
+        p2_data = fetch_party(p2_id, p2_monster_ids)
+
+        if len(p1_data) < 3 or len(p2_data) < 3:
             raise ValueError("three monsters required")
-        p1, p2 = [prepare_party(party) for party in parties]
+
+        p1, p2 = prepare_party(p1_data), prepare_party(p2_data)
         first_id = p1_id if calc_stat(p1[0]["max_speed"], p1[0]["current_level"]) >= calc_stat(p2[0]["max_speed"], p2[0]["current_level"]) else p2_id
         state = {"p1": {"party": p1, "active_idx": 0}, "p2": {"party": p2, "active_idx": 0}, "version": 0,
                  "logs": ["3対3の対戦開始！ 技・防御・交代から行動を選ぼう。"]}
         record = supabase.table("battles").insert({"player1_id": p1_id, "player2_id": p2_id, "turn_user_id": first_id,
                                                   "battle_state": state, "is_finished": False}).execute().data[0]
-        # Construct Views on the event loop, not this worker thread.
         return record
 
-    @app_commands.command(name="ddd_battle", description="相手に招待を送り、直近3匹で3対3のドットバトル")
+    @app_commands.command(name="ddd_battle", description="相手に招待を送り、手持ちから選抜した3体でドットバトル")
     async def battle(self, interaction: discord.Interaction, opponent: discord.User):
         p1_id, p2_id = str(interaction.user.id), str(opponent.id)
         if p1_id == p2_id or opponent.bot:
@@ -408,8 +536,12 @@ class BattleCog(commands.Cog):
         self.busy.update((p1_id, p2_id))
         view = ChallengeView(self, p1_id, p2_id)
         try:
-            await interaction.response.send_message(content=f"<@{p2_id}>、ドットバトルへの招待です。", embed=discord.Embed(title="DDD ARENA | 挑戦状", description="双方の直近3匹で対戦。勝利パーティに50 EXP。\n60秒以内に回答してください。", color=0x8B7CF8), view=view,
-                                                    allowed_mentions=discord.AllowedMentions(users=[opponent]))
+            await interaction.response.send_message(
+                content=f"<@{p2_id}>、ドットバトルへの招待です。",
+                embed=discord.Embed(title="DDD ARENA | 挑戦状", description="手持ちから選抜した3体で対戦を行います。\n勝利パーティに50 EXP。\n60秒以内に回答してください。", color=0x8B7CF8),
+                view=view,
+                allowed_mentions=discord.AllowedMentions(users=[opponent])
+            )
             view.message = await interaction.original_response()
         except Exception:
             self.busy.difference_update((p1_id, p2_id))
@@ -425,13 +557,11 @@ class BattleCog(commands.Cog):
         record = records[0]
         state = record["battle_state"]
         if "version" not in state:
-            # Old battle snapshots have incompatible actions; close without rewards.
             await asyncio.to_thread(lambda: supabase.table("battles").update({"is_finished": True}).eq("id", record["id"]).execute())
             self.busy.difference_update((str(record["player1_id"]), str(record["player2_id"])))
             await interaction.followup.send("旧バージョンの未完了戦を報酬なしで終了しました。新しく対戦できます。", ephemeral=True)
             return
         view = BattleView(self, record["id"], state, str(record["turn_user_id"]), str(record["player1_id"]), str(record["player2_id"]))
-        # Public board so both participants can continue using the same updated message.
         view.message = await interaction.followup.send(content=f"<@{view.turn_user_id}> のターン", embed=battle_embed(state), view=view, ephemeral=False, wait=True,
                                                        allowed_mentions=discord.AllowedMentions.none())
 

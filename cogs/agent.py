@@ -795,7 +795,7 @@ class AgentCog(commands.Cog):
             await interaction.response.send_message("GROQ_API_KEYが未設定のためAgentコマンドを利用できません。環境変数を設定してください。", ephemeral=True)
             return
         if github_client is None and (repo_name or DEFAULT_REPO_NAME):
-            await interaction.response.send_message("GitHubトークンを取得できないためGitHub操作を利用できません。SUPABASE_URLとSUPABASE_SERVICE_ROLE_KEY（またはSUPABASE_KEY）、およびVault RPC get_github_access_tokenの設定を確認してください。", ephemeral=True)
+            await interaction.response.send_message("GitHubトークンを取得できないためGitHub操作を利用できません。SUPABASE_URLとSUPABASE_KEY（公開キー）、およびVault RPC get_github_access_tokenの設定を確認してください。", ephemeral=True)
             return
 
         channel_id = interaction.channel.id
