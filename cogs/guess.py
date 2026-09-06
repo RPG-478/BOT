@@ -86,7 +86,6 @@ class Guess(commands.Cog):
                 "user_id": user_id,
                 "balance": 0,
                 "max_box_slots": 20,
-                "unlocked_palettes": ["8x8"],
             }).execute()
         )
         return inserted.data[0]
