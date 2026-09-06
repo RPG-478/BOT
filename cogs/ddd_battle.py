@@ -1,5 +1,9 @@
+import asyncio
+import copy
+import logging
 import os
 import random
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -8,209 +12,461 @@ from supabase import create_client, Client
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+logger = logging.getLogger(__name__)
 
-# 5属性の相性表
 TYPE_CHART = {
-    "虚": {"実": 2.0, "虚": 0.5},
-    "実": {"虚": 2.0, "実": 0.5},
-    "正": {"負": 2.0, "正": 0.5},
-    "負": {"正": 2.0, "負": 0.5},
-    "無": {}
+    "虚": {"実": 2.0, "虚": 0.5}, "実": {"虚": 2.0, "実": 0.5},
+    "正": {"負": 2.0, "正": 0.5}, "負": {"正": 2.0, "負": 0.5}, "無": {},
 }
+STAT_KEYS = ("hp", "attack", "defense", "sp_atk", "sp_def", "speed")
+MAX_ACTIONS = 80
+
+
+def integer(value, default=0, low=0, high=9999):
+    try:
+        return max(low, min(high, int(value)))
+    except (ValueError, TypeError, OverflowError):
+        return default
+
 
 def calc_stat(max_stat: int, level: int) -> int:
-    """Lv.30での最高個体値から現在Lvのステータスを計算"""
-    return max(1, int(max_stat * (0.2 + 0.8 * (level / 30.0))))
+    """Preserve the existing 20% base growth curve; clamp legacy data safely."""
+    return max(1, int(integer(max_stat, 10, 1) * (0.2 + 0.8 * integer(level, 1, 1, 30) / 30)))
+
 
 def get_type_multiplier(atk_type: str, def_type: str) -> float:
     return TYPE_CHART.get(atk_type, {}).get(def_type, 1.0)
 
-def calculate_damage(attacker: dict, defender: dict, move: dict) -> tuple[int, float]:
-    """ポケモン準拠のダメージ計算"""
-    atk_lv = attacker["current_level"]
-    is_special = move.get("category") == "special"
-    
-    atk_val = calc_stat(attacker["max_sp_atk" if is_special else "max_attack"], atk_lv)
-    def_val = calc_stat(defender["max_sp_def" if is_special else "max_defense"], defender["current_level"])
-    
-    power = move.get("power", 40)
-    type_mult = get_type_multiplier(move.get("type", "無"), defender["element_type"])
-    random_mult = random.uniform(0.85, 1.0)
-    
-    base_dmg = (((atk_lv * 2 / 5 + 2) * power * (atk_val / def_val)) / 50) + 2
-    final_dmg = int(base_dmg * type_mult * random_mult)
-    return max(1, final_dmg), type_mult
+
+def rank_multiplier(rank):
+    rank = integer(rank, 0, -6, 6)
+    return (2 + rank) / 2 if rank >= 0 else 2 / (2 - rank)
+
+
+def normalize_moves(moves):
+    source = moves if isinstance(moves, list) else []
+    result = []
+    for index in range(3):
+        move = dict(source[index]) if index < len(source) and isinstance(source[index], dict) else {}
+        category = move.get("category", "physical")
+        if category not in ("physical", "special", "status"):
+            category = "physical"
+        result.append({**move, "name": str(move.get("name") or "たいあたり")[:20],
+                       "type": move.get("type") if move.get("type") in TYPE_CHART else "無",
+                       "category": category,
+                       "power": 0 if category == "status" else integer(move.get("power", 40), 40, 1, 120),
+                       "accuracy": integer(move.get("accuracy", 100), 100, 1, 100)})
+    return result
+
+
+def prepare_party(party):
+    party = copy.deepcopy(party)
+    for monster in party:
+        monster["current_level"] = integer(monster.get("current_level"), 1, 1, 30)
+        for key in STAT_KEYS:
+            monster[f"max_{key}"] = integer(monster.get(f"max_{key}"), 10, 1)
+        monster["moves"] = normalize_moves(monster.get("moves"))
+        monster["current_hp"] = calc_stat(monster["max_hp"], monster["current_level"])
+        monster.update(ranks={}, guarding=False, poison=0, heals=3)
+    return party
+
+
+def calculate_damage(attacker, defender, move, rng=None, critical=False):
+    rng = rng or random
+    mult = get_type_multiplier(move.get("type", "無"), defender["element_type"])
+    if move.get("category") == "status":
+        return 0, mult
+    atk_key, def_key = ("sp_atk", "sp_def") if move.get("category") == "special" else ("attack", "defense")
+    atk = calc_stat(attacker[f"max_{atk_key}"], attacker["current_level"]) * rank_multiplier(attacker.get("ranks", {}).get(atk_key, 0))
+    defense = calc_stat(defender[f"max_{def_key}"], defender["current_level"]) * rank_multiplier(defender.get("ranks", {}).get(def_key, 0))
+    power = integer(move.get("power", 40), 40, 1, 120)
+    base = ((attacker["current_level"] * 2 / 5 + 2) * power * atk / max(1, defense)) / 50 + 2
+    stab = 1.5 if move.get("type") == attacker["element_type"] else 1.0
+    return max(1, int(base * mult * stab * rng.uniform(0.85, 1) * (1.5 if critical else 1) * (0.5 if defender.get("guarding") else 1))), mult
+
+
+def add_experience(level, experience, amount):
+    level = integer(level, 1, 1, 30)
+    total = integer(experience) + max(0, amount)
+    while total >= 100 and level < 30:
+        level += 1
+        total -= 100
+    return level, 0 if level == 30 else total
+
+
+def hp_bar(monster):
+    maximum = calc_stat(monster["max_hp"], monster["current_level"])
+    hp = integer(monster.get("current_hp"), maximum, 0, maximum)
+    filled = max(1, round(hp / maximum * 12)) if hp else 0
+    return f"`{'█' * filled}{'░' * (12 - filled)}` {hp}/{maximum}"
+
+
+def resolve_action(state, side, action, rng=None):
+    """Pure turn engine shared by PvP and practice. Returns p1/p2/draw/None."""
+    rng = rng or random
+    other = "p2" if side == "p1" else "p1"
+    team, enemy = state[side], state[other]
+    actor = team["party"][team["active_idx"]]
+    target = enemy["party"][enemy["active_idx"]]
+    # Validate before mutating anything, including guard and status durations.
+    if actor["current_hp"] <= 0:
+        raise ValueError("倒れている相棒は行動できません。")
+    if action.startswith("switch:"):
+        index = integer(action.split(":", 1)[1], -1, -1, 99)
+        if index < 0 or index >= len(team["party"]) or index == team["active_idx"] or team["party"][index]["current_hp"] <= 0:
+            raise ValueError("その相棒には交代できません。")
+    elif action not in ("guard", "surrender"):
+        index = integer(action, -1, -1, 99)
+        if index not in range(3):
+            raise ValueError("技は1〜3から選んでください。")
+    logs = state.setdefault("logs", [])
+    actor["guarding"] = False
+    if action == "surrender":
+        logs.append(f"{side.upper()} が降参しました。")
+        return other
+    if action.startswith("switch:"):
+        actor["ranks"] = {}
+        team["active_idx"] = index
+        logs.append(f"{actor['name']} → {team['party'][index]['name']} に交代！")
+    elif action == "guard":
+        actor["guarding"] = True
+        logs.append(f"{actor['name']} は防御。次の被ダメージを半減！")
+    else:
+        move = actor["moves"][index]
+        if rng.random() * 100 >= move["accuracy"]:
+            logs.append(f"{actor['name']} の {move['name']} は外れた！")
+        elif move["category"] == "status":
+            effect = move.get("effect")
+            if effect == "heal":
+                maximum = calc_stat(actor["max_hp"], actor["current_level"])
+                if actor["heals"] > 0:
+                    recovered = min(maximum - actor["current_hp"], max(1, maximum // 4))
+                    actor["current_hp"] += recovered
+                    actor["heals"] -= 1
+                    logs.append(f"{actor['name']} はHPを{recovered}回復！ 残り{actor['heals']}回")
+                else:
+                    logs.append(f"{move['name']} は回数切れ。回復できなかった。")
+            elif effect in ("attack_up", "defense_up", "sp_atk_up", "sp_def_up"):
+                key = effect[:-3]
+                actor["ranks"][key] = min(6, actor["ranks"].get(key, 0) + 1)
+                logs.append(f"{actor['name']} の {key} が1段階上昇！")
+            elif effect == "poison":
+                target["poison"] = 3
+                logs.append(f"{target['name']} は毒状態に！ 行動後3回ダメージ。")
+            elif effect == "guard":
+                actor["guarding"] = True
+                logs.append(f"{actor['name']} は {move['name']} で防御！")
+            else:
+                logs.append(f"{move['name']}：未対応の変化効果です（ダメージなし）。")
+        else:
+            critical = rng.random() < 1 / 16
+            damage, mult = calculate_damage(actor, target, move, rng, critical)
+            target["current_hp"] = max(0, target["current_hp"] - damage)
+            target["guarding"] = False
+            notes = (" 急所！" if critical else "") + (" 弱点！" if mult > 1 else " 耐性あり" if mult < 1 else "")
+            logs.append(f"{actor['name']} の {move['name']} → {target['name']} に{damage}！{notes}")
+    if actor.get("poison", 0) and actor["current_hp"] > 0:
+        damage = max(1, calc_stat(actor["max_hp"], actor["current_level"]) // 8)
+        actor["current_hp"] = max(0, actor["current_hp"] - damage)
+        actor["poison"] -= 1
+        logs.append(f"{actor['name']} に毒のダメージ {damage}")
+    alive = {}
+    for key in ("p1", "p2"):
+        party = state[key]["party"]
+        indices = [i for i, m in enumerate(party) if m["current_hp"] > 0]
+        alive[key] = bool(indices)
+        if indices and party[state[key]["active_idx"]]["current_hp"] <= 0:
+            state[key]["active_idx"] = indices[0]
+            logs.append(f"{party[indices[0]]['name']} が自動出場！")
+    state["version"] = state.get("version", 0) + 1
+    state["logs"] = logs[-12:]
+    if not alive["p1"] and not alive["p2"]:
+        return "draw"
+    if not alive["p1"]:
+        return "p2"
+    if not alive["p2"]:
+        return "p1"
+    return "draw" if state["version"] >= MAX_ACTIONS else None
+
+
+def battle_embed(state, practice=False):
+    embed = discord.Embed(title=f"DDD {'PRACTICE' if practice else 'ARENA'} | TURN {state.get('version', 0) + 1}", color=0x8B7CF8,
+                          description="\n".join(state["logs"][-5:])[:3000])
+    for side in ("p1", "p2"):
+        team = state[side]
+        active = team["party"][team["active_idx"]]
+        effects = (" / 防御" if active.get("guarding") else "") + (f" / 毒{active['poison']}" if active.get("poison") else "")
+        reserve = "\n".join(f"{'>' if i == team['active_idx'] else '-'} {m['name']} {'戦闘不能' if m['current_hp'] <= 0 else str(m['current_hp']) + ' HP'}" for i, m in enumerate(team["party"]))
+        embed.add_field(name=f"{side.upper()} | {active['name']} Lv.{active['current_level']} [{active['element_type']}]"[:256],
+                        value=f"{hp_bar(active)}{effects}\n{reserve}"[:1024], inline=True)
+    first = state["p1"]["party"][state["p1"]["active_idx"]]
+    second = state["p2"]["party"][state["p2"]["active_idx"]]
+    if first.get("image_url"):
+        embed.set_image(url=first["image_url"])
+    if second.get("image_url"):
+        embed.set_thumbnail(url=second["image_url"])
+    embed.set_footer(text="一致属性×1.5 / 虚⇔実・正⇔負が弱点 / 防御は半減 / 交代も1手 / 80手で引き分け")
+    return embed
+
 
 class BattleView(discord.ui.View):
-    def __init__(self, battle_id: str, turn_user_id: str, p1_id: str, p2_id: str):
+    def __init__(self, cog, battle_id, state, turn_user_id, p1_id, p2_id, practice=False):
         super().__init__(timeout=180)
-        self.battle_id = battle_id
-        self.turn_user_id = turn_user_id
-        self.p1_id = p1_id
-        self.p2_id = p2_id
+        self.cog, self.battle_id, self.state = cog, battle_id, state
+        self.turn_user_id, self.p1_id, self.p2_id = turn_user_id, p1_id, p2_id
+        self.practice, self.version = practice, state.get("version", 0)
+        self.lock = asyncio.Lock()
+        self.used = False
+        self.message = None
+        side = "p1" if turn_user_id == p1_id else "p2"
+        team = state[side]
+        for idx, move in enumerate(team["party"][team["active_idx"]]["moves"]):
+            effect = move.get("effect", "変化") if move["category"] == "status" else f"威{move['power']}"
+            button = discord.ui.Button(label=f"{move['name']} [{move['type']}] {effect} / 命{move['accuracy']}"[:80], style=discord.ButtonStyle.primary, row=0)
+            button.callback = self.callback_for(str(idx))
+            self.add_item(button)
+        for label, action in (("防御", "guard"), ("降参", "surrender")):
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, row=1)
+            button.callback = self.callback_for(action)
+            self.add_item(button)
+        for index, monster in enumerate(team["party"]):
+            if index != team["active_idx"] and monster["current_hp"] > 0:
+                button = discord.ui.Button(label=f"交代: {monster['name']}"[:80], row=2)
+                button.callback = self.callback_for(f"switch:{index}")
+                self.add_item(button)
 
-    async def execute_turn(self, interaction: discord.Interaction, move_idx: int):
+    def callback_for(self, action):
+        async def callback(interaction):
+            await self.execute_turn(interaction, action)
+        return callback
+
+    async def execute_turn(self, interaction, action):
         if str(interaction.user.id) != self.turn_user_id:
             await interaction.response.send_message("あなたのターンではありません。", ephemeral=True)
             return
-
         await interaction.response.defer()
-
-        # 最新のバトル状態を取得
-        res = supabase.table("battles").select("*").eq("id", self.battle_id).execute()
-        battle = res.data[0]
-        state = battle["battle_state"]
-
-        is_p1 = str(interaction.user.id) == self.p1_id
-        atk_key, def_key = ("p1", "p2") if is_p1 else ("p2", "p1")
-        next_turn_id = self.p2_id if is_p1 else self.p1_id
-
-        attacker_party = state[atk_key]["party"]
-        defender_party = state[def_key]["party"]
-
-        atk_idx = state[atk_key]["active_idx"]
-        def_idx = state[def_key]["active_idx"]
-
-        attacker = attacker_party[atk_idx]
-        defender = defender_party[def_idx]
-
-        move = attacker["moves"][move_idx]
-        damage, mult = calculate_damage(attacker, defender, move)
-        defender["current_hp"] = max(0, defender["current_hp"] - damage)
-
-        # ログメッセージ
-        log = f"⚔️ **{attacker['name']}** の {move['name']}！ **{defender['name']}** に {damage} ダメージ！"
-        if mult > 1.0: log += " (効果はばつぐんだ！)"
-        elif mult < 1.0 and mult > 0: log += " (効果はいまひとつのようだ...)"
-        state["logs"].append(log)
-
-        # ひんし判定・交代処理
-        is_finished = False
-        if defender["current_hp"] == 0:
-            state["logs"].append(f"💀 **{defender['name']}** は倒れた！")
-            
-            # 生きている次のモンスターを検索
-            next_def_idx = next((i for i, m in enumerate(defender_party) if m["current_hp"] > 0), None)
-            if next_def_idx is not None:
-                state[def_key]["active_idx"] = next_def_idx
-                state["logs"].append(f"➡️ **{defender_party[next_def_idx]['name']}** がバトル場に出た！")
+        async with self.lock:
+            if self.used or self.is_finished():
+                await interaction.followup.send("このターンは処理済み、または期限切れです。", ephemeral=True)
+                return
+            state = copy.deepcopy(self.state)
+            side = "p1" if self.turn_user_id == self.p1_id else "p2"
+            try:
+                winner = resolve_action(state, side, action)
+                if self.practice and winner is None:
+                    cpu = state["p2"]["party"][state["p2"]["active_idx"]]
+                    # Predictable CPU: heal when hurt, otherwise choose an attack.
+                    healing = next((i for i, m in enumerate(cpu["moves"]) if m.get("effect") == "heal"), None)
+                    hurt = cpu["current_hp"] < calc_stat(cpu["max_hp"], cpu["current_level"]) // 2
+                    choice = healing if healing is not None and hurt and cpu["heals"] else random.choice([i for i, m in enumerate(cpu["moves"]) if m["category"] != "status"] or [0])
+                    winner = resolve_action(state, "p2", str(choice))
+                next_id = self.p1_id if self.practice or side == "p2" else self.p2_id
+                if winner:
+                    state["logs"].append("引き分け！" if winner == "draw" else f"{winner.upper()} の勝利！")
+                    state["winner"] = winner
+                if not self.practice:
+                    updated = await asyncio.to_thread(self.save_turn, state, next_id, winner is not None)
+                    if not updated:
+                        self.used = True
+                        await interaction.followup.send("古い操作です。最新の対戦画面か /ddd_resume を使用してください。", ephemeral=True)
+                        return
+            except ValueError as exc:
+                await interaction.followup.send(str(exc), ephemeral=True)
+                return
+            except Exception:
+                logger.exception("DDD battle update failed")
+                await interaction.followup.send("対戦更新に失敗しました。/ddd_resume で最新状態を確認してください。", ephemeral=True)
+                return
+            self.used = True
+            self.stop()
+            if winner:
+                if not self.practice:
+                    self.cog.busy.difference_update((self.p1_id, self.p2_id))
+                if not self.practice and winner != "draw":
+                    try:
+                        await asyncio.to_thread(self.award_exp, state[winner]["party"])
+                        state["logs"].append("勝利パーティ全員に50 EXP。100 EXPでLv.UP（上限30）。")
+                    except Exception:
+                        logger.exception("DDD reward failed for battle %s", self.battle_id)
+                        state["logs"].append("経験値の保存に失敗しました。管理者へ対戦IDを連絡してください。")
+                view = None
             else:
-                is_finished = True
-                state["logs"].append(f"🏆 <@{interaction.user.id}> の勝利！")
-                self.award_exp(attacker["id"])
+                view = BattleView(self.cog, self.battle_id, state, next_id, self.p1_id, self.p2_id, self.practice)
+            await interaction.edit_original_response(content="対戦終了" if winner else f"<@{next_id}> のターン", embed=battle_embed(state, self.practice), view=view,
+                                                     allowed_mentions=discord.AllowedMentions.none())
+            if view:
+                view.message = interaction.message
 
-        # DB更新
-        supabase.table("battles").update({
-            "battle_state": state,
-            "turn_user_id": next_turn_id,
-            "is_finished": is_finished
-        }).eq("id", self.battle_id).execute()
+    def save_turn(self, state, next_id, finished):
+        # JSON version is an optimistic lock: even old buttons from two turns ago cannot replay.
+        query = supabase.table("battles").update({"battle_state": state, "turn_user_id": next_id, "is_finished": finished})
+        return query.eq("id", self.battle_id).eq("is_finished", False).eq("turn_user_id", self.turn_user_id).eq("battle_state->>version", str(self.version)).execute().data
 
-        # Embed構築・送信
-        embed = self.build_embed(state)
-        if is_finished:
-            await interaction.followup.send(content="🎊 **対戦終了！**", embed=embed)
-        else:
-            next_view = BattleView(self.battle_id, next_turn_id, self.p1_id, self.p2_id)
-            next_view.setup_buttons(state[def_key if is_p1 else atk_key]["party"][state[def_key if is_p1 else atk_key]["active_idx"]]["moves"])
-            await interaction.followup.send(content=f"<@{next_turn_id}> のターンです。", embed=embed, view=next_view)
+    def award_exp(self, party):
+        for monster in party:
+            result = supabase.table("monsters").select("current_level,current_exp").eq("id", monster["id"]).eq("user_id", monster["user_id"]).execute()
+            if not result.data:
+                continue
+            old = result.data[0]
+            level, exp = add_experience(old["current_level"], old.get("current_exp", 0), 50)
+            updated = supabase.table("monsters").update({"current_level": level, "current_exp": exp}).eq("id", monster["id"]).eq("user_id", monster["user_id"]).eq("current_level", old["current_level"]).eq("current_exp", old.get("current_exp", 0)).execute()
+            if not updated.data:
+                raise RuntimeError("Concurrent EXP update; manual reconciliation needed")
 
-    def award_exp(self, monster_id: str):
-        """勝利モンスターへの経験値付与＆レベルアップ（最大Lv.30）"""
-        m_res = supabase.table("monsters").select("current_level, current_exp").eq("id", monster_id).execute()
-        if not m_res.data: return
-        
-        m = m_res.data[0]
-        if m["current_level"] >= 30: return
-        
-        new_exp = m["current_exp"] + 50
-        new_lv = m["current_level"]
-        if new_exp >= 100:
-            new_lv = min(30, new_lv + 1)
-            new_exp = 0
+    async def on_timeout(self):
+        # PvP remains resumable in DB rather than silently granting timeout rewards.
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(content="操作期限切れ。対人戦は /ddd_resume で再開できます。練習戦は /ddd_practice でやり直せます。", view=self)
+            except discord.HTTPException:
+                pass
 
-        supabase.table("monsters").update({"current_level": new_lv, "current_exp": new_exp}).eq("id", monster_id).execute()
 
-    def setup_buttons(self, moves: list):
-        self.clear_items()
-        for idx, move in enumerate(moves):
-            btn = discord.ui.Button(
-                label=f"{move['name']} ({move['type']}/威:{move.get('power', 0)})",
-                style=discord.ButtonStyle.primary,
-                custom_id=f"move_{idx}"
-            )
-            btn.callback = self.create_callback(idx)
-            self.add_item(btn)
+class ChallengeView(discord.ui.View):
+    def __init__(self, cog, p1_id, p2_id):
+        super().__init__(timeout=60)
+        self.cog, self.p1_id, self.p2_id = cog, p1_id, p2_id
+        self.claimed = False
+        self.message = None
 
-    def create_callback(self, move_idx: int):
-        async def callback(interaction: discord.Interaction):
-            await self.execute_turn(interaction, move_idx)
-        return callback
+    async def interaction_check(self, interaction):
+        if str(interaction.user.id) != self.p2_id:
+            await interaction.response.send_message("招待されたプレイヤーだけが回答できます。", ephemeral=True)
+            return False
+        if self.claimed:
+            await interaction.response.send_message("回答済みの招待です。", ephemeral=True)
+            return False
+        return True
 
-    def build_embed(self, state: dict) -> discord.Embed:
-        p1_active = state["p1"]["party"][state["p1"]["active_idx"]]
-        p2_active = state["p2"]["party"][state["p2"]["active_idx"]]
-        
-        embed = discord.Embed(title="⚔️ DDD コマンドバトル", description="\n".join(state["logs"][-4:]))
-        embed.add_field(
-            name=f"P1: {p1_active['name']} (Lv.{p1_active['current_level']})",
-            value=f"HP: {p1_active['current_hp']} / {calc_stat(p1_active['max_hp'], p1_active['current_level'])}"
-        )
-        embed.add_field(
-            name=f"P2: {p2_active['name']} (Lv.{p2_active['current_level']})",
-            value=f"HP: {p2_active['current_hp']} / {calc_stat(p2_active['max_hp'], p2_active['current_level'])}"
-        )
-        return embed
+    @discord.ui.button(label="対戦を受ける", style=discord.ButtonStyle.success)
+    async def accept(self, interaction, button):
+        self.claimed = True
+        self.stop()
+        await interaction.response.defer()
+        try:
+            record = await asyncio.to_thread(self.cog.start_battle, self.p1_id, self.p2_id)
+            view = BattleView(self.cog, record["id"], record["battle_state"], str(record["turn_user_id"]), self.p1_id, self.p2_id)
+        except Exception:
+            logger.exception("DDD challenge could not start")
+            self.cog.busy.difference_update((self.p1_id, self.p2_id))
+            await interaction.edit_original_response(content="開始できませんでした。双方3匹以上の所持と未完了対戦を確認してください。", view=None)
+            return
+        view.message = interaction.message
+        await interaction.edit_original_response(content=f"<@{view.turn_user_id}> の先攻です。", embed=battle_embed(view.state), view=view,
+                                                 allowed_mentions=discord.AllowedMentions.none())
+
+    @discord.ui.button(label="今回はやめる", style=discord.ButtonStyle.secondary)
+    async def decline(self, interaction, button):
+        self.claimed = True
+        self.stop()
+        self.cog.busy.difference_update((self.p1_id, self.p2_id))
+        await interaction.response.edit_message(content="招待を取り消しました。", view=None)
+
+    async def on_timeout(self):
+        self.cog.busy.difference_update((self.p1_id, self.p2_id))
+        if self.message:
+            try:
+                await self.message.edit(content="対戦招待の期限が切れました。", view=None)
+            except discord.HTTPException:
+                pass
+
 
 class BattleCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.busy = set()
 
-    @app_commands.command(name="ddd_battle", description="他のプレイヤーと3v3の対戦を行います")
+    def active_battle(self, user_id):
+        return supabase.table("battles").select("*").eq("is_finished", False).or_(f"player1_id.eq.{user_id},player2_id.eq.{user_id}").limit(1).execute().data
+
+    def start_battle(self, p1_id, p2_id):
+        if self.active_battle(p1_id) or self.active_battle(p2_id):
+            raise ValueError("active battle")
+        parties = [supabase.table("monsters").select("*").eq("user_id", uid).order("created_at", desc=True).limit(3).execute().data for uid in (p1_id, p2_id)]
+        if any(len(party) < 3 for party in parties):
+            raise ValueError("three monsters required")
+        p1, p2 = [prepare_party(party) for party in parties]
+        first_id = p1_id if calc_stat(p1[0]["max_speed"], p1[0]["current_level"]) >= calc_stat(p2[0]["max_speed"], p2[0]["current_level"]) else p2_id
+        state = {"p1": {"party": p1, "active_idx": 0}, "p2": {"party": p2, "active_idx": 0}, "version": 0,
+                 "logs": ["3対3の対戦開始！ 技・防御・交代から行動を選ぼう。"]}
+        record = supabase.table("battles").insert({"player1_id": p1_id, "player2_id": p2_id, "turn_user_id": first_id,
+                                                  "battle_state": state, "is_finished": False}).execute().data[0]
+        # Construct Views on the event loop, not this worker thread.
+        return record
+
+    @app_commands.command(name="ddd_battle", description="相手に招待を送り、直近3匹で3対3のドットバトル")
     async def battle(self, interaction: discord.Interaction, opponent: discord.User):
-        await interaction.response.defer()
-
         p1_id, p2_id = str(interaction.user.id), str(opponent.id)
-        p1_res = supabase.table("monsters").select("*").eq("user_id", p1_id).order("created_at", desc=True).limit(3).execute()
-        p2_res = supabase.table("monsters").select("*").eq("user_id", p2_id).order("created_at", desc=True).limit(3).execute()
-
-        if len(p1_res.data) < 3 or len(p2_res.data) < 3:
-            await interaction.followup.send("対戦を行うには両プレイヤーが手持ちモンスターを【3匹以上】所有している必要があります。")
+        if p1_id == p2_id or opponent.bot:
+            await interaction.response.send_message("自分やBotには挑戦できません。一人なら /ddd_practice！", ephemeral=True)
             return
+        if p1_id in self.busy or p2_id in self.busy:
+            await interaction.response.send_message("どちらかが対戦中・招待中です。未完了戦は /ddd_resume。", ephemeral=True)
+            return
+        self.busy.update((p1_id, p2_id))
+        view = ChallengeView(self, p1_id, p2_id)
+        try:
+            await interaction.response.send_message(content=f"<@{p2_id}>、ドットバトルへの招待です。", embed=discord.Embed(title="DDD ARENA | 挑戦状", description="双方の直近3匹で対戦。勝利パーティに50 EXP。\n60秒以内に回答してください。", color=0x8B7CF8), view=view,
+                                                    allowed_mentions=discord.AllowedMentions(users=[opponent]))
+            view.message = await interaction.original_response()
+        except Exception:
+            self.busy.difference_update((p1_id, p2_id))
+            raise
 
-        def prep_party(party):
-            for m in party:
-                m["current_hp"] = calc_stat(m["max_hp"], m["current_level"])
-            return party
+    @app_commands.command(name="ddd_resume", description="未完了の対人戦を再表示。再起動やボタン期限切れから復帰")
+    async def resume(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        records = await asyncio.to_thread(self.active_battle, str(interaction.user.id))
+        if not records:
+            await interaction.followup.send("未完了の対戦はありません。", ephemeral=True)
+            return
+        record = records[0]
+        state = record["battle_state"]
+        if "version" not in state:
+            # Old battle snapshots have incompatible actions; close without rewards.
+            await asyncio.to_thread(lambda: supabase.table("battles").update({"is_finished": True}).eq("id", record["id"]).execute())
+            self.busy.difference_update((str(record["player1_id"]), str(record["player2_id"])))
+            await interaction.followup.send("旧バージョンの未完了戦を報酬なしで終了しました。新しく対戦できます。", ephemeral=True)
+            return
+        view = BattleView(self, record["id"], state, str(record["turn_user_id"]), str(record["player1_id"]), str(record["player2_id"]))
+        # Public board so both participants can continue using the same updated message.
+        view.message = await interaction.followup.send(content=f"<@{view.turn_user_id}> のターン", embed=battle_embed(state), view=view, ephemeral=False, wait=True,
+                                                       allowed_mentions=discord.AllowedMentions.none())
 
-        p1_party, p2_party = prep_party(p1_res.data), prep_party(p2_res.data)
-        
-        # 先攻判定
-        p1_spd = calc_stat(p1_party[0]["max_speed"], p1_party[0]["current_level"])
-        p2_spd = calc_stat(p2_party[0]["max_speed"], p2_party[0]["current_level"])
-        first_id = p1_id if p1_spd >= p2_spd else p2_id
+    @app_commands.command(name="ddd_practice", description="自分の相棒でCPUと無料の練習戦。経験値・コイン変動なし")
+    @app_commands.describe(monster_id="ボックス詳細のID。省略時は最新の相棒", course="相手の戦い方")
+    @app_commands.choices(course=[app_commands.Choice(name=n, value=n) for n in ["草原のスライム", "遺跡のガーディアン", "鏡のライバル"]])
+    async def practice(self, interaction: discord.Interaction, monster_id: str = "", course: str = "草原のスライム"):
+        await interaction.response.defer(ephemeral=True)
+        def load():
+            query = supabase.table("monsters").select("*").eq("user_id", str(interaction.user.id))
+            if monster_id:
+                query = query.eq("id", monster_id)
+            return query.order("created_at", desc=True).limit(1).execute().data
+        monsters = await asyncio.to_thread(load)
+        if not monsters:
+            await interaction.followup.send("相棒が見つかりません。/ddd_create で無料作成しましょう！", ephemeral=True)
+            return
+        player = prepare_party(monsters)
+        enemy = copy.deepcopy(player)
+        enemy[0]["name"] = course
+        enemy[0]["image_url"] = ""
+        if course == "草原のスライム":
+            enemy[0]["element_type"] = "無"
+            enemy[0]["max_attack"] = max(1, enemy[0]["max_attack"] * 2 // 3)
+            enemy[0]["max_sp_atk"] = max(1, enemy[0]["max_sp_atk"] * 2 // 3)
+        elif course == "遺跡のガーディアン":
+            enemy[0]["max_defense"] = min(9999, enemy[0]["max_defense"] * 3 // 2)
+            enemy[0]["max_sp_def"] = min(9999, enemy[0]["max_sp_def"] * 3 // 2)
+        enemy = prepare_party(enemy)
+        state = {"p1": {"party": player, "active_idx": 0}, "p2": {"party": enemy, "active_idx": 0}, "version": 0,
+                 "logs": [f"{course}に挑戦！ HP・経験値・コインは練習後に持ち越しません。"]}
+        uid = str(interaction.user.id)
+        view = BattleView(self, None, state, uid, uid, "CPU", practice=True)
+        view.message = await interaction.followup.send(embed=battle_embed(state, True), view=view, ephemeral=True, wait=True)
 
-        initial_state = {
-            "p1": {"party": p1_party, "active_idx": 0},
-            "p2": {"party": p2_party, "active_idx": 0},
-            "logs": ["⚔️ 3v3 コマンドバトル開始！"]
-        }
-
-        b_res = supabase.table("battles").insert({
-            "player1_id": p1_id,
-            "player2_id": p2_id,
-            "turn_user_id": first_id,
-            "battle_state": initial_state
-        }).execute()
-
-        battle_id = b_res.data[0]["id"]
-        
-        first_party = p1_party if first_id == p1_id else p2_party
-        view = BattleView(battle_id, first_id, p1_id, p2_id)
-        view.setup_buttons(first_party[0]["moves"])
-
-        embed = view.build_embed(initial_state)
-        await interaction.followup.send(content=f"<@{first_id}> の先攻ターンです。", embed=embed, view=view)
 
 async def setup(bot):
     await bot.add_cog(BattleCog(bot))
