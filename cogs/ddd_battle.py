@@ -168,6 +168,10 @@ def resolve_action(state, side, action, rng=None):
             elif effect == "poison":
                 target["poison"] = 3
                 logs.append(f"{target['name']} は毒状態に！ 行動後3回ダメージ。")
+            elif effect == "bind":
+                duration = 4 if move.get("name") == "締め付け" else 3
+                target["bound"] = max(target.get("bound", 0), duration)
+                logs.append(f"{target['name']} は {move['name']} に絡め取られた！ {duration}ターン拘束。")
             elif effect == "guard":
                 actor["guarding"] = True
                 logs.append(f"{actor['name']} は {move['name']} で防御！")
@@ -296,7 +300,7 @@ class BattleView(discord.ui.View):
             if winner:
                 if not self.practice:
                     self.cog.busy.difference_update((self.p1_id, self.p2_id))
-                if self.mode == "battle" and winner != "draw":
+                if not self.practice and self.mode == "battle" and winner != "draw":
                     try:
                         await asyncio.to_thread(self.award_exp, state[winner]["party"])
                         state["logs"].append("勝利パーティ全員に50 EXP。100 EXPでLv.UP（上限30）。")

@@ -240,6 +240,100 @@ class PixelStudio(discord.ui.View):
         await interaction.edit_original_response(embed=embed, attachments=[], view=None)
 
 
+class ScoutDecisionView(discord.ui.View):
+    """鑑定済み個体をボックスへ迎えるか、見送るかを選ぶ確認画面。"""
+    def __init__(self, cog, user_id, record, file_path, dice, stats, canvas_size, box_text):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.user_id = user_id
+        self.record = record
+        self.file_path = file_path
+        self.dice = dice
+        self.stats = stats
+        self.canvas_size = canvas_size
+        self.box_text = box_text
+        self.done = False
+
+    def preview_embed(self):
+        embed = discord.Embed(
+            title=f"DDD 鑑定記録 | 【{self.record['element_type']}】{self.record['name']}",
+            description="**鑑定完了**\nこの個体をボックスへ迎え入れますか？見送っても鑑定費用は返金されません。",
+            color=discord.Color.gold(),
+        )
+        embed.set_image(url=self.record["image_url"])
+        embed.add_field(
+            name="厳選結果 | 個体ポテンシャル",
+            value=(f"初期レベル **{self.dice['level']} / 20**  {score_bar(self.dice['level'], 20)}\n"
+                   f"才能値 **{self.dice['talent']} / 600**  {score_bar(self.dice['talent'], 600)}\n"
+                   f"AI適合 **{self.dice['ai']} / 100**  {score_bar(self.dice['ai'], 100)}\n"
+                   f"能力補正 **{self.dice['ability']} / 100**  {score_bar(self.dice['ability'], 100)}"),
+            inline=False,
+        )
+        embed.add_field(
+            name="能力配分 | Lv.30到達時",
+            value=(f"**HP**: {self.stats['hp']} | **攻撃**: {self.stats['attack']} | **防御**: {self.stats['defense']}\n"
+                   f"**特攻**: {self.stats['sp_atk']} | **特防**: {self.stats['sp_def']} | **素早さ**: {self.stats['speed']}"),
+            inline=False,
+        )
+        embed.add_field(name="特性 | 個体の特徴", value=self.record["characteristic"], inline=False)
+        moves_text = "\n".join(
+            f"・**{m['name']}** [{m['type']}] ({'物理' if m['category']=='physical' else '特殊' if m['category']=='special' else '変化'} / 威力:{m['power'] if m['power'] > 0 else '-'})"
+            for m in self.record["moves"]
+        )
+        embed.add_field(name="修得技 | バトル構成", value=moves_text, inline=False)
+        embed.set_footer(text=f"鑑定費用: {APPRAISAL_COST} ago | パレット: {self.canvas_size} | ボックス: {self.box_text}")
+        return embed
+
+    async def interaction_check(self, interaction):
+        if str(interaction.user.id) != self.user_id or self.done:
+            await interaction.response.send_message("この鑑定結果は操作済み、またはあなたのものではありません。", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="スカウトしてボックスへ", style=discord.ButtonStyle.success)
+    async def scout(self, interaction, button):
+        self.done = True
+        await interaction.response.defer()
+        try:
+            result = await asyncio.to_thread(lambda: supabase.table("monsters").insert(self.record).execute())
+            if not result.data:
+                raise RuntimeError("登録結果が空でした")
+            monster = result.data[0]
+        except Exception:
+            self.done = False
+            await interaction.followup.send("ボックスへの登録に失敗しました。鑑定費用は返金されません。", ephemeral=True)
+            return
+        self.stop()
+        embed = self.preview_embed()
+        embed.description = "**スカウト成功**\nこの個体をボックスへ迎え入れました。"
+        embed.set_footer(text=f"鑑定費用: {APPRAISAL_COST} ago | ボックス登録済み | モンスターID: {monster['id']}")
+        await interaction.edit_original_response(embed=embed, view=None)
+
+    @discord.ui.button(label="今回は見送る", style=discord.ButtonStyle.secondary)
+    async def decline(self, interaction, button):
+        self.done = True
+        await interaction.response.defer()
+        try:
+            await asyncio.to_thread(lambda: supabase.storage.from_("dot_images").remove([self.file_path]))
+        except Exception:
+            pass
+        self.stop()
+        embed = self.preview_embed()
+        embed.description = "**スカウトを見送りました。**\n個体はボックスへ登録されず、鑑定費用も返金されません。"
+        await interaction.edit_original_response(embed=embed, view=None)
+
+    async def on_timeout(self):
+        if self.done:
+            return
+        self.done = True
+        try:
+            await asyncio.to_thread(lambda: supabase.storage.from_("dot_images").remove([self.file_path]))
+        except Exception:
+            pass
+        for child in self.children:
+            child.disabled = True
+
+
 class AppraisalCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -342,23 +436,40 @@ class AppraisalCog(commands.Cog):
 
     # --- AI・ステータス精密補正ロジック ---
     def normalize_stats(self, stats: dict, target_talent: int) -> dict:
-        """AIが出力したステータスの合計値を才能ダイス（target_talent）と厳密に一致させる"""
+        """個体値合計を維持しつつ、HPだけは10〜200に収める。才能値の上限は変更しない。"""
         keys = ["hp", "attack", "defense", "sp_atk", "sp_def", "speed"]
-        cleaned = {k: max(10, int(stats.get(k, 20))) for k in keys}
-        
+        target_talent = max(60, min(600, int(target_talent)))
+        cleaned = {}
+        for key in keys:
+            try:
+                value = int(stats.get(key, 20))
+            except (TypeError, ValueError):
+                value = 20
+            cleaned[key] = max(10, value)
+        cleaned["hp"] = min(200, cleaned["hp"])
         current_sum = sum(cleaned.values())
-        if current_sum == target_talent:
-            return cleaned
-
-        # 比率を崩さず再割り振り
         scaled = {k: max(10, int(round((cleaned[k] / current_sum) * target_talent))) for k in keys}
-        
-        # 端数調整（余りを最も大きいステータスに加算）
+        scaled["hp"] = min(200, scaled["hp"])
         diff = target_talent - sum(scaled.values())
-        if diff != 0:
-            max_k = max(scaled, key=scaled.get)
-            scaled[max_k] = max(10, scaled[max_k] + diff)
-
+        if diff > 0:
+            # 余りはHPを200まで優先し、その後は最大能力へ加算する。
+            hp_room = 200 - scaled["hp"]
+            add_hp = min(diff, hp_room)
+            scaled["hp"] += add_hp
+            diff -= add_hp
+            if diff:
+                scaled[max(keys, key=scaled.get)] += diff
+        elif diff < 0:
+            # 減算時は下限10を守りながら大きい能力から調整する。
+            remaining = -diff
+            while remaining:
+                candidates = [k for k in keys if scaled[k] > 10]
+                if not candidates:
+                    break
+                key = max(candidates, key=scaled.get)
+                amount = min(remaining, scaled[key] - 10)
+                scaled[key] -= amount
+                remaining -= amount
         return scaled
 
     async def generate_ai_monster(self, image_bytes: bytes, dice: dict) -> dict:
@@ -429,7 +540,7 @@ class AppraisalCog(commands.Cog):
             except (TypeError, ValueError):
                 power = 40 if category != "status" else 0
             try:
-                accuracy = max(1, min(100, int(m.get("accuracy", 100))))
+                accuracy = max(50, min(100, int(m.get("accuracy", 100))))
             except (TypeError, ValueError):
                 accuracy = 100
             valid_moves.append({
@@ -538,44 +649,14 @@ class AppraisalCog(commands.Cog):
             "max_speed": stats["speed"],
             "moves": ai_data["moves"]
         }
-        try:
-            res = supabase.table("monsters").insert(record).execute()
-            monster = res.data[0]
-        except Exception:
-            self.refund_coins(user_id, APPRAISAL_COST, reason="registration_failed_refund")
-            await interaction.followup.send("登録に失敗しました。鑑定費用を返金しました。")
-            return
+        # 8. 生成結果を確認し、スカウトするか選択する。ここではまだDB登録しない。
+        view = ScoutDecisionView(
+            self, user_id, record, file_path, dice, stats, canvas_size,
+            f"未登録（{current_cnt}/{profile['max_box_slots']}）",
+        )
+        await interaction.followup.send(embed=view.preview_embed(), view=view)
+        return
 
-        # 8. 結果Embedの表示
-        embed = discord.Embed(
-            title=f"DDD 鑑定記録 | 【{monster['element_type']}】{monster['name']}",
-            description=f"**鑑定完了**\n{ai_data['description']}\n\n厳選された個体の記録がボックスに登録されました。",
-            color=discord.Color.gold()
-        )
-        embed.set_image(url=public_url)
-        embed.add_field(
-            name="厳選結果 | 個体ポテンシャル",
-            value=(f"初期レベル **{dice['level']} / 20**  {score_bar(dice['level'], 20)}\n"
-                   f"才能値 **{dice['talent']} / 600**  {score_bar(dice['talent'], 600)}\n"
-                   f"AI適合 **{dice['ai']} / 100**  {score_bar(dice['ai'], 100)}\n"
-                   f"能力補正 **{dice['ability']} / 100**  {score_bar(dice['ability'], 100)}"),
-            inline=False
-        )
-        embed.add_field(
-            name="能力配分 | Lv.30到達時",
-            value=f"**HP**: {stats['hp']} | **攻撃**: {stats['attack']} | **防御**: {stats['defense']}\n**特攻**: {stats['sp_atk']} | **特防**: {stats['sp_def']} | **素早さ**: {stats['speed']}",
-            inline=False
-        )
-        embed.add_field(name="特性 | 個体の特徴", value=monster["characteristic"], inline=False)
-        
-        moves_text = "\n".join([
-            f"・**{m['name']}** [{m['type']}] ({'物理' if m['category']=='physical' else '特殊' if m['category']=='special' else '変化'} / 威力:{m['power'] if m['power']>0 else '-'})"
-            for m in monster["moves"]
-        ])
-        embed.add_field(name="修得技 | バトル構成", value=moves_text, inline=False)
-        embed.set_footer(text=f"鑑定費用: {APPRAISAL_COST} ago | パレット: {canvas_size} | ボックス: {current_cnt + 1}/{profile['max_box_slots']}")
-
-        await interaction.followup.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(AppraisalCog(bot))

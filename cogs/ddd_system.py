@@ -1,5 +1,8 @@
 import os
 import asyncio
+import json
+import os
+import random
 from .ddd_battle import calc_stat, normalize_moves, TYPE_CHART, add_experience, SAFE_TRAITS
 import discord
 from discord import app_commands
@@ -24,6 +27,7 @@ RENAME_ABILITY_COST = 250  # 特性名・説明変更
 MAX_RENAME_LENGTH = 20
 MAX_ABILITY_LENGTH = 60
 COINS_PER_EXP = 50
+MOVE_REROLL_COST = 2000
 
 ELEMENT_COLORS = {"虚": 0xA185F7, "実": 0x45E1AD, "正": 0xF7BE3E, "負": 0xF677A4, "無": 0x52A7FF}
 TECHNIQUES = {
@@ -34,6 +38,10 @@ TECHNIQUES = {
     "回復": {"category": "status", "effect": "heal", "description": "変化 / HPを25%回復。1戦3回まで。"},
     "防御": {"category": "status", "effect": "guard", "description": "変化 / 次に受けるダメージを半減。"},
     "毒": {"category": "status", "effect": "poison", "accuracy": 85, "description": "変化 / 命中85。相手に3回の毒ダメージ。"},
+    "絡みつき": {"category": "status", "effect": "bind", "accuracy": 85, "description": "変化 / 命中85。相手を3ターン拘束する。"},
+    "締め付け": {"category": "status", "effect": "bind", "accuracy": 80, "description": "変化 / 命中80。相手を4ターン拘束する。"},
+    "くさむすび": {"category": "special", "power": 55, "accuracy": 90, "description": "特殊 / 威力55 / 命中90。蔦を絡めて攻撃。"},
+    "まきつく": {"category": "physical", "power": 35, "accuracy": 95, "description": "物理 / 威力35 / 命中95。絡みついて追撃する。"},
     "攻撃強化": {"category": "status", "effect": "attack_up", "description": "変化 / 攻撃を1段階上昇。最大6段階。"},
     "特殊強化": {"category": "status", "effect": "sp_atk_up", "description": "変化 / 特攻を1段階上昇。最大6段階。"},
     "防御強化": {"category": "status", "effect": "defense_up", "description": "変化 / 防御を1段階上昇。交代で解除。"},
@@ -497,7 +505,52 @@ class SystemCog(commands.Cog):
             return
         await interaction.followup.send("相棒を選ぶと確認画面が開きます。削除は取り消せません。", view=MonsterSelectView(uid, result.data, release=True), ephemeral=True)
 
-    @app_commands.command(name="ddd_loadout", description="相棒の技1枠を無料で変更。攻撃・回復・毒・強化を組み合わせよう")
+    @app_commands.command(name="ddd_reroll_move", description="2000 ago coinで攻撃技の威力・命中を無料API利用なしで振り直します")
+    @app_commands.describe(monster_id="ボックス詳細のID", move_slot="振り直す技スロット")
+    @app_commands.choices(move_slot=[
+        app_commands.Choice(name="技1", value=1),
+        app_commands.Choice(name="技2", value=2),
+        app_commands.Choice(name="技3", value=3),
+    ])
+    async def reroll_move(self, interaction: discord.Interaction, monster_id: str, move_slot: int):
+        user_id = str(interaction.user.id)
+        if move_slot not in (1, 2, 3):
+            await interaction.response.send_message("技スロットは1〜3で指定してください。", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        profile = self.get_user_profile(user_id)
+        if not self.deduct_coins(user_id, MOVE_REROLL_COST, reason=f"reroll_move_{move_slot}"):
+            await interaction.followup.send(f"ago coinが不足しています。（必要: {MOVE_REROLL_COST} / 所持: {profile.get('balance', 0)}）", ephemeral=True)
+            return
+        try:
+            result = supabase.table("monsters").select("*").eq("id", monster_id).eq("user_id", user_id).execute()
+            if not result.data:
+                raise ValueError("指定したモンスターが見つかりません。")
+            monster = result.data[0]
+            old_moves = monster.get("moves")
+            moves = normalize_moves(old_moves)
+            move = dict(moves[move_slot - 1])
+            if move.get("category") == "status":
+                raise ValueError("変化技には威力の振り直しを適用できません。攻撃技を選んでください。")
+            move["power"] = random.randint(1, 110)
+            move["accuracy"] = random.randint(50, 100)
+            moves[move_slot - 1] = move
+            query = supabase.table("monsters").update({"moves": moves}).eq("id", monster_id).eq("user_id", user_id)
+            if old_moves is None:
+                query = query.is_("moves", "null")
+            else:
+                query = query.eq("moves", json.dumps(old_moves, ensure_ascii=False))
+            updated = query.execute()
+            if not updated.data:
+                raise RuntimeError("同時編集が検出されました。")
+        except Exception as exc:
+            self.refund_coins(user_id, MOVE_REROLL_COST, reason="reroll_move_failed_refund")
+            await interaction.followup.send(f"振り直しに失敗したため、{MOVE_REROLL_COST} ago coinを返金しました。\n詳細: {exc}", ephemeral=True)
+            return
+        await interaction.followup.send(f"**{monster['name']}** の技{move_slot}を振り直しました。\n威力 **{move['power']}** / 命中 **{move['accuracy']}**（APIクレジット消費なし）", ephemeral=True)
+
+
+    @app_commands.command(name="ddd_loadout", description="相棒の技1枠を無料で変更。攻撃・回復・毒・拘束・強化を組み合わせよう")
     @app_commands.describe(monster_id="ボックス詳細のID", slot="変更する技枠", technique="覚える技。技名も選んだ技に置き換わります")
     @app_commands.choices(slot=[app_commands.Choice(name=f"技{i}", value=i) for i in (1, 2, 3)],
                           technique=[app_commands.Choice(name=f"{name}：{data['description']}"[:100], value=name) for name, data in TECHNIQUES.items()])
@@ -539,7 +592,7 @@ class SystemCog(commands.Cog):
         embed.add_field(name="03 / ひとりで腕試し", value="`/ddd_practice` は1匹から遊べる無料のCPU戦。草原・遺跡・鏡の3コース。練習なので経験値・コインは変動しません。", inline=False)
         embed.add_field(name="04 / 友達と対戦・育成", value="`/ddd_battle` で招待。双方の直近3匹が出場し、速い先頭が先攻。勝利パーティ全員に50 EXP、100 EXPでレベルアップ（Lv.30まで）。期限切れは `/ddd_resume`。", inline=False)
         embed.add_field(name="戦術ノート", value="虚⇔実・正⇔負はお互いに2倍、同属性は半減（無を除く）。一致属性技は1.5倍。防御でダメージ半減、交代で能力ランク解除。回復は3回まで。80手で引き分け。", inline=False)
-        embed.add_field(name="費用について", value="工房・技編成・練習にAI API・ago消費はありません。既存の `/ddd_appraise` は500 ago＋管理者側のGemini API利用、改名・ボックス拡張は従来どおりagoを使います。Discord・Supabase等の運用費は別です。", inline=False)
+        embed.add_field(name="費用について", value="工房・技編成・練習にAI API・ago消費はありません。既存の `/ddd_appraise` は500 ago＋管理者側のGemini API利用。鑑定後はスカウトするか選択でき、見送っても返金されません、改名・ボックス拡張は従来どおりagoを使います。Discord・Supabase等の運用費は別です。", inline=False)
         embed.set_footer(text="ドット画像は公開Storageに保存されます。個人情報を描かないでください。")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
