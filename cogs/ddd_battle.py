@@ -9,6 +9,8 @@ from discord import app_commands
 from discord.ext import commands
 from supabase import create_client, Client
 
+from .ddd_inventory import HERB, consume_item, restore_item
+
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -113,13 +115,33 @@ def experience_required(level):
     return 100 if level < 30 else 1000 if level < 40 else 10000
 
 
-def add_experience(level, experience, amount):
+def add_experience(level, experience, amount, breakthrough_stage=0):
+    """EXPを加算する。Lv.30・40では対応する突破までレベル上昇を停止する。"""
     level = integer(level, 1, 1, 50)
     total = max(0, integer(experience)) + max(0, int(amount))
+    stage = integer(breakthrough_stage, 0, 0, 40)
     while level < 50 and total >= experience_required(level):
+        if (level == 30 and stage < 30) or (level == 40 and stage < 40):
+            return level, experience_required(level)
         total -= experience_required(level)
         level += 1
     return level, 0 if level == 50 else total
+
+
+def experience_space(level, experience, breakthrough_stage=0):
+    """現在の突破状況で無駄なく追加できるEXPの上限を返す。"""
+    level = integer(level, 1, 1, 50)
+    current_exp = max(0, integer(experience))
+    stage = integer(breakthrough_stage, 0, 0, 40)
+    space = 0
+    while level < 50:
+        needed = experience_required(level)
+        if (level == 30 and stage < 30) or (level == 40 and stage < 40):
+            return space + max(0, needed - current_exp)
+        space += max(0, needed - current_exp)
+        level += 1
+        current_exp = 0
+    return space
 
 
 def hp_bar(monster):
@@ -141,7 +163,7 @@ def resolve_action(state, side, action, rng=None):
         index = integer(action.split(":", 1)[1], -1, -1, 99)
         if index < 0 or index >= len(team["party"]) or index == team["active_idx"] or team["party"][index]["current_hp"] <= 0:
             raise ValueError("その相棒には交代できません。")
-    elif action not in ("guard", "surrender"):
+    elif action not in ("herb", "surrender"):
         index = integer(action, -1, -1, 99)
         if index not in range(3):
             raise ValueError("技は1〜3から選んでください。")
@@ -151,7 +173,7 @@ def resolve_action(state, side, action, rng=None):
     if was_stunned:
         actor["stunned"] = 0
         logs.append(f"{actor['name']} は動けない！")
-        action = "guard"
+        action = "herb"
     if actor.get("trait_id") == "regen":
         maximum = calc_stat(actor["max_hp"], actor["current_level"])
         recovered = min(maximum - actor["current_hp"], max(1, maximum // 12))
@@ -170,9 +192,14 @@ def resolve_action(state, side, action, rng=None):
             entrant["current_hp"] = max(0, entrant["current_hp"] - hazard)
             logs.append(f"{entrant['name']}は登場時に罠のダメージ {hazard}！")
         logs.append(f"{actor['name']} → {entrant['name']} に交代！")
-    elif action == "guard":
-        actor["guarding"] = True
-        logs.append(f"{actor['name']} は防御。次の被ダメージを半減！")
+    elif action == "herb":
+        maximum = calc_stat(actor["max_hp"], actor["current_level"])
+        recovered = maximum - actor["current_hp"]
+        actor["current_hp"] = maximum
+        if recovered:
+            logs.append(f"{actor['name']} は薬草でHPを{recovered}回復！")
+        else:
+            logs.append(f"{actor['name']} は薬草を使ったが、HPは満タンだった。")
     else:
         move = actor["moves"][index]
         accuracy = min(100, move["accuracy"] + (5 if actor.get("trait_id") == "focus" else 0))
@@ -208,8 +235,7 @@ def resolve_action(state, side, action, rng=None):
                 actor["revenge_bomb"] = True
                 logs.append(f"{actor['name']}は戦闘不能時の反撃を準備した！")
             elif effect == "guard":
-                actor["guarding"] = True
-                logs.append(f"{actor['name']} は {move['name']} で防御！")
+                logs.append(f"{move['name']} は現在使用できません。")
             else:
                 logs.append(f"{move['name']}：未対応の変化効果です（ダメージなし）。")
         else:
@@ -286,7 +312,7 @@ def battle_embed(state, practice=False):
         embed.set_image(url=first["image_url"])
     if second.get("image_url"):
         embed.set_thumbnail(url=second["image_url"])
-    embed.set_footer(text="一致属性×1.5 / 虚⇔実・正⇔負が弱点 / 防御は半減 / 交代も1手 / 80手で引き分け")
+    embed.set_footer(text="一致属性×1.5 / 虚⇔実・正⇔負が弱点 / 交代も1手 / 80手で引き分け")
     return embed
 
 
@@ -306,10 +332,13 @@ class BattleView(discord.ui.View):
             button = discord.ui.Button(label=f"{move['name']} [{move['type']}] {effect} / 命{move['accuracy']}"[:80], style=discord.ButtonStyle.primary, row=0)
             button.callback = self.callback_for(str(idx))
             self.add_item(button)
-        for label, action in (("防御", "guard"), ("降参", "surrender")):
-            button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, row=1)
-            button.callback = self.callback_for(action)
+        if self.mode == "random":
+            button = discord.ui.Button(label="薬草（HP全回復）", style=discord.ButtonStyle.success, row=1)
+            button.callback = self.callback_for("herb")
             self.add_item(button)
+        button = discord.ui.Button(label="降参", style=discord.ButtonStyle.secondary, row=1)
+        button.callback = self.callback_for("surrender")
+        self.add_item(button)
         for index, monster in enumerate(team["party"]):
             if index != team["active_idx"] and monster["current_hp"] > 0:
                 button = discord.ui.Button(label=f"交代: {monster['name']}"[:80], row=2)
@@ -332,7 +361,14 @@ class BattleView(discord.ui.View):
                 return
             state = copy.deepcopy(self.state)
             side = "p1" if self.turn_user_id == self.p1_id else "p2"
+            herb_item = None
             try:
+                if action == "herb":
+                    if self.mode != "random":
+                        raise ValueError("薬草はランダムマッチでのみ使用できます。")
+                    herb_item = await asyncio.to_thread(consume_item, supabase, self.turn_user_id, HERB)
+                    if not herb_item:
+                        raise ValueError("薬草を所持していません。")
                 winner = resolve_action(state, side, action)
                 if self.practice and winner is None:
                     cpu = state["p2"]["party"][state["p2"]["active_idx"]]
@@ -347,13 +383,19 @@ class BattleView(discord.ui.View):
                 if not self.practice:
                     updated = await asyncio.to_thread(self.save_turn, state, next_id, winner is not None)
                     if not updated:
+                        if herb_item:
+                            await asyncio.to_thread(restore_item, supabase, herb_item)
                         self.used = True
                         await interaction.followup.send("古い操作です。最新の対戦画面か /ddd_resume を使用してください。", ephemeral=True)
                         return
             except ValueError as exc:
+                if herb_item:
+                    await asyncio.to_thread(restore_item, supabase, herb_item)
                 await interaction.followup.send(str(exc), ephemeral=True)
                 return
             except Exception:
+                if herb_item:
+                    await asyncio.to_thread(restore_item, supabase, herb_item)
                 logger.exception("DDD battle update failed")
                 await interaction.followup.send("対戦更新に失敗しました。/ddd_resume で最新状態を確認してください。", ephemeral=True)
                 return
@@ -365,7 +407,7 @@ class BattleView(discord.ui.View):
                 if not self.practice and self.mode == "battle" and winner != "draw":
                     try:
                         await asyncio.to_thread(self.award_exp, state[winner]["party"])
-                        state["logs"].append("勝利パーティ全員に50 EXP。100 EXPでLv.UP（上限30）。")
+                        state["logs"].append("勝利パーティ全員に50 EXPを獲得しました。")
                     except Exception:
                         logger.exception("DDD reward failed for battle %s", self.battle_id)
                         state["logs"].append("経験値の保存に失敗しました。管理者へ対戦IDを連絡してください。")
@@ -391,22 +433,22 @@ class BattleView(discord.ui.View):
 
     def award_exp(self, party):
         for monster in party:
-            result = supabase.table("monsters").select("current_level,current_exp").eq("id", monster["id"]).eq("user_id", monster["user_id"]).execute()
+            result = supabase.table("monsters").select("current_level,current_exp,breakthrough_stage").eq("id", monster["id"]).eq("user_id", monster["user_id"]).execute()
             if not result.data:
                 continue
             old = result.data[0]
-            level, exp = add_experience(old["current_level"], old.get("current_exp", 0), 50)
+            level, exp = add_experience(old["current_level"], old.get("current_exp", 0), 50, old.get("breakthrough_stage", 0))
             updated = supabase.table("monsters").update({"current_level": level, "current_exp": exp}).eq("id", monster["id"]).eq("user_id", monster["user_id"]).eq("current_level", old["current_level"]).eq("current_exp", old.get("current_exp", 0)).execute()
             if not updated.data:
                 raise RuntimeError("Concurrent EXP update; manual reconciliation needed")
 
     def award_random_match(self, monster):
-        result = supabase.table("monsters").select("current_level,current_exp").eq("id", monster["id"]).eq("user_id", self.p1_id).execute()
+        result = supabase.table("monsters").select("current_level,current_exp,breakthrough_stage").eq("id", monster["id"]).eq("user_id", self.p1_id).execute()
         if not result.data:
             raise RuntimeError("Selected monster no longer exists")
         old = result.data[0]
         exp_reward, coin_reward = {"normal": (10, 50), "elite": (30, 300), "boss": (100, 1000)}[self.match_type]
-        level, exp = add_experience(old["current_level"], old.get("current_exp", 0), exp_reward)
+        level, exp = add_experience(old["current_level"], old.get("current_exp", 0), exp_reward, old.get("breakthrough_stage", 0))
         updated = supabase.table("monsters").update({"current_level": level, "current_exp": exp}).eq("id", monster["id"]).eq("user_id", self.p1_id).eq("current_level", old["current_level"]).eq("current_exp", old.get("current_exp", 0)).execute()
         if not updated.data:
             raise RuntimeError("Concurrent EXP update; manual reconciliation needed")
@@ -421,7 +463,7 @@ class BattleView(discord.ui.View):
             child.disabled = True
         if self.message:
             try:
-                await self.message.edit(content="操作期限切れ。対人戦は /ddd_resume で再開できます。練習戦は /ddd_practice でやり直せます。", view=self)
+                await self.message.edit(content="操作期限切れ。対人戦は /ddd_resume で再開できます。ランダムマッチは再挑戦してください。", view=self)
             except discord.HTTPException:
                 pass
 
@@ -626,7 +668,7 @@ class BattleCog(commands.Cog):
         p1, p2 = prepare_party(p1_data), prepare_party(p2_data)
         first_id = p1_id if calc_stat(p1[0]["max_speed"], p1[0]["current_level"]) >= calc_stat(p2[0]["max_speed"], p2[0]["current_level"]) else p2_id
         state = {"p1": {"party": p1, "active_idx": 0}, "p2": {"party": p2, "active_idx": 0}, "version": 0,
-                 "logs": ["3対3の対戦開始！ 技・防御・交代から行動を選ぼう。"]}
+                 "logs": ["3対3の対戦開始！ 技・交代・降参から行動を選ぼう。"]}
         record = supabase.table("battles").insert({"player1_id": p1_id, "player2_id": p2_id, "turn_user_id": first_id,
                                                   "battle_state": state, "is_finished": False}).execute().data[0]
         return record
@@ -635,7 +677,7 @@ class BattleCog(commands.Cog):
     async def battle(self, interaction: discord.Interaction, opponent: discord.User):
         p1_id, p2_id = str(interaction.user.id), str(opponent.id)
         if p1_id == p2_id or opponent.bot:
-            await interaction.response.send_message("自分やBotには挑戦できません。一人なら /ddd_practice！", ephemeral=True)
+            await interaction.response.send_message("自分やBotには挑戦できません。", ephemeral=True)
             return
         if p1_id in self.busy or p2_id in self.busy:
             await interaction.response.send_message("どちらかが対戦中・招待中です。未完了戦は /ddd_resume。", ephemeral=True)
@@ -726,39 +768,6 @@ class BattleCog(commands.Cog):
         }
         view = BattleView(self, None, state, uid, uid, "RANDOM_CPU", practice=True, mode="random", match_type=match_type)
         view.message = await interaction.followup.send(embed=battle_embed(state, True), view=view, wait=True)
-
-    @app_commands.command(name="ddd_practice", description="自分の相棒でCPUと無料の練習戦。経験値・コイン変動なし")
-    @app_commands.describe(monster_id="ボックス詳細のID。省略時は最新の相棒", course="相手の戦い方")
-    @app_commands.choices(course=[app_commands.Choice(name=n, value=n) for n in ["草原のスライム", "遺跡のガーディアン", "鏡のライバル"]])
-    async def practice(self, interaction: discord.Interaction, monster_id: str = "", course: str = "草原のスライム"):
-        await interaction.response.defer(ephemeral=True)
-        def load():
-            query = supabase.table("monsters").select("*").eq("user_id", str(interaction.user.id))
-            if monster_id:
-                query = query.eq("id", monster_id)
-            return query.order("created_at", desc=True).limit(1).execute().data
-        monsters = await asyncio.to_thread(load)
-        if not monsters:
-            await interaction.followup.send("相棒が見つかりません。/ddd_create で無料作成しましょう！", ephemeral=True)
-            return
-        player = prepare_party(monsters)
-        enemy = copy.deepcopy(player)
-        enemy[0]["name"] = course
-        enemy[0]["image_url"] = ""
-        if course == "草原のスライム":
-            enemy[0]["element_type"] = "無"
-            enemy[0]["max_attack"] = max(1, enemy[0]["max_attack"] * 2 // 3)
-            enemy[0]["max_sp_atk"] = max(1, enemy[0]["max_sp_atk"] * 2 // 3)
-        elif course == "遺跡のガーディアン":
-            enemy[0]["max_defense"] = min(9999, enemy[0]["max_defense"] * 3 // 2)
-            enemy[0]["max_sp_def"] = min(9999, enemy[0]["max_sp_def"] * 3 // 2)
-        enemy = prepare_party(enemy)
-        state = {"p1": {"party": player, "active_idx": 0}, "p2": {"party": enemy, "active_idx": 0}, "version": 0,
-                 "logs": [f"{course}に挑戦！ HP・経験値・コインは練習後に持ち越しません。"]}
-        uid = str(interaction.user.id)
-        view = BattleView(self, None, state, uid, uid, "CPU", practice=True)
-        view.message = await interaction.followup.send(embed=battle_embed(state, True), view=view, ephemeral=True, wait=True)
-
 
 async def setup(bot):
     await bot.add_cog(BattleCog(bot))
