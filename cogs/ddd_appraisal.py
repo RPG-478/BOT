@@ -187,7 +187,7 @@ class AppraisalCog(commands.Cog):
         return data
 
     # --- Slash Command ---
-    @app_commands.command(name="appraise", description="ドット絵画像を鑑定してAIモンスターを生成します（要500ago）")
+    @app_commands.command(name="ddd_appraise", description="ドット絵画像を鑑定してAIモンスターを生成します（要500ago）")
     @app_commands.describe(attachment="鑑定するドット絵画像", canvas_size="使用したパレットサイズ")
     @app_commands.choices(canvas_size=[
         app_commands.Choice(name="8x8", value="8x8"),
@@ -212,7 +212,7 @@ class AppraisalCog(commands.Cog):
         # 2. ボックス容量確認
         can_add, current_cnt = self.check_box_capacity(user_id, profile["max_box_slots"])
         if not can_add:
-            await interaction.followup.send(f"❌ **ボックスが満杯です！**（現在: {current_cnt}/{profile['max_box_slots']}匹）\n`/expand_box` で枠を拡張してください。")
+            await interaction.followup.send(f"❌ **ボックスが満杯です！**（現在: {current_cnt}/{profile['max_box_slots']}匹）\n`/ddd_expand_box` で枠を拡張してください。")
             return
 
         # 3. コイン決済

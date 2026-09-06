@@ -82,7 +82,7 @@ class MonsterSelectView(discord.ui.View):
 
         moves_text = "\n".join([f"・**{m['name']}** [{m['type']}] (威力:{m.get('power', '-')})" for m in monster["moves"]])
         embed.add_field(name="⚔️ 技構成", value=moves_text, inline=False)
-        embed.set_footer(text=f"モンスターID: {monster['id']} | 名前変更: /rename_monster | 技名変更: /rename_move")
+        embed.set_footer(text=f"モンスターID: {monster['id']} | 名前変更: /ddd_rename_monster | 技名変更: /ddd_rename_move")
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -136,7 +136,7 @@ class SystemCog(commands.Cog):
 
     # --- Commands ---
 
-    @app_commands.command(name="box", description="所持しているモンスター一覧を確認・詳細表示します")
+    @app_commands.command(name="ddd_box", description="所持しているモンスター一覧を確認・詳細表示します")
     async def show_box(self, interaction: discord.Interaction):
         user_id = str(interaction.user.id)
         await interaction.response.defer()
@@ -151,7 +151,7 @@ class SystemCog(commands.Cog):
         )
 
         if not monsters:
-            embed.description = "モンスターを所持していません。`/appraise` で鑑定を行いましょう！"
+            embed.description = "モンスターを所持していません。`/ddd_appraise` で鑑定を行いましょう！"
             await interaction.followup.send(embed=embed)
             return
 
@@ -160,7 +160,7 @@ class SystemCog(commands.Cog):
         await interaction.followup.send(embed=embed, view=view)
 
 
-    @app_commands.command(name="expand_box", description="1000 ago を消費してボックス容量を5枠拡張します")
+    @app_commands.command(name="ddd_expand_box", description="1000 ago を消費してボックス容量を5枠拡張します")
     async def expand_box(self, interaction: discord.Interaction):
         user_id = str(interaction.user.id)
         await interaction.response.defer()
@@ -177,7 +177,7 @@ class SystemCog(commands.Cog):
         await interaction.followup.send(f"🎉 **ボックスを拡張しました！**（最大容量: {profile['max_box_slots']} → **{new_slots}** 匹）")
 
 
-    @app_commands.command(name="unlock_palette", description="コインを消費して新しい高解像度パレットを開放します")
+    @app_commands.command(name="ddd_unlock_palette", description="コインを消費して新しい高解像度パレットを開放します")
     @app_commands.describe(size="開放するパレットサイズ")
     @app_commands.choices(size=[
         app_commands.Choice(name="16x16 (1,000 ago)", value="16x16"),
@@ -203,10 +203,10 @@ class SystemCog(commands.Cog):
         unlocked.append(size)
         supabase.table("users").update({"unlocked_palettes": unlocked}).eq("user_id", user_id).execute()
 
-        await interaction.followup.send(f"🎨 **パレット 【{size}】 を解放しました！**\n`/appraise` の鑑定時に選択可能になります。")
+        await interaction.followup.send(f"🎨 **パレット 【{size}】 を解放しました！**\n`/ddd_appraise` の鑑定時に選択可能になります。")
 
 
-    @app_commands.command(name="rename_monster", description="ago coinを消費して自分のモンスターのdot名を変更します")
+    @app_commands.command(name="ddd_rename_monster", description="ago coinを消費して自分のモンスターのdot名を変更します")
     @app_commands.describe(monster_id="/boxの詳細画面に表示されるモンスターID", new_name="新しいdot名（1〜20文字）")
     async def rename_monster(self, interaction: discord.Interaction, monster_id: str, new_name: str):
         user_id = str(interaction.user.id)
@@ -239,7 +239,7 @@ class SystemCog(commands.Cog):
         await interaction.followup.send(f"✅ dot名を **{monster['name']}** から **{new_name}** に変更しました。（{RENAME_MONSTER_COST} ago）", ephemeral=True)
 
 
-    @app_commands.command(name="rename_move", description="ago coinを消費して自分のモンスターの技名を変更します")
+    @app_commands.command(name="ddd_rename_move", description="ago coinを消費して自分のモンスターの技名を変更します")
     @app_commands.describe(monster_id="/boxの詳細画面に表示されるモンスターID", move_slot="変更する技スロット", new_name="新しい技名（1〜20文字）")
     @app_commands.choices(move_slot=[
         app_commands.Choice(name="技1", value=1),
@@ -284,7 +284,7 @@ class SystemCog(commands.Cog):
         await interaction.followup.send(f"✅ **{monster['name']}** の技{move_slot}を **{old_name}** から **{new_name}** に変更しました。（{RENAME_MOVE_COST} ago）", ephemeral=True)
 
 
-    @app_commands.command(name="rename_ability", description="ago coinを消費して自分のモンスターの特性名・説明を変更します")
+    @app_commands.command(name="ddd_rename_ability", description="ago coinを消費して自分のモンスターの特性名・説明を変更します")
     @app_commands.describe(monster_id="/boxの詳細画面に表示されるモンスターID", new_ability="新しい特性名・説明（1〜60文字）")
     async def rename_ability(self, interaction: discord.Interaction, monster_id: str, new_ability: str):
         user_id = str(interaction.user.id)
@@ -317,7 +317,7 @@ class SystemCog(commands.Cog):
         await interaction.followup.send(f"✅ **{monster['name']}** の特性を **{new_ability}** に変更しました。（{RENAME_ABILITY_COST} ago）", ephemeral=True)
 
 
-    @app_commands.command(name="profile", description="所持コイン、ボックス容量、解放済みパレットを確認します")
+    @app_commands.command(name="ddd_profile", description="所持コイン、ボックス容量、解放済みパレットを確認します")
     async def profile(self, interaction: discord.Interaction):
         user_id = str(interaction.user.id)
         await interaction.response.defer()
@@ -338,7 +338,7 @@ class SystemCog(commands.Cog):
         await interaction.followup.send(embed=embed)
 
 
-    @app_commands.command(name="release_monster", description="ボックスのモンスターとお別れ（削除）して枠を空けます")
+    @app_commands.command(name="ddd_release_monster", description="ボックスのモンスターとお別れ（削除）して枠を空けます")
     async def release_monster(self, interaction: discord.Interaction):
         user_id = str(interaction.user.id)
         await interaction.response.defer()

@@ -6,7 +6,7 @@ from discord.ext import commands
 from supabase import create_client, Client
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # 5属性の相性表
@@ -166,7 +166,7 @@ class BattleCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="battle", description="他のプレイヤーと3v3の対戦を行います")
+    @app_commands.command(name="ddd_battle", description="他のプレイヤーと3v3の対戦を行います")
     async def battle(self, interaction: discord.Interaction, opponent: discord.User):
         await interaction.response.defer()
 
