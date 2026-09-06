@@ -40,7 +40,7 @@ Bot は Discord の Slash Command と Button UI を入口とし、Cogs ごとに
 
 ### 2.2 データ整合性の原則
 
-鑑定費用の引き落としは鑑定処理の開始前に行う。AI 解析、ストレージ保存、モンスター登録のいずれかが失敗した場合、処理済みの費用を返金し、ユーザーに失敗理由を通知する。画像保存には `dot_images` という公開バケットを使用し、バケットが存在しない場合はリポジトリの `sql/ddd_storage.sql` を Supabase SQL Editor で実行する。Botの環境変数には `SUPABASE_URL` と `SUPABASE_SERVICE_ROLE_KEY` を設定する。`SUPABASE_KEY` のみ、または anon key を使用すると `storage.objects` のRLSにより403となるため、Service Role Keyを優先する。許可 MIME は PNG、JPEG、WebP、GIF、最大5 MiBとする。Service Role KeyやAI APIキーはリポジトリへ直書きせず、漏えいが疑われる場合は即時ローテーションする。将来の本格リリースでは、決済・モンスター登録・返金の冪等性をデータベース側でも保証する。
+鑑定費用の引き落としは鑑定処理の開始前に行う。AI 解析、ストレージ保存、モンスター登録のいずれかが失敗した場合、処理済みの費用を返金し、ユーザーに失敗理由を通知する。画像保存には `dot_images` という公開バケットを使用し、バケットとStorageポリシーが未作成の場合はリポジトリの `sql/ddd_storage.sql` を Supabase SQL Editor で実行する。Botは既存の `SUPABASE_URL` と `SUPABASE_KEY` を使用し、anon key運用では `storage.objects` の `monsters/` 配下への限定INSERTポリシーを適用する。許可 MIME は PNG、JPEG、WebP、GIF、最大5 MiBとする。Service Role KeyやAI APIキーはリポジトリへ直書きせず、漏えいが疑われる場合は即時ローテーションする。将来の本格リリースでは、決済・モンスター登録・返金の冪等性をデータベース側でも保証する。
 
 ## 3. 経済・システムパラメータ
 
@@ -223,6 +223,7 @@ DDD は「AIが生成して終わるゲーム」ではなく、AIが提案した
 
 | 版 | 日付 | 内容 |
 |---|---|---|
+| 1.5.0 | 2026-09-06 | 既存の`SUPABASE_URL`・`SUPABASE_KEY`構成へ復帰し、Storage限定INSERTポリシーを仕様化 |
 | 1.4.0 | 2026-09-06 | DDD関連Slash Commandをすべて`/ddd_`接頭辞へ統一 |
 | 1.3.0 | 2026-09-06 | Storage 403 RLS対策、Service Role Key優先、環境変数運用、資格情報の安全管理を追加 |
 | 1.2.0 | 2026-09-06 | `dot_images` Storage バケット作成SQL、MIME制限、一意画像パス、復旧手順を追加 |
