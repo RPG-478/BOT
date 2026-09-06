@@ -188,7 +188,7 @@ def resolve_action(state, side, action, rng=None):
 
 
 def battle_embed(state, practice=False):
-    embed = discord.Embed(title=f"DDD {'PRACTICE' if practice else 'ARENA'} | TURN {state.get('version', 0) + 1}", color=0x8B7CF8,
+    embed = discord.Embed(title=f"DDD {'PRACTICE' if practice else 'ARENA'} | TURN {state.get('version', 0) + 1}", color=0xFFFFFF,
                           description="\n".join(state["logs"][-5:])[:3000])
     for side in ("p1", "p2"):
         team = state[side]
@@ -208,11 +208,11 @@ def battle_embed(state, practice=False):
 
 
 class BattleView(discord.ui.View):
-    def __init__(self, cog, battle_id, state, turn_user_id, p1_id, p2_id, practice=False):
+    def __init__(self, cog, battle_id, state, turn_user_id, p1_id, p2_id, practice=False, mode="battle"):
         super().__init__(timeout=180)
         self.cog, self.battle_id, self.state = cog, battle_id, state
         self.turn_user_id, self.p1_id, self.p2_id = turn_user_id, p1_id, p2_id
-        self.practice, self.version = practice, state.get("version", 0)
+        self.practice, self.mode, self.version = practice, mode, state.get("version", 0)
         self.lock = asyncio.Lock()
         self.used = False
         self.message = None
@@ -279,16 +279,23 @@ class BattleView(discord.ui.View):
             if winner:
                 if not self.practice:
                     self.cog.busy.difference_update((self.p1_id, self.p2_id))
-                if not self.practice and winner != "draw":
+                if self.mode == "battle" and winner != "draw":
                     try:
                         await asyncio.to_thread(self.award_exp, state[winner]["party"])
                         state["logs"].append("勝利パーティ全員に50 EXP。100 EXPでLv.UP（上限30）。")
                     except Exception:
                         logger.exception("DDD reward failed for battle %s", self.battle_id)
                         state["logs"].append("経験値の保存に失敗しました。管理者へ対戦IDを連絡してください。")
+                elif self.mode == "random" and winner == "p1":
+                    try:
+                        await asyncio.to_thread(self.award_random_match, state["p1"]["party"][0])
+                        state["logs"].append("勝利報酬としてEXP 15、コイン100を獲得しました。")
+                    except Exception:
+                        logger.exception("DDD random match reward failed")
+                        state["logs"].append("勝利しましたが、報酬の保存に失敗しました。")
                 view = None
             else:
-                view = BattleView(self.cog, self.battle_id, state, next_id, self.p1_id, self.p2_id, self.practice)
+                view = BattleView(self.cog, self.battle_id, state, next_id, self.p1_id, self.p2_id, self.practice, self.mode)
             await interaction.edit_original_response(content="対戦終了" if winner else f"<@{next_id}> のターン", embed=battle_embed(state, self.practice), view=view,
                                                      allowed_mentions=discord.AllowedMentions.none())
             if view:
@@ -308,6 +315,21 @@ class BattleView(discord.ui.View):
             updated = supabase.table("monsters").update({"current_level": level, "current_exp": exp}).eq("id", monster["id"]).eq("user_id", monster["user_id"]).eq("current_level", old["current_level"]).eq("current_exp", old.get("current_exp", 0)).execute()
             if not updated.data:
                 raise RuntimeError("Concurrent EXP update; manual reconciliation needed")
+
+    def award_random_match(self, monster):
+        result = supabase.table("monsters").select("current_level,current_exp").eq("id", monster["id"]).eq("user_id", self.p1_id).execute()
+        if not result.data:
+            raise RuntimeError("Selected monster no longer exists")
+        old = result.data[0]
+        level, exp = add_experience(old["current_level"], old.get("current_exp", 0), 15)
+        updated = supabase.table("monsters").update({"current_level": level, "current_exp": exp}).eq("id", monster["id"]).eq("user_id", self.p1_id).eq("current_level", old["current_level"]).eq("current_exp", old.get("current_exp", 0)).execute()
+        if not updated.data:
+            raise RuntimeError("Concurrent EXP update; manual reconciliation needed")
+        profile = supabase.table("users").select("balance").eq("user_id", self.p1_id).execute()
+        balance = int(profile.data[0].get("balance") or 0) if profile.data else 0
+        updated_user = supabase.table("users").update({"balance": balance + 100}).eq("user_id", self.p1_id).eq("balance", balance).execute()
+        if not updated_user.data:
+            raise RuntimeError("Concurrent balance update; manual reconciliation needed")
 
     async def on_timeout(self):
         for child in self.children:
@@ -394,7 +416,7 @@ class PartySelectView(discord.ui.View):
             embed = discord.Embed(
                 title="DDD ARENA | パーティ選出フェーズ",
                 description=f"下のボタンを押して手持ちから対戦に出す3体を選択してください。\n\n<@{self.p1_id}>: {p1_status}\n<@{self.p2_id}>: {p2_status}",
-                color=0x8B7CF8
+                color=0xFFFFFF
             )
 
             if self.p1_selection and self.p2_selection:
@@ -464,7 +486,7 @@ class ChallengeView(discord.ui.View):
             embed = discord.Embed(
                 title="DDD ARENA | パーティ選出フェーズ",
                 description=f"下のボタンを押して手持ちから対戦に出す3体を選択してください。\n\n<@{self.p1_id}>: 選出中...\n<@{self.p2_id}>: 選出中...",
-                color=0x8B7CF8
+                color=0xFFFFFF
             )
             await interaction.edit_original_response(content="【パーティ選出フェーズ】", embed=embed, view=select_view)
             select_view.message = interaction.message
@@ -538,7 +560,7 @@ class BattleCog(commands.Cog):
         try:
             await interaction.response.send_message(
                 content=f"<@{p2_id}>、ドットバトルへの招待です。",
-                embed=discord.Embed(title="DDD ARENA | 挑戦状", description="手持ちから選抜した3体で対戦を行います。\n勝利パーティに50 EXP。\n60秒以内に回答してください。", color=0x8B7CF8),
+                embed=discord.Embed(title="DDD ARENA | 挑戦状", description="手持ちから選抜した3体で対戦を行います。\n勝利パーティに50 EXP。\n60秒以内に回答してください。", color=0xFFFFFF),
                 view=view,
                 allowed_mentions=discord.AllowedMentions(users=[opponent])
             )
@@ -564,6 +586,37 @@ class BattleCog(commands.Cog):
         view = BattleView(self, record["id"], state, str(record["turn_user_id"]), str(record["player1_id"]), str(record["player2_id"]))
         view.message = await interaction.followup.send(content=f"<@{view.turn_user_id}> のターン", embed=battle_embed(state), view=view, ephemeral=False, wait=True,
                                                        allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name="ddd_random_match", description="1体を選んで全キャラから抽選された相手と戦います。勝利報酬あり")
+    @app_commands.describe(monster_id="使用する相棒のID")
+    async def random_match(self, interaction: discord.Interaction, monster_id: str):
+        await interaction.response.defer()
+        uid = str(interaction.user.id)
+
+        def load():
+            own = supabase.table("monsters").select("*").eq("id", monster_id).eq("user_id", uid).execute().data
+            all_monsters = supabase.table("monsters").select("*").execute().data
+            return own, all_monsters
+
+        own, all_monsters = await asyncio.to_thread(load)
+        if not own:
+            await interaction.followup.send("指定した相棒が見つかりません。/ddd_boxでIDを確認してください。", ephemeral=True)
+            return
+        if not all_monsters:
+            await interaction.followup.send("対戦相手になるキャラがまだいません。", ephemeral=True)
+            return
+
+        player = prepare_party([own[0]])
+        opponent = random.choice(all_monsters)
+        enemy = prepare_party([copy.deepcopy(opponent)])
+        state = {
+            "p1": {"party": player, "active_idx": 0},
+            "p2": {"party": enemy, "active_idx": 0},
+            "version": 0,
+            "logs": [f"ランダムマッチ開始。{opponent['name']}が対戦相手に選ばれました。勝利報酬: EXP 15 / コイン100。"],
+        }
+        view = BattleView(self, None, state, uid, uid, "RANDOM_CPU", practice=True, mode="random")
+        view.message = await interaction.followup.send(embed=battle_embed(state, True), view=view, wait=True)
 
     @app_commands.command(name="ddd_practice", description="自分の相棒でCPUと無料の練習戦。経験値・コイン変動なし")
     @app_commands.describe(monster_id="ボックス詳細のID。省略時は最新の相棒", course="相手の戦い方")

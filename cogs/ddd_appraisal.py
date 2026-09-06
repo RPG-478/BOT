@@ -101,7 +101,7 @@ def creator_record(user_id, name, element, style, image_url):
             {"name": "オーバードライブ", "type": element,
              "category": "special" if special else "physical", "power": 75, "accuracy": 80,
              "description": "命中80の大技"},
-            {"name": "リペア", "type": "無", "category": "status", "power": 0, "accuracy": 100,
+            {"name": "回復", "type": "無", "category": "status", "power": 0, "accuracy": 100,
              "effect": "heal", "description": "最大HPの25%を回復（3回まで）"},
         ],
     }

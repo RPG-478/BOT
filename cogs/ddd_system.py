@@ -27,17 +27,17 @@ COINS_PER_EXP = 50
 
 ELEMENT_COLORS = {"虚": 0xA185F7, "実": 0x45E1AD, "正": 0xF7BE3E, "負": 0xF677A4, "無": 0x52A7FF}
 TECHNIQUES = {
-    "ストライク": {"category": "physical", "power": 45, "accuracy": 100, "description": "安定した物理攻撃"},
-    "ブレイク": {"category": "physical", "power": 75, "accuracy": 80, "description": "命中を犠牲に威力を高める"},
-    "パルス": {"category": "special", "power": 45, "accuracy": 100, "description": "特攻で放つ安定した光弾"},
-    "ノヴァ": {"category": "special", "power": 75, "accuracy": 80, "description": "高威力の特殊攻撃"},
-    "リペア": {"category": "status", "effect": "heal", "description": "HP25%回復。1戦3回まで"},
-    "バリア": {"category": "status", "effect": "guard", "description": "次の被ダメージ半減"},
-    "ポイズン": {"category": "status", "effect": "poison", "accuracy": 85, "description": "相手の行動後3回、最大HPの1/8ダメージ"},
-    "パワーチャージ": {"category": "status", "effect": "attack_up", "description": "攻撃1段階上昇。最大6段階"},
-    "マインドチャージ": {"category": "status", "effect": "sp_atk_up", "description": "特攻1段階上昇。最大6段階"},
-    "アーマー": {"category": "status", "effect": "defense_up", "description": "防御1段階上昇。交代で解除"},
-    "マジックアーマー": {"category": "status", "effect": "sp_def_up", "description": "特防1段階上昇。交代で解除"},
+    "攻撃": {"category": "physical", "power": 45, "accuracy": 100, "description": "物理 / 威力45 / 命中100。安定した攻撃。"},
+    "強攻撃": {"category": "physical", "power": 75, "accuracy": 80, "description": "物理 / 威力75 / 命中80。高威力だが外れやすい。"},
+    "特殊": {"category": "special", "power": 45, "accuracy": 100, "description": "特殊 / 威力45 / 命中100。安定した特殊攻撃。"},
+    "強特殊": {"category": "special", "power": 75, "accuracy": 80, "description": "特殊 / 威力75 / 命中80。高威力だが外れやすい。"},
+    "回復": {"category": "status", "effect": "heal", "description": "変化 / HPを25%回復。1戦3回まで。"},
+    "防御": {"category": "status", "effect": "guard", "description": "変化 / 次に受けるダメージを半減。"},
+    "毒": {"category": "status", "effect": "poison", "accuracy": 85, "description": "変化 / 命中85。相手に3回の毒ダメージ。"},
+    "攻撃強化": {"category": "status", "effect": "attack_up", "description": "変化 / 攻撃を1段階上昇。最大6段階。"},
+    "特殊強化": {"category": "status", "effect": "sp_atk_up", "description": "変化 / 特攻を1段階上昇。最大6段階。"},
+    "防御強化": {"category": "status", "effect": "defense_up", "description": "変化 / 防御を1段階上昇。交代で解除。"},
+    "特殊防御": {"category": "status", "effect": "sp_def_up", "description": "変化 / 特防を1段階上昇。交代で解除。"},
 }
 
 
@@ -89,7 +89,9 @@ def monster_embed(monster):
     for index, move in enumerate(normalize_moves(monster.get("moves")), 1):
         category = {"physical": "物理", "special": "特殊", "status": "変化"}[move["category"]]
         embed.add_field(name=f"{index}. {move['name']} [{move['type']}]", value=f"{category} / 威力 {move['power']} / 命中 {move['accuracy']}\n{str(move.get('description') or '効果説明なし')[:160]}", inline=False)
-    embed.add_field(name="この相棒で遊ぶ", value=f"`/ddd_practice monster_id:{monster['id']}`\n`/ddd_loadout` で技を選択。技名は `/ddd_rename_move`。", inline=False)
+    embed.add_field(name="キャラID", value=f"`{monster['id']}`", inline=True)
+    embed.add_field(name="純粋なID", value=f"`{monster['id']}`", inline=True)
+    embed.add_field(name="操作", value="`/ddd_practice` で練習対戦。`/ddd_random_match` で報酬対戦。`/ddd_loadout` で技を変更。", inline=False)
     embed.set_footer(text=f"モンスターID: {monster['id']}")
     return embed
 
@@ -500,7 +502,7 @@ class SystemCog(commands.Cog):
         if slot not in (1, 2, 3) or technique not in TECHNIQUES:
             await interaction.response.send_message("技枠と技を選択してください。", ephemeral=True)
             return
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         uid = str(interaction.user.id)
         def update():
             result = supabase.table("monsters").select("*").eq("id", monster_id).eq("user_id", uid).execute()
@@ -521,9 +523,9 @@ class SystemCog(commands.Cog):
             return updated.data[0] if updated.data else None
         monster = await asyncio.to_thread(update)
         if not monster:
-            await interaction.followup.send("相棒が見つからないか同時編集がありました。ボックスを確認して再操作してください。", ephemeral=True)
+            await interaction.followup.send("相棒が見つからないか同時編集がありました。ボックスを確認して再操作してください。")
             return
-        await interaction.followup.send(content="技を変更しました。進行中の対戦には反映されず、次の対戦から有効です。", embed=monster_embed(monster), ephemeral=True)
+        await interaction.followup.send(content="技を変更しました。進行中の対戦には反映されず、次の対戦から有効です。", embed=monster_embed(monster))
 
     @app_commands.command(name="ddd_guide", description="DDDの遊び方・属性相性・無料機能・バトルルールを確認")
     async def guide(self, interaction: discord.Interaction):
