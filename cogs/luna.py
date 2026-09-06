@@ -313,7 +313,7 @@ class PerfectMimicAI(commands.Cog):
                 contents = f"入力内容: {user_input}\n上記に対して、本人になりきって自然な返答のみを出力してください。"
 
         response = await self.gemini_client.aio.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-3.5-flash-lite',
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,

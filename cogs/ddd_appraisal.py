@@ -381,7 +381,7 @@ class AppraisalCog(commands.Cog):
 """
         async with genai.Client(api_key=GEMINI_API_KEY).aio as client:
             response = await client.models.generate_content(
-                model=os.getenv("DDD_GEMINI_MODEL", "gemini-3.6-flash"),
+                model=os.getenv("DDD_GEMINI_MODEL", "gemini-3.5-flash-lite"),
                 contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type="image/png")],
             )
         

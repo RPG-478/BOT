@@ -189,7 +189,7 @@ class ZetaModoki(commands.Cog):
         self.bot = bot
         self.api_key = os.environ.get("GEMINI_API_KEY")
         self.gemini_client = genai.Client(api_key=self.api_key)
-        self.model_name = "gemini-3.6-flash"
+        self.model_name = "gemini-3.5-flash-lite"
 
         # チャンネルID (int) をキーとして管理
         self.active_personas: Dict[int, BotPersona] = {}

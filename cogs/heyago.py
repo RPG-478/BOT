@@ -121,7 +121,7 @@ class AdaptiveAI(commands.Cog):
         contents = [prompt] + file_parts
 
         response = await self.gemini_client.aio.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-3.5-flash-lite',
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
