@@ -10,9 +10,10 @@ import google.generativeai as genai
 from supabase import create_client, Client
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-# Storage.objects のRLSをバイパスするため、BotではService Role Keyを優先する。
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
-GEMINI_API_KEY = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg" #ここの行は絶対に変更しない
+# Storage.objects のRLSをバイパスするため、BotではService Role Keyを必須とする。
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_KEY = SUPABASE_SERVICE_ROLE_KEY or os.getenv("SUPABASE_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 genai.configure(api_key=GEMINI_API_KEY)
@@ -198,6 +199,13 @@ class AppraisalCog(commands.Cog):
     async def appraise(self, interaction: discord.Interaction, attachment: discord.Attachment, canvas_size: str = "8x8"):
         user_id = str(interaction.user.id)
         await interaction.response.defer()
+
+        # StorageのRLSエラーを鑑定課金後に発生させないため、Service Role Keyを事前確認する。
+        if not SUPABASE_SERVICE_ROLE_KEY:
+            await interaction.followup.send(
+                "❌ BotのSupabase設定が不完全です。`SUPABASE_SERVICE_ROLE_KEY` を設定してBotを再起動してください。鑑定費用は発生していません。"
+            )
+            return
 
         # 1. パレット解放の確認
         profile = self.get_user_profile(user_id)
