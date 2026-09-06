@@ -13,9 +13,10 @@ PREFIX = "!"
 
 # --- Supabase設定 ---
 SUPABASE_URL = os.getenv('SUPABASE_URL')
-# Vault RPCなどのサーバー専用処理にはService Role Keyを優先する。
-SUPABASE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY') or os.getenv('SUPABASE_KEY')
+# Botは公開可能なSupabaseキーのみを使用する。サービスロールキーは使用しない。
+SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 # クライアントの初期化
 if SUPABASE_URL and SUPABASE_KEY:

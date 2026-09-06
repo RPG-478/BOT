@@ -47,5 +47,4 @@ where schemaname = 'storage'
 
 -- 注意:
 -- 公開バケットのため、保存済み画像はget_public_urlで閲覧できます。
--- SUPABASE_SERVICE_ROLE_KEYを使う場合は上記ポリシーをバイパスできますが、
--- 現行BotはSUPABASE_KEYで動かす前提のため、この限定INSERTポリシーを使用します。
+-- 現行BotはSUPABASE_KEY（公開キー）で動かす前提のため、この限定INSERTポリシーを使用します。

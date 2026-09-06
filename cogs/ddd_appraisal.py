@@ -16,7 +16,7 @@ from supabase import create_client, Client
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 # 既存環境ではSUPABASE_URLとSUPABASE_KEYを使用する。
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-GEMINI_API_KEY = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -381,7 +381,7 @@ class AppraisalCog(commands.Cog):
 """
         async with genai.Client(api_key=GEMINI_API_KEY).aio as client:
             response = await client.models.generate_content(
-                model=os.getenv("DDD_GEMINI_MODEL", "gemini-2.5-flash"),
+                model=os.getenv("DDD_GEMINI_MODEL", "gemini-3.6-flash"),
                 contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type="image/png")],
             )
         

@@ -11,7 +11,7 @@ from google.genai import types
 class AdaptiveAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.gemini_api_key = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg")
+        self.gemini_api_key = os.environ.get("GEMINI_API_KEY")
         self.gemini_client = genai.Client(api_key=self.gemini_api_key)
 
     @commands.Cog.listener()
@@ -121,7 +121,7 @@ class AdaptiveAI(commands.Cog):
         contents = [prompt] + file_parts
 
         response = await self.gemini_client.aio.models.generate_content(
-            model='gemini-3.5-flash-lite',
+            model='gemini-3.6-flash',
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,

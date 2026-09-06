@@ -14,7 +14,7 @@ DB_PATH = "mimic_memory.db"
 class PerfectMimicAI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.gemini_api_key = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg")
+        self.gemini_api_key = os.environ.get("GEMINI_API_KEY")
         self.gemini_client = genai.Client(api_key=self.gemini_api_key)
         self.enabled_channels = set()
         self.sent_webhook_message_ids = deque(maxlen=200)
@@ -313,7 +313,7 @@ class PerfectMimicAI(commands.Cog):
                 contents = f"入力内容: {user_input}\n上記に対して、本人になりきって自然な返答のみを出力してください。"
 
         response = await self.gemini_client.aio.models.generate_content(
-            model='gemini-3.5-flash-lite',
+            model='gemini-3.6-flash',
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
