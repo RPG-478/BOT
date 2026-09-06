@@ -15,6 +15,11 @@ PALETTE_COSTS = {       # パレット開放コスト
     "64x64": 5000,
     "128x128": 20000
 }
+RENAME_MONSTER_COST = 300  # dot名変更
+RENAME_MOVE_COST = 200     # 技名変更
+RENAME_ABILITY_COST = 250  # 特性名・説明変更
+MAX_RENAME_LENGTH = 20
+MAX_ABILITY_LENGTH = 60
 
 # --- UI コンポーネント (ボックス一覧・詳細・お別れ) ---
 class MonsterSelectView(discord.ui.View):
@@ -76,6 +81,7 @@ class MonsterSelectView(discord.ui.View):
 
         moves_text = "\n".join([f"・**{m['name']}** [{m['type']}] (威力:{m.get('power', '-')})" for m in monster["moves"]])
         embed.add_field(name="⚔️ 技構成", value=moves_text, inline=False)
+        embed.set_footer(text=f"モンスターID: {monster['id']} | 名前変更: /rename_monster | 技名変更: /rename_move")
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -197,6 +203,117 @@ class SystemCog(commands.Cog):
         supabase.table("users").update({"unlocked_palettes": unlocked}).eq("user_id", user_id).execute()
 
         await interaction.followup.send(f"🎨 **パレット 【{size}】 を解放しました！**\n`/appraise` の鑑定時に選択可能になります。")
+
+
+    @app_commands.command(name="rename_monster", description="ago coinを消費して自分のモンスターのdot名を変更します")
+    @app_commands.describe(monster_id="/boxの詳細画面に表示されるモンスターID", new_name="新しいdot名（1〜20文字）")
+    async def rename_monster(self, interaction: discord.Interaction, monster_id: str, new_name: str):
+        user_id = str(interaction.user.id)
+        new_name = new_name.strip()
+        if not new_name or len(new_name) > MAX_RENAME_LENGTH:
+            await interaction.response.send_message(f"❌ 名前は1〜{MAX_RENAME_LENGTH}文字で入力してください。", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        res = supabase.table("monsters").select("id, name").eq("id", monster_id).eq("user_id", user_id).execute()
+        if not res.data:
+            await interaction.followup.send("❌ 指定したモンスターが見つからないか、あなたの所持個体ではありません。", ephemeral=True)
+            return
+        monster = res.data[0]
+        if monster["name"] == new_name:
+            await interaction.followup.send("⚠️ 現在と同じ名前です。", ephemeral=True)
+            return
+        profile = self.get_user_profile(user_id)
+        if not self.deduct_coins(user_id, RENAME_MONSTER_COST, reason="rename_monster"):
+            await interaction.followup.send(f"❌ ago coinが不足しています。（必要: {RENAME_MONSTER_COST} ago / 所持: {profile['balance']} ago）", ephemeral=True)
+            return
+        try:
+            update = supabase.table("monsters").update({"name": new_name}).eq("id", monster_id).eq("user_id", user_id).execute()
+            if not update.data:
+                raise RuntimeError("monster update returned no rows")
+        except Exception:
+            # 決済後の更新失敗時は同額を返金する。
+            self.refund_coins(user_id, RENAME_MONSTER_COST, reason="rename_monster_failed_refund")
+            await interaction.followup.send("⚠️ 名前変更に失敗したため、ago coinを返金しました。", ephemeral=True)
+            return
+        await interaction.followup.send(f"✅ dot名を **{monster['name']}** から **{new_name}** に変更しました。（{RENAME_MONSTER_COST} ago）", ephemeral=True)
+
+
+    @app_commands.command(name="rename_move", description="ago coinを消費して自分のモンスターの技名を変更します")
+    @app_commands.describe(monster_id="/boxの詳細画面に表示されるモンスターID", move_slot="変更する技スロット", new_name="新しい技名（1〜20文字）")
+    @app_commands.choices(move_slot=[
+        app_commands.Choice(name="技1", value=1),
+        app_commands.Choice(name="技2", value=2),
+        app_commands.Choice(name="技3", value=3),
+    ])
+    async def rename_move(self, interaction: discord.Interaction, monster_id: str, move_slot: int, new_name: str):
+        user_id = str(interaction.user.id)
+        new_name = new_name.strip()
+        if not new_name or len(new_name) > MAX_RENAME_LENGTH:
+            await interaction.response.send_message(f"❌ 技名は1〜{MAX_RENAME_LENGTH}文字で入力してください。", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        res = supabase.table("monsters").select("id, name, moves").eq("id", monster_id).eq("user_id", user_id).execute()
+        if not res.data:
+            await interaction.followup.send("❌ 指定したモンスターが見つからないか、あなたの所持個体ではありません。", ephemeral=True)
+            return
+        monster = res.data[0]
+        moves = monster.get("moves") or []
+        if move_slot not in (1, 2, 3) or move_slot > len(moves):
+            await interaction.followup.send("❌ 技スロットは1〜3で、存在する技を選択してください。", ephemeral=True)
+            return
+        move = dict(moves[move_slot - 1])
+        old_name = str(move.get("name", "技"))
+        if old_name == new_name:
+            await interaction.followup.send("⚠️ 現在と同じ技名です。", ephemeral=True)
+            return
+        profile = self.get_user_profile(user_id)
+        if not self.deduct_coins(user_id, RENAME_MOVE_COST, reason=f"rename_move_{move_slot}"):
+            await interaction.followup.send(f"❌ ago coinが不足しています。（必要: {RENAME_MOVE_COST} ago / 所持: {profile['balance']} ago）", ephemeral=True)
+            return
+        move["name"] = new_name
+        moves[move_slot - 1] = move
+        try:
+            update = supabase.table("monsters").update({"moves": moves}).eq("id", monster_id).eq("user_id", user_id).execute()
+            if not update.data:
+                raise RuntimeError("monster move update returned no rows")
+        except Exception:
+            self.refund_coins(user_id, RENAME_MOVE_COST, reason="rename_move_failed_refund")
+            await interaction.followup.send("⚠️ 技名変更に失敗したため、ago coinを返金しました。", ephemeral=True)
+            return
+        await interaction.followup.send(f"✅ **{monster['name']}** の技{move_slot}を **{old_name}** から **{new_name}** に変更しました。（{RENAME_MOVE_COST} ago）", ephemeral=True)
+
+
+    @app_commands.command(name="rename_ability", description="ago coinを消費して自分のモンスターの特性名・説明を変更します")
+    @app_commands.describe(monster_id="/boxの詳細画面に表示されるモンスターID", new_ability="新しい特性名・説明（1〜60文字）")
+    async def rename_ability(self, interaction: discord.Interaction, monster_id: str, new_ability: str):
+        user_id = str(interaction.user.id)
+        new_ability = new_ability.strip()
+        if not new_ability or len(new_ability) > MAX_ABILITY_LENGTH:
+            await interaction.response.send_message(f"❌ 特性名・説明は1〜{MAX_ABILITY_LENGTH}文字で入力してください。", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        res = supabase.table("monsters").select("id, name, characteristic").eq("id", monster_id).eq("user_id", user_id).execute()
+        if not res.data:
+            await interaction.followup.send("❌ 指定したモンスターが見つからないか、あなたの所持個体ではありません。", ephemeral=True)
+            return
+        monster = res.data[0]
+        old_ability = str(monster.get("characteristic") or "未設定")
+        if old_ability == new_ability:
+            await interaction.followup.send("⚠️ 現在と同じ特性名・説明です。", ephemeral=True)
+            return
+        profile = self.get_user_profile(user_id)
+        if not self.deduct_coins(user_id, RENAME_ABILITY_COST, reason="rename_ability"):
+            await interaction.followup.send(f"❌ ago coinが不足しています。（必要: {RENAME_ABILITY_COST} ago / 所持: {profile['balance']} ago）", ephemeral=True)
+            return
+        try:
+            update = supabase.table("monsters").update({"characteristic": new_ability}).eq("id", monster_id).eq("user_id", user_id).execute()
+            if not update.data:
+                raise RuntimeError("monster ability update returned no rows")
+        except Exception:
+            self.refund_coins(user_id, RENAME_ABILITY_COST, reason="rename_ability_failed_refund")
+            await interaction.followup.send("⚠️ 特性名・説明の変更に失敗したため、ago coinを返金しました。", ephemeral=True)
+            return
+        await interaction.followup.send(f"✅ **{monster['name']}** の特性を **{new_ability}** に変更しました。（{RENAME_ABILITY_COST} ago）", ephemeral=True)
 
 
     @app_commands.command(name="profile", description="所持コイン、ボックス容量、解放済みパレットを確認します")

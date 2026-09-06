@@ -124,7 +124,7 @@ class AppraisalCog(commands.Cog):
 
 【厳格ルール】
 1. 属性(element_type)は以下から【最も適した1つ】のみ選択: ["虚", "実", "正", "負", "無"]
-2. 技(moves)は最大4つ。categoryは "physical", "special", "status" のいずれか。
+2. 技(moves)は**必ず3つ**。categoryは "physical", "special", "status" のいずれか。技の順序をスロット1〜3として保存する。
 
 【出力フォーマット (JSON)】
 {{
@@ -153,20 +153,33 @@ class AppraisalCog(commands.Cog):
         # ステータス合計の補正
         data["max_stats"] = self.normalize_stats(data.get("max_stats", {}), dice["talent"])
 
-        # 技データの整形（最大4つ）
+        # 技データの整形（必ず3枠）
+        fallback_moves = [
+            {"name": "たいあたり", "type": "無", "category": "physical", "power": 40, "accuracy": 100, "description": "体当たり攻撃"},
+            {"name": "まもる", "type": "無", "category": "status", "power": 0, "accuracy": 100, "description": "身を守る"},
+            {"name": "でんこうせっか", "type": "無", "category": "physical", "power": 40, "accuracy": 100, "description": "素早い攻撃"},
+        ]
+        source_moves = data.get("moves", []) if isinstance(data.get("moves", []), list) else []
         valid_moves = []
-        for m in data.get("moves", [])[:4]:
+        for idx in range(3):
+            m = source_moves[idx] if idx < len(source_moves) and isinstance(source_moves[idx], dict) else fallback_moves[idx]
+            category = m.get("category") if m.get("category") in ["physical", "special", "status"] else fallback_moves[idx]["category"]
+            try:
+                power = int(m.get("power", 40)) if category != "status" else 0
+            except (TypeError, ValueError):
+                power = 40 if category != "status" else 0
+            try:
+                accuracy = max(1, min(100, int(m.get("accuracy", 100))))
+            except (TypeError, ValueError):
+                accuracy = 100
             valid_moves.append({
-                "name": str(m.get("name", "たいあたり"))[:10],
+                "name": str(m.get("name", fallback_moves[idx]["name"]))[:10],
                 "type": m.get("type") if m.get("type") in VALID_ELEMENTS else data["element_type"],
-                "category": m.get("category") if m.get("category") in ["physical", "special", "status"] else "physical",
-                "power": int(m.get("power", 40)) if m.get("category") != "status" else 0,
-                "accuracy": int(m.get("accuracy", 100)),
-                "description": str(m.get("description", "通常の攻撃"))[:30]
+                "category": category,
+                "power": power,
+                "accuracy": accuracy,
+                "description": str(m.get("description", fallback_moves[idx]["description"]))[:30]
             })
-        
-        if not valid_moves:
-            valid_moves.append({"name": "たいあたり", "type": "無", "category": "physical", "power": 40, "accuracy": 100, "description": "体当たり攻撃"})
 
         data["moves"] = valid_moves
         return data
