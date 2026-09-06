@@ -1,4 +1,9 @@
 import io
+import asyncio
+import logging
+import struct
+import zlib
+from collections import defaultdict
 import json
 import random
 import os
@@ -6,23 +11,252 @@ import uuid
 import discord
 from discord import app_commands
 from discord.ext import commands
-import google.generativeai as genai
 from supabase import create_client, Client
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 # 既存環境ではSUPABASE_URLとSUPABASE_KEYを使用する。
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-GEMINI_API_KEY = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-genai.configure(api_key=GEMINI_API_KEY)
 
 APPRAISAL_COST = 500  # 基本鑑定コスト
 VALID_ELEMENTS = ["虚", "実", "正", "負", "無"]
 
+# Free creator: deterministic, equal-budget characters; no AI requests or coin debit.
+PIXEL_TEMPLATES = {
+    "スライム": "00000000/00011000/00122100/01222210/01233210/01222210/00111100/00000000",
+    "ナイト": "00111100/01222210/01233210/00122100/01122110/12122121/00111100/00100100",
+    "ドラゴン": "01000010/01200210/01211210/00133100/01222210/12222221/00122100/01100110",
+    "ゴースト": "00111100/01222210/12322321/12222221/12233221/12222221/12122121/01011010",
+    "ロボット": "00011000/01111110/01222210/01322310/01111110/11222211/00111100/01100110",
+    "白紙": "/".join(["00000000"] * 8),
+}
+PIXEL_COLORS = {
+    "ミント": ((69, 225, 173), (216, 255, 244)),
+    "サクラ": ((246, 119, 164), (255, 223, 234)),
+    "アクア": ((82, 167, 255), (209, 238, 255)),
+    "ゴールド": ((247, 190, 62), (255, 243, 197)),
+    "ラベンダー": ((161, 133, 247), (239, 228, 255)),
+}
+# All archetypes total 360, so artistic complexity never grants a power advantage.
+ARCHETYPES = {
+    "バランス": (80, 60, 55, 60, 55, 50),
+    "アタッカー": (70, 95, 45, 45, 40, 65),
+    "ガーディアン": (100, 50, 85, 40, 60, 25),
+    "メイジ": (65, 35, 40, 100, 65, 55),
+    "スピード": (65, 65, 40, 65, 40, 85),
+}
+
+
+def parse_pixels(text):
+    rows = text.strip().replace("/", "\n").splitlines()
+    if len(rows) != 8 or any(len(row) != 8 or set(row) - set("0123") for row in rows):
+        raise ValueError("0〜3だけで、各行8文字・全8行にしてください。0=透明、1=輪郭、2=本体、3=光。")
+    return rows
+
+
+def pixel_png(rows, color="ミント", scale=32):
+    """Encode nearest-neighbour RGBA pixels with only Python's standard library."""
+    rows = parse_pixels("\n".join(rows))
+    if not 1 <= scale <= 64:
+        raise ValueError("scale must be between 1 and 64")
+    base, light = PIXEL_COLORS[color]
+    palette = [(0, 0, 0, 0), (28, 31, 53, 255), (*base, 255), (*light, 255)]
+    raw = b"".join((b"\0" + b"".join(bytes(palette[int(c)]) * scale for c in row)) * scale for row in rows)
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 8 * scale, 8 * scale, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def creator_record(user_id, name, element, style, image_url):
+    stats = ARCHETYPES[style]
+    special = style == "メイジ"
+    return {
+        "user_id": user_id, "name": name, "image_url": image_url, "canvas_size": "8x8",
+        "element_type": element, "characteristic": "創作の魂：自分の手で生まれた唯一の相棒",
+        "dice_level": 5, "dice_talent": 360, "dice_ai": 1, "dice_ability": 50,
+        "current_level": 5, "current_exp": 0,
+        **dict(zip(("max_hp", "max_attack", "max_defense", "max_sp_atk", "max_sp_def", "max_speed"), stats)),
+        "moves": [
+            {"name": "ドットバースト" if special else "ピクセルストライク", "type": element,
+             "category": "special" if special else "physical", "power": 45, "accuracy": 100,
+             "description": "自分の属性で安定した一撃"},
+            {"name": "オーバードライブ", "type": element,
+             "category": "special" if special else "physical", "power": 75, "accuracy": 80,
+             "description": "命中80の大技"},
+            {"name": "リペア", "type": "無", "category": "status", "power": 0, "accuracy": 100,
+             "effect": "heal", "description": "最大HPの25%を回復（3回まで）"},
+        ],
+    }
+
+
+class PixelModal(discord.ui.Modal, title="8×8 ドット絵を描く"):
+    def __init__(self, editor):
+        super().__init__()
+        self.editor = editor
+        self.revision = editor.revision
+        self.art = discord.ui.TextInput(label="0=透明 / 1=輪郭 / 2=本体 / 3=光", style=discord.TextStyle.paragraph,
+                                        default="\n".join(editor.rows), min_length=71, max_length=71)
+        self.name_input = discord.ui.TextInput(label="相棒の名前", default=editor.name, max_length=20)
+        self.add_item(self.art)
+        self.add_item(self.name_input)
+
+    async def on_submit(self, interaction):
+        if not await self.editor.interaction_check(interaction):
+            return
+        if self.revision != self.editor.revision:
+            await interaction.response.send_message("編集内容が更新されています。もう一度開いてください。", ephemeral=True)
+            return
+        try:
+            rows = parse_pixels(str(self.art))
+            name = str(self.name_input).strip()
+            if not name:
+                raise ValueError("名前を入力してください。")
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        self.editor.snapshot()
+        self.editor.rows, self.editor.name = rows, name
+        await self.editor.refresh(interaction)
+
+
+class PixelStudio(discord.ui.View):
+    def __init__(self, cog, user_id, name):
+        super().__init__(timeout=900)
+        self.cog, self.user_id, self.name = cog, user_id, name
+        self.rows = parse_pixels(PIXEL_TEMPLATES["スライム"])
+        self.element, self.style, self.color = "無", "バランス", "ミント"
+        self.history, self.revision = [], 0
+        self.saving = self.saved = False
+        for row, (label, values, attribute) in enumerate([
+            ("ベースを選ぶ（絵を置換）", PIXEL_TEMPLATES, "template"),
+            ("属性を選ぶ", VALID_ELEMENTS, "element"),
+            ("戦闘スタイル", ARCHETYPES, "style"),
+            ("カラーパレット", PIXEL_COLORS, "color"),
+        ]):
+            select = discord.ui.Select(placeholder=label, options=[discord.SelectOption(label=v, value=v) for v in values], row=row)
+            select.callback = self.selection(attribute)
+            self.add_item(select)
+
+    async def interaction_check(self, interaction):
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("自分の工房は /ddd_create で開けます。", ephemeral=True)
+            return False
+        if self.saved or self.saving or self.is_finished():
+            await interaction.response.send_message("保存中・保存済み、または期限切れの工房です。", ephemeral=True)
+            return False
+        return True
+
+    def snapshot(self):
+        self.history.append((self.rows[:], self.name, self.element, self.style, self.color))
+        self.history = self.history[-20:]
+        self.revision += 1
+
+    def selection(self, attribute):
+        async def callback(interaction):
+            self.snapshot()
+            value = interaction.data["values"][0]
+            if attribute == "template":
+                self.rows = parse_pixels(PIXEL_TEMPLATES[value])
+            else:
+                setattr(self, attribute, value)
+            await self.refresh(interaction)
+        return callback
+
+    def embed(self):
+        stats = ARCHETYPES[self.style]
+        embed = discord.Embed(title=f"DDD PIXEL STUDIO | {self.name}", color=0x45E1AD,
+                              description="描く → 個性を選ぶ → 相棒として登録\nAI API・ago消費なし。画像は公開保存されます。")
+        embed.set_image(url="attachment://dot.png")
+        embed.add_field(name="キャラクターデザイン", value=f"属性 **{self.element}** / **{self.style}** / {self.color}", inline=False)
+        embed.add_field(name="Lv.30 ポテンシャル / 合計360", value=" / ".join(f"{k} {v}" for k, v in zip(["HP", "攻", "防", "特攻", "特防", "速"], stats)), inline=False)
+        embed.add_field(name="描き方", value="「描く・名前」で8行の数字を編集。0=透明、1=輪郭、2=本体、3=光。\nテンプレート・左右反転・20手まで戻す機能で、好きな形を作れます。", inline=False)
+        embed.set_footer(text="Lv.5で誕生 / 技3枠 / 保存前なら何度でも編集可能 / 工房の操作期限15分")
+        return embed
+
+    def file(self):
+        return discord.File(io.BytesIO(pixel_png(self.rows, self.color)), filename="dot.png")
+
+    async def refresh(self, interaction):
+        await interaction.response.edit_message(embed=self.embed(), attachments=[self.file()], view=self)
+
+    @discord.ui.button(label="描く・名前", style=discord.ButtonStyle.primary, row=4)
+    async def draw(self, interaction, button):
+        await interaction.response.send_modal(PixelModal(self))
+
+    @discord.ui.button(label="左右反転", row=4)
+    async def mirror(self, interaction, button):
+        self.snapshot()
+        self.rows = [row[::-1] for row in self.rows]
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="戻す", row=4)
+    async def undo(self, interaction, button):
+        if self.history:
+            self.rows, self.name, self.element, self.style, self.color = self.history.pop()
+            self.revision += 1
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="相棒として登録", style=discord.ButtonStyle.success, row=4)
+    async def publish(self, interaction, button):
+        if not any(c != "0" for row in self.rows for c in row):
+            await interaction.response.send_message("まず1ドット以上描いてください。", ephemeral=True)
+            return
+        self.saving = True
+        await interaction.response.defer()
+        try:
+            async with self.cog.creation_locks[self.user_id]:
+                monster = await asyncio.to_thread(self.cog.save_creation, self)
+            self.saved = True
+        except Exception:
+            logging.getLogger(__name__).exception("DDD free creation failed")
+            self.saving = False
+            await interaction.followup.send("保存できませんでした。ボックス容量とStorage設定を確認してください。課金はありません。", ephemeral=True)
+            return
+        self.stop()
+        embed = self.embed()
+        embed.title = f"相棒誕生 | {self.name}"
+        embed.description = "ボックスに保存しました。まずは /ddd_practice で腕試し！"
+        embed.set_image(url=monster["image_url"])
+        embed.add_field(name="モンスターID", value=str(monster["id"]), inline=False)
+        await interaction.edit_original_response(embed=embed, attachments=[], view=None)
+
+
 class AppraisalCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.creation_locks = defaultdict(asyncio.Lock)
+
+    @app_commands.command(name="ddd_create", description="無料のドット絵工房。自分だけの相棒を描いて育てよう（AI不使用）")
+    @app_commands.describe(name="相棒の名前（1〜20文字）")
+    @app_commands.checks.cooldown(1, 15, key=lambda i: i.user.id)
+    async def create(self, interaction: discord.Interaction, name: str = "はじめてのドット"):
+        name = name.strip()
+        if not 1 <= len(name) <= 20:
+            await interaction.response.send_message("名前は1〜20文字で指定してください。", ephemeral=True)
+            return
+        view = PixelStudio(self, str(interaction.user.id), name)
+        await interaction.response.send_message(embed=view.embed(), file=view.file(), view=view, ephemeral=True)
+
+    def save_creation(self, editor):
+        profile = self.get_user_profile(editor.user_id)
+        available, _ = self.check_box_capacity(editor.user_id, profile["max_box_slots"])
+        if not available:
+            raise ValueError("box full")
+        path = f"monsters/{editor.user_id}/{uuid.uuid4().hex}.png"
+        bucket = supabase.storage.from_("dot_images")
+        bucket.upload(path, pixel_png(editor.rows, editor.color), {"content-type": "image/png", "upsert": "false"})
+        record = creator_record(editor.user_id, editor.name, editor.element, editor.style, bucket.get_public_url(path))
+        try:
+            return supabase.table("monsters").insert(record).execute().data[0]
+        except Exception:
+            try:
+                bucket.remove([path])
+            except Exception:
+                logging.getLogger(__name__).warning("Could not clean up unregistered DDD image")
+            raise
 
     # --- DB・プロファイル管理 ---
     def get_user_profile(self, user_id: str) -> dict:
@@ -112,7 +346,10 @@ class AppraisalCog(commands.Cog):
         return scaled
 
     async def generate_ai_monster(self, image_bytes: bytes, dice: dict) -> dict:
-        model = genai.GenerativeModel("gemini-3.5-flash-lite")
+        if not GEMINI_API_KEY:
+            raise RuntimeError("GEMINI_API_KEY未設定。無料作成は /ddd_create を利用できます。")
+        from google import genai
+        from google.genai import types
         
         prompt = f"""
 あなたはゲーム「DDD (dot discord)」の鑑定AIです。
@@ -142,8 +379,11 @@ class AppraisalCog(commands.Cog):
   ]
 }}
 """
-        image_part = {"mime_type": "image/png", "data": image_bytes}
-        response = await model.generate_content_async([prompt, image_part])
+        async with genai.Client(api_key=GEMINI_API_KEY).aio as client:
+            response = await client.models.generate_content(
+                model=os.getenv("DDD_GEMINI_MODEL", "gemini-2.5-flash"),
+                contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type="image/png")],
+            )
         
         raw_text = response.text.strip().replace("```json", "").replace("```", "")
         data = json.loads(raw_text)
@@ -229,8 +469,8 @@ class AppraisalCog(commands.Cog):
         }
 
         # 5. AI解析（エラー時は全額返金）
-        image_bytes = await attachment.read()
         try:
+            image_bytes = await attachment.read()
             ai_data = await self.generate_ai_monster(image_bytes, dice)
         except Exception as e:
             self.refund_coins(user_id, APPRAISAL_COST, reason="appraisal_failed_refund")
@@ -276,8 +516,13 @@ class AppraisalCog(commands.Cog):
             "max_speed": stats["speed"],
             "moves": ai_data["moves"]
         }
-        res = supabase.table("monsters").insert(record).execute()
-        monster = res.data[0]
+        try:
+            res = supabase.table("monsters").insert(record).execute()
+            monster = res.data[0]
+        except Exception:
+            self.refund_coins(user_id, APPRAISAL_COST, reason="registration_failed_refund")
+            await interaction.followup.send("登録に失敗しました。鑑定費用を返金しました。")
+            return
 
         # 8. 結果Embedの表示
         embed = discord.Embed(
