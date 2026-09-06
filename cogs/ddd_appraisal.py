@@ -22,6 +22,7 @@ GEMINI_API_KEY = "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 APPRAISAL_COST = 500  # 基本鑑定コスト
+ULTRA_SCOUT_COST = 10000  # 最低値保証付きウルトラスカウト
 VALID_ELEMENTS = ["虚", "実", "正", "負", "無"]
 
 # Free creator: deterministic, equal-budget characters; no AI requests or coin debit.
@@ -242,7 +243,7 @@ class PixelStudio(discord.ui.View):
 
 class ScoutDecisionView(discord.ui.View):
     """鑑定済み個体をボックスへ迎えるか、見送るかを選ぶ確認画面。"""
-    def __init__(self, cog, user_id, record, file_path, dice, stats, canvas_size, box_text):
+    def __init__(self, cog, user_id, record, file_path, dice, stats, canvas_size, box_text, cost=APPRAISAL_COST):
         super().__init__(timeout=180)
         self.cog = cog
         self.user_id = user_id
@@ -252,6 +253,7 @@ class ScoutDecisionView(discord.ui.View):
         self.stats = stats
         self.canvas_size = canvas_size
         self.box_text = box_text
+        self.cost = cost
         self.done = False
 
     def preview_embed(self):
@@ -281,7 +283,7 @@ class ScoutDecisionView(discord.ui.View):
             for m in self.record["moves"]
         )
         embed.add_field(name="修得技 | バトル構成", value=moves_text, inline=False)
-        embed.set_footer(text=f"鑑定費用: {APPRAISAL_COST} ago | パレット: {self.canvas_size} | ボックス: {self.box_text}")
+        embed.set_footer(text=f"鑑定費用: {self.cost} ago | パレット: {self.canvas_size} | ボックス: {self.box_text}")
         return embed
 
     async def interaction_check(self, interaction):
@@ -559,58 +561,51 @@ class AppraisalCog(commands.Cog):
         return data
 
     # --- Slash Command ---
-    @app_commands.command(name="ddd_appraise", description="ドット絵画像を鑑定してAIモンスターを生成します（要500ago）")
-    @app_commands.describe(attachment="鑑定するドット絵画像", canvas_size="使用したパレットサイズ")
-    @app_commands.choices(canvas_size=[
-        app_commands.Choice(name="8x8", value="8x8"),
-        app_commands.Choice(name="16x16", value="16x16"),
-        app_commands.Choice(name="64x64", value="64x64"),
-        app_commands.Choice(name="128x128", value="128x128")
-    ])
-    async def appraise(self, interaction: discord.Interaction, attachment: discord.Attachment, canvas_size: str = "8x8"):
+    async def _run_appraisal(self, interaction: discord.Interaction, attachment: discord.Attachment,
+                             canvas_size: str, cost: int, ultra: bool = False):
         user_id = str(interaction.user.id)
         await interaction.response.defer()
-
-        # 1. パレット解放の確認
         profile = self.get_user_profile(user_id)
         unlocked_palettes = profile.get("unlocked_palettes", ["8x8"])
         if canvas_size not in unlocked_palettes:
             await interaction.followup.send(
                 f"🔒 **{canvas_size}** パレットは解放されていません！（所持パレット: {', '.join(unlocked_palettes)}）",
-                ephemeral=True
+                ephemeral=True,
             )
             return
-
-        # 2. ボックス容量確認
         can_add, current_cnt = self.check_box_capacity(user_id, profile["max_box_slots"])
         if not can_add:
-            await interaction.followup.send(f" **ボックスが満杯です！**（現在: {current_cnt}/{profile['max_box_slots']}匹）\n`/ddd_expand_box` で枠を拡張してください。")
+            await interaction.followup.send(
+                f"**ボックスが満杯です！**（現在: {current_cnt}/{profile['max_box_slots']}匹）\n"
+                "`/ddd_expand_box` で枠を拡張してください。"
+            )
             return
-
-        # 3. コイン決済
-        if not self.deduct_coins_transaction(user_id, APPRAISAL_COST, reason="monster_appraisal"):
-            await interaction.followup.send(f" **コインが不足しています！**（所持金: {profile['balance']} ago / 必要: {APPRAISAL_COST} ago）")
+        if not self.deduct_coins_transaction(user_id, cost, reason="ultra_scout" if ultra else "monster_appraisal"):
+            await interaction.followup.send(
+                f"**コインが不足しています！**（所持金: {profile.get('balance', 0)} ago / 必要: {cost} ago）"
+            )
             return
-
-        # 4. 厳選ダイスロール
-        dice = {
-            "level": normal_roll(1, 20),
-            "talent": normal_roll(100, 600),
-            "ai": normal_roll(1, 100),
-            "ability": normal_roll(1, 100)
-        }
-
-        # 5. AI解析（エラー時は全額返金）
+        if ultra:
+            dice = {
+                "level": normal_roll(1, 20),
+                "talent": normal_roll(400, 600),
+                "ai": normal_roll(50, 100),
+                "ability": normal_roll(50, 100),
+            }
+        else:
+            dice = {
+                "level": normal_roll(1, 20),
+                "talent": normal_roll(100, 600),
+                "ai": normal_roll(1, 100),
+                "ability": normal_roll(1, 100),
+            }
         try:
             image_bytes = await attachment.read()
             ai_data = await self.generate_ai_monster(image_bytes, dice)
-        except Exception as e:
-            self.refund_coins(user_id, APPRAISAL_COST, reason="appraisal_failed_refund")
-            await interaction.followup.send(f" **AI鑑定に失敗したためコインを返還しました。**\n詳細: `{e}`")
+        except Exception as exc:
+            self.refund_coins(user_id, cost, reason="ultra_scout_failed_refund" if ultra else "appraisal_failed_refund")
+            await interaction.followup.send(f"**AI鑑定に失敗したためコインを返還しました。**\n詳細: `{exc}`")
             return
-
-        # 6. 画像保存（エラー時は全額返金）
-        # 同一ユーザーが同じ秒に複数回鑑定しても画像が衝突しないようUUIDを付与する。
         file_ext = ".png"
         allowed_content_types = {"image/png", "image/jpeg", "image/webp", "image/gif"}
         content_type = attachment.content_type if attachment.content_type in allowed_content_types else "image/png"
@@ -620,42 +615,54 @@ class AppraisalCog(commands.Cog):
         try:
             supabase.storage.from_("dot_images").upload(file_path, image_bytes, {"content-type": content_type, "upsert": "false"})
             public_url = supabase.storage.from_("dot_images").get_public_url(file_path)
-        except Exception as e:
-            self.refund_coins(user_id, APPRAISAL_COST, reason="upload_failed_refund")
-            await interaction.followup.send(f" **画像保存に失敗したためコインを返還しました。**\n詳細: `{e}`")
+        except Exception as exc:
+            self.refund_coins(user_id, cost, reason="ultra_scout_upload_failed_refund" if ultra else "upload_failed_refund")
+            await interaction.followup.send(f"**画像保存に失敗したためコインを返還しました。**\n詳細: `{exc}`")
             return
-
-        # 7. DB追加
         stats = ai_data["max_stats"]
         record = {
-            "user_id": user_id,
-            "name": ai_data["name"],
-            "image_url": public_url,
-            "canvas_size": canvas_size,
-            "element_type": ai_data["element_type"],
-            "characteristic": ai_data["characteristic"],
-            "trait_id": ai_data["trait_id"],
-            "dice_level": dice["level"],
-            "dice_talent": dice["talent"],
-            "dice_ai": dice["ai"],
-            "dice_ability": dice["ability"],
-            "current_level": dice["level"],
-            "current_exp": 0,
-            "max_hp": stats["hp"],
-            "max_attack": stats["attack"],
-            "max_defense": stats["defense"],
-            "max_sp_atk": stats["sp_atk"],
-            "max_sp_def": stats["sp_def"],
-            "max_speed": stats["speed"],
-            "moves": ai_data["moves"]
+            "user_id": user_id, "name": ai_data["name"], "image_url": public_url,
+            "canvas_size": canvas_size, "element_type": ai_data["element_type"],
+            "characteristic": ai_data["characteristic"], "trait_id": ai_data["trait_id"],
+            "dice_level": dice["level"], "dice_talent": dice["talent"],
+            "dice_ai": dice["ai"], "dice_ability": dice["ability"],
+            "current_level": dice["level"], "current_exp": 0,
+            "max_hp": stats["hp"], "max_attack": stats["attack"],
+            "max_defense": stats["defense"], "max_sp_atk": stats["sp_atk"],
+            "max_sp_def": stats["sp_def"], "max_speed": stats["speed"],
+            "moves": ai_data["moves"],
         }
-        # 8. 生成結果を確認し、スカウトするか選択する。ここではまだDB登録しない。
+        guarantee = "最低保証: 才能値400 / AI適合50 / 能力補正50" if ultra else "通常鑑定"
         view = ScoutDecisionView(
             self, user_id, record, file_path, dice, stats, canvas_size,
-            f"未登録（{current_cnt}/{profile['max_box_slots']}）",
+            f"未登録（{current_cnt}/{profile['max_box_slots']}）", cost=cost,
         )
-        await interaction.followup.send(embed=view.preview_embed(), view=view)
-        return
+        embed = view.preview_embed()
+        embed.description = ("**ウルトラスカウト鑑定完了**\nこの個体をボックスへ迎え入れますか？\n"
+                             f"{guarantee}\n見送っても鑑定費用は返金されません。") if ultra else embed.description
+        await interaction.followup.send(embed=embed, view=view)
+
+    @app_commands.command(name="ddd_appraise", description="ドット絵画像を鑑定してAIモンスターを生成します（要500ago）")
+    @app_commands.describe(attachment="鑑定するドット絵画像", canvas_size="使用したパレットサイズ")
+    @app_commands.choices(canvas_size=[
+        app_commands.Choice(name="8x8", value="8x8"),
+        app_commands.Choice(name="16x16", value="16x16"),
+        app_commands.Choice(name="64x64", value="64x64"),
+        app_commands.Choice(name="128x128", value="128x128")
+    ])
+    async def appraise(self, interaction: discord.Interaction, attachment: discord.Attachment, canvas_size: str = "8x8"):
+        await self._run_appraisal(interaction, attachment, canvas_size, APPRAISAL_COST)
+
+    @app_commands.command(name="ddd_ultra_scout", description="1万ago coinで最低値保証のウルトラスカウト")
+    @app_commands.describe(attachment="スカウトするドット絵画像", canvas_size="使用したパレットサイズ")
+    @app_commands.choices(canvas_size=[
+        app_commands.Choice(name="8x8", value="8x8"),
+        app_commands.Choice(name="16x16", value="16x16"),
+        app_commands.Choice(name="64x64", value="64x64"),
+        app_commands.Choice(name="128x128", value="128x128")
+    ])
+    async def ultra_scout(self, interaction: discord.Interaction, attachment: discord.Attachment, canvas_size: str = "8x8"):
+        await self._run_appraisal(interaction, attachment, canvas_size, ULTRA_SCOUT_COST, ultra=True)
 
 
 async def setup(bot):

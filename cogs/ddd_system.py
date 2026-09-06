@@ -592,7 +592,7 @@ class SystemCog(commands.Cog):
         embed.add_field(name="03 / ひとりで腕試し", value="`/ddd_practice` は1匹から遊べる無料のCPU戦。草原・遺跡・鏡の3コース。練習なので経験値・コインは変動しません。", inline=False)
         embed.add_field(name="04 / 友達と対戦・育成", value="`/ddd_battle` で招待。双方の直近3匹が出場し、速い先頭が先攻。勝利パーティ全員に50 EXP、100 EXPでレベルアップ（Lv.30まで）。期限切れは `/ddd_resume`。", inline=False)
         embed.add_field(name="戦術ノート", value="虚⇔実・正⇔負はお互いに2倍、同属性は半減（無を除く）。一致属性技は1.5倍。防御でダメージ半減、交代で能力ランク解除。回復は3回まで。80手で引き分け。", inline=False)
-        embed.add_field(name="費用について", value="工房・技編成・練習にAI API・ago消費はありません。既存の `/ddd_appraise` は500 ago＋管理者側のGemini API利用。鑑定後はスカウトするか選択でき、見送っても返金されません、改名・ボックス拡張は従来どおりagoを使います。Discord・Supabase等の運用費は別です。", inline=False)
+        embed.add_field(name="費用について", value="工房・技編成・練習にAI API・ago消費はありません。既存の `/ddd_appraise` は500 ago＋管理者側のGemini API利用。鑑定後はスカウトするか選択でき、見送っても返金されません。`/ddd_ultra_scout` は10000 agoで才能値400以上・AI適合50以上・能力補正50以上を保証します。改名・ボックス拡張は従来どおりagoを使います。Discord・Supabase等の運用費は別です。", inline=False)
         embed.set_footer(text="ドット画像は公開Storageに保存されます。個人情報を描かないでください。")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
