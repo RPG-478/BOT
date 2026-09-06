@@ -53,6 +53,13 @@ def monster_embed(monster):
     embed.add_field(name="成長", value=f"{progress}\nパレット {monster.get('canvas_size', '8x8')} / 才能 {monster.get('dice_talent', '-')}", inline=False)
     stats = [(name, monster.get(f"max_{key}", 10)) for name, key in [("HP", "hp"), ("攻撃", "attack"), ("防御", "defense"), ("特攻", "sp_atk"), ("特防", "sp_def"), ("素早さ", "speed")]]
     embed.add_field(name="現在の能力値 / Lv.30の上限", value="\n".join(f"**{name}** {calc_stat(value, level)} / {value}" for name, value in stats), inline=True)
+    stat_total = sum(value for _, value in stats)
+    talent = int(monster.get("dice_talent") or 0)
+    ability = int(monster.get("dice_ability") or 0)
+    strength_score = round(min(100, stat_total / 360 * 55 + talent / 600 * 25 + ability / 100 * 20))
+    strength_rank = "S" if strength_score >= 90 else "A" if strength_score >= 75 else "B" if strength_score >= 55 else "C" if strength_score >= 35 else "D"
+    strength_bar = "█" * (strength_score // 10) + "░" * (10 - strength_score // 10)
+    embed.add_field(name="強さ評価", value=f"**ランク {strength_rank} / 100点**\n`{strength_bar}` {strength_score}\n能力合計 {stat_total}・才能 {talent}・能力補正 {ability}", inline=True)
     weaknesses = [element_type for element_type, match in TYPE_CHART.items() if match.get(element, 1) > 1]
     embed.add_field(name="属性メモ", value=f"弱点: {'・'.join(weaknesses) or 'なし'}\n自分と同じ属性の攻撃技は威力1.5倍。", inline=True)
     for index, move in enumerate(normalize_moves(monster.get("moves")), 1):
@@ -131,7 +138,7 @@ class MonsterSelectView(discord.ui.View):
 
     async def select_callback(self, interaction):
         selected_id = interaction.data["values"][0]
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         result = await asyncio.to_thread(lambda: supabase.table("monsters").select("*").eq("id", selected_id).eq("user_id", self.user_id).execute())
         if not result.data:
             await interaction.followup.send("相棒が見つかりません。ボックスを開き直してください。", ephemeral=True)
@@ -140,7 +147,7 @@ class MonsterSelectView(discord.ui.View):
         if self.release:
             await interaction.followup.send(content=f"**{monster['name']}** とお別れしますか？削除は取り消せません。", view=ReleaseConfirm(self.user_id, monster), ephemeral=True)
         else:
-            await interaction.followup.send(embed=monster_embed(monster), ephemeral=True)
+            await interaction.followup.send(embed=monster_embed(monster))
 
 
 class SystemCog(commands.Cog):
@@ -223,13 +230,13 @@ class SystemCog(commands.Cog):
         profile = self.get_user_profile(user_id)
 
         if not self.deduct_coins(user_id, EXPAND_BOX_COST, reason="box_expansion"):
-            await interaction.followup.send(f"❌ **コインが不足しています！**（所持: {profile['balance']} ago / 必要: {EXPAND_BOX_COST} ago）")
+            await interaction.followup.send(f" **コインが不足しています！**（所持: {profile['balance']} ago / 必要: {EXPAND_BOX_COST} ago）")
             return
 
         new_slots = profile["max_box_slots"] + 5
         supabase.table("users").update({"max_box_slots": new_slots}).eq("user_id", user_id).execute()
 
-        await interaction.followup.send(f"🎉 **ボックスを拡張しました！**（最大容量: {profile['max_box_slots']} → **{new_slots}** 匹）")
+        await interaction.followup.send(f" **ボックスを拡張しました！**（最大容量: {profile['max_box_slots']} → **{new_slots}** 匹）")
 
 
     @app_commands.command(name="ddd_unlock_palette", description="コインを消費して新しい高解像度パレットを開放します")
@@ -247,18 +254,18 @@ class SystemCog(commands.Cog):
         unlocked = profile.get("unlocked_palettes", ["8x8"])
 
         if size in unlocked:
-            await interaction.followup.send(f"⚠️ パレット **{size}** は既に開放されています。")
+            await interaction.followup.send(f" パレット **{size}** は既に開放されています。")
             return
 
         cost = PALETTE_COSTS.get(size, 1000)
         if not self.deduct_coins(user_id, cost, reason=f"unlock_palette_{size}"):
-            await interaction.followup.send(f"❌ **コインが不足しています！**（所持: {profile['balance']} ago / 必要: {cost} ago）")
+            await interaction.followup.send(f" **コインが不足しています！**（所持: {profile['balance']} ago / 必要: {cost} ago）")
             return
 
         unlocked.append(size)
         supabase.table("users").update({"unlocked_palettes": unlocked}).eq("user_id", user_id).execute()
 
-        await interaction.followup.send(f"🎨 **パレット 【{size}】 を解放しました！**\n`/ddd_appraise` の鑑定時に選択可能になります。")
+        await interaction.followup.send(f" **パレット 【{size}】 を解放しました！**\n`/ddd_appraise` の鑑定時に選択可能になります。")
 
 
     @app_commands.command(name="ddd_rename_monster", description="ago coinを消費して自分のモンスターのdot名を変更します")
@@ -267,20 +274,20 @@ class SystemCog(commands.Cog):
         user_id = str(interaction.user.id)
         new_name = new_name.strip()
         if not new_name or len(new_name) > MAX_RENAME_LENGTH:
-            await interaction.response.send_message(f"❌ 名前は1〜{MAX_RENAME_LENGTH}文字で入力してください。", ephemeral=True)
+            await interaction.response.send_message(f" 名前は1〜{MAX_RENAME_LENGTH}文字で入力してください。", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
         res = supabase.table("monsters").select("id, name").eq("id", monster_id).eq("user_id", user_id).execute()
         if not res.data:
-            await interaction.followup.send("❌ 指定したモンスターが見つからないか、あなたの所持個体ではありません。", ephemeral=True)
+            await interaction.followup.send(" 指定したモンスターが見つからないか、あなたの所持個体ではありません。", ephemeral=True)
             return
         monster = res.data[0]
         if monster["name"] == new_name:
-            await interaction.followup.send("⚠️ 現在と同じ名前です。", ephemeral=True)
+            await interaction.followup.send(" 現在と同じ名前です。", ephemeral=True)
             return
         profile = self.get_user_profile(user_id)
         if not self.deduct_coins(user_id, RENAME_MONSTER_COST, reason="rename_monster"):
-            await interaction.followup.send(f"❌ ago coinが不足しています。（必要: {RENAME_MONSTER_COST} ago / 所持: {profile['balance']} ago）", ephemeral=True)
+            await interaction.followup.send(f" ago coinが不足しています。（必要: {RENAME_MONSTER_COST} ago / 所持: {profile['balance']} ago）", ephemeral=True)
             return
         try:
             update = supabase.table("monsters").update({"name": new_name}).eq("id", monster_id).eq("user_id", user_id).execute()
@@ -289,9 +296,9 @@ class SystemCog(commands.Cog):
         except Exception:
             # 決済後の更新失敗時は同額を返金する。
             self.refund_coins(user_id, RENAME_MONSTER_COST, reason="rename_monster_failed_refund")
-            await interaction.followup.send("⚠️ 名前変更に失敗したため、ago coinを返金しました。", ephemeral=True)
+            await interaction.followup.send(" 名前変更に失敗したため、ago coinを返金しました。", ephemeral=True)
             return
-        await interaction.followup.send(f"✅ dot名を **{monster['name']}** から **{new_name}** に変更しました。（{RENAME_MONSTER_COST} ago）", ephemeral=True)
+        await interaction.followup.send(f" dot名を **{monster['name']}** から **{new_name}** に変更しました。（{RENAME_MONSTER_COST} ago）", ephemeral=True)
 
 
     @app_commands.command(name="ddd_rename_move", description="ago coinを消費して自分のモンスターの技名を変更します")
@@ -305,26 +312,26 @@ class SystemCog(commands.Cog):
         user_id = str(interaction.user.id)
         new_name = new_name.strip()
         if not new_name or len(new_name) > MAX_RENAME_LENGTH:
-            await interaction.response.send_message(f"❌ 技名は1〜{MAX_RENAME_LENGTH}文字で入力してください。", ephemeral=True)
+            await interaction.response.send_message(f" 技名は1〜{MAX_RENAME_LENGTH}文字で入力してください。", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
         res = supabase.table("monsters").select("id, name, moves").eq("id", monster_id).eq("user_id", user_id).execute()
         if not res.data:
-            await interaction.followup.send("❌ 指定したモンスターが見つからないか、あなたの所持個体ではありません。", ephemeral=True)
+            await interaction.followup.send(" 指定したモンスターが見つからないか、あなたの所持個体ではありません。", ephemeral=True)
             return
         monster = res.data[0]
         moves = monster.get("moves") or []
         if move_slot not in (1, 2, 3) or move_slot > len(moves):
-            await interaction.followup.send("❌ 技スロットは1〜3で、存在する技を選択してください。", ephemeral=True)
+            await interaction.followup.send(" 技スロットは1〜3で、存在する技を選択してください。", ephemeral=True)
             return
         move = dict(moves[move_slot - 1])
         old_name = str(move.get("name", "技"))
         if old_name == new_name:
-            await interaction.followup.send("⚠️ 現在と同じ技名です。", ephemeral=True)
+            await interaction.followup.send(" 現在と同じ技名です。", ephemeral=True)
             return
         profile = self.get_user_profile(user_id)
         if not self.deduct_coins(user_id, RENAME_MOVE_COST, reason=f"rename_move_{move_slot}"):
-            await interaction.followup.send(f"❌ ago coinが不足しています。（必要: {RENAME_MOVE_COST} ago / 所持: {profile['balance']} ago）", ephemeral=True)
+            await interaction.followup.send(f" ago coinが不足しています。（必要: {RENAME_MOVE_COST} ago / 所持: {profile['balance']} ago）", ephemeral=True)
             return
         move["name"] = new_name
         moves[move_slot - 1] = move
@@ -334,9 +341,9 @@ class SystemCog(commands.Cog):
                 raise RuntimeError("monster move update returned no rows")
         except Exception:
             self.refund_coins(user_id, RENAME_MOVE_COST, reason="rename_move_failed_refund")
-            await interaction.followup.send("⚠️ 技名変更に失敗したため、ago coinを返金しました。", ephemeral=True)
+            await interaction.followup.send(" 技名変更に失敗したため、ago coinを返金しました。", ephemeral=True)
             return
-        await interaction.followup.send(f"✅ **{monster['name']}** の技{move_slot}を **{old_name}** から **{new_name}** に変更しました。（{RENAME_MOVE_COST} ago）", ephemeral=True)
+        await interaction.followup.send(f" **{monster['name']}** の技{move_slot}を **{old_name}** から **{new_name}** に変更しました。（{RENAME_MOVE_COST} ago）", ephemeral=True)
 
 
     @app_commands.command(name="ddd_rename_ability", description="ago coinを消費して自分のモンスターの特性名・説明を変更します")
@@ -345,21 +352,21 @@ class SystemCog(commands.Cog):
         user_id = str(interaction.user.id)
         new_ability = new_ability.strip()
         if not new_ability or len(new_ability) > MAX_ABILITY_LENGTH:
-            await interaction.response.send_message(f"❌ 特性名・説明は1〜{MAX_ABILITY_LENGTH}文字で入力してください。", ephemeral=True)
+            await interaction.response.send_message(f" 特性名・説明は1〜{MAX_ABILITY_LENGTH}文字で入力してください。", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
         res = supabase.table("monsters").select("id, name, characteristic").eq("id", monster_id).eq("user_id", user_id).execute()
         if not res.data:
-            await interaction.followup.send("❌ 指定したモンスターが見つからないか、あなたの所持個体ではありません。", ephemeral=True)
+            await interaction.followup.send(" 指定したモンスターが見つからないか、あなたの所持個体ではありません。", ephemeral=True)
             return
         monster = res.data[0]
         old_ability = str(monster.get("characteristic") or "未設定")
         if old_ability == new_ability:
-            await interaction.followup.send("⚠️ 現在と同じ特性名・説明です。", ephemeral=True)
+            await interaction.followup.send(" 現在と同じ特性名・説明です。", ephemeral=True)
             return
         profile = self.get_user_profile(user_id)
         if not self.deduct_coins(user_id, RENAME_ABILITY_COST, reason="rename_ability"):
-            await interaction.followup.send(f"❌ ago coinが不足しています。（必要: {RENAME_ABILITY_COST} ago / 所持: {profile['balance']} ago）", ephemeral=True)
+            await interaction.followup.send(f" ago coinが不足しています。（必要: {RENAME_ABILITY_COST} ago / 所持: {profile['balance']} ago）", ephemeral=True)
             return
         try:
             update = supabase.table("monsters").update({"characteristic": new_ability}).eq("id", monster_id).eq("user_id", user_id).execute()
@@ -367,9 +374,9 @@ class SystemCog(commands.Cog):
                 raise RuntimeError("monster ability update returned no rows")
         except Exception:
             self.refund_coins(user_id, RENAME_ABILITY_COST, reason="rename_ability_failed_refund")
-            await interaction.followup.send("⚠️ 特性名・説明の変更に失敗したため、ago coinを返金しました。", ephemeral=True)
+            await interaction.followup.send(" 特性名・説明の変更に失敗したため、ago coinを返金しました。", ephemeral=True)
             return
-        await interaction.followup.send(f"✅ **{monster['name']}** の特性を **{new_ability}** に変更しました。（{RENAME_ABILITY_COST} ago）", ephemeral=True)
+        await interaction.followup.send(f" **{monster['name']}** の特性を **{new_ability}** に変更しました。（{RENAME_ABILITY_COST} ago）", ephemeral=True)
 
 
     @app_commands.command(name="ddd_profile", description="所持コイン、ボックス容量、解放済みパレットを確認します")
@@ -386,9 +393,9 @@ class SystemCog(commands.Cog):
             color=discord.Color.purple()
         )
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
-        embed.add_field(name="💰 所持コイン", value=f"**{prof['balance']}** ago", inline=True)
-        embed.add_field(name="📦 ボックス使用量", value=f"**{current_monsters}** / {prof['max_box_slots']} 匹", inline=True)
-        embed.add_field(name="🎨 解放済みパレット", value=", ".join([f"`{p}`" for p in prof['unlocked_palettes']]), inline=False)
+        embed.add_field(name=" 所持コイン", value=f"**{prof['balance']}** ago", inline=True)
+        embed.add_field(name=" ボックス使用量", value=f"**{current_monsters}** / {prof['max_box_slots']} 匹", inline=True)
+        embed.add_field(name=" 解放済みパレット", value=", ".join([f"`{p}`" for p in prof['unlocked_palettes']]), inline=False)
 
         await interaction.followup.send(embed=embed)
 

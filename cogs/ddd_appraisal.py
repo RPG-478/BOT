@@ -49,6 +49,21 @@ ARCHETYPES = {
 }
 
 
+def normal_roll(minimum, maximum, rng=None):
+    """中央付近が出やすい整数ロール。上下限外の値は範囲内に丸める。"""
+    if minimum > maximum:
+        raise ValueError("minimum must not exceed maximum")
+    rng = rng or random
+    mean = (minimum + maximum) / 2
+    stddev = (maximum - minimum) / 6 or 1
+    return max(minimum, min(maximum, round(rng.gauss(mean, stddev))))
+
+
+def score_bar(value, maximum):
+    score = max(0, min(100, round(value / maximum * 100)))
+    return f"`{'█' * (score // 10)}{'░' * (10 - score // 10)}` {score}/100"
+
+
 def parse_pixels(text):
     rows = text.strip().replace("/", "\n").splitlines()
     if len(rows) != 8 or any(len(row) != 8 or set(row) - set("0123") for row in rows):
@@ -452,20 +467,20 @@ class AppraisalCog(commands.Cog):
         # 2. ボックス容量確認
         can_add, current_cnt = self.check_box_capacity(user_id, profile["max_box_slots"])
         if not can_add:
-            await interaction.followup.send(f"❌ **ボックスが満杯です！**（現在: {current_cnt}/{profile['max_box_slots']}匹）\n`/ddd_expand_box` で枠を拡張してください。")
+            await interaction.followup.send(f" **ボックスが満杯です！**（現在: {current_cnt}/{profile['max_box_slots']}匹）\n`/ddd_expand_box` で枠を拡張してください。")
             return
 
         # 3. コイン決済
         if not self.deduct_coins_transaction(user_id, APPRAISAL_COST, reason="monster_appraisal"):
-            await interaction.followup.send(f"❌ **コインが不足しています！**（所持金: {profile['balance']} ago / 必要: {APPRAISAL_COST} ago）")
+            await interaction.followup.send(f" **コインが不足しています！**（所持金: {profile['balance']} ago / 必要: {APPRAISAL_COST} ago）")
             return
 
         # 4. 厳選ダイスロール
         dice = {
-            "level": random.randint(1, 20),
-            "talent": random.randint(100, 600),
-            "ai": random.randint(1, 100),
-            "ability": random.randint(1, 100)
+            "level": normal_roll(1, 20),
+            "talent": normal_roll(100, 600),
+            "ai": normal_roll(1, 100),
+            "ability": normal_roll(1, 100)
         }
 
         # 5. AI解析（エラー時は全額返金）
@@ -474,7 +489,7 @@ class AppraisalCog(commands.Cog):
             ai_data = await self.generate_ai_monster(image_bytes, dice)
         except Exception as e:
             self.refund_coins(user_id, APPRAISAL_COST, reason="appraisal_failed_refund")
-            await interaction.followup.send(f"⚠️ **AI鑑定に失敗したためコインを返還しました。**\n詳細: `{e}`")
+            await interaction.followup.send(f" **AI鑑定に失敗したためコインを返還しました。**\n詳細: `{e}`")
             return
 
         # 6. 画像保存（エラー時は全額返金）
@@ -490,7 +505,7 @@ class AppraisalCog(commands.Cog):
             public_url = supabase.storage.from_("dot_images").get_public_url(file_path)
         except Exception as e:
             self.refund_coins(user_id, APPRAISAL_COST, reason="upload_failed_refund")
-            await interaction.followup.send(f"⚠️ **画像保存に失敗したためコインを返還しました。**\n詳細: `{e}`")
+            await interaction.followup.send(f" **画像保存に失敗したためコインを返還しました。**\n詳細: `{e}`")
             return
 
         # 7. DB追加
@@ -526,29 +541,32 @@ class AppraisalCog(commands.Cog):
 
         # 8. 結果Embedの表示
         embed = discord.Embed(
-            title=f"✨ 鑑定完了：【{monster['element_type']}】{monster['name']}",
-            description=ai_data["description"],
+            title=f"DDD 鑑定記録 | 【{monster['element_type']}】{monster['name']}",
+            description=f"**鑑定完了**\n{ai_data['description']}\n\n厳選された個体の記録がボックスに登録されました。",
             color=discord.Color.gold()
         )
         embed.set_image(url=public_url)
         embed.add_field(
-            name="🎲 厳選ダイス結果",
-            value=f"初期Lv: **{dice['level']}** / 30 | 才能(Lv30最高個体値): **{dice['talent']}**\nAI判定: **{dice['ai']}** | 能力補正: **{dice['ability']}**",
+            name="厳選結果 | 個体ポテンシャル",
+            value=(f"初期レベル **{dice['level']} / 20**  {score_bar(dice['level'], 20)}\n"
+                   f"才能値 **{dice['talent']} / 600**  {score_bar(dice['talent'], 600)}\n"
+                   f"AI適合 **{dice['ai']} / 100**  {score_bar(dice['ai'], 100)}\n"
+                   f"能力補正 **{dice['ability']} / 100**  {score_bar(dice['ability'], 100)}"),
             inline=False
         )
         embed.add_field(
-            name="📊 最高個体値 (Lv.30時)",
+            name="能力配分 | Lv.30到達時",
             value=f"**HP**: {stats['hp']} | **攻撃**: {stats['attack']} | **防御**: {stats['defense']}\n**特攻**: {stats['sp_atk']} | **特防**: {stats['sp_def']} | **素早さ**: {stats['speed']}",
             inline=False
         )
-        embed.add_field(name="🌟 特性", value=monster["characteristic"], inline=False)
+        embed.add_field(name="特性 | 個体の特徴", value=monster["characteristic"], inline=False)
         
         moves_text = "\n".join([
             f"・**{m['name']}** [{m['type']}] ({'物理' if m['category']=='physical' else '特殊' if m['category']=='special' else '変化'} / 威力:{m['power'] if m['power']>0 else '-'})"
             for m in monster["moves"]
         ])
-        embed.add_field(name="⚔️ 修得技", value=moves_text, inline=False)
-        embed.set_footer(text=f"消費: {APPRAISAL_COST} ago | パレット: {canvas_size} | ボックス: {current_cnt + 1}/{profile['max_box_slots']}")
+        embed.add_field(name="修得技 | バトル構成", value=moves_text, inline=False)
+        embed.set_footer(text=f"鑑定費用: {APPRAISAL_COST} ago | パレット: {canvas_size} | ボックス: {current_cnt + 1}/{profile['max_box_slots']}")
 
         await interaction.followup.send(embed=embed)
 
