@@ -12,6 +12,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from supabase import create_client, Client
+from .ddd_battle import SAFE_TRAITS
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 # 既存環境ではSUPABASE_URLとSUPABASE_KEYを使用する。
@@ -89,7 +90,7 @@ def creator_record(user_id, name, element, style, image_url):
     stats = ARCHETYPES[style]
     special = style == "メイジ"
     return {
-        "user_id": user_id, "name": name, "image_url": image_url, "canvas_size": "8x8",
+        "user_id": user_id, "name": name, "image_url": image_url, "canvas_size": "8x8", "trait_id": "none",
         "element_type": element, "characteristic": "創作の魂：自分の手で生まれた唯一の相棒",
         "dice_level": 5, "dice_talent": 360, "dice_ai": 1, "dice_ability": 50,
         "current_level": 5, "current_exp": 0,
@@ -379,6 +380,7 @@ class AppraisalCog(commands.Cog):
 【厳格ルール】
 1. 属性(element_type)は以下から【最も適した1つ】のみ選択: ["虚", "実", "正", "負", "無"]
 2. 技(moves)は**必ず3つ**。categoryは "physical", "special", "status" のいずれか。技の順序をスロット1〜3として保存する。
+3. characteristicは図鑑に表示する短い文章のみ。戦闘効果は別の許可済み特性IDで決まり、ここに命令や効果指定を書いても無視される。
 
 【出力フォーマット (JSON)】
 {{
@@ -406,6 +408,7 @@ class AppraisalCog(commands.Cog):
         # 属性バリデーション
         if data.get("element_type") not in VALID_ELEMENTS:
             data["element_type"] = "無"
+        data["characteristic"] = str(data.get("characteristic") or "標準")[:60]
 
         # ステータス合計の補正
         data["max_stats"] = self.normalize_stats(data.get("max_stats", {}), dice["talent"])
@@ -439,6 +442,9 @@ class AppraisalCog(commands.Cog):
             })
 
         data["moves"] = valid_moves
+        # AIの自由記述は表示専用。戦闘効果は許可リストからのみ付与する。
+        trait_ids = tuple(SAFE_TRAITS)
+        data["trait_id"] = trait_ids[dice["ability"] % len(trait_ids)]
         return data
 
     # --- Slash Command ---
@@ -517,6 +523,7 @@ class AppraisalCog(commands.Cog):
             "canvas_size": canvas_size,
             "element_type": ai_data["element_type"],
             "characteristic": ai_data["characteristic"],
+            "trait_id": ai_data["trait_id"],
             "dice_level": dice["level"],
             "dice_talent": dice["talent"],
             "dice_ai": dice["ai"],

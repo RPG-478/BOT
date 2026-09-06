@@ -20,6 +20,13 @@ TYPE_CHART = {
 }
 STAT_KEYS = ("hp", "attack", "defense", "sp_atk", "sp_def", "speed")
 MAX_ACTIONS = 80
+SAFE_TRAITS = {
+    "none": {"name": "標準", "description": "追加効果なし。"},
+    "regen": {"name": "再生", "description": "自分の行動開始時、HPが最大値の1/12回復。"},
+    "guard": {"name": "堅守", "description": "受けるダメージを15%軽減。"},
+    "valor": {"name": "闘志", "description": "HP半分以下のとき、与えるダメージを10%上昇。"},
+    "focus": {"name": "集中", "description": "技の命中率を5上昇。100を超えない。"},
+}
 
 
 def integer(value, default=0, low=0, high=9999):
@@ -66,6 +73,7 @@ def prepare_party(party):
         for key in STAT_KEYS:
             monster[f"max_{key}"] = integer(monster.get(f"max_{key}"), 10, 1)
         monster["moves"] = normalize_moves(monster.get("moves"))
+        monster["trait_id"] = monster.get("trait_id") if monster.get("trait_id") in SAFE_TRAITS else "none"
         monster["current_hp"] = calc_stat(monster["max_hp"], monster["current_level"])
         monster.update(ranks={}, guarding=False, poison=0, heals=3)
     return party
@@ -82,7 +90,9 @@ def calculate_damage(attacker, defender, move, rng=None, critical=False):
     power = integer(move.get("power", 40), 40, 1, 120)
     base = ((attacker["current_level"] * 2 / 5 + 2) * power * atk / max(1, defense)) / 50 + 2
     stab = 1.5 if move.get("type") == attacker["element_type"] else 1.0
-    return max(1, int(base * mult * stab * rng.uniform(0.85, 1) * (1.5 if critical else 1) * (0.5 if defender.get("guarding") else 1))), mult
+    trait_multiplier = 1.1 if attacker.get("trait_id") == "valor" and attacker.get("current_hp", 0) <= calc_stat(attacker["max_hp"], attacker["current_level"]) // 2 else 1.0
+    trait_multiplier *= 0.85 if defender.get("trait_id") == "guard" else 1.0
+    return max(1, int(base * mult * stab * rng.uniform(0.85, 1) * (1.5 if critical else 1) * (0.5 if defender.get("guarding") else 1) * trait_multiplier)), mult
 
 
 def add_experience(level, experience, amount):
@@ -119,6 +129,12 @@ def resolve_action(state, side, action, rng=None):
             raise ValueError("技は1〜3から選んでください。")
     logs = state.setdefault("logs", [])
     actor["guarding"] = False
+    if actor.get("trait_id") == "regen":
+        maximum = calc_stat(actor["max_hp"], actor["current_level"])
+        recovered = min(maximum - actor["current_hp"], max(1, maximum // 12))
+        if recovered:
+            actor["current_hp"] += recovered
+            logs.append(f"{actor['name']} の特性『再生』でHPが{recovered}回復。")
     if action == "surrender":
         logs.append(f"{side.upper()} が降参しました。")
         return other
@@ -131,7 +147,8 @@ def resolve_action(state, side, action, rng=None):
         logs.append(f"{actor['name']} は防御。次の被ダメージを半減！")
     else:
         move = actor["moves"][index]
-        if rng.random() * 100 >= move["accuracy"]:
+        accuracy = min(100, move["accuracy"] + (5 if actor.get("trait_id") == "focus" else 0))
+        if rng.random() * 100 >= accuracy:
             logs.append(f"{actor['name']} の {move['name']} は外れた！")
         elif move["category"] == "status":
             effect = move.get("effect")

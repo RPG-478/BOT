@@ -1,6 +1,6 @@
 import os
 import asyncio
-from .ddd_battle import calc_stat, normalize_moves, TYPE_CHART, add_experience
+from .ddd_battle import calc_stat, normalize_moves, TYPE_CHART, add_experience, SAFE_TRAITS
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -84,6 +84,9 @@ def monster_embed(monster):
     strength_rank = "S" if strength_score >= 90 else "A" if strength_score >= 75 else "B" if strength_score >= 55 else "C" if strength_score >= 35 else "D"
     strength_bar = "█" * (strength_score // 10) + "░" * (10 - strength_score // 10)
     embed.add_field(name="強さ評価", value=f"**ランク {strength_rank} / 100点**\n`{strength_bar}` {strength_score}\n能力合計 {stat_total}・才能 {talent}・能力補正 {ability}", inline=True)
+    trait_id = monster.get("trait_id") if monster.get("trait_id") in SAFE_TRAITS else "none"
+    trait = SAFE_TRAITS[trait_id]
+    embed.add_field(name=f"特性 | {trait['name']}", value=f"{trait['description']}\n表示名・説明は効果判定に使いません。", inline=False)
     weaknesses = [element_type for element_type, match in TYPE_CHART.items() if match.get(element, 1) > 1]
     embed.add_field(name="属性メモ", value=f"弱点: {'・'.join(weaknesses) or 'なし'}\n自分と同じ属性の攻撃技は威力1.5倍。", inline=True)
     for index, move in enumerate(normalize_moves(monster.get("moves")), 1):
