@@ -309,6 +309,7 @@ class AppraisalCog(commands.Cog):
             raise ScoutFailure("SCOUT-005", "利用可能なGemini APIキーがありません。")
         from google import genai
         from google.genai import types
+        from .gemini_compat import generate_content
 
         prompt = f"""
 あなたはゲーム「DDD」のモンスター鑑定士です。
@@ -337,11 +338,15 @@ class AppraisalCog(commands.Cog):
         rate_errors = []
         for api_key in keys:
             try:
-                async with genai.Client(api_key=api_key).aio as client:
-                    response = await client.models.generate_content(
+                client = genai.Client(api_key=api_key)
+                try:
+                    response = await generate_content(
+                        client,
                         model=os.getenv("DDD_GEMINI_MODEL", "gemini-3.5-flash-lite"),
                         contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type="image/png")],
                     )
+                finally:
+                    client.close()
                 raw_text = response.text.strip().replace("```json", "").replace("```", "")
                 data = json.loads(raw_text)
                 break

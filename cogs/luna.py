@@ -1,4 +1,5 @@
 import discord
+import asyncio
 from discord.ext import commands, tasks
 import os
 import random
@@ -7,6 +8,7 @@ import re
 from collections import deque
 from google import genai
 from google.genai import types
+from .gemini_compat import generate_content
 
 TARGET_USER_ID = 1320705325686587408
 DB_PATH = "mimic_memory.db"
@@ -312,7 +314,8 @@ class PerfectMimicAI(commands.Cog):
                 user_input = prompt if prompt else "最近どう？"
                 contents = f"入力内容: {user_input}\n上記に対して、本人になりきって自然な返答のみを出力してください。"
 
-        response = await self.gemini_client.aio.models.generate_content(
+        response = await generate_content(
+            self.gemini_client,
             model='gemini-3.5-flash-lite',
             contents=contents,
             config=types.GenerateContentConfig(

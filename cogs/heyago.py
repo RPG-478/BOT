@@ -7,6 +7,7 @@ from curl_cffi.requests import AsyncSession
 from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
+from .gemini_compat import generate_content
 
 class AdaptiveAI(commands.Cog):
     def __init__(self, bot):
@@ -120,7 +121,8 @@ class AdaptiveAI(commands.Cog):
 
         contents = [prompt] + file_parts
 
-        response = await self.gemini_client.aio.models.generate_content(
+        response = await generate_content(
+            self.gemini_client,
             model='gemini-3.5-flash-lite',
             contents=contents,
             config=types.GenerateContentConfig(
