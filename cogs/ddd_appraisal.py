@@ -20,7 +20,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GEMINI_API_KEYS = [
     "AQ.Ab8RN6LqsTEvK4h4ZW0u-Ni7qdxbytjUuXEJaZLDV3JG0Anygg",
     # "2つ目のGemini APIキーをここへ追記",
-    os.getenv("GEMINI_API_KEY", ""),
+    "AQ.Ab8RN6LUcM1qwe3EqJV9Z5vWAPpcfpo6Y8B8mH9uJYflmJ4HNg",
     os.getenv("GEMINI_API_KEY_2", ""),
     os.getenv("GEMINI_API_KEY_3", ""),
 ]
