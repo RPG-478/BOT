@@ -56,12 +56,9 @@ def chest_coin_reward(rng: random.Random | Any | None = None) -> int:
     return max(100, min(100_000, amount))
 
 
-def roll_chest_reward(rng: random.Random | Any | None = None) -> dict:
-    """宝箱1個の確定報酬を返す。内容は開封時に保存される。"""
+def roll_item_reward(rng: random.Random | Any | None = None) -> dict:
+    """宝箱に付属するアイテム1個を抽選する。"""
     rng = rng or random
-    if rng.random() < 0.80:
-        return {"kind": "coin", "amount": chest_coin_reward(rng)}
-
     item_roll = rng.random()
     if item_roll < 0.52:
         return {"kind": "item", "item_code": rng.choice(list(ORB_CODES.values())), "metadata": {}}
@@ -72,6 +69,13 @@ def roll_chest_reward(rng: random.Random | Any | None = None) -> dict:
     if item_roll < 0.92:
         return {"kind": "item", "item_code": TRADE_TICKET, "metadata": {}}
     return {"kind": "item", "item_code": UPRAISE_CRYSTAL, "metadata": create_crystal_metadata(rng)}
+
+
+def roll_chest_reward(rng: random.Random | Any | None = None) -> dict:
+    """宝箱1個のコインとアイテムの確定報酬を返す。"""
+    rng = rng or random
+    item = roll_item_reward(rng)
+    return {**item, "kind": "bundle", "amount": chest_coin_reward(rng)}
 
 
 def add_item(client, user_id: str, item_code: str, metadata: dict | None = None) -> dict:

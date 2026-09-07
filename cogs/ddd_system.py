@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
@@ -12,6 +12,7 @@ from supabase import Client, create_client
 from .ddd_battle import SAFE_TRAITS, TYPE_CHART, add_experience, experience_required, experience_space, normalize_moves
 from .ddd_inventory import (
     ELEMENTS,
+    HERB,
     MOVE_RESET_TICKET,
     ORB_CODES,
     STAT_KEYS,
@@ -28,6 +29,7 @@ from .ddd_inventory import (
 SUPABASE_URL = __import__("os").getenv("SUPABASE_URL")
 SUPABASE_KEY = __import__("os").getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+logger = logging.getLogger(__name__)
 
 EXPAND_BOX_COST = 1000
 RENAME_MONSTER_COST = 300
@@ -36,6 +38,16 @@ RENAME_ABILITY_COST = 250
 MOVE_REROLL_COST = 2000
 COINS_PER_EXP = 50
 TRADE_COST = 5000
+SHOP_ORB_COST = 10_000
+SHOP_TICKET_COST = 7_000
+SHOP_HERB_COST = 3_000
+JST = timezone(timedelta(hours=9))
+SHOP_ITEMS = {
+    **{code: (SHOP_ORB_COST, 1, f"{element}のオーブ") for element, code in ORB_CODES.items()},
+    MOVE_RESET_TICKET: (SHOP_TICKET_COST, 1, "技リセットチケット"),
+    TRADE_TICKET: (SHOP_TICKET_COST, 1, "トレードチケット"),
+    HERB: (SHOP_HERB_COST, 5, "薬草"),
+}
 MAX_RENAME_LENGTH = 20
 MAX_ABILITY_LENGTH = 60
 ELEMENT_COLORS = {"虚": 0xA185F7, "実": 0x45E1AD, "正": 0xF7BE3E, "負": 0xF677A4, "無": 0x52A7FF}
@@ -83,6 +95,12 @@ def strength_evaluation(monster: dict) -> tuple[int, str]:
     score = round(min(100, total / 650 * 45 + talent / 650 * 25 + ai / 100 * 15 + ability / 100 * 15))
     rank = "S" if score >= 93 else "A" if score >= 80 else "B" if score >= 64 else "C" if score >= 45 else "D"
     return score, rank
+
+
+def shop_week_start(now: datetime | None = None) -> date:
+    """日本時間の金曜日を週の開始日として返す。"""
+    today = (now or datetime.now(timezone.utc)).astimezone(JST).date()
+    return today - timedelta(days=(today.weekday() - 4) % 7)
 
 
 def monster_embed(monster: dict):
@@ -598,6 +616,72 @@ class SystemCog(commands.Cog):
             return
         await interaction.followup.send(f"ボックス容量を {profile['max_box_slots']} → {new_slots} 匹へ拡張しました。")
 
+    def ensure_shop_week(self, week_start: date) -> dict:
+        found = supabase.table("ddd_shop_weeks").select("*").eq("week_start", week_start.isoformat()).execute()
+        if found.data:
+            return found.data[0]
+        created = supabase.table("ddd_shop_weeks").insert({
+            "week_start": week_start.isoformat(),
+            "orb_code": random.choice(list(ORB_CODES.values())),
+        }).execute()
+        return created.data[0]
+
+    def shop_purchase(self, user_id: str, week_start: date, item_code: str) -> dict:
+        if item_code not in SHOP_ITEMS:
+            raise ValueError("ショップの商品が不正です。")
+        price, quantity, _label = SHOP_ITEMS[item_code]
+        result = supabase.rpc("ddd_shop_purchase", {
+            "p_week_start": week_start.isoformat(),
+            "p_user_id": user_id,
+            "p_item_code": item_code,
+            "p_price": price,
+            "p_quantity": quantity,
+        }).execute()
+        if not result.data:
+            raise RuntimeError("ショップ購入を確定できませんでした。")
+        return {"item_code": item_code, "price": price, "quantity": quantity}
+
+    @app_commands.command(name="ddd_shop", description="金曜日に更新されるDDDショップを確認・購入します")
+    @app_commands.describe(item_code="購入商品。省略時はショップ一覧を表示")
+    @app_commands.choices(item_code=[
+        app_commands.Choice(name="ショップ一覧", value="view"),
+        *[app_commands.Choice(name=f"{label}（{price}コイン）", value=code) for code, (price, _quantity, label) in SHOP_ITEMS.items()],
+    ])
+    async def shop(self, interaction: discord.Interaction, item_code: str = "view"):
+        await interaction.response.defer(ephemeral=True)
+        week_start = shop_week_start()
+        try:
+            shop_row = await asyncio.to_thread(self.ensure_shop_week, week_start)
+        except Exception:
+            logger.exception("DDD shop week initialization failed")
+            await interaction.followup.send("ショップ情報の取得に失敗しました。", ephemeral=True)
+            return
+        lines = [f"更新日: 毎週金曜日（今週: {week_start.isoformat()}）", "オーブは5種類から1個選択できます。"]
+        for code, (price, quantity, label) in SHOP_ITEMS.items():
+            lines.append(f"{label} ×{quantity}: {price}コイン")
+        if item_code == "view":
+            await interaction.followup.send("DDD ショップ\n" + "\n".join(lines), ephemeral=True)
+            return
+        try:
+            result = await asyncio.to_thread(self.shop_purchase, str(interaction.user.id), week_start, item_code)
+        except Exception as exc:
+            message = str(exc)
+            if "shop_item_already_purchased" in message:
+                message = "今週この商品は購入済みです。"
+            elif "shop_orb_already_purchased" in message:
+                message = "今週はすでにオーブを1個購入しています。"
+            elif "shop_insufficient_coin" in message:
+                message = "コインが不足しています。"
+            elif "shop_price_invalid" in message or "shop_item_invalid" in message:
+                message = "ショップ商品の設定が不正です。"
+            else:
+                logger.exception("DDD shop purchase failed")
+                message = "ショップ購入に失敗しました。"
+            await interaction.followup.send(message, ephemeral=True)
+            return
+        label = SHOP_ITEMS[result["item_code"]][2]
+        await interaction.followup.send(f"{label} ×{result['quantity']}を購入しました。消費コイン: {result['price']}", ephemeral=True)
+
     @app_commands.command(name="ddd_profile", description="所持コイン、宝箱、アイテムを確認します")
     async def profile(self, interaction: discord.Interaction):
         user_id = str(interaction.user.id)
@@ -632,11 +716,9 @@ class SystemCog(commands.Cog):
             if not marked.data:
                 continue
             opened += 1
-            if reward["kind"] == "coin":
-                total_coins += reward["amount"]
-            else:
-                item = await asyncio.to_thread(add_item, supabase, user_id, reward["item_code"], reward.get("metadata"))
-                items.append(item_label(item["item_code"], item.get("metadata")))
+            total_coins += reward["amount"]
+            item = await asyncio.to_thread(add_item, supabase, user_id, reward["item_code"], reward.get("metadata"))
+            items.append(item_label(item["item_code"], item.get("metadata")))
         if total_coins:
             credited = await asyncio.to_thread(self.credit_coins, user_id, total_coins, "ddd_chest_open_coin")
             if not credited:

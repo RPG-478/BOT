@@ -144,6 +144,11 @@ def experience_space(level, experience, breakthrough_stage=0):
     return space
 
 
+def elite_chest_drop(rng=None) -> bool:
+    """エリートマッチ勝利時の宝箱ドロップ判定。"""
+    return (rng or random).random() < 0.02
+
+
 def hp_bar(monster):
     maximum = calc_stat(monster["max_hp"], monster["current_level"])
     hp = integer(monster.get("current_hp"), maximum, 0, maximum)
@@ -413,9 +418,11 @@ class BattleView(discord.ui.View):
                         state["logs"].append("経験値の保存に失敗しました。管理者へ対戦IDを連絡してください。")
                 elif self.mode == "random" and winner == "p1":
                     try:
-                        await asyncio.to_thread(self.award_random_match, state["p1"]["party"][0])
+                        chest_awarded = await asyncio.to_thread(self.award_random_match, state["p1"]["party"][0])
                         reward = {"normal": (10, 50), "elite": (30, 300), "boss": (100, 1000)}[self.match_type]
                         state["logs"].append(f"勝利報酬としてEXP {reward[0]}、コイン{reward[1]}を獲得しました。")
+                        if chest_awarded:
+                            state["logs"].append("エリート勝利報酬として宝箱を1個獲得しました。/ddd_open で開封できます。")
                     except Exception:
                         logger.exception("DDD random match reward failed")
                         state["logs"].append("勝利しましたが、報酬の保存に失敗しました。")
@@ -457,6 +464,12 @@ class BattleView(discord.ui.View):
         updated_user = supabase.table("users").update({"balance": balance + coin_reward}).eq("user_id", self.p1_id).eq("balance", balance).execute()
         if not updated_user.data:
             raise RuntimeError("Concurrent balance update; manual reconciliation needed")
+        chest_awarded = self.match_type == "elite" and elite_chest_drop()
+        if chest_awarded:
+            created = supabase.table("ddd_chests").insert({"user_id": self.p1_id, "source": "elite_battle"}).execute()
+            if not created.data:
+                raise RuntimeError("Elite chest reward could not be saved")
+        return chest_awarded
 
     async def on_timeout(self):
         for child in self.children:

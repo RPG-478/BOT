@@ -3,6 +3,7 @@ import asyncio
 import copy
 import random
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -107,19 +108,34 @@ class InventoryTests(unittest.TestCase):
         self.assertLess(sum(samples) / len(samples), 20_000)
 
     def test_chest_reward_can_produce_each_category(self):
-        coin = inventory.roll_chest_reward(ChestRandom([0.0], 0))
-        self.assertEqual(coin, {"kind": "coin", "amount": 100})
-        orb = inventory.roll_chest_reward(ChestRandom([0.9, 0.1]))
+        coin_and_orb = inventory.roll_chest_reward(ChestRandom([0.1], 0))
+        self.assertEqual(coin_and_orb["kind"], "bundle")
+        self.assertEqual(coin_and_orb["amount"], 100)
+        self.assertEqual(coin_and_orb["item_code"], "orb_虚")
+        orb = inventory.roll_chest_reward(ChestRandom([0.1], 0))
         self.assertEqual(orb["item_code"], "orb_虚")
-        herb = inventory.roll_chest_reward(ChestRandom([0.9, 0.6]))
+        herb = inventory.roll_chest_reward(ChestRandom([0.6], 0))
         self.assertEqual(herb["item_code"], inventory.HERB)
-        ticket = inventory.roll_chest_reward(ChestRandom([0.9, 0.75]))
+        ticket = inventory.roll_chest_reward(ChestRandom([0.75], 0))
         self.assertEqual(ticket["item_code"], inventory.MOVE_RESET_TICKET)
-        trade_ticket = inventory.roll_chest_reward(ChestRandom([0.9, 0.88]))
+        trade_ticket = inventory.roll_chest_reward(ChestRandom([0.88], 0))
         self.assertEqual(trade_ticket["item_code"], inventory.TRADE_TICKET)
-        crystal = inventory.roll_chest_reward(ChestRandom([0.9, 0.99]))
+        crystal = inventory.roll_chest_reward(ChestRandom([0.99], 0))
         self.assertEqual(crystal["item_code"], inventory.UPRAISE_CRYSTAL)
         self.assertEqual(crystal["metadata"]["boosts"], [{"stat": "hp", "amount": 1}, {"stat": "attack", "amount": 1}])
+
+    def test_shop_prices_and_weekly_limits(self):
+        self.assertEqual(system.SHOP_ITEMS[inventory.ORB_CODES["虚"]][:2], (10_000, 1))
+        self.assertEqual(system.SHOP_ITEMS[inventory.MOVE_RESET_TICKET][:2], (7_000, 1))
+        self.assertEqual(system.SHOP_ITEMS[inventory.TRADE_TICKET][:2], (7_000, 1))
+        self.assertEqual(system.SHOP_ITEMS[inventory.HERB][:2], (3_000, 5))
+        friday = system.shop_week_start(datetime(2026, 9, 11, 0, 0, tzinfo=timezone.utc))
+        monday = system.shop_week_start(datetime(2026, 9, 14, 0, 0, tzinfo=timezone.utc))
+        self.assertEqual(friday, monday)
+
+    def test_elite_win_chest_rate_boundary(self):
+        self.assertTrue(battle.elite_chest_drop(FixedRandom(0.019)))
+        self.assertFalse(battle.elite_chest_drop(FixedRandom(0.02)))
 
     def test_crystal_metadata_has_two_distinct_valid_stats(self):
         metadata = inventory.create_crystal_metadata(random.Random(6))
