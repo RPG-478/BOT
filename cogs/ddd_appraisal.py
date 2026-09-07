@@ -95,6 +95,20 @@ def is_rate_limited(error: Exception) -> bool:
     return status == 429 or "429" in text or "resource_exhausted" in text or "rate limit" in text
 
 
+class ScoutFailure(RuntimeError):
+    """ユーザーへ安全に表示できるDDDスカウト失敗。"""
+
+    def __init__(self, code: str, message: str, cause: Exception | None = None):
+        super().__init__(message)
+        self.code = code
+        self.public_message = message
+        self.cause = cause
+
+
+def scout_error_text(failure: ScoutFailure) -> str:
+    return f"スカウトに失敗しました。エラーコード: {failure.code} / {failure.public_message}"
+
+
 class ScoutDecisionView(discord.ui.View):
     """スカウト結果をボックスへ登録・見送り・再抽選する画面。"""
 
@@ -167,9 +181,11 @@ class ScoutDecisionView(discord.ui.View):
             if not result.data:
                 raise RuntimeError("登録結果が空です")
             monster = result.data[0]
-        except Exception:
+        except Exception as exc:
             self.done = False
-            await interaction.followup.send("ボックスへの登録に失敗しました。", ephemeral=True)
+            failure = ScoutFailure("SCOUT-009", "モンスター登録に失敗しました。", exc)
+            logging.getLogger(__name__).exception("DDD scout monster insert failed [SCOUT-009]")
+            await interaction.followup.send(scout_error_text(failure), ephemeral=True)
             return
         self.stop()
         embed = self.preview_embed()
@@ -290,7 +306,7 @@ class AppraisalCog(commands.Cog):
     async def generate_ai_monster(self, image_bytes: bytes, dice: dict, talent_cap: int) -> dict:
         keys = unique_api_keys()
         if not keys:
-            raise RuntimeError("鑑定を現在利用できません。")
+            raise ScoutFailure("SCOUT-005", "利用可能なGemini APIキーがありません。")
         from google import genai
         from google.genai import types
 
@@ -333,9 +349,9 @@ class AppraisalCog(commands.Cog):
                 if is_rate_limited(exc):
                     rate_errors.append(exc)
                     continue
-                raise
+                raise ScoutFailure("SCOUT-007", "Gemini APIへの鑑定要求に失敗しました。", exc) from exc
         else:
-            raise RuntimeError("すべての鑑定キーがレート制限中です。少し時間を置いて再試行してください。") from (rate_errors[-1] if rate_errors else None)
+            raise ScoutFailure("SCOUT-006", "すべての鑑定キーがレート制限中です。少し時間を置いて再試行してください。", rate_errors[-1] if rate_errors else None)
 
         if data.get("element_type") not in VALID_ELEMENTS:
             data["element_type"] = "無"
@@ -387,32 +403,66 @@ class AppraisalCog(commands.Cog):
 
     async def _run_scout(self, interaction: discord.Interaction, attachment: discord.Attachment, tier: str, already_deferred: bool = False):
         if tier not in SCOUT_TIERS:
+            failure = ScoutFailure("SCOUT-000", "スカウト種別が不正です。")
             if not already_deferred:
-                await interaction.response.send_message("スカウト種別が不正です。", ephemeral=True)
+                await interaction.response.send_message(scout_error_text(failure), ephemeral=True)
             else:
-                await interaction.followup.send("スカウト種別が不正です。", ephemeral=True)
+                await interaction.followup.send(scout_error_text(failure), ephemeral=True)
             return
         if not already_deferred:
             await interaction.response.defer()
         user_id = str(interaction.user.id)
         tier_data = SCOUT_TIERS[tier]
-        profile = await asyncio.to_thread(self.get_user_profile, user_id)
-        can_add, current_count = await asyncio.to_thread(self.check_box_capacity, user_id, int(profile["max_box_slots"]))
+        try:
+            profile = await asyncio.to_thread(self.get_user_profile, user_id)
+        except Exception as exc:
+            failure = ScoutFailure("SCOUT-002", "プレイヤーデータの取得に失敗しました。", exc)
+            logging.getLogger(__name__).exception("DDD scout profile lookup failed [SCOUT-002]")
+            await interaction.followup.send(scout_error_text(failure), ephemeral=True)
+            return
+        try:
+            can_add, current_count = await asyncio.to_thread(self.check_box_capacity, user_id, int(profile["max_box_slots"]))
+        except Exception as exc:
+            failure = ScoutFailure("SCOUT-003", "ボックス容量の確認に失敗しました。", exc)
+            logging.getLogger(__name__).exception("DDD scout capacity lookup failed [SCOUT-003]")
+            await interaction.followup.send(scout_error_text(failure), ephemeral=True)
+            return
         if not can_add:
             await interaction.followup.send(f"ボックスが満杯です（現在: {current_count}/{profile['max_box_slots']}匹）。")
             return
-        if not await asyncio.to_thread(self.deduct_coins_transaction, user_id, tier_data["cost"], f"ddd_scout_{tier}"):
+        balance = int(profile.get("balance") or 0)
+        if balance < tier_data["cost"]:
             await interaction.followup.send(f"コインが不足しています（所持: {profile.get('balance', 0)} / 必要: {tier_data['cost']}）。")
+            return
+        try:
+            charged = await asyncio.to_thread(self.deduct_coins_transaction, user_id, tier_data["cost"], f"ddd_scout_{tier}")
+        except Exception as exc:
+            failure = ScoutFailure("SCOUT-004", "スカウト料金の決済に失敗しました。", exc)
+            logging.getLogger(__name__).exception("DDD scout debit failed [SCOUT-004]")
+            await interaction.followup.send(scout_error_text(failure), ephemeral=True)
+            return
+        if not charged:
+            failure = ScoutFailure("SCOUT-004", "スカウト料金の決済に失敗しました。残高が変化した可能性があります。")
+            logging.getLogger(__name__).error("DDD scout debit returned false [SCOUT-004] user=%s tier=%s", user_id, tier)
+            await interaction.followup.send(scout_error_text(failure), ephemeral=True)
             return
 
         try:
             image_bytes = await attachment.read()
+            if not image_bytes:
+                raise ValueError("empty attachment")
             dice = self.make_dice(tier)
             ai_data = await self.generate_ai_monster(image_bytes, dice, tier_data["talent_cap"])
-        except Exception:
+        except ScoutFailure as failure:
             await asyncio.to_thread(self.refund_coins, user_id, tier_data["cost"], f"ddd_scout_{tier}_failed_refund")
-            logging.getLogger(__name__).exception("DDD scout failed")
-            await interaction.followup.send("スカウトに失敗したため、コインを返還しました。")
+            logging.getLogger(__name__).exception("DDD scout failed [%s]", failure.code)
+            await interaction.followup.send(f"{scout_error_text(failure)} コインは返還しました。")
+            return
+        except Exception as exc:
+            await asyncio.to_thread(self.refund_coins, user_id, tier_data["cost"], f"ddd_scout_{tier}_failed_refund")
+            failure = ScoutFailure("SCOUT-001", "画像の読み込みまたはスカウト準備に失敗しました。", exc)
+            logging.getLogger(__name__).exception("DDD scout preparation failed [SCOUT-001]")
+            await interaction.followup.send(f"{scout_error_text(failure)} コインは返還しました。")
             return
 
         allowed_content_types = {"image/png", "image/jpeg", "image/webp", "image/gif"}
@@ -424,10 +474,11 @@ class AppraisalCog(commands.Cog):
                 file_path, image_bytes, {"content-type": content_type, "upsert": "false"}
             ))
             public_url = await asyncio.to_thread(lambda: supabase.storage.from_("dot_images").get_public_url(file_path))
-        except Exception:
+        except Exception as exc:
             await asyncio.to_thread(self.refund_coins, user_id, tier_data["cost"], f"ddd_scout_{tier}_upload_failed_refund")
-            logging.getLogger(__name__).exception("DDD scout image upload failed")
-            await interaction.followup.send("画像を保存できなかったため、コインを返還しました。")
+            failure = ScoutFailure("SCOUT-008", "画像の保存に失敗しました。", exc)
+            logging.getLogger(__name__).exception("DDD scout image upload failed [SCOUT-008]")
+            await interaction.followup.send(f"{scout_error_text(failure)} コインは返還しました。")
             return
 
         stats = ai_data["max_stats"]
