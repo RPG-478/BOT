@@ -1,4 +1,5 @@
 import discord
+import asyncio
 from discord.ext import commands
 from discord import app_commands
 from typing import Dict, List, Optional
@@ -7,6 +8,7 @@ import os
 from google import genai
 from google.genai import types
 import config
+from .gemini_compat import generate_content
 
 
 # --- キャラクター＆シチュエーション構造定義 ---
@@ -268,7 +270,8 @@ class ZetaModoki(commands.Cog):
         )
 
         try:
-            response = await self.gemini_client.aio.models.generate_content(
+            response = await generate_content(
+                self.gemini_client,
                 model=self.model_name,
                 contents=contents,
                 config=types.GenerateContentConfig(

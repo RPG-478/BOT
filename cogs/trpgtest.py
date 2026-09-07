@@ -1,4 +1,5 @@
 import discord
+import asyncio
 from discord.ext import commands
 from discord import app_commands
 from typing import Optional, Dict, List
@@ -8,6 +9,7 @@ import os
 from google import genai
 from google.genai import types
 import config
+from .gemini_compat import generate_content
 
 MAX_ROUND = 15
 INITIAL_ROOM = "エントランス"
@@ -374,7 +376,8 @@ class TRPGGame(commands.Cog):
         prompt_parts = self._build_gemini_prompt(dice_results)
 
         try:
-            response = await self.gemini_client.aio.models.generate_content(
+            response = await generate_content(
+                self.gemini_client,
                 model=self.model_name,
                 contents=prompt_parts,
                 config=types.GenerateContentConfig(
@@ -483,4 +486,3 @@ class TRPGGame(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TRPGGame(bot))
-
