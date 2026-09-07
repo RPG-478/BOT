@@ -4,9 +4,43 @@ from discord import app_commands
 import config
 import traceback
 
+COIN_SETTER_USER_ID = 1320705325686587408
+
 class WalletCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    @commands.command(name="coin")
+    async def set_coin(self, ctx: commands.Context, amount: int):
+        """指定された管理者だけが !coin <数値> で残高を直接設定できる。"""
+        if ctx.author.id != COIN_SETTER_USER_ID:
+            await ctx.send("このコマンドを実行する権限がありません。")
+            return
+        if amount < 0:
+            await ctx.send("コインは0以上の数値で指定してください。")
+            return
+        user_id = str(ctx.author.id)
+        try:
+            current = config.supabase.table("users").select("balance").eq("user_id", user_id).execute()
+            old_balance = int(current.data[0].get("balance") or 0) if current.data else 0
+            if current.data:
+                updated = (config.supabase.table("users").update({"balance": amount})
+                           .eq("user_id", user_id).eq("balance", old_balance).execute())
+            else:
+                updated = config.supabase.table("users").insert({"user_id": user_id, "balance": amount, "debt": 0}).execute()
+            if not updated.data:
+                raise RuntimeError("残高を更新できませんでした。")
+            delta = amount - old_balance
+            config.supabase.table("transaction_history").insert({
+                "sender_id": "SYSTEM_ADMIN",
+                "receiver_id": user_id,
+                "amount": abs(delta),
+                "reason": f"admin_coin_set_to_{amount}",
+            }).execute()
+            await ctx.send(f"コインを **{amount:,} AGO** に設定しました（変更: {delta:+,} AGO）。")
+        except Exception:
+            traceback.print_exc()
+            await ctx.send("コイン設定中にエラーが発生しました。")
 
     @app_commands.command(name="wallet", description="自身のコイン残高を確認します。")
     async def wallet(self, interaction: discord.Interaction):

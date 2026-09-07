@@ -317,6 +317,8 @@ def battle_embed(state, practice=False):
         embed.set_image(url=first["image_url"])
     if second.get("image_url"):
         embed.set_thumbnail(url=second["image_url"])
+    if state.get("reward_summary"):
+        embed.add_field(name="獲得報酬", value=state["reward_summary"], inline=False)
     embed.set_footer(text="一致属性×1.5 / 虚⇔実・正⇔負が弱点 / 交代も1手 / 80手で引き分け")
     return embed
 
@@ -412,6 +414,7 @@ class BattleView(discord.ui.View):
                 if not self.practice and self.mode == "battle" and winner != "draw":
                     try:
                         await asyncio.to_thread(self.award_exp, state[winner]["party"])
+                        state["reward_summary"] = "勝利パーティ全員: **+50 EXP**"
                         state["logs"].append("勝利パーティ全員に50 EXPを獲得しました。")
                     except Exception:
                         logger.exception("DDD reward failed for battle %s", self.battle_id)
@@ -419,7 +422,8 @@ class BattleView(discord.ui.View):
                 elif self.mode == "random" and winner == "p1":
                     try:
                         chest_awarded = await asyncio.to_thread(self.award_random_match, state["p1"]["party"][0])
-                        reward = {"normal": (10, 50), "elite": (30, 300), "boss": (100, 1000)}[self.match_type]
+                        reward = {"normal": (10, 50), "elite": (30, 300)}[self.match_type]
+                        state["reward_summary"] = f"EXP **+{reward[0]}** / コイン **+{reward[1]:,}**"
                         state["logs"].append(f"勝利報酬としてEXP {reward[0]}、コイン{reward[1]}を獲得しました。")
                         if chest_awarded:
                             state["logs"].append("エリート勝利報酬として宝箱を1個獲得しました。/ddd_open で開封できます。")
@@ -454,7 +458,7 @@ class BattleView(discord.ui.View):
         if not result.data:
             raise RuntimeError("Selected monster no longer exists")
         old = result.data[0]
-        exp_reward, coin_reward = {"normal": (10, 50), "elite": (30, 300), "boss": (100, 1000)}[self.match_type]
+        exp_reward, coin_reward = {"normal": (10, 50), "elite": (30, 300)}[self.match_type]
         level, exp = add_experience(old["current_level"], old.get("current_exp", 0), exp_reward, old.get("breakthrough_stage", 0))
         updated = supabase.table("monsters").update({"current_level": level, "current_exp": exp}).eq("id", monster["id"]).eq("user_id", self.p1_id).eq("current_level", old["current_level"]).eq("current_exp", old.get("current_exp", 0)).execute()
         if not updated.data:
@@ -727,12 +731,11 @@ class BattleCog(commands.Cog):
         view.message = await interaction.followup.send(content=f"<@{view.turn_user_id}> のターン", embed=battle_embed(state), view=view, ephemeral=False, wait=True,
                                                        allowed_mentions=discord.AllowedMentions.none())
 
-    @app_commands.command(name="ddd_random_match", description="通常・エリート・ボスの3種から選ぶ報酬ランダムマッチ")
+    @app_commands.command(name="ddd_random_match", description="通常・エリートの2種から選ぶ報酬ランダムマッチ")
     @app_commands.describe(monster_id="使用する相棒のID", match_type="挑戦するマッチ種別")
     @app_commands.choices(match_type=[
         app_commands.Choice(name="通常マッチ（Lv.30以下）", value="normal"),
         app_commands.Choice(name="エリートマッチ（Lv.30以上）", value="elite"),
-        app_commands.Choice(name="ボスマッチ（Lv.30以上）", value="boss"),
     ])
     async def random_match(self, interaction: discord.Interaction, monster_id: str, match_type: str = "normal"):
         await interaction.response.defer()
@@ -745,15 +748,15 @@ class BattleCog(commands.Cog):
         if not own:
             await interaction.followup.send("指定した相棒が見つかりません。/ddd_boxでIDを確認してください。", ephemeral=True)
             return
-        if match_type not in ("normal", "elite", "boss"):
+        if match_type not in ("normal", "elite"):
             await interaction.followup.send("マッチ種別が不正です。", ephemeral=True)
             return
         player_level = int(own[0].get("current_level") or 1)
         if match_type == "normal" and player_level > 30:
             await interaction.followup.send("通常マッチはLv.30以下の相棒専用です。", ephemeral=True)
             return
-        if match_type in ("elite", "boss") and player_level < 30:
-            await interaction.followup.send("エリート・ボスマッチはLv.30以上の相棒専用です。", ephemeral=True)
+        if match_type == "elite" and player_level < 30:
+            await interaction.followup.send("エリートマッチはLv.30以上の相棒専用です。", ephemeral=True)
             return
         if not all_monsters:
             await interaction.followup.send("対戦相手になるキャラがまだいません。", ephemeral=True)
@@ -762,22 +765,12 @@ class BattleCog(commands.Cog):
         opponent = random.choice(candidates or all_monsters)
         player = prepare_party([own[0]])
         enemy = prepare_party([copy.deepcopy(opponent)])
-        reward = {"normal": (10, 50), "elite": (30, 300), "boss": (100, 1000)}[match_type]
-        if match_type == "boss":
-            boss_hp_multiplier = random.randint(3, 5)
-            boss = enemy[0]
-            boss["max_hp"] = min(9999, boss["max_hp"] * boss_hp_multiplier)
-            for key in ("attack", "defense", "sp_atk", "sp_def", "speed"):
-                boss[f"max_{key}"] = min(9999, int(boss[f"max_{key}"] * 1.5))
-            boss["current_hp"] = calc_stat(boss["max_hp"], boss["current_level"])
-            boss_label = f" HP{boss_hp_multiplier}倍 / その他能力1.5倍"
-        else:
-            boss_label = ""
-        labels = {"normal": "通常マッチ", "elite": "エリートマッチ", "boss": "ボスマッチ"}
+        reward = {"normal": (10, 50), "elite": (30, 300)}[match_type]
+        labels = {"normal": "通常マッチ", "elite": "エリートマッチ"}
         state = {
             "p1": {"party": player, "active_idx": 0}, "p2": {"party": enemy, "active_idx": 0},
             "version": 0, "match_type": match_type,
-            "logs": [f"{labels[match_type]}開始。{opponent['name']}が対戦相手に選ばれました。{boss_label} 勝利報酬: EXP {reward[0]} / コイン{reward[1]}。"],
+            "logs": [f"{labels[match_type]}開始。{opponent['name']}が対戦相手に選ばれました。勝利報酬: EXP {reward[0]} / コイン{reward[1]}。"],
         }
         view = BattleView(self, None, state, uid, uid, "RANDOM_CPU", practice=True, mode="random", match_type=match_type)
         view.message = await interaction.followup.send(embed=battle_embed(state, True), view=view, wait=True)
