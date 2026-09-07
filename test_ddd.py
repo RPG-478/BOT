@@ -424,6 +424,7 @@ class DiscordUITests(unittest.IsolatedAsyncioTestCase):
                     await bot.load_extension(extension)
             names = {command.name for command in bot.tree.get_commands()}
             expected = {"ddd_scout", "ddd_legend_scout", "ddd_box", "ddd_loadout", "ddd_upgrade", "ddd_open", "ddd_trade", "ddd_work", "ddd_random_match", "ddd_battle", "ddd_raid", "ddd_raid_resume", "ddd_rename"}
+            expected.add("ddd_battle_cancel")
             self.assertTrue(expected <= names)
             retired = {f"ddd_{suffix}" for suffix in ("create", "practice", "appraise", "ultra_scout", "exchange", "unlock_palette")}
             self.assertFalse(retired & names)

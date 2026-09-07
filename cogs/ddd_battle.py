@@ -729,7 +729,27 @@ class BattleCog(commands.Cog):
             return
         view = BattleView(self, record["id"], state, str(record["turn_user_id"]), str(record["player1_id"]), str(record["player2_id"]))
         view.message = await interaction.followup.send(content=f"<@{view.turn_user_id}> のターン", embed=battle_embed(state), view=view, ephemeral=False, wait=True,
-                                                       allowed_mentions=discord.AllowedMentions.none())
+            allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=int(view.turn_user_id))]))
+
+    @app_commands.command(name="ddd_battle_cancel", description="自分が参加中の対戦を報酬なしで強制終了します")
+    async def cancel_battle(self, interaction: discord.Interaction):
+        user_id = str(interaction.user.id)
+        await interaction.response.defer(ephemeral=True)
+        records = await asyncio.to_thread(self.active_battle, user_id)
+        if not records:
+            await interaction.followup.send("現在、強制終了できる対戦はありません。", ephemeral=True)
+            return
+        record = records[0]
+        updated = await asyncio.to_thread(
+            lambda: supabase.table("battles").update({
+                "is_finished": True,
+                "battle_state": {**(record.get("battle_state") or {}), "ended_reason": "force_cancelled"},
+            }).eq("id", record["id"]).eq("is_finished", False).execute()
+        )
+        if not updated.data:
+            await interaction.followup.send("対戦状態が変化したため、終了できませんでした。`/ddd_resume` で確認してください。", ephemeral=True)
+            return
+        await interaction.followup.send("対戦を強制終了しました。今回の対戦では報酬は発生しません。", ephemeral=True)
 
     @app_commands.command(name="ddd_random_match", description="通常・エリートの2種から選ぶ報酬ランダムマッチ")
     @app_commands.describe(monster_id="使用する相棒のID", match_type="挑戦するマッチ種別")
