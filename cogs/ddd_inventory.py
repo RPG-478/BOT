@@ -18,6 +18,7 @@ STAT_LABELS = {
 ORB_CODES = {element: f"orb_{element}" for element in ELEMENTS}
 MOVE_RESET_TICKET = "move_reset_ticket"
 TRADE_TICKET = "trade_ticket"
+RAID_TICKET = "raid_ticket"
 UPRAISE_CRYSTAL = "upraise_crystal"
 HERB = "herb"
 
@@ -25,6 +26,7 @@ ITEM_LABELS = {
     **{code: f"{element}のオーブ" for element, code in ORB_CODES.items()},
     MOVE_RESET_TICKET: "技リセットチケット",
     TRADE_TICKET: "トレードチケット",
+    RAID_TICKET: "レイドチケット",
     UPRAISE_CRYSTAL: "アップレイズクリスタル",
     HERB: "薬草",
 }
@@ -68,6 +70,8 @@ def roll_item_reward(rng: random.Random | Any | None = None) -> dict:
         return {"kind": "item", "item_code": MOVE_RESET_TICKET, "metadata": {}}
     if item_roll < 0.92:
         return {"kind": "item", "item_code": TRADE_TICKET, "metadata": {}}
+    if item_roll < 0.96:
+        return {"kind": "item", "item_code": RAID_TICKET, "metadata": {}}
     return {"kind": "item", "item_code": UPRAISE_CRYSTAL, "metadata": create_crystal_metadata(rng)}
 
 

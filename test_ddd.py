@@ -14,6 +14,7 @@ with patch("supabase.create_client"):
     from cogs import ddd_appraisal as scout
     from cogs import ddd_battle as battle
     from cogs import ddd_inventory as inventory
+    from cogs import ddd_raid as raid
     from cogs import ddd_system as system
     from cogs import ddd_work as work
 
@@ -120,6 +121,8 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(ticket["item_code"], inventory.MOVE_RESET_TICKET)
         trade_ticket = inventory.roll_chest_reward(ChestRandom([0.88], 0))
         self.assertEqual(trade_ticket["item_code"], inventory.TRADE_TICKET)
+        raid_ticket = inventory.roll_chest_reward(ChestRandom([0.94], 0))
+        self.assertEqual(raid_ticket["item_code"], inventory.RAID_TICKET)
         crystal = inventory.roll_chest_reward(ChestRandom([0.99], 0))
         self.assertEqual(crystal["item_code"], inventory.UPRAISE_CRYSTAL)
         self.assertEqual(crystal["metadata"]["boosts"], [{"stat": "hp", "amount": 1}, {"stat": "attack", "amount": 1}])
@@ -128,6 +131,7 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(system.SHOP_ITEMS[inventory.ORB_CODES["虚"]][:2], (10_000, 1))
         self.assertEqual(system.SHOP_ITEMS[inventory.MOVE_RESET_TICKET][:2], (7_000, 1))
         self.assertEqual(system.SHOP_ITEMS[inventory.TRADE_TICKET][:2], (7_000, 1))
+        self.assertEqual(system.SHOP_ITEMS[inventory.RAID_TICKET][:2], (7_000, 1))
         self.assertEqual(system.SHOP_ITEMS[inventory.HERB][:2], (3_000, 5))
         friday = system.shop_week_start(datetime(2026, 9, 11, 0, 0, tzinfo=timezone.utc))
         monday = system.shop_week_start(datetime(2026, 9, 14, 0, 0, tzinfo=timezone.utc))
@@ -180,6 +184,8 @@ class ProgressionTests(unittest.TestCase):
         self.assertEqual(system.required_breakthrough(40, 30), (40, 10))
         self.assertIsNone(system.required_breakthrough(29, 0))
         self.assertIsNone(system.required_breakthrough(41, 40))
+        self.assertIsNone(system.required_breakthrough(31, 30))
+        self.assertIsNone(system.required_breakthrough(40, 40))
 
     def test_experience_stops_at_unbroken_milestones(self):
         self.assertEqual(battle.add_experience(29, 80, 250, 0), (30, 230))
@@ -321,19 +327,94 @@ class EngineTests(unittest.TestCase):
         current["p2"]["party"][1]["current_hp"] = 1
         self.assertEqual(battle.resolve_action(current, "p1", "0", FixedRandom()), "p1")
 
+    def test_raid_boss_uses_former_boss_tuning(self):
+        boss = raid.build_raid_boss(monster(level=30), random.Random(1))
+        self.assertIn(boss["raid_bonus_label"], ("HP3倍 / その他能力1.5倍", "HP4倍 / その他能力1.5倍", "HP5倍 / その他能力1.5倍"))
+        self.assertGreater(boss["max_hp"], monster(level=30)["max_hp"])
+        self.assertGreater(boss["max_attack"], monster(level=30)["max_attack"])
+
+    def test_raid_boss_attacks_exactly_one_random_participant(self):
+        first = battle.prepare_party([monster("1", "first", level=30)])[0]
+        second = battle.prepare_party([monster("2", "second", level=30)])[0]
+        boss = raid.build_raid_boss(monster("boss", "boss", level=30), random.Random(2))
+        current = {
+            "boss": boss,
+            "participants": [
+                {"user_id": "1", "monster": first, "withdrawn": False},
+                {"user_id": "2", "monster": second, "withdrawn": False},
+            ],
+            "logs": [],
+            "version": 0,
+        }
+        before = [first["current_hp"], second["current_hp"]]
+        raid.resolve_raid_boss_turn(current, random.Random(3))
+        after = [first["current_hp"], second["current_hp"]]
+        self.assertEqual(sum(value < old for value, old in zip(after, before)), 1)
+
+    def test_raid_boss_uses_damaging_fallback_for_all_status_moves(self):
+        player = battle.prepare_party([monster("1", "player", level=30)])[0]
+        boss = raid.build_raid_boss(monster("boss", "boss", level=30), random.Random(2))
+        for move in boss["moves"]:
+            move.update(category="status", effect="attack_up", power=0)
+        current = {"boss": boss, "participants": [{"user_id": "1", "monster": player, "withdrawn": False}], "logs": [], "version": 0}
+        before = player["current_hp"]
+        raid.resolve_raid_boss_turn(current, random.Random(3))
+        self.assertLess(player["current_hp"], before)
+        self.assertEqual(boss["moves"][0]["name"], "レイドストライク")
+
+    def test_raid_turn_order_respects_speed_and_skips_to_players(self):
+        slow = battle.prepare_party([monster("1", "slow", level=30)])[0]
+        slow["max_speed"] = 1
+        fast = battle.prepare_party([monster("2", "fast", level=30)])[0]
+        fast["max_speed"] = 100
+        boss = raid.build_raid_boss(monster("boss", "boss", level=30), random.Random(4))
+        boss["max_speed"] = 50
+        current = {
+            "boss": boss,
+            "participants": [
+                {"user_id": "1", "monster": slow, "withdrawn": False},
+                {"user_id": "2", "monster": fast, "withdrawn": False},
+            ],
+            "turn_order": [
+                {"kind": "player", "user_id": "2"},
+                {"kind": "boss", "user_id": raid.RAID_BOSS_MARKER},
+                {"kind": "player", "user_id": "1"},
+            ],
+            "turn_index": -1,
+            "logs": [],
+            "version": 0,
+        }
+        outcome, next_user = raid.advance_raid_until_player_turn(current, random.Random(5))
+        self.assertIsNone(outcome)
+        self.assertEqual(next_user, "2")
+        raid.resolve_raid_player_action(current, "2", "surrender")
+        outcome, next_user = raid.advance_raid_until_player_turn(current, random.Random(6))
+        self.assertIsNone(outcome)
+        self.assertEqual(next_user, "1")
+
+    def test_raid_outcome_requires_boss_defeat(self):
+        current = {
+            "boss": battle.prepare_party([monster("boss", "boss", level=30)])[0],
+            "participants": [{"user_id": "1", "monster": battle.prepare_party([monster("1", "player", level=30)])[0], "withdrawn": False}],
+        }
+        self.assertIsNone(raid.raid_outcome(current))
+        current["boss"]["current_hp"] = 0
+        self.assertEqual(raid.raid_outcome(current), "cleared")
+
 
 class DiscordUITests(unittest.IsolatedAsyncioTestCase):
     async def test_cogs_load_and_commands_serialize_without_retired_commands(self):
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
         async with bot:
             with patch("supabase.create_client"):
-                for extension in ("cogs.ddd_inventory", "cogs.ddd_appraisal", "cogs.ddd_battle", "cogs.ddd_system", "cogs.ddd_work"):
+                for extension in ("cogs.ddd_inventory", "cogs.ddd_appraisal", "cogs.ddd_battle", "cogs.ddd_raid", "cogs.ddd_system", "cogs.ddd_work"):
                     await bot.load_extension(extension)
             names = {command.name for command in bot.tree.get_commands()}
-            expected = {"ddd_scout", "ddd_legend_scout", "ddd_box", "ddd_loadout", "ddd_upgrade", "ddd_open", "ddd_trade", "ddd_work", "ddd_random_match", "ddd_battle"}
+            expected = {"ddd_scout", "ddd_legend_scout", "ddd_box", "ddd_loadout", "ddd_upgrade", "ddd_open", "ddd_trade", "ddd_work", "ddd_random_match", "ddd_battle", "ddd_raid", "ddd_raid_resume", "ddd_rename"}
             self.assertTrue(expected <= names)
             retired = {f"ddd_{suffix}" for suffix in ("create", "practice", "appraise", "ultra_scout", "exchange", "unlock_palette")}
             self.assertFalse(retired & names)
+            self.assertFalse({"ddd_rename_monster", "ddd_rename_move", "ddd_rename_ability"} & names)
             for command in bot.tree.get_commands():
                 self.assertTrue(command.to_dict(bot.tree))
 

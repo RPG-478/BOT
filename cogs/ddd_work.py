@@ -210,8 +210,8 @@ class WorkCog(commands.Cog):
                 embed.set_thumbnail(url=monster["image_url"])
             embed.description = f"**{monster['name']}** が {reward['action']}。"
             if reward["coins"]:
-                embed.add_field(name="獲得コイン", value=f"+{reward['coins']}", inline=True)
-            level_text = f"+{reward['exp']} EXP"
+                embed.add_field(name="獲得コイン", value=f"**+{reward['coins']:,}**", inline=True)
+            level_text = f"**+{reward['exp']:,} EXP**"
             if reward["old_level"] != reward["new_level"]:
                 level_text += f"\nLv.{reward['old_level']} → Lv.{reward['new_level']}"
             embed.add_field(name="獲得経験値", value=level_text, inline=True)

@@ -15,6 +15,7 @@ from .ddd_inventory import (
     HERB,
     MOVE_RESET_TICKET,
     ORB_CODES,
+    RAID_TICKET,
     STAT_KEYS,
     TRADE_TICKET,
     UPRAISE_CRYSTAL,
@@ -46,6 +47,7 @@ SHOP_ITEMS = {
     **{code: (SHOP_ORB_COST, 1, f"{element}のオーブ") for element, code in ORB_CODES.items()},
     MOVE_RESET_TICKET: (SHOP_TICKET_COST, 1, "技リセットチケット"),
     TRADE_TICKET: (SHOP_TICKET_COST, 1, "トレードチケット"),
+    RAID_TICKET: (SHOP_TICKET_COST, 1, "レイドチケット"),
     HERB: (SHOP_HERB_COST, 5, "薬草"),
 }
 MAX_RENAME_LENGTH = 20
@@ -693,7 +695,7 @@ class SystemCog(commands.Cog):
         item_lines = [f"{item_label(code)}: {count}" for code, count in counts.items()]
         embed = discord.Embed(title=f"{interaction.user.display_name} のプレイヤーデータ", color=discord.Color.purple())
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
-        embed.add_field(name="所持コイン", value=str(profile.get("balance") or 0), inline=True)
+        embed.add_field(name="所持コイン", value=f"{int(profile.get('balance') or 0):,}", inline=True)
         embed.add_field(name="ボックス使用量", value=f"{count_result.count if count_result.count is not None else 0} / {profile['max_box_slots']}匹", inline=True)
         embed.add_field(name="未開封の宝箱", value=str(chest_result.count if chest_result.count is not None else 0), inline=True)
         embed.add_field(name="アイテム", value="\n".join(item_lines) if item_lines else "なし", inline=False)
@@ -724,9 +726,9 @@ class SystemCog(commands.Cog):
             if not credited:
                 await interaction.followup.send("宝箱は開封されましたが、コインの加算に失敗しました。管理者へ連絡してください。", ephemeral=True)
                 return
-        summary = [f"開封数: {opened}"]
+        summary = [f"**宝箱を{opened}個開封しました**"]
         if total_coins:
-            summary.append(f"コイン: +{total_coins}")
+            summary.append(f"獲得コイン: **+{total_coins:,}**")
         if items:
             counts: dict[str, int] = {}
             for label in items:
@@ -749,7 +751,12 @@ class SystemCog(commands.Cog):
             await interaction.followup.send(str(exc), ephemeral=True)
             return
         if result["action"] == "coin_to_exp":
-            message = f"**{result['name']}** にEXPを交換しました。\n消費コイン: {result['cost']}\n現在: Lv.{result['level']} / EXP {result['exp']}"
+            message = (
+                f"**{result['name']}** を育成しました。\n"
+                f"消費コイン: **-{result['cost']:,}**\n"
+                f"獲得経験値: **+{amount:,} EXP**\n"
+                f"現在: Lv.{result['level']} / EXP {result['exp']:,}"
+            )
         elif result["action"] == "breakthrough":
             message = f"**{result['name']}** を突破しました。{result['orb']}を{result['count']}個使用し、Lv.{result['level']}から再開します。"
         else:
@@ -766,91 +773,59 @@ class SystemCog(commands.Cog):
             return
         await interaction.followup.send("モンスターを選ぶと確認画面が開きます。削除は取り消せません。", view=MonsterSelectView(user_id, monsters, release=True), ephemeral=True)
 
-    @app_commands.command(name="ddd_rename_monster", description="300コインでモンスター名を変更します")
-    @app_commands.describe(monster_id="ボックス詳細のモンスターID", new_name="新しい名前（1〜20文字）")
-    async def rename_monster(self, interaction: discord.Interaction, monster_id: str, new_name: str):
+    @app_commands.command(name="ddd_rename", description="モンスター・技・特性の表示名を変更します")
+    @app_commands.describe(monster_id="ボックス詳細のモンスターID", target="変更する対象", new_name="新しい名前・説明", move_slot="技を変更する場合のスロット")
+    @app_commands.choices(target=[
+        app_commands.Choice(name="モンスター名（300コイン）", value="monster"),
+        app_commands.Choice(name="技名（200コイン）", value="move"),
+        app_commands.Choice(name="特性の表示（250コイン）", value="ability"),
+    ], move_slot=[app_commands.Choice(name=f"技{i}", value=i) for i in (1, 2, 3)])
+    async def rename(self, interaction: discord.Interaction, monster_id: str, target: str, new_name: str, move_slot: int = 1):
         new_name = new_name.strip()
-        if not 1 <= len(new_name) <= MAX_RENAME_LENGTH:
-            await interaction.response.send_message(f"名前は1〜{MAX_RENAME_LENGTH}文字で入力してください。", ephemeral=True)
+        if target not in ("monster", "move", "ability"):
+            await interaction.response.send_message("変更対象を選択してください。", ephemeral=True)
+            return
+        max_length = MAX_ABILITY_LENGTH if target == "ability" else MAX_RENAME_LENGTH
+        if not 1 <= len(new_name) <= max_length:
+            await interaction.response.send_message(f"入力は1〜{max_length}文字で指定してください。", ephemeral=True)
+            return
+        if target == "move" and move_slot not in (1, 2, 3):
+            await interaction.response.send_message("技スロットは1〜3で指定してください。", ephemeral=True)
             return
         user_id = str(interaction.user.id)
         await interaction.response.defer(ephemeral=True)
-        found = await asyncio.to_thread(lambda: supabase.table("monsters").select("id,name").eq("id", monster_id).eq("user_id", user_id).execute())
-        if not found.data:
-            await interaction.followup.send("指定したモンスターが見つかりません。", ephemeral=True)
-            return
-        old_name = found.data[0]["name"]
-        if old_name == new_name:
-            await interaction.followup.send("現在と同じ名前です。", ephemeral=True)
-            return
-        if not await asyncio.to_thread(self.deduct_coins, user_id, RENAME_MONSTER_COST, "rename_monster"):
-            await interaction.followup.send(f"コインが不足しています（必要: {RENAME_MONSTER_COST}）。", ephemeral=True)
-            return
-        updated = await asyncio.to_thread(lambda: supabase.table("monsters").update({"name": new_name}).eq("id", monster_id).eq("user_id", user_id).eq("name", old_name).execute())
-        if not updated.data:
-            await asyncio.to_thread(self.refund_coins, user_id, RENAME_MONSTER_COST, "rename_monster_refund")
-            await interaction.followup.send("名前変更に失敗したため、コインを返却しました。", ephemeral=True)
-            return
-        await interaction.followup.send(f"**{old_name}** を **{new_name}** に変更しました。", ephemeral=True)
-
-    @app_commands.command(name="ddd_rename_move", description="200コインで技名を変更します")
-    @app_commands.describe(monster_id="ボックス詳細のモンスターID", move_slot="変更する技スロット", new_name="新しい技名（1〜20文字）")
-    @app_commands.choices(move_slot=[app_commands.Choice(name=f"技{i}", value=i) for i in (1, 2, 3)])
-    async def rename_move(self, interaction: discord.Interaction, monster_id: str, move_slot: int, new_name: str):
-        new_name = new_name.strip()
-        if move_slot not in (1, 2, 3) or not 1 <= len(new_name) <= MAX_RENAME_LENGTH:
-            await interaction.response.send_message("技スロットは1〜3、名前は1〜20文字で指定してください。", ephemeral=True)
-            return
-        user_id = str(interaction.user.id)
-        await interaction.response.defer(ephemeral=True)
-        found = await asyncio.to_thread(lambda: supabase.table("monsters").select("name,moves").eq("id", monster_id).eq("user_id", user_id).execute())
+        found = await asyncio.to_thread(lambda: supabase.table("monsters").select("id,name,moves,characteristic").eq("id", monster_id).eq("user_id", user_id).execute())
         if not found.data:
             await interaction.followup.send("指定したモンスターが見つかりません。", ephemeral=True)
             return
         monster = found.data[0]
-        old_moves = monster.get("moves") or []
-        moves = normalize_moves(old_moves)
-        old_name = moves[move_slot - 1]["name"]
-        if old_name == new_name:
-            await interaction.followup.send("現在と同じ技名です。", ephemeral=True)
+        changes: dict[str, object]
+        if target == "monster":
+            old_value, cost, reason = monster["name"], RENAME_MONSTER_COST, "rename_monster"
+            changes = {"name": new_name}
+            label = "モンスター名"
+        elif target == "move":
+            moves = normalize_moves(monster.get("moves"))
+            old_value, cost, reason = moves[move_slot - 1]["name"], RENAME_MOVE_COST, f"rename_move_{move_slot}"
+            moves[move_slot - 1]["name"] = new_name
+            changes = {"moves": moves}
+            label = f"技{move_slot}"
+        else:
+            old_value, cost, reason = monster.get("characteristic") or "", RENAME_ABILITY_COST, "rename_ability"
+            changes = {"characteristic": new_name}
+            label = "特性表示"
+        if old_value == new_name:
+            await interaction.followup.send("現在と同じ内容です。", ephemeral=True)
             return
-        if not await asyncio.to_thread(self.deduct_coins, user_id, RENAME_MOVE_COST, f"rename_move_{move_slot}"):
-            await interaction.followup.send(f"コインが不足しています（必要: {RENAME_MOVE_COST}）。", ephemeral=True)
+        if not await asyncio.to_thread(self.deduct_coins, user_id, cost, reason):
+            await interaction.followup.send(f"コインが不足しています（必要: {cost:,}）。", ephemeral=True)
             return
-        moves[move_slot - 1]["name"] = new_name
-        updated = await asyncio.to_thread(lambda: supabase.table("monsters").update({"moves": moves}).eq("id", monster_id).eq("user_id", user_id).execute())
+        updated = await asyncio.to_thread(lambda: supabase.table("monsters").update(changes).eq("id", monster_id).eq("user_id", user_id).execute())
         if not updated.data:
-            await asyncio.to_thread(self.refund_coins, user_id, RENAME_MOVE_COST, "rename_move_refund")
-            await interaction.followup.send("技名変更に失敗したため、コインを返却しました。", ephemeral=True)
+            await asyncio.to_thread(self.refund_coins, user_id, cost, f"{reason}_refund")
+            await interaction.followup.send("変更に失敗したため、コインを返却しました。", ephemeral=True)
             return
-        await interaction.followup.send(f"**{monster['name']}** の技{move_slot}を **{new_name}** に変更しました。", ephemeral=True)
-
-    @app_commands.command(name="ddd_rename_ability", description="250コインで特性の表示名・説明を変更します")
-    @app_commands.describe(monster_id="ボックス詳細のモンスターID", new_ability="新しい特性名・説明（1〜60文字）")
-    async def rename_ability(self, interaction: discord.Interaction, monster_id: str, new_ability: str):
-        new_ability = new_ability.strip()
-        if not 1 <= len(new_ability) <= MAX_ABILITY_LENGTH:
-            await interaction.response.send_message(f"特性名・説明は1〜{MAX_ABILITY_LENGTH}文字で入力してください。", ephemeral=True)
-            return
-        user_id = str(interaction.user.id)
-        await interaction.response.defer(ephemeral=True)
-        found = await asyncio.to_thread(lambda: supabase.table("monsters").select("name,characteristic").eq("id", monster_id).eq("user_id", user_id).execute())
-        if not found.data:
-            await interaction.followup.send("指定したモンスターが見つかりません。", ephemeral=True)
-            return
-        monster = found.data[0]
-        if monster.get("characteristic") == new_ability:
-            await interaction.followup.send("現在と同じ特性名・説明です。", ephemeral=True)
-            return
-        if not await asyncio.to_thread(self.deduct_coins, user_id, RENAME_ABILITY_COST, "rename_ability"):
-            await interaction.followup.send(f"コインが不足しています（必要: {RENAME_ABILITY_COST}）。", ephemeral=True)
-            return
-        updated = await asyncio.to_thread(lambda: supabase.table("monsters").update({"characteristic": new_ability}).eq("id", monster_id).eq("user_id", user_id).execute())
-        if not updated.data:
-            await asyncio.to_thread(self.refund_coins, user_id, RENAME_ABILITY_COST, "rename_ability_refund")
-            await interaction.followup.send("特性変更に失敗したため、コインを返却しました。", ephemeral=True)
-            return
-        await interaction.followup.send(f"**{monster['name']}** の特性表示を変更しました。", ephemeral=True)
+        await interaction.followup.send(f"**{monster['name']}** の{label}を **{new_name}** に変更しました。\n消費コイン: **-{cost:,}**", ephemeral=True)
 
     @app_commands.command(name="ddd_reroll_move", description="技の威力・命中を振り直します")
     @app_commands.describe(monster_id="ボックス詳細のモンスターID", move_slot="振り直す技スロット")
