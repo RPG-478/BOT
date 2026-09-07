@@ -27,6 +27,81 @@ create index if not exists ddd_chests_unopened_idx
     on public.ddd_chests (user_id, created_at)
     where opened_at is null;
 
+create table if not exists public.ddd_shop_weeks (
+    week_start date primary key,
+    orb_code text not null check (orb_code in ('orb_虚', 'orb_実', 'orb_正', 'orb_負', 'orb_無')),
+    created_at timestamptz not null default now()
+);
+
+create table if not exists public.ddd_shop_purchases (
+    id uuid primary key default gen_random_uuid(),
+    week_start date not null references public.ddd_shop_weeks(week_start),
+    user_id text not null,
+    item_code text not null check (item_code in (
+        'orb_虚', 'orb_実', 'orb_正', 'orb_負', 'orb_無',
+        'move_reset_ticket', 'trade_ticket', 'upraise_crystal', 'herb'
+    )),
+    quantity integer not null check (quantity > 0),
+    created_at timestamptz not null default now(),
+    unique (week_start, user_id, item_code)
+);
+
+create or replace function public.ddd_shop_purchase(
+    p_week_start date,
+    p_user_id text,
+    p_item_code text,
+    p_price integer,
+    p_quantity integer
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+    shop_row public.ddd_shop_weeks%rowtype;
+    purchase_id uuid;
+    item_index integer;
+begin
+    select * into shop_row from public.ddd_shop_weeks where week_start = p_week_start for update;
+    if not found then raise exception 'shop_week_not_found'; end if;
+    if p_item_code = 'orb_虚' or p_item_code = 'orb_実' or p_item_code = 'orb_正' or p_item_code = 'orb_負' or p_item_code = 'orb_無' then
+        if p_quantity <> 1 or p_price <> 10000 then raise exception 'shop_price_invalid'; end if;
+    elsif p_item_code = 'move_reset_ticket' or p_item_code = 'trade_ticket' then
+        if p_quantity <> 1 or p_price <> 7000 then raise exception 'shop_price_invalid'; end if;
+    elsif p_item_code = 'herb' then
+        if p_quantity <> 5 or p_price <> 3000 then raise exception 'shop_price_invalid'; end if;
+    else
+        raise exception 'shop_item_invalid';
+    end if;
+    if exists (select 1 from public.ddd_shop_purchases where week_start = p_week_start and user_id = p_user_id and item_code = p_item_code) then
+        raise exception 'shop_item_already_purchased';
+    end if;
+    if p_item_code in ('orb_虚', 'orb_実', 'orb_正', 'orb_負', 'orb_無')
+       and exists (
+           select 1 from public.ddd_shop_purchases
+           where week_start = p_week_start and user_id = p_user_id
+             and item_code in ('orb_虚', 'orb_実', 'orb_正', 'orb_負', 'orb_無')
+       ) then
+        raise exception 'shop_orb_already_purchased';
+    end if;
+    update public.users set balance = balance - p_price where user_id = p_user_id and balance >= p_price;
+    if not found then raise exception 'shop_insufficient_coin'; end if;
+    insert into public.transaction_history (sender_id, receiver_id, amount, reason)
+    values (p_user_id, 'SYSTEM_DDD_SHOP', p_price, 'ddd_shop_purchase');
+    for item_index in 1..p_quantity loop
+        insert into public.ddd_items (user_id, item_code, metadata)
+        values (p_user_id, p_item_code, '{}'::jsonb);
+    end loop;
+    insert into public.ddd_shop_purchases (week_start, user_id, item_code, quantity)
+    values (p_week_start, p_user_id, p_item_code, p_quantity)
+    returning id into purchase_id;
+    return jsonb_build_object('purchase_id', purchase_id, 'item_code', p_item_code, 'quantity', p_quantity, 'price', p_price);
+end;
+$$;
+
+grant execute on function public.ddd_shop_purchase(date, text, text, integer, integer) to anon, authenticated;
+
 alter table public.monsters
     add column if not exists breakthrough_stage integer not null default 0;
 
