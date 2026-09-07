@@ -148,6 +148,11 @@ class ScoutTests(unittest.TestCase):
         with patch.object(scout, "GEMINI_API_KEYS", ["direct-key", "", "direct-key", "backup-key"]):
             self.assertEqual(scout.unique_api_keys(), ["direct-key", "backup-key"])
 
+    def test_scout_failure_contains_safe_code(self):
+        failure = scout.ScoutFailure("SCOUT-008", "画像の保存に失敗しました。", ValueError("secret provider detail"))
+        self.assertIn("SCOUT-008", scout.scout_error_text(failure))
+        self.assertNotIn("secret provider detail", scout.scout_error_text(failure))
+
     def test_normal_roll_stays_within_bounds(self):
         for _ in range(200):
             self.assertTrue(500 <= scout.normal_roll(500, 650) <= 650)
