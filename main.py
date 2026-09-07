@@ -56,7 +56,11 @@ class MyBot(commands.Bot):
         else:
             print(df.format_log("ERROR: './cogs' directory not found."))
         
-        print(df.format_log("Skipping automatic tree.sync(). Use '!sync' command to update commands."))
+        try:
+            synced = await self.tree.sync()
+            print(df.format_log(f"Slash commands synced: {len(synced)}"))
+        except Exception:
+            print(df.format_log(f"Slash command sync failed:\n{traceback.format_exc()}"))
 
     async def on_ready(self):
         print(df.format_log(f"Logged in as {self.user} (ID: {self.user.id})"))
