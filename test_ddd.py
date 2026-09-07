@@ -210,6 +210,19 @@ class ProgressionTests(unittest.TestCase):
             high[f"max_{key}"] = 100
         self.assertEqual(system.strength_evaluation(high)[1], "S")
 
+    def test_crystal_overwrite_removes_previous_boost_before_applying_new_one(self):
+        saved = monster()
+        saved["max_hp"] = 90
+        saved["max_attack"] = 70
+        saved["upraise_crystal_boosts"] = [{"stat": "hp", "amount": 10}, {"stat": "attack", "amount": 5}]
+        previous = {key: saved[f"max_{key}"] - next((b["amount"] for b in saved["upraise_crystal_boosts"] if b["stat"] == key), 0) for key in inventory.STAT_KEYS}
+        replacement = [{"stat": "hp", "amount": 2}, {"stat": "speed", "amount": 4}]
+        for boost in replacement:
+            previous[boost["stat"]] += boost["amount"]
+        self.assertEqual(previous["hp"], 82)
+        self.assertEqual(previous["attack"], 65)
+        self.assertEqual(previous["speed"], 54)
+
 
 class EngineTests(unittest.TestCase):
     def test_level_clamps_and_curve(self):

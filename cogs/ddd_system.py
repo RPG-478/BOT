@@ -566,20 +566,31 @@ class SystemCog(commands.Cog):
             if not isinstance(boosts, list) or len(boosts) != 2:
                 restore_item(supabase, item)
                 raise ValueError("このアップレイズクリスタルの内容が不正です。")
-            values = {f"max_{key}": int(monster.get(f"max_{key}") or 10) for key in STAT_KEYS}
+            previous_boosts = monster.get("upraise_crystal_boosts") or []
+            previous_by_stat = {
+                boost.get("stat"): int(boost.get("amount") or 0)
+                for boost in previous_boosts
+                if isinstance(boost, dict) and boost.get("stat") in STAT_KEYS
+            }
+            values = {
+                f"max_{key}": max(1, int(monster.get(f"max_{key}") or 10) - previous_by_stat.get(key, 0))
+                for key in STAT_KEYS
+            }
             try:
                 for boost in boosts:
                     key, increment = boost.get("stat"), int(boost.get("amount"))
                     if key not in STAT_KEYS or not 1 <= increment <= 10:
                         raise ValueError("このアップレイズクリスタルの内容が不正です。")
                     values[f"max_{key}"] += increment
+                values["upraise_crystal_boosts"] = boosts
                 updated = supabase.table("monsters").update(values).eq("id", monster_id).eq("user_id", user_id).execute()
                 if not updated.data:
                     raise RuntimeError("能力値更新に失敗しました。")
             except Exception:
                 restore_item(supabase, item)
                 raise
-            return {"action": action, "name": monster["name"], "crystal": item_label(UPRAISE_CRYSTAL, item.get("metadata"))}
+            operation = "上書き" if previous_by_stat else "適用"
+            return {"action": action, "name": monster["name"], "crystal": item_label(UPRAISE_CRYSTAL, item.get("metadata")), "operation": operation}
         raise ValueError("育成内容が不正です。")
 
     @app_commands.command(name="ddd_box", description="所持モンスター一覧を確認します")
@@ -760,7 +771,7 @@ class SystemCog(commands.Cog):
         elif result["action"] == "breakthrough":
             message = f"**{result['name']}** を突破しました。{result['orb']}を{result['count']}個使用し、Lv.{result['level']}から再開します。"
         else:
-            message = f"**{result['name']}** に {result['crystal']} を使用しました。"
+            message = f"**{result['name']}** のアップレイズクリスタルを **{result['operation']}**しました。\n{result['crystal']}"
         await interaction.followup.send(message, ephemeral=True)
 
     @app_commands.command(name="ddd_release_monster", description="モンスターとお別れします。確認後に削除します")

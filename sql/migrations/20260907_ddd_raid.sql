@@ -43,6 +43,17 @@ alter table public.monsters
     add constraint monsters_breakthrough_stage_check
     check (breakthrough_stage in (0, 30, 40));
 
+-- 旧スキーマのLv.30上限制約を解除し、突破後のLv.31/Lv.41〜50を許可する。
+alter table public.monsters
+    drop constraint if exists monsters_current_level_check;
+alter table public.monsters
+    add constraint monsters_current_level_check
+    check (current_level between 1 and 50);
+
+-- アップレイズクリスタルは1キャラにつき1個分だけ保持し、次回使用時に上書きする。
+alter table public.monsters
+    add column if not exists upraise_crystal_boosts jsonb not null default '[]'::jsonb;
+
 create table if not exists public.ddd_raids (
     id uuid primary key default gen_random_uuid(),
     host_user_id text not null,
