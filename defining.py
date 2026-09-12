@@ -8,7 +8,6 @@ def format_log(message: str) -> str:
     """
     JST（日本時間）を付与した標準的なログフォーマットを返します。
     """
-    # config.get_now() を使うことで、JST（日本時間）に統一されます
     now = config.get_now().strftime('%Y-%m-%d %H:%M:%S')
     return f"[{now}] {message}"
 
