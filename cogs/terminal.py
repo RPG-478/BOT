@@ -4,18 +4,20 @@ import pty
 import discord
 from discord.ext import commands
 
-# 単一のIDから、許可するIDの集合(set)に変更
 ALLOWED_USER_IDS = {
     1320705325686587408,
-    1000302102473613373,  # 追加したい2人目のユーザーID
+    1000302102473613373,
 }
 TARGET_DIR = os.path.expanduser("~/BOT")
 
-async def run_interactive_terminal(bot, thread, cmd):
-    full_command = f"cd {TARGET_DIR} && source venv/bin/activate && {cmd}"
-    master, slave = pty.openpty()
+async def run_interactive_terminal(bot, thread, cmd, is_normal_mode=False):
+    # ノーマルモードの場合は事前処理なし、それ以外はcd & venvを自動適用
+    if is_normal_mode:
+        full_command = cmd
+    else:
+        full_command = f"cd {TARGET_DIR} && source venv/bin/activate && {cmd}"
 
-    # masterを非ブロックモードに設定（イベントループのフリーズ防止）
+    master, slave = pty.openpty()
     os.set_blocking(master, False)
 
     try:
@@ -53,7 +55,6 @@ async def run_interactive_terminal(bot, thread, cmd):
                     if data:
                         output_buffer += data.decode("utf-8", errors="replace")
 
-                    # 出力バッファが存在し、一時的に追加データが無くなったタイミングでDiscordに送信
                     if output_buffer and not data:
                         text_to_send = output_buffer
                         output_buffer = ""
@@ -84,15 +85,14 @@ async def run_interactive_terminal(bot, thread, cmd):
                 except OSError:
                     break
 
-        await thread.send(f"実行開始: `{cmd}`\nキャンセルする場合は `cancel` と送信してください。")
+        mode_name = "ノーマルモード" if is_normal_mode else "仮想環境モード (自動cd & venv)"
+        await thread.send(f"実行開始 [{mode_name}]: `{cmd}`\nキャンセルする場合は `cancel` と送信してください。")
 
         listener_task = asyncio.create_task(listen_messages())
         reader_task = asyncio.create_task(read_output())
         writer_task = asyncio.create_task(handle_input())
 
         await process.wait()
-
-        # 残りの出力を読み切るための猶予時間
         await asyncio.sleep(0.5)
 
         listener_task.cancel()
@@ -108,10 +108,14 @@ async def run_interactive_terminal(bot, thread, cmd):
             pass
 
 class TerminalModal(discord.ui.Modal, title="対話ターミナル実行"):
+    def __init__(self, is_normal_mode: bool):
+        super().__init__()
+        self.is_normal_mode = is_normal_mode
+
     command_input = discord.ui.TextInput(
         label="実行コマンド",
         style=discord.TextStyle.paragraph,
-        placeholder="sudo certbot --- や python main.py など",
+        placeholder="sudo certbot や python main.py など",
         required=True
     )
 
@@ -124,8 +128,9 @@ class TerminalModal(discord.ui.Modal, title="対話ターミナル実行"):
         cmd = self.command_input.value
 
         if isinstance(interaction.channel, discord.TextChannel):
+            prefix = "norm" if self.is_normal_mode else "venv"
             thread = await interaction.channel.create_thread(
-                name=f"term-{cmd[:15]}".replace(" ", "-"),
+                name=f"{prefix}-{cmd[:15]}".replace(" ", "-"),
                 auto_archive_duration=60
             )
         else:
@@ -133,18 +138,25 @@ class TerminalModal(discord.ui.Modal, title="対話ターミナル実行"):
             return
 
         await interaction.followup.send(f"スレッドを作成しました: {thread.mention}")
-        asyncio.create_task(run_interactive_terminal(interaction.client, thread, cmd))
+        asyncio.create_task(run_interactive_terminal(interaction.client, thread, cmd, self.is_normal_mode))
 
 class TerminalView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="コマンド送信", style=discord.ButtonStyle.primary, custom_id="terminal_send_button")
-    async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="BOTディレクトリ (venv)", style=discord.ButtonStyle.primary, custom_id="terminal_send_button_venv")
+    async def open_modal_venv(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id not in ALLOWED_USER_IDS:
             await interaction.response.send_message("実行権限がありません。", ephemeral=True)
             return
-        await interaction.response.send_modal(TerminalModal())
+        await interaction.response.send_modal(TerminalModal(is_normal_mode=False))
+
+    @discord.ui.button(label="ノーマルターミナル", style=discord.ButtonStyle.secondary, custom_id="terminal_send_button_normal")
+    async def open_modal_normal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in ALLOWED_USER_IDS:
+            await interaction.response.send_message("実行権限がありません。", ephemeral=True)
+            return
+        await interaction.response.send_modal(TerminalModal(is_normal_mode=True))
 
 class TerminalCog(commands.Cog):
     def __init__(self, bot):
@@ -157,7 +169,12 @@ class TerminalCog(commands.Cog):
         
         embed = discord.Embed(
             title="ラズパイ 擬似ターミナル (対話対応)",
-            description=f"下のボタンを押してコマンドを入力してください。\n実行時に作成されるスレッド内で入力応答が可能です。\n実行パス: `{TARGET_DIR}`",
+            description=(
+                "実行モードを選択してボタンを押してください。\n"
+                "• **BOTディレクトリ (venv)**: `~/BOT` へ移動し `venv` を有効化して実行\n"
+                "• **ノーマルターミナル**: 事前処理なしでそのまま実行\n\n"
+                "実行時に作成されるスレッド内で入力応答が可能です。"
+            ),
             color=discord.Color.blue()
         )
         await ctx.send(embed=embed, view=TerminalView())
