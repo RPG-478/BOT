@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 # ----------------------------------------------------------------------
-# CPUマルチスレッド最適化設定（4コア環境向け）
+# CPUマルチスレッド最適化設定
 # ----------------------------------------------------------------------
 os.environ["OMP_NUM_THREADS"] = "4"
 os.environ["OPENBLAS_NUM_THREADS"] = "4"
@@ -25,22 +25,24 @@ except ImportError:
     pass
 
 NEEDLE_AVAILABLE = False
+NEEDLE_IMPORT_ERROR = None
 try:
     import needle
     NEEDLE_AVAILABLE = True
-except ImportError:
+except ImportError as e1:
     try:
         import cactus_needle as needle
         NEEDLE_AVAILABLE = True
-    except ImportError:
+    except ImportError as e2:
         needle = None
+        NEEDLE_IMPORT_ERROR = f"needle: {e1} | cactus_needle: {e2}"
 
 
 # ----------------------------------------------------------------------
-# 1文字限定 ツール関数定義（ひらがな・句読点）
+# 1文字限定 ツール関数定義
 # ----------------------------------------------------------------------
 def append_next_character(char: str) -> str:
-    """文脈に続く最初のひらがな1文字、句読点（、。）、または '[END]' を選択します。
+    """文脈に続く最初の1文字（ひらがな、句読点「、」「。」）、または '[END]' を選択します。
 
     Args:
         char: ひらがな1文字、句読点（、。）、または '[END]'。
@@ -60,15 +62,29 @@ if NEEDLE_AVAILABLE and hasattr(needle, "tool"):
 
 class Needle1CharEngine:
     """
-    1文字（ひらがな・句読点）自己回帰生成エンジン。
-    JSON制御記号の除去フィルターおよび抽出安全機構を搭載。
+    1文字自己回帰生成エンジン。
+    初期化状態チェックおよび抽出フォールバック機構を強化。
     """
     def __init__(self, max_steps: int = 30, min_steps: int = 3):
         self.agent = None
+        self.init_error = None
         self.max_steps = max_steps
         self.min_steps = min_steps
-        # 有効な文字パターン（ひらがな、句読点、または [END]）
-        self.valid_char_pattern = re.compile(r"^[ぁ-ん、。]$|^\\[END\\]$")
+
+        if not NEEDLE_AVAILABLE:
+            self.init_error = f"Needle module not found ({NEEDLE_IMPORT_ERROR})"
+            return
+
+        try:
+            init_kwargs = {"tools": [append_next_character]}
+            if hasattr(needle, "Needle"):
+                self.agent = needle.Needle(**init_kwargs)
+            elif hasattr(needle, "Agent"):
+                self.agent = needle.Agent(**init_kwargs)
+            else:
+                self.init_error = "Neither 'Needle' nor 'Agent' class found in module."
+        except Exception as e:
+            self.init_error = f"Agent Init Exception: {e}"
 
     async def generate_sentence(self, user_prompt: str) -> Dict[str, Any]:
         start_time = time.perf_counter()
@@ -78,6 +94,18 @@ class Needle1CharEngine:
         step_count = 0
         consecutive_repeat_count = 0
         last_char = ""
+
+        # Agent 初期化失敗時の即時判定
+        if self.agent is None:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            error_msg = self.init_error or "Unknown Initialization Error"
+            return {
+                "sentence": f"（Needle初期化失敗: {error_msg}）",
+                "trace": [f"Init Error: {error_msg}"],
+                "raw_debug": [f"Init ERR: {error_msg}"],
+                "total_steps": 0,
+                "latency_ms": elapsed_ms
+            }
 
         while step_count < self.max_steps:
             step_count += 1
@@ -96,47 +124,52 @@ class Needle1CharEngine:
 
             chosen_char = None
 
-            if self.agent is not None:
-                try:
-                    result = await asyncio.to_thread(self.agent.run, state_context)
-                    raw_debug_outputs.append(f"Step {step_count:02d} Raw: {repr(result)}")
+            try:
+                result = await asyncio.to_thread(self.agent.run, state_context)
+                raw_debug_outputs.append(f"Step {step_count:02d} Raw: {repr(result)}")
 
-                    if result:
-                        if isinstance(result, dict):
-                            if "results" in result and result["results"]:
-                                for res in result["results"]:
-                                    candidate = self._sanitize_char(res)
-                                    if candidate:
-                                        chosen_char = candidate
-                                        break
-                            if chosen_char is None and "function_calls" in result and result["function_calls"]:
-                                for call in result["function_calls"]:
-                                    candidate = self._extract_char(call)
-                                    if candidate:
-                                        chosen_char = candidate
-                                        break
-                            elif chosen_char is None and "tool_calls" in result and result["tool_calls"]:
-                                for call in result["tool_calls"]:
-                                    candidate = self._extract_char(call)
-                                    if candidate:
-                                        chosen_char = candidate
-                                        break
-
-                        elif hasattr(result, "function_calls") and result.function_calls:
-                            for call in result.function_calls:
+                if result:
+                    if isinstance(result, dict):
+                        if "results" in result and result["results"]:
+                            for res in result["results"]:
+                                candidate = self._sanitize_char(res)
+                                if candidate:
+                                    chosen_char = candidate
+                                    break
+                        if chosen_char is None and "function_calls" in result and result["function_calls"]:
+                            for call in result["function_calls"]:
+                                candidate = self._extract_char(call)
+                                if candidate:
+                                    chosen_char = candidate
+                                    break
+                        elif chosen_char is None and "tool_calls" in result and result["tool_calls"]:
+                            for call in result["tool_calls"]:
                                 candidate = self._extract_char(call)
                                 if candidate:
                                     chosen_char = candidate
                                     break
 
-                        if chosen_char is None and isinstance(result, str):
-                            candidate = self._sanitize_char(result)
+                    elif hasattr(result, "function_calls") and result.function_calls:
+                        for call in result.function_calls:
+                            candidate = self._extract_char(call)
                             if candidate:
                                 chosen_char = candidate
+                                break
 
-                except Exception as e:
-                    print(f"[Needle Exception Step {step_count}]: {e}")
-                    raw_debug_outputs.append(f"Step {step_count:02d} ERR: {e}")
+                    # 直返却文字列からのパース（フォールバック含む）
+                    if chosen_char is None and isinstance(result, str):
+                        candidate = self._sanitize_char(result)
+                        if candidate:
+                            chosen_char = candidate
+                        elif len(result.strip()) > 0:
+                            # 記号等を除外した先頭1文字を最終フォールバックとして採用
+                            cleaned = re.sub(r"[{} \[\]\"':]", "", result.strip())
+                            if cleaned:
+                                chosen_char = cleaned[0]
+
+            except Exception as e:
+                print(f"[Needle Exception Step {step_count}]: {e}")
+                raw_debug_outputs.append(f"Step {step_count:02d} ERR: {e}")
 
             if chosen_char is None:
                 trace_logs.append(f"Step {step_count:02d}: [FAIL (Tool Call None)]")
@@ -176,7 +209,6 @@ class Needle1CharEngine:
         }
 
     def _sanitize_char(self, val: Any) -> Optional[str]:
-        """文字列からひらがな・句読点・[END] のみを抽出および検証します。"""
         if val is None:
             return None
         text = str(val)
@@ -184,7 +216,6 @@ class Needle1CharEngine:
         if "[END]" in text:
             return "[END]"
 
-        # ひらがな、または句読点（、。）の最初の一文字を抽出
         match = re.search(r"[ぁ-ん、。]", text)
         if match:
             return match.group(0)
@@ -192,7 +223,6 @@ class Needle1CharEngine:
         return None
 
     def _extract_char(self, call: Any) -> Optional[str]:
-        """ツール呼出オブジェクトより引数を安全に抽出します。"""
         if hasattr(call, "execute"):
             return self._sanitize_char(call.execute())
         if hasattr(call, "arguments"):
