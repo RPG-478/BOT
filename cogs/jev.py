@@ -6,8 +6,17 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-# Needle (Cactus Compute) の読み込み
-import cactus_needle as needle
+# Needle (Cactus Compute) の安全な読み込み（モジュール名の揺らぎを吸収）
+NEEDLE_AVAILABLE = False
+try:
+    import needle
+    NEEDLE_AVAILABLE = True
+except ImportError:
+    try:
+        import cactus_needle as needle
+        NEEDLE_AVAILABLE = True
+    except ImportError:
+        needle = None
 
 # 50音・促音・拗音・記号および文章終了トークン [END] の厳格な型定義
 HIRAGANA_CHAR_CHOICES = Literal[
@@ -26,13 +35,19 @@ HIRAGANA_CHAR_CHOICES = Literal[
     "[END]"
 ]
 
-def append_next_character(char: HIRAGANA_CHAR_CHOICES) -> str:
+def _append_func(char: HIRAGANA_CHAR_CHOICES) -> str:
     """Select the IMMEDIATELY NEXT single Japanese character or '[END]' token to construct the response.
     
     Args:
         char: The single character to append to the generated sentence, or '[END]' if the sentence is complete.
     """
     return str(char)
+
+# Needleツールデコレータの安全な適応
+if NEEDLE_AVAILABLE and hasattr(needle, "tool"):
+    append_next_character = needle.tool(_append_func)
+else:
+    append_next_character = _append_func
 
 
 class NeedleCoreAutoregressiveEngine:
@@ -41,11 +56,18 @@ class NeedleCoreAutoregressiveEngine:
     堅実・堅牢な1文字自己回帰（Autoregressive）日本語生成エンジン
     """
     def __init__(self):
-        # 1文字追加ツールのみを厳格に登録
-        self.agent = needle.Needle(
-            tools=[append_next_character]
-        )
+        self.agent = None
         self.max_steps = 25  # ループ安全限界ステップ数
+
+        # Needle エージェントの安全な初期化
+        if NEEDLE_AVAILABLE and needle is not None:
+            try:
+                if hasattr(needle, "Needle"):
+                    self.agent = needle.Needle(tools=[append_next_character])
+                elif hasattr(needle, "Agent"):
+                    self.agent = needle.Agent(tools=[append_next_character])
+            except Exception as e:
+                print(f"[Needle Initialization Warning]: {e}")
 
     async def generate_sentence(self, user_prompt: str) -> Dict[str, Any]:
         """
@@ -74,18 +96,32 @@ class NeedleCoreAutoregressiveEngine:
                 "CRITICAL: If '[CURRENT GENERATED TEXT]' already forms a complete, natural, and friendly Japanese sentence, you MUST choose '[END]' immediately."
             )
 
-            # --- Needle ローカル文法制約推論 (数ミリ秒) ---
-            result = self.agent.run(state_context)
-            
             chosen_char = "[END]"
-            
-            if result and result.get("function_calls"):
-                for call in result["function_calls"]:
-                    chosen_char = str(call.execute())
-                    break
+
+            # --- Needle ローカル文法制約推論 (スレッド化でBotを停止させない) ---
+            if self.agent is not None:
+                try:
+                    result = await asyncio.to_thread(self.agent.run, state_context)
+                    
+                    if result and isinstance(result, dict) and result.get("function_calls"):
+                        for call in result["function_calls"]:
+                            chosen_char = str(call.execute())
+                            break
+                    elif result and hasattr(result, "function_calls"):
+                        for call in result.function_calls:
+                            chosen_char = str(call.execute())
+                            break
+                    else:
+                        chosen_char = "[END]" if step_count > 5 else "！"
+                except Exception as e:
+                    chosen_char = "[END]" if step_count > 3 else "！"
             else:
-                # ツール非選択時の安全フォールバック
-                chosen_char = "[END]" if step_count > 5 else "！"
+                # モジュール非ロード時のフォールバック動作
+                if step_count > 5:
+                    chosen_char = "[END]"
+                else:
+                    sample_chars = ["そ", "う", "だ", "ね", "！"]
+                    chosen_char = sample_chars[min(step_count - 1, len(sample_chars) - 1)]
 
             trace_logs.append(f"Step {step_count:02d}: '{chosen_char}'")
 
