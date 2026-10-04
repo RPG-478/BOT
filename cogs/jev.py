@@ -195,9 +195,9 @@ class NeedleCoreEngineCog(commands.Cog):
         msg = (
             f"**[生成結果]: {sentence}**\n\n"
             f"```\n"
-            f"[Needle 1文字選択ステップ軌跡]\n{trace}\n"
+            f"[ステップ軌跡]\n{trace}\n"
             f"```\n"
-            f"`⚡ Core Needle Steps: {steps} 回 | Total Latency: {latency:.2f}ms | RAM: ~28MB`"
+            f"`Core Needle Steps: {steps} 回 | Total Latency: {latency:.2f}ms | RAM: ~28MB`"
         )
 
         await interaction.followup.send(msg)
