@@ -13,6 +13,7 @@ os.environ["NUMEXPR_NUM_THREADS"] = "4"
 
 import asyncio
 import time
+import random
 from typing import List, Dict, Any, Literal
 import discord
 from discord import app_commands
@@ -78,11 +79,10 @@ class NeedleCoreAutoregressiveEngine:
     """
     def __init__(self):
         self.agent = None
-        self.max_steps = 20
+        self.max_steps = 15
 
         if NEEDLE_AVAILABLE and needle is not None:
             try:
-                # C++バックエンドに直接スレッド数を渡せる設定が存在する場合は適用
                 init_kwargs = {"tools": [append_next_character]}
                 
                 if hasattr(needle, "Needle"):
@@ -98,15 +98,16 @@ class NeedleCoreAutoregressiveEngine:
         generated_text = ""
         trace_logs = []
         step_count = 0
+        raw_debug_outputs = []
 
         while step_count < self.max_steps:
             step_count += 1
             
-            # --- 28MBモデル向け：プロンプトの極限簡素化 ---
+            # --- Needleへのシンプルな指示プロンプト ---
             state_context = (
-                f"User: {user_prompt}\n"
-                f"Text: {generated_text}\n"
-                f"Next char:"
+                f"User question: {user_prompt}\n"
+                f"Current text: {generated_text}\n"
+                f"Call append_next_character with the single next character to answer naturally."
             )
 
             chosen_char = None
@@ -116,30 +117,34 @@ class NeedleCoreAutoregressiveEngine:
                     # バックグラウンドスレッドでNeedle推論を実行
                     result = await asyncio.to_thread(self.agent.run, state_context)
                     
-                    # 戻り値のデバッグ解析と抽出
-                    if result and isinstance(result, dict) and result.get("function_calls"):
-                        for call in result["function_calls"]:
-                            chosen_char = str(call.execute())
-                            break
-                    elif result and hasattr(result, "function_calls") and result.function_calls:
-                        for call in result.function_calls:
-                            chosen_char = str(call.execute())
-                            break
-                    else:
-                        print(f"[Needle Step {step_count} Output Raw]: {result}")
+                    # 生のレスポンスログを保存
+                    raw_debug_outputs.append(f"Step {step_count}: {repr(result)}")
+                    
+                    # 戻り値の解析
+                    if result:
+                        if isinstance(result, dict) and result.get("function_calls"):
+                            for call in result["function_calls"]:
+                                chosen_char = str(call.execute())
+                                break
+                        elif hasattr(result, "function_calls") and result.function_calls:
+                            for call in result.function_calls:
+                                chosen_char = str(call.execute())
+                                break
+                        elif isinstance(result, str):
+                            # 文字列で直接返ってきた場合の抽出
+                            for c in result:
+                                if c in HIRAGANA_CHAR_CHOICES.__args__:
+                                    chosen_char = c
+                                    break
                 except Exception as e:
                     print(f"[Needle Exception Step {step_count}]: {e}")
+                    raw_debug_outputs.append(f"Step {step_count} ERR: {e}")
 
-            # Needleがツール呼び出しを行えなかった場合の安全フォールバック
+            # ツール呼び出しに失敗した場合（[FAIL]と明記して原因追究）
             if chosen_char is None:
-                if not generated_text:
-                    sample_first = ["そ", "あ", "う", "お", "は"]
-                    chosen_char = sample_first[(step_count - 1) % len(sample_first)]
-                elif step_count > 6:
-                    chosen_char = "[END]"
-                else:
-                    sample_seq = ["う", "だ", "ね", "。"]
-                    chosen_char = sample_seq[min(step_count - 2, len(sample_seq) - 1)]
+                trace_logs.append(f"Step {step_count:02d}: [FAIL (Tool Call None)]")
+                # 原因特定のために1回失敗したら即時中断
+                break
 
             trace_logs.append(f"Step {step_count:02d}: '{chosen_char}'")
 
@@ -151,8 +156,9 @@ class NeedleCoreAutoregressiveEngine:
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
         return {
-            "sentence": generated_text if generated_text else "（応答なし）",
+            "sentence": generated_text if generated_text else "（Needleツール呼出失敗）",
             "trace": trace_logs,
+            "raw_debug": raw_debug_outputs,
             "total_steps": step_count,
             "latency_ms": elapsed_ms
         }
@@ -178,14 +184,20 @@ class NeedleCoreEngineCog(commands.Cog):
         sentence = res["sentence"]
         steps = res["total_steps"]
         latency = res["latency_ms"]
-        trace = " ➔ ".join([t.split("'")[1] for t in res["trace"]])
+        trace = " ➔ ".join([t for t in res["trace"]])
+        
+        # コンソールログに生のNeedle戻り値を表示
+        print("\n=== [Needle Raw Output Trace] ===")
+        for dbg in res["raw_debug"]:
+            print(dbg)
+        print("=================================\n")
 
         msg = (
             f"**[生成結果]: {sentence}**\n\n"
             f"```\n"
-            f"[ステップ軌跡]\n{trace}\n"
+            f"[Needle 1文字選択ステップ軌跡]\n{trace}\n"
             f"```\n"
-            f"`Core Needle Steps: {steps} 回 | Total Latency: {latency:.2f}ms | RAM: ~28MB (4-Thread Active)`"
+            f"`⚡ Core Needle Steps: {steps} 回 | Total Latency: {latency:.2f}ms | RAM: ~28MB`"
         )
 
         await interaction.followup.send(msg)
