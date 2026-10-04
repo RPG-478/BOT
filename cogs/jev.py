@@ -1,9 +1,9 @@
 import os
 import sys
+import re
 
 # ----------------------------------------------------------------------
 # ラズパイ4B（4コア）向け CPUマルチスレッド並列化設定
-# 必ず Needle や PyTorch などの C++ バインディングをインポートする前に設定
 # ----------------------------------------------------------------------
 os.environ["OMP_NUM_THREADS"] = "4"
 os.environ["OPENBLAS_NUM_THREADS"] = "4"
@@ -13,13 +13,12 @@ os.environ["NUMEXPR_NUM_THREADS"] = "4"
 
 import asyncio
 import time
-import random
-from typing import List, Dict, Any, Literal
+from typing import List, Dict, Any
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-# PyTorch 等が内部で使われている場合の補強
+# PyTorch 等のスレッド補強
 try:
     import torch
     torch.set_num_threads(4)
@@ -39,28 +38,12 @@ except ImportError:
     except ImportError:
         needle = None
 
-# 50音・標準句読点・疑問符および文章終了トークン [END]
-HIRAGANA_CHAR_CHOICES = Literal[
-    "あ", "い", "う", "え", "お",
-    "か", "き", "く", "け", "こ",
-    "さ", "し", "す", "せ", "そ",
-    "た", "ち", "つ", "て", "と",
-    "な", "に", "ぬ", "ね", "の",
-    "は", "ひ", "ふ", "へ", "ほ",
-    "ま", "み", "む", "め", "も",
-    "や", "ゆ", "よ",
-    "ら", "り", "る", "れ", "ろ",
-    "わ", "を", "ん",
-    "っ", "ゃ", "ゅ", "ょ", "ー",
-    "、", "。", "？",
-    "[END]"
-]
-
-def append_next_character(char: HIRAGANA_CHAR_CHOICES) -> str:
-    """Append the single next Japanese character or '[END]' to construct the answer.
+# 1文字追加ツール（型スキーマを軽量な str に簡略化して Needel のパース崩れを防止）
+def append_next_character(char: str) -> str:
+    """Append the single next Japanese hiragana character, punctuation (、。？), or '[END]' to answer the user.
 
     Args:
-        char: Single Japanese hiragana character or '[END]'.
+        char: Single Japanese character or '[END]'.
     """
     return str(char)
 
@@ -105,9 +88,9 @@ class NeedleCoreAutoregressiveEngine:
             
             # --- Needleへのシンプルな指示プロンプト ---
             state_context = (
-                f"User question: {user_prompt}\n"
-                f"Current text: {generated_text}\n"
-                f"Call append_next_character with the single next character to answer naturally."
+                f"User Question: {user_prompt}\n"
+                f"Generated Sentence: '{generated_text}'\n"
+                f"Instruction: Call append_next_character(char=...) with the single next Japanese character or '[END]' to complete a friendly answer."
             )
 
             chosen_char = None
@@ -118,32 +101,54 @@ class NeedleCoreAutoregressiveEngine:
                     result = await asyncio.to_thread(self.agent.run, state_context)
                     
                     # 生のレスポンスログを保存
-                    raw_debug_outputs.append(f"Step {step_count}: {repr(result)}")
+                    raw_debug_outputs.append(f"Step {step_count:02d} Raw: {repr(result)}")
                     
-                    # 戻り値の解析
+                    # 1. 正常な Tool Call オブジェクトの解析
                     if result:
-                        if isinstance(result, dict) and result.get("function_calls"):
-                            for call in result["function_calls"]:
-                                chosen_char = str(call.execute())
-                                break
+                        if isinstance(result, dict):
+                            if "function_calls" in result and result["function_calls"]:
+                                for call in result["function_calls"]:
+                                    chosen_char = str(call.execute())
+                                    break
+                            elif "tool_calls" in result and result["tool_calls"]:
+                                for call in result["tool_calls"]:
+                                    if hasattr(call, "execute"):
+                                        chosen_char = str(call.execute())
+                                    elif isinstance(call, dict) and "arguments" in call:
+                                        chosen_char = str(call["arguments"].get("char", ""))
+                                    break
+                            elif "char" in result:
+                                chosen_char = str(result["char"])
+
                         elif hasattr(result, "function_calls") and result.function_calls:
                             for call in result.function_calls:
                                 chosen_char = str(call.execute())
                                 break
-                        elif isinstance(result, str):
-                            # 文字列で直接返ってきた場合の抽出
-                            for c in result:
-                                if c in HIRAGANA_CHAR_CHOICES.__args__:
-                                    chosen_char = c
-                                    break
+
+                        # 2. テキストとして返ってきた場合の正規表現・抽出パース
+                        if chosen_char is None and isinstance(result, str):
+                            # [END] の検出
+                            if "[END]" in result:
+                                chosen_char = "[END]"
+                            else:
+                                # append_next_character(char='...') のパターン抽出
+                                match = re.search(r"append_next_character\s*\(\s*char\s*=\s*['\"]?([^'\"\)\s]+)", result)
+                                if match:
+                                    chosen_char = match.group(1)[0] if match.group(1) else None
+                                else:
+                                    # 直でひらがなや記号が返ってきた場合
+                                    for c in result:
+                                        if c in "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをんっゃゅょー、。？":
+                                            chosen_char = c
+                                            break
+
                 except Exception as e:
                     print(f"[Needle Exception Step {step_count}]: {e}")
-                    raw_debug_outputs.append(f"Step {step_count} ERR: {e}")
+                    raw_debug_outputs.append(f"Step {step_count:02d} ERR: {e}")
 
-            # ツール呼び出しに失敗した場合（[FAIL]と明記して原因追究）
+            # 抽出失敗時のトラッキング
             if chosen_char is None:
                 trace_logs.append(f"Step {step_count:02d}: [FAIL (Tool Call None)]")
-                # 原因特定のために1回失敗したら即時中断
                 break
 
             trace_logs.append(f"Step {step_count:02d}: '{chosen_char}'")
@@ -195,9 +200,9 @@ class NeedleCoreEngineCog(commands.Cog):
         msg = (
             f"**[生成結果]: {sentence}**\n\n"
             f"```\n"
-            f"[ステップ軌跡]\n{trace}\n"
+            f"[Needle 1文字選択ステップ軌跡]\n{trace}\n"
             f"```\n"
-            f"`Core Needle Steps: {steps} 回 | Total Latency: {latency:.2f}ms | RAM: ~28MB`"
+            f"`⚡ Core Needle Steps: {steps} 回 | Total Latency: {latency:.2f}ms | RAM: ~28MB`"
         )
 
         await interaction.followup.send(msg)
