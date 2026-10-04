@@ -38,21 +38,25 @@ except ImportError:
     except ImportError:
         needle = None
 
-# 1文字追加ツール（型スキーマを軽量な str に簡略化して Needel のパース崩れを防止）
+# 1文字追加ツール
+# triggers=[r".*"] を指定することで、Needleの確信度フィルタを迂回し、常にこのツールを発火させます
 def append_next_character(char: str) -> str:
-    """Append the single next Japanese hiragana character, punctuation (、。？), or '[END]' to answer the user.
+    """Select and append the single next Japanese hiragana character, punctuation (、。？), or '[END]' to naturally build the output sentence.
 
     Args:
-        char: Single Japanese character or '[END]'.
+        char: Single Japanese character or punctuation or '[END]'.
     """
     return str(char)
 
-# needle.tool デコレータの適用
+# needle.tool デコレータの適用 (triggers パターンマッチで強制呼び出しを有効化)
 if NEEDLE_AVAILABLE and hasattr(needle, "tool"):
     try:
-        append_next_character = needle.tool(append_next_character)
-    except Exception as e:
-        print(f"[Needle Tool Register Warning]: {e}")
+        append_next_character = needle.tool(triggers=[r".*"])(append_next_character)
+    except Exception:
+        try:
+            append_next_character = needle.tool(append_next_character)
+        except Exception as e:
+            print(f"[Needle Tool Register Warning]: {e}")
 
 
 class NeedleCoreAutoregressiveEngine:
@@ -86,11 +90,11 @@ class NeedleCoreAutoregressiveEngine:
         while step_count < self.max_steps:
             step_count += 1
             
-            # --- Needleへのシンプルな指示プロンプト ---
+            # --- Needleへの指示文脈 (引数 char に選ばせたい文字が抽出されやすいシンプルな構成) ---
             state_context = (
-                f"User Question: {user_prompt}\n"
-                f"Generated Sentence: '{generated_text}'\n"
-                f"Instruction: Call append_next_character(char=...) with the single next Japanese character or '[END]' to complete a friendly answer."
+                f"User: {user_prompt}\n"
+                f"Generated text so far: '{generated_text}'\n"
+                f"Select next char to append:"
             )
 
             chosen_char = None
@@ -103,44 +107,48 @@ class NeedleCoreAutoregressiveEngine:
                     # 生のレスポンスログを保存
                     raw_debug_outputs.append(f"Step {step_count:02d} Raw: {repr(result)}")
                     
-                    # 1. 正常な Tool Call オブジェクトの解析
+                    # 1. 正常な Tool Call / Results オブジェクトの解析
                     if result:
                         if isinstance(result, dict):
-                            if "function_calls" in result and result["function_calls"]:
+                            # results (実行済み戻り値) の確認
+                            if "results" in result and result["results"]:
+                                for res in result["results"]:
+                                    if res is not None:
+                                        chosen_char = str(res)
+                                        break
+                            # function_calls / tool_calls の解析
+                            if chosen_char is None and "function_calls" in result and result["function_calls"]:
                                 for call in result["function_calls"]:
-                                    chosen_char = str(call.execute())
+                                    if hasattr(call, "execute"):
+                                        chosen_char = str(call.execute())
+                                    elif hasattr(call, "arguments") and "char" in call.arguments:
+                                        chosen_char = str(call.arguments["char"])
+                                    elif isinstance(call, dict):
+                                        args = call.get("arguments", call.get("args", {}))
+                                        if "char" in args:
+                                            chosen_char = str(args["char"])
                                     break
-                            elif "tool_calls" in result and result["tool_calls"]:
+                            elif chosen_char is None and "tool_calls" in result and result["tool_calls"]:
                                 for call in result["tool_calls"]:
                                     if hasattr(call, "execute"):
                                         chosen_char = str(call.execute())
                                     elif isinstance(call, dict) and "arguments" in call:
                                         chosen_char = str(call["arguments"].get("char", ""))
                                     break
-                            elif "char" in result:
-                                chosen_char = str(result["char"])
 
                         elif hasattr(result, "function_calls") and result.function_calls:
                             for call in result.function_calls:
                                 chosen_char = str(call.execute())
                                 break
 
-                        # 2. テキストとして返ってきた場合の正規表現・抽出パース
+                        # 2. テキスト・文字列として返ってきた場合のフォールバックパース
                         if chosen_char is None and isinstance(result, str):
-                            # [END] の検出
                             if "[END]" in result:
                                 chosen_char = "[END]"
                             else:
-                                # append_next_character(char='...') のパターン抽出
-                                match = re.search(r"append_next_character\s*\(\s*char\s*=\s*['\"]?([^'\"\)\s]+)", result)
+                                match = re.search(r"['\"]?([^'\"\)\s]{1,5})['\"]?", result)
                                 if match:
-                                    chosen_char = match.group(1)[0] if match.group(1) else None
-                                else:
-                                    # 直でひらがなや記号が返ってきた場合
-                                    for c in result:
-                                        if c in "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをんっゃゅょー、。？":
-                                            chosen_char = c
-                                            break
+                                    chosen_char = match.group(1)[0]
 
                 except Exception as e:
                     print(f"[Needle Exception Step {step_count}]: {e}")
