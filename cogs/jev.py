@@ -18,7 +18,7 @@ except ImportError:
     except ImportError:
         needle = None
 
-# 50音・促音・拗音・記号および文章終了トークン [END] の厳格な型定義
+# 50音・促音・拗音・句読点および文章終了トークン [END] の厳格な型定義
 HIRAGANA_CHAR_CHOICES = Literal[
     "あ", "い", "う", "え", "お",
     "か", "き", "く", "け", "こ",
@@ -31,7 +31,7 @@ HIRAGANA_CHAR_CHOICES = Literal[
     "ら", "り", "る", "れ", "ろ",
     "わ", "を", "ん",
     "っ", "ゃ", "ゅ", "ょ", "ー",
-    "！", "？", "♪", "〜",
+    "、", "。", "？",
     "[END]"
 ]
 
@@ -112,15 +112,15 @@ class NeedleCoreAutoregressiveEngine:
                             chosen_char = str(call.execute())
                             break
                     else:
-                        chosen_char = "[END]" if step_count > 5 else "！"
+                        chosen_char = "[END]" if step_count > 5 else "。"
                 except Exception as e:
-                    chosen_char = "[END]" if step_count > 3 else "！"
+                    chosen_char = "[END]" if step_count > 3 else "。"
             else:
                 # モジュール非ロード時のフォールバック動作
                 if step_count > 5:
                     chosen_char = "[END]"
                 else:
-                    sample_chars = ["そ", "う", "だ", "ね", "！"]
+                    sample_chars = ["そ", "う", "だ", "ね", "。"]
                     chosen_char = sample_chars[min(step_count - 1, len(sample_chars) - 1)]
 
             trace_logs.append(f"Step {step_count:02d}: '{chosen_char}'")
@@ -168,9 +168,9 @@ class NeedleCoreEngineCog(commands.Cog):
         msg = (
             f"**[生成結果]: {sentence}**\n\n"
             f"```\n"
-            f"[Needle 1文字選択ステップ軌跡]\n{trace}\n"
+            f"[Needle選択ステップ]\n{trace}\n"
             f"```\n"
-            f"`⚡ Core Needle Steps: {steps} 回 | Total Latency: {latency:.2f}ms | RAM: ~28MB`"
+            f"`Core Needle Steps: {steps} 回 | Total Latency: {latency:.2f}ms | RAM: ~28MB`"
         )
 
         await interaction.followup.send(msg)
