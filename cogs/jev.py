@@ -1,13 +1,16 @@
 import asyncio
+import time
 import os
-import random
-import aiohttp
+from typing import List, Dict, Any, Literal
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-# 1文字候補の50音・記号・および文章終了トークン [END]
-ALL_HIRAGANA = [
+# Needle (Cactus Compute) の読み込み
+import cactus_needle as needle
+
+# Needleが厳格に選択できるひらがな・音節・文章終了トークン
+HIRAGANA_CHAR_CHOICES = Literal[
     "あ", "い", "う", "え", "お",
     "か", "き", "く", "け", "こ",
     "さ", "し", "す", "せ", "そ",
@@ -18,155 +21,136 @@ ALL_HIRAGANA = [
     "や", "ゆ", "よ",
     "ら", "り", "る", "れ", "ろ",
     "わ", "を", "ん",
-    "っ", "ゃ", "ゅ", "ょ", "ー",
-    "！", "？", "♪",
+    "っ", "ー", "！", "？", "♪", "〜",
+    "[END]"
 ]
 
-END_TOKEN = "[END]"
+# 通信往復を減らすためのSpeculative（投機的）2文字チャンク
+CHUNK_CHOICES = Literal[
+    "ね！", "だよ", "です", "かな", "ー！", "〜♪", "[END]"
+]
 
-class AutoregressiveJevCharEngine:
-    """Jevを用いて1文字ずつ自己回帰的（Autoregressive）に文字を選択・追加し、
-
-    [END] トークンが選ばれるまで一文を生成し続ける雛形エンジン。
+def append_single_char(char: HIRAGANA_CHAR_CHOICES) -> str:
+    """Select the IMMEDIATELY NEXT single hiragana character or '[END]' token to naturally build the response.
+    
+    Args:
+        char: The single character to append, or '[END]' if sentence is complete.
     """
+    return str(char)
 
-    def __init__(self, api_key: str = None):
-        self.api_key = api_key or os.getenv("JEV_API_KEY", "DEMO_KEY")
-        self.api_url = "https://api.typesafe.ai/v1/evaluate"
-        self.max_steps = 30  # 無限ループ防止用の最大生成ステップ数
+def append_speculative_chunk(chunk: CHUNK_CHOICES) -> str:
+    """Select a 2-character ending chunk or '[END]' token when the sentence is close to completion.
+    
+    Args:
+        chunk: The ending chunk to append, or '[END]' if sentence is complete.
+    """
+    return str(chunk)
 
-    async def generate_sentence_step_by_step(self, user_prompt: str) -> dict:
-        """1文字ごとにJevに問い合わせ、文脈（State）を更新しながら文章を伸長するメインループ"""
-        start_time = asyncio.get_event_loop().time()
 
+class NeedleAutoregressiveEngine:
+    """
+    Needle (100% ローカル / 28MB RAM) を使用した
+    1文字・音節自己回帰（Autoregressive）日本語文章生成エンジン
+    """
+    def __init__(self):
+        # Needleエージェントの初期化（1文字選択ツール ＆ チャンク選択ツールを登録）
+        self.agent = needle.Needle(
+            tools=[append_single_char, append_speculative_chunk]
+        )
+        self.max_steps = 20  # 最大ステップ数（ループ安全限界）
+
+    async def generate_sentence(self, user_prompt: str) -> Dict[str, Any]:
+        """
+        Needleで1文字/音節ごとにルーティング・判定を行い、
+        [END] トークンが選ばれるまでローカルで文字を追加していくメイン生成ループ
+        """
+        start_time = time.perf_counter()
+        
         generated_text = ""
-        trace_history = []
+        trace_logs = []
         step_count = 0
 
-        # 自己回帰生成（Autoregressive Generation Loop）
         while step_count < self.max_steps:
             step_count += 1
-
-            # 選択肢リスト（ひらがな全般 ＋ 文章終了トークン）
-            candidates = ALL_HIRAGANA + [END_TOKEN]
-
-            # 1文字選択のAPIリクエスト実行
-            chosen_char = await self._predict_next_char(
-                user_prompt=user_prompt,
-                current_text=generated_text,
-                candidates=candidates,
-                step=step_count
+            
+            # --- needle.run 用のコンテキストプロンプト構築 ---
+            # これまでに選択された文字列と、元メッセージを文脈として入力
+            state_prompt = (
+                f"User Input: \"{user_prompt}\"\n"
+                f"Generated Text So Far: \"{generated_text}\"\n"
+                f"Step: {step_count}\n"
+                "Task: Pick the best next single character or speculative chunk from available tools to make a natural Japanese response. "
+                "If 'Generated Text So Far' is already complete and makes sense, choose '[END]' immediately."
             )
 
-            trace_history.append(f"Step {step_count}: '{chosen_char}'")
+            # --- Needle によるミリ秒単位のローカル推論＆型制約抽出 ---
+            # CPU/RAM負荷ほぼゼロで数ミリ秒で決定される
+            result = self.agent.run(state_prompt)
+            
+            chosen_token = "[END]"
+            
+            if result and result.get("function_calls"):
+                for call in result["function_calls"]:
+                    # ツールの戻り値（選ばれた1文字またはチャンク）を取得
+                    output = str(call.execute())
+                    chosen_token = output
+                    break
+            else:
+                # 該当ツールが選ばれなかった場合のフォールバック（文字数に応じて[END]か記号）
+                chosen_token = "[END]" if step_count > 5 else "！"
 
-            # 終了トークン [END] が選ばれた場合は即時生成終了
-            if chosen_char == END_TOKEN:
+            trace_logs.append(f"Step {step_count:02d}: '{chosen_token}'")
+
+            # [END] トークンが出現したら即時生成終了
+            if chosen_token == "[END]":
                 break
 
-            # 生成テキストに1文字追加（文脈の更新）
-            generated_text += chosen_char
+            generated_text += chosen_token
 
-        elapsed_ms = (asyncio.get_event_loop().time() - start_time) * 1000
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
 
         return {
-            "sentence": generated_text if generated_text else "（空の生成）",
-            "trace": trace_history,
+            "sentence": generated_text if generated_text else "（応答なし）",
+            "trace": trace_logs,
             "total_steps": step_count,
-            "speed_ms": elapsed_ms
+            "latency_ms": elapsed_ms
         }
 
-    async def _predict_next_char(self, user_prompt: str, current_text: str, candidates: list, step: int) -> str:
-        """現在の文脈（プロンプト + ここまでに生成された文字列）をJevにわたし、
 
-        最も適した次の1文字または [END] を確率選択させる。
-        """
-        # Jevへの入力State（役割・ユーザー発言・現在生成中の文字列を明確に構造化）
-        state_context = (
-            "[Role] You are a friendly, highly natural Japanese AI assistant.\n"
-            f"[User Input] \"{user_prompt}\"\n"
-            f"[Generated So Far] \"{current_text}\"\n"
-            f"[Current Step] {step}"
-        )
-
-        payload = {
-            "state": state_context,
-            "questions": {
-                "next_char": {
-                    "type": "choice",
-                    "choices": candidates,
-                    "prompt": (
-                        "Based on '[Generated So Far]', select the SINGLE next character from 'choices' that makes "
-                        "the sequence sound like completely natural, grammatically correct Japanese responding to '[User Input]'. "
-                        f"If '[Generated So Far]' already forms a complete, natural, and friendly response, you MUST select '{END_TOKEN}' immediately."
-                    )
-                }
-            }
-        }
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(self.api_url, json=payload, headers=headers, timeout=2) as resp:
-                    if resp.status == 200:
-                        result = await resp.json()
-                        chosen = result.get("next_char", {}).get("choice", END_TOKEN)
-                        return chosen
-                    else:
-                        return self._fallback_step_selection(current_text, step)
-        except Exception:
-            return self._fallback_step_selection(current_text, step)
-
-    def _fallback_step_selection(self, current_text: str, step: int) -> str:
-        """API未接続時・テスト用の1文字判定シミュレーション。
-
-        一定文字数を超えると [END] が出やすくなる挙動の実験。
-        """
-        # 10文字を超えたら段階的に [END] の選択確率を上げる
-        if step > 12:
-            return END_TOKEN if random.random() < 0.6 else random.choice(["！", "〜", "ね"])
-        elif step > 6:
-            candidates = ["つ", "か", "れ", "た", "よ", "ね", "！", "〜", END_TOKEN]
-            return random.choice(candidates)
-        else:
-            first_chars = ["そ", "う", "だ", "ね", "あ", "お", "か"]
-            return random.choice(first_chars)
-
-
-class CharAutoregressiveCog(commands.Cog):
-    """1文字自己回帰（Autoregressive）Jev生成エンジン Cog"""
+class NeedleCharEngineCog(commands.Cog):
+    """Needle 1文字・音節自己回帰 Discord Cog"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.engine = AutoregressiveJevCharEngine()
+        self.engine = NeedleAutoregressiveEngine()
 
-    @app_commands.command(name="ai", description="1文字ずつJevで判定・生成し、[END]で打ち切る自己回帰テスト")
+    @app_commands.command(
+        name="ai_needle",
+        description="[100%ローカル / Needle] 1文字・音節自己回帰でミリ秒単位の文章生成を行います"
+    )
     @app_commands.describe(prompt="メッセージを入力してください")
-    async def ai_command(self, interaction: discord.Interaction, prompt: str):
-        """/ai コマンド: 1文字ステップループを実行し、生成結果とログを返却"""
+    async def ai_needle_command(self, interaction: discord.Interaction, prompt: str):
+        """/ai_needle コマンド: Needleのツール文法制約で1文字ずつ繋ぎ合わせる"""
         await interaction.response.defer()
 
-        res = await self.engine.generate_sentence_step_by_step(prompt)
+        # Needleローカル生成の実行
+        res = await self.engine.generate_sentence(prompt)
 
         sentence = res["sentence"]
-        trace = "\n".join(res["trace"][:10])  # ログの先頭10ステップを表示
-        if len(res["trace"]) > 10:
-            trace += f"\n... (計 {res['total_steps']} ステップ)"
+        steps = res["total_steps"]
+        latency = res["latency_ms"]
+        trace = " ➔ ".join([t.split("'")[1] for t in res["trace"]])
 
-        speed_ms = res["speed_ms"]
-
-        response_msg = (
-            f"**生成結果: {sentence}**\n\n"
-            f"```\n[1文字ステップ採択ログ]\n{trace}\n```\n"
-            f"`⚡ Autoregressive Steps: {res['total_steps']} | Time: {speed_ms:.2f}ms`"
+        msg = (
+            f"**[生成結果]: {sentence}**\n\n"
+            f"```\n"
+            f"[Needle 1文字/音節 ルーティング軌跡]\n{trace}\n"
+            f"```\n"
+            f"`⚡ Needle Local Steps: {steps} 回 | Latency: {latency:.2f}ms | Memory: ~28MB (Zero API Cost)`"
         )
 
-        await interaction.followup.send(response_msg)
+        await interaction.followup.send(msg)
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(CharAutoregressiveCog(bot))
+    await bot.add_cog(NeedleCharEngineCog(bot))
