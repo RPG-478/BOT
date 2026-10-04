@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 # ----------------------------------------------------------------------
-# CPUマルチスレッド最適化設定（ラズパイ4B等 4コア環境向け）
+# CPUマルチスレッド最適化設定（4コア環境向け）
 # ----------------------------------------------------------------------
 os.environ["OMP_NUM_THREADS"] = "4"
 os.environ["OPENBLAS_NUM_THREADS"] = "4"
@@ -37,13 +37,13 @@ except ImportError:
 
 
 # ----------------------------------------------------------------------
-# 1文字限定 ツール関数定義
+# 1文字限定 ツール関数定義（ひらがな・句読点）
 # ----------------------------------------------------------------------
 def append_next_character(char: str) -> str:
-    """文脈に適合する次の1文字（ひらがな、カタカナ、漢字、記号）、または '[END]' を選択します。
+    """文脈に続く最初の1文字（ひらがな、句読点「、」「。」）、または文章完成時の '[END]' を選択します。
 
     Args:
-        char: 厳格に1文字の文字列、または '[END]'。
+        char: ひらがな1文字、句読点（、。）、または '[END]'。
     """
     return str(char)
 
@@ -60,12 +60,13 @@ if NEEDLE_AVAILABLE and hasattr(needle, "tool"):
 
 class Needle1CharEngine:
     """
-    1文字単位に限定した自己回帰生成エンジン。
-    1文字強制的切り詰めおよび同一文字ループ検知機構を搭載。
+    1文字（ひらがな・句読点）自己回帰生成エンジン。
+    初期ステップでの [END] 無効化ガードおよび動的プロンプト制御を適用。
     """
-    def __init__(self, max_steps: int = 50):
+    def __init__(self, max_steps: int = 30, min_steps: int = 3):
         self.agent = None
         self.max_steps = max_steps
+        self.min_steps = min_steps
 
         if NEEDLE_AVAILABLE and needle is not None:
             try:
@@ -89,10 +90,17 @@ class Needle1CharEngine:
         while step_count < self.max_steps:
             step_count += 1
 
+            # ステップ数に応じたプロンプト指示の切り替え
+            end_instruction = (
+                "文章が未完成のため '[END]' は選択不可。"
+                if step_count <= self.min_steps
+                else "文章が自然に完結した場合は '[END]' を選択のこと。"
+            )
+
             state_context = (
-                f"User Prompt: {user_prompt}\n"
-                f"Generated Text: '{generated_text}'\n"
-                f"Instruction: Call 'append_next_character' with EXACTLY ONE single Japanese character, punctuation, or '[END]' to append next."
+                f"ユーザー指示: {user_prompt}\n"
+                f"現在生成済みのテキスト: '{generated_text}'\n"
+                f"指示: 'append_next_character' を呼び出し、次に続く適切なひらがな1文字または句読点（、。）を選択してください。{end_instruction}"
             )
 
             chosen_char = None
@@ -142,16 +150,22 @@ class Needle1CharEngine:
                 trace_logs.append(f"Step {step_count:02d}: [FAIL (Tool Call None)]")
                 break
 
-            # 1文字制限の厳格化（[END] 以外の複数文字返却時は先頭1文字へ強制切り詰め）
+            # 1文字制限の切詰め（[END] 以外の複数文字返却時）
             if chosen_char != "[END]" and len(chosen_char) > 1:
                 chosen_char = chosen_char[0]
 
+            # 早期 [END] 出力の破棄制御
+            if chosen_char == "[END]":
+                if step_count <= self.min_steps:
+                    trace_logs.append(f"Step {step_count:02d}: '[END]' (IGNORED: Step <= {self.min_steps})")
+                    continue
+                else:
+                    trace_logs.append(f"Step {step_count:02d}: '[END]'")
+                    break
+
             trace_logs.append(f"Step {step_count:02d}: '{chosen_char}'")
 
-            if chosen_char == "[END]":
-                break
-
-            # 同一文字の連続発生（ループ）防止
+            # 同一文字の連続発生（ループ）抑止
             if chosen_char == last_char:
                 consecutive_repeat_count += 1
                 if consecutive_repeat_count >= 3:
@@ -191,15 +205,15 @@ class Needle1CharEngine:
 
 
 class Needle1CharEngineCog(commands.Cog):
-    """Needle 1文字厳格自己回帰 Discord Cog"""
+    """Needle 1文字自己回帰 Discord Cog"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.engine = Needle1CharEngine(max_steps=50)
+        self.engine = Needle1CharEngine(max_steps=30, min_steps=3)
 
     @app_commands.command(
         name="ai_needle",
-        description="[100%ローカル / Needle] 1文字厳格自己回帰による安定生成"
+        description="[100%ローカル / Needle] 1文字自己回帰による安定文章生成"
     )
     @app_commands.describe(prompt="メッセージを入力してください")
     async def ai_needle_command(self, interaction: discord.Interaction, prompt: str):
