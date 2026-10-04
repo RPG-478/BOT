@@ -4,6 +4,8 @@ from discord.ext import commands
 import asyncio
 import time
 import logging
+import base64
+import concurrent.futures
 import configparser
 import string
 import subprocess
@@ -12,6 +14,8 @@ import io
 import os
 import shlex
 import tempfile
+import secrets
+from urllib.parse import urlencode
 import yt_dlp
 import struct
 import math  # 追加: Timerクラスのサイン波計算で必要
@@ -25,6 +29,10 @@ import re
 import aiohttp
 import wave
 import discord.opus
+from flask import request
+from supabase import create_client
+import config
+from keep_alive import app as keep_alive_app
 
 logger = logging.getLogger(__name__)
  
@@ -54,6 +62,12 @@ if YTDL_COOKIE_FILE:
 BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
 MAX_QUEUE_SIZE = 50
 MAX_PLAYLIST_ITEMS = 50
+SPOTIFY_PLAYLIST_RE = re.compile(
+    r"https?://open\.spotify\.com/(?:intl-[^/]+/)?playlist/([A-Za-z0-9]+)",
+    re.IGNORECASE,
+)
+SPOTIFY_REDIRECT_URI = os.getenv('SPOTIFY_REDIRECT_URI', '').strip()
+SPOTIFY_SCOPES = 'playlist-read-private playlist-read-collaborative user-read-private'
 MAX_TTS_CHARS = 300
 MIN_PLAYBACK_SPEED = 0.5
 MAX_PLAYBACK_SPEED = 64.0
@@ -914,6 +928,15 @@ class SearchModal(discord.ui.Modal, title="🎵 YouTube 楽曲検索"):
             is_yt = False
             url, filename = None, None
 
+            if self.cog._spotify_playlist_id(keyword):
+                token = None
+                try:
+                    token = await self.cog._spotify_user_token(interaction.user.id)
+                except Exception:
+                    pass
+                await self.cog.start_spotify_playlist_load(interaction, keyword, token)
+                return
+
             if "youtube.com" in keyword or "youtu.be" in keyword:
                 info = await self.cog.get_yt_info(keyword)
                 url, filename, is_yt = keyword, info['title'], True
@@ -941,6 +964,43 @@ class SearchModal(discord.ui.Modal, title="🎵 YouTube 楽曲検索"):
 
         except Exception as e:
             await interaction.followup.send(f"❌ 検索中にエラーが発生しました: {e}", ephemeral=True)
+
+
+class SpotifyPlaylistView(discord.ui.View):
+    """連携済みSpotifyアカウントのプレイリスト選択UI。"""
+    def __init__(self, cog, user_id: int, playlists: list[dict]):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.user_id = user_id
+        options = []
+        for playlist in playlists[:25]:
+            label = playlist['name'][:100]
+            description = f"{playlist['owner']} / {playlist['tracks']}曲"[:100]
+            options.append(discord.SelectOption(label=label, value=playlist['id'], description=description))
+        select = discord.ui.Select(
+            placeholder="再生するSpotifyプレイリストを選択",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+        select.callback = self.select_callback
+        self.add_item(select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message('この選択画面は呼び出したユーザー専用です。', ephemeral=True)
+        playlist_id = self.children[0].values[0]
+        await interaction.response.defer(ephemeral=True)
+        try:
+            token = await self.cog._spotify_user_token(interaction.user.id)
+            await self.cog.start_spotify_playlist_load(
+                interaction,
+                f'https://open.spotify.com/playlist/{playlist_id}',
+                token,
+            )
+        except Exception as exc:
+            await interaction.followup.send(f'Spotifyプレイリストの再生準備に失敗しました: {exc}', ephemeral=True)
+        self.stop()
 
 
 class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルター入力)"):
@@ -1146,7 +1206,7 @@ class VoiceControlView(discord.ui.View):
     @discord.ui.button(label="📚 ライブラリ", style=discord.ButtonStyle.secondary, row=4)
     async def library_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
-            "個人プレイリストは `/playlist` から保存・一覧・再生できます。",
+            "個人プレイリストは `/playlist`、Spotify連携済みプレイリストは `/spotify_playlists` から再生できます。未連携の場合は `/spotify_link` を実行してください。",
             ephemeral=True,
         )
 
@@ -1315,6 +1375,12 @@ class VoiceCog(commands.Cog):
         self.emoji_sounds = {}
         self.states = {} 
         self.supabase = getattr(bot, "supabase", None)
+        service_role_key = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
+        self.spotify_supabase = (
+            create_client(config.SUPABASE_URL, service_role_key)
+            if config.SUPABASE_URL and service_role_key
+            else self.supabase
+        )
         self.ir_l_id = "d424KTRkAlaetACCuFZOCjUtFNjho1t5" 
         self.ir_r_id = "d424KTRkAlaetACCuFZOCjUtFO0p0TMN"
         self.default_volume = 1.0
@@ -1322,6 +1388,26 @@ class VoiceCog(commands.Cog):
         self.default_eq = "flat"
         self.vv_host = "http://localhost:50021"
         self.recorders = {}
+        self.spotify_oauth_states = {}
+        self._register_spotify_callback()
+
+    def _register_spotify_callback(self):
+        """既存のkeep-alive Flaskアプリへ、CogのOAuth callbackだけを登録する。"""
+        if 'spotify_callback' in keep_alive_app.view_functions:
+            return
+
+        @keep_alive_app.route('/spotify/callback', endpoint='spotify_callback')
+        def spotify_callback():
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._handle_spotify_callback(request.args.to_dict()), self.bot.loop
+                )
+                return future.result(timeout=35)
+            except concurrent.futures.TimeoutError:
+                return 'Spotify連携処理がタイムアウトしました。Discordで再度お試しください。', 504
+            except Exception:
+                logger.exception('Spotify callback route failed')
+                return 'Spotify連携に失敗しました。Discordで再度お試しください。', 500
 
     def cog_unload(self):
         for state in self.states.values():
@@ -1885,6 +1971,231 @@ class VoiceCog(commands.Cog):
             'duration': data.get('duration', 0)
         }
 
+    async def _handle_spotify_callback(self, args: dict) -> str:
+        """Flaskから呼ばれるSpotify OAuth callback処理。"""
+        state = args.get('state')
+        pending = self.spotify_oauth_states.pop(state, None) if state else None
+        if not pending or time.time() - pending['created_at'] > 600:
+            return '認証状態が無効または期限切れです。Discordで連携をやり直してください。', 400
+        if args.get('error'):
+            return 'Spotify連携がキャンセルされました。Discordへ戻ってください。', 400
+        code = args.get('code')
+        if not code:
+            return 'Spotifyから認可コードを受け取れませんでした。', 400
+        try:
+            token = await self._exchange_spotify_code(code)
+            profile = await self._spotify_api_json('/v1/me', token['access_token'])
+            if not self.spotify_supabase:
+                raise RuntimeError('Supabaseが設定されていないため、連携情報を保存できません。')
+            row = {
+                'discord_user_id': pending['discord_user_id'],
+                'spotify_user_id': profile.get('id'),
+                'spotify_display_name': profile.get('display_name') or profile.get('id'),
+                'access_token': token['access_token'],
+                'refresh_token': token.get('refresh_token'),
+                'expires_at': time.time() + int(token.get('expires_in', 3600)),
+            }
+            await asyncio.to_thread(
+                lambda: self.spotify_supabase.table('spotify_accounts').upsert(row, on_conflict='discord_user_id').execute()
+            )
+            return 'Spotifyとの連携が完了しました。Discordに戻って `/spotify_playlists` を実行してください。'
+        except Exception:
+            logger.exception('Spotify OAuth callback failed')
+            return 'Spotify連携情報の保存に失敗しました。Bot管理者に設定を確認してもらってください。', 500
+
+    async def _exchange_spotify_code(self, code: str) -> dict:
+        client_id = os.getenv('SPOTIFY_CLIENT_ID')
+        client_secret = os.getenv('SPOTIFY_CLIENT_SECRET')
+        if not client_id or not client_secret or not SPOTIFY_REDIRECT_URI:
+            raise RuntimeError('Spotify OAuthの環境変数が不足しています。')
+        auth = base64.b64encode(f'{client_id}:{client_secret}'.encode()).decode()
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
+            async with session.post(
+                'https://accounts.spotify.com/api/token',
+                headers={'Authorization': f'Basic {auth}'},
+                data={'grant_type': 'authorization_code', 'code': code, 'redirect_uri': SPOTIFY_REDIRECT_URI},
+            ) as response:
+                if response.status != 200:
+                    raise RuntimeError(f'Spotify token exchange failed: {response.status}')
+                return await response.json()
+
+    async def _spotify_api_json(self, path_or_url: str, access_token: str, params: dict | None = None) -> dict:
+        url = path_or_url if path_or_url.startswith('http') else f'https://api.spotify.com/v1{path_or_url}'
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
+            async with session.get(url, headers={'Authorization': f'Bearer {access_token}'}, params=params) as response:
+                if response.status != 200:
+                    raise RuntimeError(f'Spotify API request failed: {response.status}')
+                return await response.json()
+
+    async def _spotify_user_token(self, discord_user_id: int) -> str:
+        if not self.spotify_supabase:
+            raise RuntimeError('Spotify連携を使うにはSupabaseを設定してください。')
+        result = await asyncio.to_thread(
+            lambda: self.spotify_supabase.table('spotify_accounts').select(
+                'access_token,refresh_token,expires_at'
+            ).eq('discord_user_id', discord_user_id).limit(1).execute()
+        )
+        rows = result.data or []
+        if not rows:
+            raise RuntimeError('Spotifyが未連携です。先に `/spotify_link` を実行してください。')
+        row = rows[0]
+        if float(row.get('expires_at') or 0) > time.time() + 60:
+            return row['access_token']
+        refresh_token = row.get('refresh_token')
+        if not refresh_token:
+            raise RuntimeError('Spotify更新トークンがありません。`/spotify_link` をやり直してください。')
+        client_id = os.getenv('SPOTIFY_CLIENT_ID')
+        client_secret = os.getenv('SPOTIFY_CLIENT_SECRET')
+        auth = base64.b64encode(f'{client_id}:{client_secret}'.encode()).decode()
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
+            async with session.post(
+                'https://accounts.spotify.com/api/token',
+                headers={'Authorization': f'Basic {auth}'},
+                data={'grant_type': 'refresh_token', 'refresh_token': refresh_token},
+            ) as response:
+                if response.status != 200:
+                    raise RuntimeError('Spotifyのアクセストークン更新に失敗しました。')
+                token = await response.json()
+        update = {
+            'access_token': token['access_token'],
+            'expires_at': time.time() + int(token.get('expires_in', 3600)),
+        }
+        if token.get('refresh_token'):
+            update['refresh_token'] = token['refresh_token']
+        await asyncio.to_thread(
+            lambda: self.spotify_supabase.table('spotify_accounts').update(update).eq(
+                'discord_user_id', discord_user_id
+            ).execute()
+        )
+        return token['access_token']
+
+    @staticmethod
+    def _spotify_playlist_id(value: str) -> str | None:
+        """Spotifyの通常URLおよびintl付きURLからプレイリストIDを取得する。"""
+        match = SPOTIFY_PLAYLIST_RE.search(value.strip())
+        return match.group(1) if match else None
+
+    async def get_spotify_playlist_entries(self, playlist_url: str, access_token: str | None = None):
+        """Spotify Web APIで公開プレイリストを取得し、既存のYouTubeキュー形式へ変換する。
+
+        Spotifyは音声配信元ではないため、各曲は ``ytsearch1:曲名 アーティスト`` として
+        既存のYouTube解決処理へ渡す。Client Credentialsが未設定の場合は、利用者に
+        設定方法を知らせる明示的なエラーにする。
+        """
+        playlist_id = self._spotify_playlist_id(playlist_url)
+        if not playlist_id:
+            raise ValueError("有効なSpotifyプレイリストURLを指定してください。")
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            if not access_token:
+                client_id = os.getenv('SPOTIFY_CLIENT_ID')
+                client_secret = os.getenv('SPOTIFY_CLIENT_SECRET')
+                if not client_id or not client_secret:
+                    raise RuntimeError(
+                        "Spotify連携が未設定です。`SPOTIFY_CLIENT_ID` と `SPOTIFY_CLIENT_SECRET` "
+                        "をBotの環境変数へ設定してください。"
+                    )
+                auth = base64.b64encode(f'{client_id}:{client_secret}'.encode()).decode()
+                async with session.post(
+                    'https://accounts.spotify.com/api/token',
+                    headers={'Authorization': f'Basic {auth}'},
+                    data={'grant_type': 'client_credentials'},
+                ) as response:
+                    if response.status != 200:
+                        raise RuntimeError('Spotify認証に失敗しました。Client IDとSecretを確認してください。')
+                    token_data = await response.json()
+                access_token = token_data['access_token']
+            headers = {'Authorization': f"Bearer {access_token}"}
+            next_url = f'https://api.spotify.com/v1/playlists/{playlist_id}'
+            params = {
+                'fields': 'name,tracks.items(track(name,artists(name),is_local)),tracks.next',
+                'limit': min(MAX_PLAYLIST_ITEMS, 100),
+            }
+            playlist_name = 'Spotifyプレイリスト'
+            tracks = []
+            while next_url and len(tracks) < MAX_PLAYLIST_ITEMS:
+                async with session.get(next_url, headers=headers, params=params if next_url.endswith(playlist_id) else None) as response:
+                    if response.status == 404:
+                        raise RuntimeError('Spotifyプレイリストが見つからないか、非公開です。')
+                    if response.status != 200:
+                        raise RuntimeError('Spotifyプレイリストを読み込めませんでした。')
+                    payload = await response.json()
+                playlist_name = payload.get('name') or playlist_name
+                for item in payload.get('tracks', {}).get('items', []):
+                    track = item.get('track') or {}
+                    if track.get('is_local') or not track.get('name'):
+                        continue
+                    artists = ', '.join(
+                        artist.get('name', '') for artist in track.get('artists', []) if artist.get('name')
+                    )
+                    query = f"{track['name']} {artists}".strip()
+                    tracks.append({
+                        'input': f'ytsearch1:{query}',
+                        'title': f"{track['name']} — {artists}" if artists else track['name'],
+                        'is_youtube': True,
+                    })
+                    if len(tracks) >= MAX_PLAYLIST_ITEMS:
+                        break
+                next_url = payload.get('tracks', {}).get('next')
+                params = None
+        return playlist_name, tracks
+
+    async def _load_spotify_playlist_in_background(self, interaction, playlist_url: str, status_message, access_token: str | None = None):
+        state = self.get_state(interaction.guild_id)
+        try:
+            await status_message.edit(content='Spotifyプレイリストの曲一覧を取得しています…')
+            title, tracks = await self.get_spotify_playlist_entries(playlist_url, access_token)
+            if not tracks:
+                await status_message.edit(content='Spotifyプレイリストから再生可能な曲を取得できませんでした。')
+                return
+            await status_message.edit(content=f'Spotifyプレイリスト `{title}` を取得しました（全 {len(tracks)} 件）。キューへ追加します…')
+            await self._load_playlist_in_background(interaction, tracks, title, status_message)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception('Spotify playlist extraction failed')
+            try:
+                await status_message.edit(content=f'Spotifyプレイリストの取得に失敗しました: {exc}')
+            except discord.HTTPException:
+                pass
+        finally:
+            state['playlist_load_task'] = None
+
+    async def start_spotify_playlist_load(self, interaction, playlist_url: str, access_token: str | None = None):
+        state = self.get_state(interaction.guild_id)
+        state['current_ctx'] = interaction
+        existing = state.get('playlist_load_task')
+        if existing and not existing.done():
+            existing.cancel()
+        status_message = await interaction.followup.send(
+            'Spotifyプレイリストの読込を受け付けました。バックグラウンドで曲一覧を取得します。',
+            wait=True,
+        )
+        state['playlist_load_task'] = asyncio.create_task(
+            self._load_spotify_playlist_in_background(interaction, playlist_url, status_message, access_token)
+        )
+
+    async def get_spotify_user_playlists(self, discord_user_id: int) -> list[dict]:
+        token = await self._spotify_user_token(discord_user_id)
+        playlists = []
+        profile = await self._spotify_api_json('/me', token)
+        spotify_user_id = profile.get('id')
+        if not spotify_user_id:
+            raise RuntimeError('Spotifyユーザー情報を取得できませんでした。')
+        next_url = f'https://api.spotify.com/v1/users/{spotify_user_id}/playlists?limit=50'
+        while next_url and len(playlists) < 100:
+            payload = await self._spotify_api_json(next_url, token)
+            for item in payload.get('items', []):
+                if item.get('id') and item.get('name'):
+                    playlists.append({
+                        'id': item['id'],
+                        'name': item['name'],
+                        'owner': (item.get('owner') or {}).get('display_name') or 'Spotify',
+                        'tracks': (item.get('items') or item.get('tracks') or {}).get('total', 0),
+                    })
+            next_url = payload.get('next')
+        return playlists
+
     async def get_youtube_playlist_entries(self, playlist_url: str):
         """個別の音声URLを解決せず、YouTubeプレイリストの曲ページURLだけを取得する。"""
         loop = asyncio.get_running_loop()
@@ -2002,6 +2313,12 @@ class VoiceCog(commands.Cog):
         """Youtubeから検索した結果を10件表示します"""
         if not ctx.voice_client: return await ctx.send("先に `!join` してください。")
         if not keyword: return await ctx.send("検索キーワードを入力してください。")
+        if self._spotify_playlist_id(keyword.strip()):
+            try:
+                title, tracks = await self.get_spotify_playlist_entries(keyword.strip())
+                return await self.start_playlist_load(ctx, tracks, title)
+            except Exception as exc:
+                return await ctx.send(f"Spotifyプレイリストの取得に失敗しました: {exc}")
         await ctx.send(f"🔎 YouTubeで「{keyword}」の上位10件を検索中...")
         search_options = YTDL_OPTIONS.copy()
         search_options['default_search'] = 'ytsearch10'
@@ -2288,9 +2605,63 @@ class VoiceCog(commands.Cog):
         state['panel_message'] = await interaction.original_response()
         await self.update_panel(interaction.guild_id)
 
-    @app_commands.command(name="play", description="添付ファイル、ユニバーサルID、YouTubeのURL/キーワードで音楽を再生します")
+    @app_commands.command(name="spotify_link", description="SpotifyアカウントをDiscordユーザーへ連携します")
+    async def spotify_link(self, interaction: discord.Interaction):
+        client_id = os.getenv('SPOTIFY_CLIENT_ID')
+        if not client_id or not SPOTIFY_REDIRECT_URI or not self.spotify_supabase:
+            return await interaction.response.send_message(
+                'Spotify連携が未設定です。管理者に `SPOTIFY_CLIENT_ID`、`SPOTIFY_REDIRECT_URI`、`SUPABASE_SERVICE_ROLE_KEY` の設定を依頼してください。',
+                ephemeral=True,
+            )
+        state = secrets.token_urlsafe(32)
+        self.spotify_oauth_states[state] = {
+            'discord_user_id': interaction.user.id,
+            'created_at': time.time(),
+        }
+        params = urlencode({
+            'client_id': client_id,
+            'response_type': 'code',
+            'redirect_uri': SPOTIFY_REDIRECT_URI,
+            'scope': SPOTIFY_SCOPES,
+            'state': state,
+            'show_dialog': 'false',
+        })
+        await interaction.response.send_message(
+            f'[SpotifyをDiscordに連携する]({"https://accounts.spotify.com/authorize?" + params})\n'
+            '認証完了後、この画面に戻って `/spotify_playlists` を実行してください。',
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="spotify_unlink", description="Discordユーザーに紐付いたSpotifyアカウントを解除します")
+    async def spotify_unlink(self, interaction: discord.Interaction):
+        if not self.spotify_supabase:
+            return await interaction.response.send_message('Supabaseが設定されていません。', ephemeral=True)
+        await asyncio.to_thread(
+            lambda: self.spotify_supabase.table('spotify_accounts').delete().eq(
+                'discord_user_id', interaction.user.id
+            ).execute()
+        )
+        await interaction.response.send_message('Spotifyのユーザー連携を解除しました。', ephemeral=True)
+
+    @app_commands.command(name="spotify_playlists", description="連携済みSpotifyアカウントのプレイリストから再生します")
+    async def spotify_playlists(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            playlists = await self.get_spotify_user_playlists(interaction.user.id)
+            if not playlists:
+                return await interaction.followup.send('Spotifyプレイリストが見つかりません。', ephemeral=True)
+            view = SpotifyPlaylistView(self, interaction.user.id, playlists)
+            await interaction.followup.send(
+                f'Spotifyプレイリストを選択してください（表示は先頭{min(len(playlists), 25)}件）。',
+                view=view,
+                ephemeral=True,
+            )
+        except Exception as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+
+    @app_commands.command(name="play", description="添付ファイル、Spotify/YouTube URL、検索キーワードで音楽を再生します")
     @app_commands.describe(
-        query="YouTube URL / 検索キーワード / ユニバーサルID",
+        query="Spotify/YouTube URL / 検索キーワード / ユニバーサルID",
         file="音声/動画ファイルの添付（ファイル再生時）",
         start_at="開始位置（秒）。キューが空で再生を開始する場合のみ指定できます。"
     )
@@ -2328,12 +2699,22 @@ class VoiceCog(commands.Cog):
         # YouTube関連ドメイン判定
         yt_pattern = re.compile(r'https?://(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)/', re.IGNORECASE)
 
-        # 1. YouTubeプレイリストは曲一覧の取得が長時間化するため、即時受付してバックグラウンド処理へ渡す。
+        # 1. Spotifyプレイリストは曲一覧の取得が長時間化するため、即時受付してバックグラウンド処理へ渡す。
+        if input_str and self._spotify_playlist_id(input_str):
+            token = None
+            try:
+                token = await self._spotify_user_token(interaction.user.id)
+            except Exception:
+                pass
+            await self.start_spotify_playlist_load(interaction, input_str, token)
+            return
+
+        # 2. YouTubeプレイリストは曲一覧の取得が長時間化するため、即時受付してバックグラウンド処理へ渡す。
         if input_str and yt_pattern.search(input_str) and re.search(r'[?&]list=[^&]+', input_str):
             await self.start_youtube_playlist_load(interaction, input_str)
             return
 
-        # 2. YouTube単曲URLが直接指定された場合
+        # 3. YouTube単曲URLが直接指定された場合
         if input_str and yt_pattern.search(input_str):
             await interaction.followup.send("⏳ YouTubeを解析中...")
             try:
