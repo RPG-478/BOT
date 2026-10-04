@@ -40,64 +40,169 @@ except ImportError as e1:
 
 
 # ----------------------------------------------------------------------
-# 厳格な Enum（列挙型）による選択肢の物理的制限定義
+# 大量基本単語 Enum（列挙型）定義 (100語超)
 # ----------------------------------------------------------------------
-class CharChoice(str, Enum):
-    A = "A"
-    B = "B"
-    C = "C"
-    D = "D"
-    E = "E"
-    F = "F"
-    G = "G"
-    H = "H"
+class WordChoice(str, Enum):
+    # 挨拶・感嘆詞
+    HELLO = "HELLO"
+    HI = "HI"
+    THANKS = "THANKS"
+    THANK_YOU = "THANK YOU"
+    PLEASE = "PLEASE"
+    YES = "YES"
+    NO = "NO"
+    OK = "OK"
+    BYE = "BYE"
+    GOODBYE = "GOODBYE"
+    SORRY = "SORRY"
+    WELCOME = "WELCOME"
+    GREAT = "GREAT"
+    NICE = "NICE"
+
+    # 代名詞
     I = "I"
-    J = "J"
-    K = "K"
-    L = "L"
-    M = "M"
-    N = "N"
-    O = "O"
-    P = "P"
-    Q = "Q"
-    R = "R"
-    S = "S"
-    T = "T"
-    U = "U"
-    V = "V"
-    W = "W"
-    X = "X"
-    Y = "Y"
-    Z = "Z"
-    SPACE = " "
+    YOU = "YOU"
+    HE = "HE"
+    SHE = "SHE"
+    IT = "IT"
+    WE = "WE"
+    THEY = "THEY"
+    THIS = "THIS"
+    THAT = "THAT"
+    MY = "MY"
+    YOUR = "YOUR"
+    HIS = "HIS"
+    HER = "HER"
+    OUR = "OUR"
+    ME = "ME"
+    HIM = "HIM"
+    US = "US"
+    THEM = "THEM"
+    WHAT = "WHAT"
+    WHO = "WHO"
+    WHERE = "WHERE"
+    WHEN = "WHEN"
+    WHY = "WHY"
+    HOW = "HOW"
+
+    # 助動詞・b動詞
+    AM = "AM"
+    IS = "IS"
+    ARE = "ARE"
+    WAS = "WAS"
+    WERE = "WERE"
+    BE = "BE"
+    DO = "DO"
+    DOES = "DOES"
+    DID = "DID"
+    CAN = "CAN"
+    COULD = "COULD"
+    WILL = "WILL"
+    WOULD = "WOULD"
+    MUST = "MUST"
+    SHOULD = "SHOULD"
+    HAVE = "HAVE"
+    HAS = "HAS"
+    HAD = "HAD"
+
+    # 主要動詞
+    GO = "GO"
+    COME = "COME"
+    SEE = "SEE"
+    KNOW = "KNOW"
+    THINK = "THINK"
+    MAKE = "MAKE"
+    TAKE = "TAKE"
+    GET = "GET"
+    WANT = "WANT"
+    LIKE = "LIKE"
+    HELP = "HELP"
+    NEED = "NEED"
+    USE = "USE"
+    FIND = "FIND"
+    SAY = "SAY"
+    TELL = "TELL"
+    WORK = "WORK"
+
+    # 名詞
+    TIME = "TIME"
+    DAY = "DAY"
+    TODAY = "TODAY"
+    NAME = "NAME"
+    FRIEND = "FRIEND"
+    BOT = "BOT"
+    AI = "AI"
+    USER = "USER"
+    THING = "THING"
+    WORLD = "WORLD"
+    SYSTEM = "SYSTEM"
+
+    # 形容詞・副詞
+    GOOD = "GOOD"
+    BAD = "BAD"
+    BEST = "BEST"
+    NEW = "NEW"
+    OLD = "OLD"
+    BIG = "BIG"
+    SMALL = "SMALL"
+    VERY = "VERY"
+    SO = "SO"
+    WELL = "WELL"
+    NOW = "NOW"
+    HERE = "HERE"
+    THERE = "THERE"
+    ALWAYS = "ALWAYS"
+    NEVER = "NEVER"
+    AGAIN = "AGAIN"
+
+    # 前置詞・接続詞・記号
+    IN = "IN"
+    ON = "ON"
+    AT = "AT"
+    TO = "TO"
+    FOR = "FOR"
+    WITH = "WITH"
+    ABOUT = "ABOUT"
+    BY = "BY"
+    FROM = "FROM"
+    AND = "AND"
+    BUT = "BUT"
+    OR = "OR"
+    IF = "IF"
+    BECAUSE = "BECAUSE"
     PERIOD = "."
+    COMMA = ","
+    QUESTION = "?"
+    EXCLAMATION = "!"
+
+    # 終了識別子
     END = "[END]"
 
 
-def append_next_character(char: CharChoice) -> str:
-    """Append the single selected character to construct the output text.
+def append_next_word(word: WordChoice) -> str:
+    """Select and append the single best word or token from the WordChoice Enum to build the sentence naturally.
 
     Args:
-        char: The exact single character selected from the permitted Enum choices.
+        word: The selected word, token, or '[END]' from the permitted Enum choices.
     """
-    return str(char.value if isinstance(char, CharChoice) else char)
+    return str(word.value if isinstance(word, WordChoice) else word)
 
 
 if NEEDLE_AVAILABLE and hasattr(needle, "tool"):
     try:
-        append_next_character = needle.tool(triggers=[r".*"])(append_next_character)
+        append_next_word = needle.tool(triggers=[r".*"])(append_next_word)
     except Exception:
         try:
-            append_next_character = needle.tool(append_next_character)
+            append_next_word = needle.tool(append_next_word)
         except Exception as e:
             print(f"[Needle Tool Register Warning]: {e}")
 
 
-class NeedleEnumChoiceEngine:
+class NeedleWordEnumEngine:
     """
-    Enum（列挙型）スキーマ制限による厳格な選択式自己回帰生成エンジン。
+    100語超の基本単語 Enum スキーマに基づく単語自己回帰生成エンジン。
     """
-    def __init__(self, max_steps: int = 50, min_steps: int = 5):
+    def __init__(self, max_steps: int = 20, min_steps: int = 2):
         self.agent = None
         self.init_error = None
         self.max_steps = max_steps
@@ -108,7 +213,7 @@ class NeedleEnumChoiceEngine:
             return
 
         try:
-            init_kwargs = {"tools": [append_next_character]}
+            init_kwargs = {"tools": [append_next_word]}
             if hasattr(needle, "Needle"):
                 self.agent = needle.Needle(**init_kwargs)
             elif hasattr(needle, "Agent"):
@@ -120,12 +225,12 @@ class NeedleEnumChoiceEngine:
 
     async def generate_sentence(self, user_prompt: str) -> Dict[str, Any]:
         start_time = time.perf_counter()
-        generated_text = ""
+        generated_words: List[str] = []
         trace_logs = []
         raw_debug_outputs = []
         step_count = 0
         consecutive_repeat_count = 0
-        last_char = ""
+        last_word = ""
 
         if self.agent is None:
             elapsed_ms = (time.perf_counter() - start_time) * 1000
@@ -140,58 +245,60 @@ class NeedleEnumChoiceEngine:
 
         while step_count < self.max_steps:
             step_count += 1
-            chosen_char = None
+            chosen_word = None
             retry_count = 0
+
+            current_text = " ".join(generated_words)
 
             while retry_count < 3:
                 state_context = (
                     f"User Prompt: {user_prompt}\n"
-                    f"Current Output: '{generated_text}'\n"
-                    f"Action: Call 'append_next_character' choosing the best single character to continue."
+                    f"Current Output: '{current_text}'\n"
+                    f"Action: Call 'append_next_word' selecting the single best WordChoice to logically continue the sentence."
                 )
 
                 try:
                     result = await asyncio.to_thread(self.agent.run, state_context)
                     raw_debug_outputs.append(f"Step {step_count:02d} (Attempt {retry_count+1}) Raw: {repr(result)}")
 
-                    temp_char = None
+                    temp_word = None
                     if result:
                         if isinstance(result, dict):
                             if "results" in result and result["results"]:
                                 for res in result["results"]:
                                     candidate = self._parse_enum_value(res)
                                     if candidate:
-                                        temp_char = candidate
+                                        temp_word = candidate
                                         break
-                            if temp_char is None and "function_calls" in result and result["function_calls"]:
+                            if temp_word is None and "function_calls" in result and result["function_calls"]:
                                 for call in result["function_calls"]:
                                     candidate = self._extract_enum(call)
                                     if candidate:
-                                        temp_char = candidate
+                                        temp_word = candidate
                                         break
-                            elif temp_char is None and "tool_calls" in result and result["tool_calls"]:
+                            elif temp_word is None and "tool_calls" in result and result["tool_calls"]:
                                 for call in result["tool_calls"]:
                                     candidate = self._extract_enum(call)
                                     if candidate:
-                                        temp_char = candidate
+                                        temp_word = candidate
                                         break
 
                         elif hasattr(result, "function_calls") and result.function_calls:
                             for call in result.function_calls:
                                 candidate = self._extract_enum(call)
                                 if candidate:
-                                    temp_char = candidate
+                                    temp_word = candidate
                                     break
 
-                        if temp_char is None and isinstance(result, str):
-                            temp_char = self._parse_enum_value(result)
+                        if temp_word is None and isinstance(result, str):
+                            temp_word = self._parse_enum_value(result)
 
-                    if temp_char == "[END]" and step_count <= self.min_steps:
+                    if temp_word == "[END]" and step_count <= self.min_steps:
                         retry_count += 1
                         continue
 
-                    chosen_char = temp_char
-                    if chosen_char is not None:
+                    chosen_word = temp_word
+                    if chosen_word is not None:
                         break
 
                 except Exception as e:
@@ -200,32 +307,36 @@ class NeedleEnumChoiceEngine:
 
                 retry_count += 1
 
-            if chosen_char is None:
+            if chosen_word is None:
                 trace_logs.append(f"Step {step_count:02d}: [FAIL (Tool Call None)]")
                 break
 
-            if chosen_char == "[END]":
+            if chosen_word == "[END]":
                 trace_logs.append(f"Step {step_count:02d}: '[END]'")
                 break
 
-            trace_logs.append(f"Step {step_count:02d}: '{chosen_char}'")
+            trace_logs.append(f"Step {step_count:02d}: '{chosen_word}'")
 
-            # ループ検知（空白を除く同文字の連続）
-            if chosen_char != " " and chosen_char == last_char:
+            # 単語ループ検知
+            if chosen_word == last_word:
                 consecutive_repeat_count += 1
-                if consecutive_repeat_count >= 4:
+                if consecutive_repeat_count >= 2:
                     trace_logs.append(f"Step {step_count:02d}: [LOOP DETECTED - FORCED END]")
                     break
             else:
                 consecutive_repeat_count = 0
-                last_char = chosen_char
+                last_word = chosen_word
 
-            generated_text += chosen_char
+            generated_words.append(chosen_word)
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
+        
+        # 記号の前後のスペース整形
+        final_sentence = " ".join(generated_words)
+        final_sentence = re.sub(r"\s+([.,!?])", r"\1", final_sentence)
 
         return {
-            "sentence": generated_text if generated_text else "（Needleツール呼出失敗）",
+            "sentence": final_sentence if final_sentence else "（Needleツール呼出失敗）",
             "trace": trace_logs,
             "raw_debug": raw_debug_outputs,
             "total_steps": step_count,
@@ -233,19 +344,19 @@ class NeedleEnumChoiceEngine:
         }
 
     def _parse_enum_value(self, val: Any) -> Optional[str]:
-        """引数または返却値を Enum の値へ厳格にマッピング"""
         if val is None:
             return None
-        if isinstance(val, CharChoice):
+        if isinstance(val, WordChoice):
             return val.value
 
         text = str(val).strip()
-        # Enum のキー名（例: "SPACE", "PERIOD", "END", "A"）直接指定への対応
-        if text in CharChoice.__members__:
-            return CharChoice[text].value
 
-        # Enum の値（例: " ", ".", "[END]", "A"）直接指定への対応
-        for item in CharChoice:
+        # Enum のキー名（例: "HELLO", "THANK_YOU"）直接指定時のマッピング
+        if text in WordChoice.__members__:
+            return WordChoice[text].value
+
+        # Enum の値直接指定時のマッピング
+        for item in WordChoice:
             if item.value == text or item.value == text.upper():
                 return item.value
 
@@ -257,25 +368,25 @@ class NeedleEnumChoiceEngine:
         if hasattr(call, "arguments"):
             args = call.arguments
             if isinstance(args, dict):
-                return self._parse_enum_value(args.get("char", args.get("token", "")))
+                return self._parse_enum_value(args.get("word", args.get("char", args.get("token", ""))))
         if isinstance(call, dict):
             args = call.get("arguments", call.get("args", {}))
             if isinstance(args, dict):
-                val = args.get("char", args.get("token", None))
+                val = args.get("word", args.get("char", args.get("token", None)))
                 return self._parse_enum_value(val)
         return None
 
 
-class NeedleEnumChoiceCog(commands.Cog):
-    """Needle Enum 選択式自己回帰 Discord Cog"""
+class NeedleWordEnumCog(commands.Cog):
+    """Needle 単語 Enum 選択式自己回帰 Discord Cog"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.engine = NeedleEnumChoiceEngine(max_steps=50, min_steps=5)
+        self.engine = NeedleWordEnumEngine(max_steps=20, min_steps=2)
 
     @app_commands.command(
         name="ai_needle",
-        description="[100%ローカル / Needle] Enum厳格選択による自己回帰生成"
+        description="[100%ローカル / Needle] 単語Enum選択による自己回帰文章生成"
     )
     @app_commands.describe(prompt="プロンプトを入力してください")
     async def ai_needle_command(self, interaction: discord.Interaction, prompt: str):
@@ -296,13 +407,13 @@ class NeedleEnumChoiceCog(commands.Cog):
         msg = (
             f"**[生成結果]: {sentence}**\n\n"
             f"```\n"
-            f"[文字選択]\n{trace}\n"
+            f"[Needle 単語選択軌跡]\n{trace}\n"
             f"```\n"
-            f"`Steps: {steps} 回 | Latency: {latency:.2f}ms | RAM: ~28MB`"
+            f"`⚡ Steps: {steps} 回 | Latency: {latency:.2f}ms | RAM: ~28MB`"
         )
 
         await interaction.followup.send(msg)
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(NeedleEnumChoiceCog(bot))
+    await bot.add_cog(NeedleWordEnumCog(bot))
