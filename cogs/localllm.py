@@ -28,21 +28,27 @@ class AICog(commands.Cog):
     async with self.lock:
       await interaction.response.defer()
 
+      # システム指示（思考を10行以内に抑えさせる）
+      system_instruction = (
+          "思考プロセス（<think>タグ内）を出力する場合は、必ず10行以内の簡潔な内容に収めてください。"
+          "思考後はユーザーの質問に日本語で回答してください。"
+      )
+
       payload = {
           "model": self.model_name,
           "prompt": prompt,
+          "system": system_instruction,
           "stream": False,
-          "keep_alive": -1,  # -1 でモデルをRAMに完全常駐（永続保持）
+          "keep_alive": -1,  # RAMに完全常駐
           "options": {
               "num_thread": 4,  # ラズパイ4Bの4コアを活用
-              "num_ctx": 2048,  # コンテキストサイズ
-              "num_predict": 512,  # 生成の最大トークン数
+              "num_ctx": 4096,  # コンテキストサイズ
+              "num_predict": 768,  # 生成の最大トークン数
           },
       }
 
       try:
-        # 常駐時は初回起動時以外の応答が高速になるため、タイムアウトを120秒に設定
-        timeout = aiohttp.ClientTimeout(total=120)
+        timeout = aiohttp.ClientTimeout(total=180)
         async with aiohttp.ClientSession(timeout=timeout) as session:
           async with session.post(self.ollama_url, json=payload) as resp:
             if resp.status == 200:
@@ -51,18 +57,11 @@ class AICog(commands.Cog):
                   "response", "応答を生成できませんでした。"
               )
 
-              # --- Thinking（思考ログ）の削除処理 ---
-              # 1. <think>...</think> の完全なブロックを除去
-              response_text = re.sub(
-                  r"<think>.*?</think>", "", response_text, flags=re.DOTALL
+              # --- 思考ログ（<think>）を最大10行に制限する整形処理 ---
+              response_text = self._limit_think_lines(
+                  response_text, max_lines=10
               )
-              # 2. 途中で出力が切れて未閉じになった <think>... を末尾まで除去
-              response_text = re.sub(
-                  r"<think>.*$", "", response_text, flags=re.DOTALL
-              ).strip()
 
-              if not response_text:
-                response_text = "回答の生成に失敗しました（思考部分のみで回答本文が得られませんでした）。"
             else:
               response_text = f"エラーが発生しました (Status: {resp.status})"
       except asyncio.TimeoutError:
@@ -76,6 +75,30 @@ class AICog(commands.Cog):
       else:
         for i in range(0, len(response_text), 2000):
           await interaction.followup.send(response_text[i : i + 2000])
+
+  def _limit_think_lines(self, text: str, max_lines: int = 10) -> str:
+    """<think>タグ内のテキストを指定された行数(デフォルト10行)に切り詰めます"""
+
+    def truncate_lines(content: str) -> str:
+      lines = [line for line in content.strip().splitlines() if line.strip()]
+      if len(lines) > max_lines:
+        lines = lines[:max_lines] + ["...（思考制限のため省略）"]
+      return "\n".join(lines)
+
+    # 1. 閉じられた <think>...</think> の処理
+    def replace_think(match):
+      truncated = truncate_lines(match.group(1))
+      return f"<think>\n{truncated}\n</think>"
+
+    text = re.sub(r"<think>(.*?)</think>", replace_think, text, flags=re.DOTALL)
+
+    # 2. 途中で途切れた未閉じ <think>... の処理
+    if "<think>" in text and "</think>" not in text:
+      parts = text.split("<think>", 1)
+      truncated = truncate_lines(parts[1])
+      text = f"{parts[0]}<think>\n{truncated}\n</think>"
+
+    return text
 
 
 async def setup(bot: commands.Bot):
