@@ -81,11 +81,12 @@ class AutoregressiveJevCharEngine:
 
         最も適した次の1文字または [END] を確率選択させる。
         """
-        # Jevへの入力State（文脈情報）
+        # Jevへの入力State（役割・ユーザー発言・現在生成中の文字列を明確に構造化）
         state_context = (
-            f"User Prompt: {user_prompt}\n"
-            f"Current Sentence: '{current_text}'\n"
-            f"Step: {step}"
+            "[Role] You are a friendly, highly natural Japanese AI assistant.\n"
+            f"[User Input] \"{user_prompt}\"\n"
+            f"[Generated So Far] \"{current_text}\"\n"
+            f"[Current Step] {step}"
         )
 
         payload = {
@@ -95,8 +96,9 @@ class AutoregressiveJevCharEngine:
                     "type": "choice",
                     "choices": candidates,
                     "prompt": (
-                        "Select the single next most natural character to build the response. "
-                        f"Select '{END_TOKEN}' if the sentence is complete."
+                        "Based on '[Generated So Far]', select the SINGLE next character from 'choices' that makes "
+                        "the sequence sound like completely natural, grammatically correct Japanese responding to '[User Input]'. "
+                        f"If '[Generated So Far]' already forms a complete, natural, and friendly response, you MUST select '{END_TOKEN}' immediately."
                     )
                 }
             }
