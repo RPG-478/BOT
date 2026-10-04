@@ -39,13 +39,13 @@ except ImportError as e1:
 
 
 # ----------------------------------------------------------------------
-# 1文字限定 ツール関数定義
+# 英語1文字限定 ツール関数定義
 # ----------------------------------------------------------------------
 def append_next_character(char: str) -> str:
-    """文脈に続く最初の1文字（ひらがな、句読点「、」「。」）、または '[END]' を選択します。
+    """Select and append the next single English character (a-z, A-Z), space, punctuation (.,!?), or '[END]' to construct the output text.
 
     Args:
-        char: ひらがな1文字、句読点（、。）、または '[END]'。
+        char: Single character (a-z, A-Z, space, .,!?) or '[END]'.
     """
     return str(char)
 
@@ -60,12 +60,12 @@ if NEEDLE_AVAILABLE and hasattr(needle, "tool"):
             print(f"[Needle Tool Register Warning]: {e}")
 
 
-class Needle1CharEngine:
+class Needle1CharEnglishEngine:
     """
-    1文字自己回帰生成エンジン。
-    初期ステップでの [END] 返却に対する同一ステップ内再試行ロジックを実装。
+    英語アルファベット 1文字自己回帰生成エンジン。
+    文字種を英語アルファベットおよび記号へ絞り込み、生成精度を高めた構成。
     """
-    def __init__(self, max_steps: int = 30, min_steps: int = 3):
+    def __init__(self, max_steps: int = 50, min_steps: int = 5):
         self.agent = None
         self.init_error = None
         self.max_steps = max_steps
@@ -111,18 +111,17 @@ class Needle1CharEngine:
             chosen_char = None
             retry_count = 0
 
-            # 同一ステップ内での再試行ループ（初期ステップの [END] 弾き用）
             while retry_count < 3:
                 end_instruction = (
-                    "絶対の禁止事項: 現時点では '[END]' の選択を禁止します。必ず最初のひらがな1文字を選んでください。"
+                    "DO NOT select '[END]'. Select the first appropriate English character."
                     if step_count <= self.min_steps
-                    else "文章が完結した場合は '[END]' を選択してください。"
+                    else "If the response is naturally completed, select '[END]'."
                 )
 
                 state_context = (
-                    f"ユーザー指示: {user_prompt}\n"
-                    f"現在生成済みのテキスト: '{generated_text}'\n"
-                    f"指示: 'append_next_character' を呼び出し、次に続く適切な「ひらがな1文字」または「句読点（、。）」を選択してください。{end_instruction}"
+                    f"User Prompt: {user_prompt}\n"
+                    f"Current Output: '{generated_text}'\n"
+                    f"Instruction: Call 'append_next_character' with exactly ONE English character (a-z, A-Z, space, punctuation) to continue the response. {end_instruction}"
                 )
 
                 try:
@@ -167,11 +166,10 @@ class Needle1CharEngine:
                                 if cleaned:
                                     temp_char = cleaned[0]
 
-                    # 最小ステップ以下での [END] 出力時は選定を無効化してリトライ
                     if temp_char == "[END]" and step_count <= self.min_steps:
                         retry_count += 1
                         continue
-                    
+
                     chosen_char = temp_char
                     if chosen_char is not None:
                         break
@@ -179,7 +177,7 @@ class Needle1CharEngine:
                 except Exception as e:
                     print(f"[Needle Exception Step {step_count}]: {e}")
                     raw_debug_outputs.append(f"Step {step_count:02d} ERR: {e}")
-                
+
                 retry_count += 1
 
             if chosen_char is None:
@@ -195,7 +193,7 @@ class Needle1CharEngine:
             # 同一文字の連続発生抑止
             if chosen_char == last_char:
                 consecutive_repeat_count += 1
-                if consecutive_repeat_count >= 3:
+                if consecutive_repeat_count >= 4:
                     trace_logs.append(f"Step {step_count:02d}: [LOOP DETECTED - FORCED END]")
                     break
             else:
@@ -222,7 +220,8 @@ class Needle1CharEngine:
         if "[END]" in text:
             return "[END]"
 
-        match = re.search(r"[ぁ-ん、。]", text)
+        # アルファベット、記号（, . ! ?）、スペースから最初の一文字を抽出
+        match = re.search(r"[a-zA-Z0-9,\.!\?\s]", text)
         if match:
             return match.group(0)
 
@@ -243,18 +242,18 @@ class Needle1CharEngine:
         return None
 
 
-class Needle1CharEngineCog(commands.Cog):
-    """Needle 1文字自己回帰 Discord Cog"""
+class Needle1CharEnglishCog(commands.Cog):
+    """Needle 英語1文字自己回帰 Discord Cog"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.engine = Needle1CharEngine(max_steps=30, min_steps=3)
+        self.engine = Needle1CharEnglishEngine(max_steps=50, min_steps=5)
 
     @app_commands.command(
         name="ai_needle",
-        description="[100%ローカル / Needle] 1文字自己回帰による安定文章生成"
+        description="[100%ローカル / Needle] 英語1文字自己回帰による文章生成"
     )
-    @app_commands.describe(prompt="メッセージを入力してください")
+    @app_commands.describe(prompt="Please enter your prompt in English")
     async def ai_needle_command(self, interaction: discord.Interaction, prompt: str):
         await interaction.response.defer()
 
@@ -273,13 +272,13 @@ class Needle1CharEngineCog(commands.Cog):
         msg = (
             f"**[生成結果]: {sentence}**\n\n"
             f"```\n"
-            f"[Needle 1文字選択軌跡]\n{trace}\n"
+            f"[軌跡]\n{trace}\n"
             f"```\n"
-            f"`⚡ Steps: {steps} 回 | Latency: {latency:.2f}ms | RAM: ~28MB`"
+            f"`Steps: {steps} 回 | Latency: {latency:.2f}ms | RAM: ~28MB`"
         )
 
         await interaction.followup.send(msg)
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(Needle1CharEngineCog(bot))
+    await bot.add_cog(Needle1CharEnglishCog(bot))
