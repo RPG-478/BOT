@@ -6,92 +6,82 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-# 1-Shot 多重スロット選定（Pattern A）で使用する表現パーツの辞書データベース
-PHRASE_DICTIONARY = {
-    "empathy": {
-        "deep": [
-            "それは本当にお疲れ様…！すごく大変だったのが伝わってくるよ。",
-            "うわぁ、それはかなり参っちゃう状況だね…心中お察しするよ。",
-            "そこまで頑張ったのにそれは辛いよね…本当によく耐えたと思う！"
-        ],
-        "mild": [
-            "なるほど、そういうことがあったんだね！教えてくれてありがとう。",
-            "そっかそっか！それはちょっとしたハプニングだったね。",
-            "うんうん、なるほどね！日常のちょっとした出来事って感じだね。"
-        ],
-        "joyful": [
-            "わあ！それめちゃくちゃ凄いことじゃない！素晴らしい！",
-            "やったね！聞いてるこっちまで最高に嬉しい気分だよ！",
-            "すごすぎる！これまでの努力が見事に実を結んだね！"
-        ],
-        "neutral": [
-            "なるほど、その件についてだね！話を聞くよ。",
-            "なるほどね！興味深いお話を聞かせてくれてありがとう。",
-            "ふむふむ、そういった状況なんだね！"
-        ]
+# 文章のフロー（位置関係・トーン・文字数制限）を極小単位に概念化・刻み込んだ表現データベース
+HIRAGANA_MATRIX = {
+    # 位置0: 文頭・接続・テンポ（呼びかけ）
+    "pos_0_intro": {
+        "deep_sympathy": ["そっか...", "うーん...", "なるほど..."],
+        "mild_sympathy": ["そっかそっか！", "うんうん！", "なるほどね！"],
+        "praise": ["わあ！", "すごーい！", "やったね！"],
+        "question": ["おや？", "ふむふむ！", "えーっとね..."]
     },
-    "advice": {
-        "encouragement": [
-            "最初は誰でも詰まるポイントだから、焦らず1ステップずつ進めていこう！",
-            "ここを乗り越えれば一気に前進できるから、自分のペースで大丈夫だよ！",
-            "失敗は成功の元って言うし、諦めずにトライしたこと自体が素晴らしいよ！"
-        ],
-        "rest": [
-            "今は一度PCや作業から離れて、温かい飲み物でも飲んでゆっくりリフレッシュしよう！",
-            "根詰めすぎると効率も落ちちゃうから、今日はもう十分頑張ったと思って休もう！",
-            "疲れている時は無理するのが一番良くないから、明日また新鮮な気持ちでやろうね！"
-        ],
-        "praise": [
-            "この成果は本当に自信を持って良いレベルだよ！自分をたくさん褒めてあげてね！",
-            "ここまで形にできたのは君の努力の賜物だね！本当に素晴らしい！",
-            "素晴らしいチャレンジ精神だね！次回もこの調子でどんどん進めよう！"
-        ],
-        "general": [
-            "また何か進展や気づいたことがあったら、いつでも気軽に教えてね！",
-            "一つずつ整理して考えていけば、きっと良い方向に向かっていくはずだよ！",
-            "いつでも相談に乗るから、困った時は遠慮なく声かけてね！"
-        ]
+    # 位置1: 主語・文脈対象（わかち書き単位で刻む）
+    "pos_1_subject": {
+        "work_study": ["きょう の おしごと", "べんきょう の こと", "さぎょう"],
+        "emotion_state": ["いま の きもち", "その かんじ", "その ハプニング"],
+        "general": ["それ", "その こと", "きょう の できごと"]
     },
-    "ending": {
-        "friendly": ["応援してるからね！ファイト！", "またいつでも話しかけてね！", "いつでも見守ってるよ！"],
-        "sympathetic": ["無理だけは絶対しないでね…！", "今日はゆっくり休んでね！", "お体に気をつけて過ごしてね！"],
-        "enthusiastic": ["次回のアクションも楽しみにしてるよ！", "この勢いでどんどん行こう！", "また素晴らしい報告待ってるね！"]
+    # 位置2: 格助詞・位置指定接続
+    "pos_2_particle": {
+        "topic": ["は", "について は"],
+        "cause": ["で", "によって"],
+        "target": ["に", "へ の とりくみ は"]
+    },
+    # 位置3: 状態・動詞・述語の核（述語部分を細分化）
+    "pos_3_predicate": {
+        "hard": ["かなり たいへん", "すごく がんばった", "ちょっと つかれちゃった"],
+        "success": ["みごとに できた", "うまく いった", "バッチリ きまった"],
+        "stuck": ["すこし つまづいちゃった", "なやんじゃった", "むずかしかった"]
+    },
+    # 位置4: 補助動詞・文脈接続・相づち展開
+    "pos_4_auxiliary": {
+        "state_past": ["みたい だね。", "ようす だね。", "かんじ だったね。"],
+        "effort_past": ["んだね！", "みたい だね！", "のかな？"],
+        "continuity": ["みたい だけど、", "ようす だけど、"]
+    },
+    # 位置5: 感情語尾・結び・ねぎらい（一文の締めくくり）
+    "pos_5_ending": {
+        "encouragement": ["ゆっくり やすんでね！", "無理 しないでね！", "自分の ぺーす で いこうね！"],
+        "praise": ["ほんとう に えらいよ！", "じしん を もってね！", "すばらしいよ！"],
+        "friendly": ["いつでも 話してね！", "また おしえてね！", "おうえん してるよ！"]
     }
 }
 
 
-class JevTextGenerator:
-    """Jevの超高速多重判定を活用し、LLMを使わずに一瞬で日本語文脈を構築する合成エンジン"""
+class JevHiraganaSynthesizer:
+    """文章フローを極小要素（文頭・主語・助詞・述語・補助・語尾）に刻み、Jevで一括選定してひらがな一文を構築するエンジン"""
 
     def __init__(self, api_key: str = None):
         self.api_key = api_key or os.getenv("JEV_API_KEY", "DEMO_KEY")
-        self.api_url = "https://api.typesafe.ai/v1/evaluate"  # Jev API エンドポイント
+        self.api_url = "https://api.typesafe.ai/v1/evaluate"
 
-    async def analyze_and_synthesize(self, prompt: str) -> str:
-        """Jevによる1-Shot多重スロット判定を行い、数10msで最適文章を合成する"""
-        
-        # Jevへのリクエストペイロード（1回のリクエストで文脈・感情・トーンを一気に抽出）
+    async def synthesize_hiragana_sentence(self, user_prompt: str) -> dict:
+        """Jevによる位置別・概念別の多重スロット判定を行い、完璧なひらがな一文を結合する"""
+        start_time = asyncio.get_event_loop().time()
+
+        # 1回のリクエストで「文脈カテゴリ」「感情深度」「文章のフロー構造」を細かく判定
         payload = {
-            "state": prompt,
+            "state": user_prompt,
             "questions": {
-                "is_frustrated": {
-                    "type": "noul",
-                    "prompt": "Is the user feeling frustrated, stuck, stressed, or tired?"
-                },
-                "empathy_level": {
+                "tone_category": {
                     "type": "choice",
-                    "choices": ["deep", "mild", "joyful", "neutral"],
-                    "prompt": "Select the appropriate empathy level based on the user's emotional context."
+                    "choices": ["deep_sympathy", "mild_sympathy", "praise", "question"],
+                    "prompt": "Select emotional tonecategory."
                 },
-                "advice_type": {
+                "topic_category": {
                     "type": "choice",
-                    "choices": ["encouragement", "rest", "praise", "general"],
-                    "prompt": "Select the best response type (encouragement, rest, praise, or general)."
+                    "choices": ["work_study", "emotion_state", "general"],
+                    "prompt": "Select topic category."
                 },
-                "ending_tone": {
+                "state_category": {
                     "type": "choice",
-                    "choices": ["friendly", "sympathetic", "enthusiastic"],
-                    "prompt": "Select the ending tone for the response."
+                    "choices": ["hard", "success", "stuck"],
+                    "prompt": "Select state category."
+                },
+                "ending_category": {
+                    "type": "choice",
+                    "choices": ["encouragement", "praise", "friendly"],
+                    "prompt": "Select ending category."
                 }
             }
         }
@@ -103,81 +93,90 @@ class JevTextGenerator:
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(self.api_url, json=payload, headers=headers, timeout=5) as resp:
+                async with session.post(self.api_url, json=payload, headers=headers, timeout=3) as resp:
                     if resp.status == 200:
                         result = await resp.json()
-                        return self._compose_response(result)
+                        sentence, flow_slots = self._compose_from_tags(result)
                     else:
-                        # API非対応またはエラー時のローカル・フォールバック判定
-                        return self._fallback_synthesis(prompt)
-        except Exception as e:
-            # ネットワークエラーやAPIキー未設定時のローカル・ルールベース・フォールバック
-            return self._fallback_synthesis(prompt)
+                        sentence, flow_slots = self._fallback_composition(user_prompt)
+        except Exception:
+            sentence, flow_slots = self._fallback_composition(user_prompt)
 
-    def _compose_response(self, jev_result: dict) -> str:
-        """Jevが返した構造化タグをもとに、表現辞書からパーツを選定して高速結合"""
-        empathy_tag = jev_result.get("empathy_level", {}).get("choice", "neutral")
-        advice_tag = jev_result.get("advice_type", {}).get("choice", "general")
-        ending_tag = jev_result.get("ending_tone", {}).get("choice", "friendly")
+        elapsed_ms = (asyncio.get_event_loop().time() - start_time) * 1000
+        return {
+            "sentence": sentence,
+            "flow_slots": flow_slots,
+            "speed_ms": elapsed_ms
+        }
 
-        # パーツのランダム選定（同じタグでも毎回表情が変わる）
-        empathy_phrase = random.choice(PHRASE_DICTIONARY["empathy"].get(empathy_tag, PHRASE_DICTIONARY["empathy"]["neutral"]))
-        advice_phrase = random.choice(PHRASE_DICTIONARY["advice"].get(advice_tag, PHRASE_DICTIONARY["advice"]["general"]))
-        ending_phrase = random.choice(PHRASE_DICTIONARY["ending"].get(ending_tag, PHRASE_DICTIONARY["ending"]["friendly"]))
+    def _compose_from_tags(self, jev_result: dict) -> tuple:
+        """刻まれた各位置スロットからタグに対応するパーツを厳密に抽出してガッチャンコ"""
+        tone = jev_result.get("tone_category", {}).get("choice", "mild_sympathy")
+        topic = jev_result.get("topic_category", {}).get("choice", "general")
+        state = jev_result.get("state_category", {}).get("choice", "hard")
+        ending = jev_result.get("ending_category", {}).get("choice", "friendly")
 
-        # 3つの文節パーツを結合（ハルシネーション・文法崩れ0%）
-        return f"{empathy_phrase}\n{advice_phrase}\n{ending_phrase}"
+        # 各位置（位置0〜5）のパーツを厳密にピックアップ
+        p0 = random.choice(HIRAGANA_MATRIX["pos_0_intro"].get(tone, HIRAGANA_MATRIX["pos_0_intro"]["mild_sympathy"]))
+        p1 = random.choice(HIRAGANA_MATRIX["pos_1_subject"].get(topic, HIRAGANA_MATRIX["pos_1_subject"]["general"]))
+        p2 = random.choice(HIRAGANA_MATRIX["pos_2_particle"]["topic"])
+        p3 = random.choice(HIRAGANA_MATRIX["pos_3_predicate"].get(state, HIRAGANA_MATRIX["pos_3_predicate"]["hard"]))
+        p4 = random.choice(HIRAGANA_MATRIX["pos_4_auxiliary"]["effort_past"])
+        p5 = random.choice(HIRAGANA_MATRIX["pos_5_ending"].get(ending, HIRAGANA_MATRIX["pos_5_ending"]["friendly"]))
 
-    def _fallback_synthesis(self, prompt: str) -> str:
-        """Jev API未接続時でも高速動作を保証する簡易フォールバック判定"""
-        # 簡易キーワード判定
-        if any(w in prompt for w in ["疲れた", "詰んだ", "難しい", "エラー", "無理"]):
-            empathy = random.choice(PHRASE_DICTIONARY["empathy"]["deep"])
-            advice = random.choice(PHRASE_DICTIONARY["advice"]["encouragement"])
-            ending = random.choice(PHRASE_DICTIONARY["ending"]["sympathetic"])
-        elif any(w in prompt for w in ["できた", "成功", "やった", "最高", "嬉しい"]):
-            empathy = random.choice(PHRASE_DICTIONARY["empathy"]["joyful"])
-            advice = random.choice(PHRASE_DICTIONARY["advice"]["praise"])
-            ending = random.choice(PHRASE_DICTIONARY["ending"]["enthusiastic"])
+        # 一文のフローとして結合（読みやすさのためスペース区切り／わかち書き）
+        full_sentence = f"{p0} {p1} {p2} {p3} {p4} {p5}"
+        
+        flow_debug = f"[{p0}] + [{p1}] + [{p2}] + [{p3}] + [{p4}] + [{p5}]"
+        return full_sentence, flow_debug
+
+    def _fallback_composition(self, prompt: str) -> tuple:
+        """API未接続時のローカルキーワード・ルール選定フォールバック"""
+        if any(w in prompt for w in ["つかれた", "むり", "へとへと", "しんどい", "大変", "疲れた"]):
+            tone, topic, state, ending = "deep_sympathy", "emotion_state", "hard", "encouragement"
+        elif any(w in prompt for w in ["できた", "やった", "成功", "かんせい", "完成"]):
+            tone, topic, state, ending = "praise", "work_study", "success", "praise"
         else:
-            empathy = random.choice(PHRASE_DICTIONARY["empathy"]["mild"])
-            advice = random.choice(PHRASE_DICTIONARY["advice"]["general"])
-            ending = random.choice(PHRASE_DICTIONARY["ending"]["friendly"])
+            tone, topic, state, ending = "mild_sympathy", "general", "hard", "friendly"
 
-        return f"{empathy}\n{advice}\n{ending}"
+        jev_mock = {
+            "tone_category": {"choice": tone},
+            "topic_category": {"choice": topic},
+            "state_category": {"choice": state},
+            "ending_category": {"choice": ending}
+        }
+        return self._compose_from_tags(jev_mock)
 
 
-class JevAICog(commands.Cog):
-    """Jev（判定AI）超高速文章選定エンジンを搭載したDiscord Cog"""
+class JevHiraganaCog(commands.Cog):
+    """ひらいがな文章構造化エンジンを統合したDiscord Cog"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # Jevテキストジェネレーターの初期化
-        self.generator = JevTextGenerator()
+        self.synthesizer = JevHiraganaSynthesizer()
 
-    @app_commands.command(name="ai", description="Jev超高速文章合成エンジンで即座に返答します")
-    @app_commands.describe(prompt="メッセージや質問を入力してください")
+    @app_commands.command(name="ai", description="Jev構造化エンジンでひらがな一文を爆速生成します")
+    @app_commands.describe(prompt="メッセージを入力してください")
     async def ai_command(self, interaction: discord.Interaction, prompt: str):
-        """/ai コマンド: LLMを使わずにJev判定＋超高速構造化選択で返答を生成"""
-        # 処理中表示（Jevのレスポンスは数10ms〜100msのため即レス可能）
+        """/ai コマンド: 細かく刻まれた構造概念を結合して完全なひらがな一文を生成"""
         await interaction.response.defer()
 
-        # 時間計測用
-        start_time = asyncio.get_event_loop().time()
+        # ひらがな一文合成処理を実行
+        res = await self.synthesizer.synthesize_hiragana_sentence(prompt)
 
-        # Jevによる文脈多重判定 ＆ 超高速文章選定
-        generated_text = await self.generator.analyze_and_synthesize(prompt)
+        hiragana_text = res["sentence"]
+        flow_debug = res["flow_slots"]
+        speed_ms = res["speed_ms"]
 
-        # 処理時間の算出
-        elapsed_ms = (asyncio.get_event_loop().time() - start_time) * 1000
+        # レスポンスメッセージ構築
+        response_msg = (
+            f"**{hiragana_text}**\n\n"
+            f"`🧩 フロー概念分解: {flow_debug}`\n"
+            f"`⚡ Jev Atomized Speed: {speed_ms:.2f}ms`"
+        )
 
-        # フッターにJev判定ミリ秒数を付与
-        footer = f"\n\n`⚡ Jev Selection Speed: {elapsed_ms:.1f}ms | Latency: Ultra-Low`"
-        final_response = generated_text + footer
-
-        # レスポンス送信
-        await interaction.followup.send(final_response)
+        await interaction.followup.send(response_msg)
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(JevAICog(bot))
+    await bot.add_cog(JevHiraganaCog(bot))
