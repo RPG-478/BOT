@@ -63,7 +63,7 @@ if NEEDLE_AVAILABLE and hasattr(needle, "tool"):
 class Needle1CharEngine:
     """
     1文字自己回帰生成エンジン。
-    初期化状態チェックおよび抽出フォールバック機構を強化。
+    初期ステップでの [END] 返却に対する同一ステップ内再試行ロジックを実装。
     """
     def __init__(self, max_steps: int = 30, min_steps: int = 3):
         self.agent = None
@@ -95,7 +95,6 @@ class Needle1CharEngine:
         consecutive_repeat_count = 0
         last_char = ""
 
-        # Agent 初期化失敗時の即時判定
         if self.agent is None:
             elapsed_ms = (time.perf_counter() - start_time) * 1000
             error_msg = self.init_error or "Unknown Initialization Error"
@@ -109,80 +108,87 @@ class Needle1CharEngine:
 
         while step_count < self.max_steps:
             step_count += 1
-
-            end_instruction = (
-                "文章が未完成のため '[END]' は選択不可。"
-                if step_count <= self.min_steps
-                else "文章が完結した場合は '[END]' を選択。"
-            )
-
-            state_context = (
-                f"ユーザー指示: {user_prompt}\n"
-                f"現在生成済みのテキスト: '{generated_text}'\n"
-                f"指示: 'append_next_character' を呼び出し、次に続く適切な「ひらがな1文字」または「句読点（、。）」を選択してください。{end_instruction}"
-            )
-
             chosen_char = None
+            retry_count = 0
 
-            try:
-                result = await asyncio.to_thread(self.agent.run, state_context)
-                raw_debug_outputs.append(f"Step {step_count:02d} Raw: {repr(result)}")
+            # 同一ステップ内での再試行ループ（初期ステップの [END] 弾き用）
+            while retry_count < 3:
+                end_instruction = (
+                    "絶対の禁止事項: 現時点では '[END]' の選択を禁止します。必ず最初のひらがな1文字を選んでください。"
+                    if step_count <= self.min_steps
+                    else "文章が完結した場合は '[END]' を選択してください。"
+                )
 
-                if result:
-                    if isinstance(result, dict):
-                        if "results" in result and result["results"]:
-                            for res in result["results"]:
-                                candidate = self._sanitize_char(res)
-                                if candidate:
-                                    chosen_char = candidate
-                                    break
-                        if chosen_char is None and "function_calls" in result and result["function_calls"]:
-                            for call in result["function_calls"]:
+                state_context = (
+                    f"ユーザー指示: {user_prompt}\n"
+                    f"現在生成済みのテキスト: '{generated_text}'\n"
+                    f"指示: 'append_next_character' を呼び出し、次に続く適切な「ひらがな1文字」または「句読点（、。）」を選択してください。{end_instruction}"
+                )
+
+                try:
+                    result = await asyncio.to_thread(self.agent.run, state_context)
+                    raw_debug_outputs.append(f"Step {step_count:02d} (Attempt {retry_count+1}) Raw: {repr(result)}")
+
+                    temp_char = None
+                    if result:
+                        if isinstance(result, dict):
+                            if "results" in result and result["results"]:
+                                for res in result["results"]:
+                                    candidate = self._sanitize_char(res)
+                                    if candidate:
+                                        temp_char = candidate
+                                        break
+                            if temp_char is None and "function_calls" in result and result["function_calls"]:
+                                for call in result["function_calls"]:
+                                    candidate = self._extract_char(call)
+                                    if candidate:
+                                        temp_char = candidate
+                                        break
+                            elif temp_char is None and "tool_calls" in result and result["tool_calls"]:
+                                for call in result["tool_calls"]:
+                                    candidate = self._extract_char(call)
+                                    if candidate:
+                                        temp_char = candidate
+                                        break
+
+                        elif hasattr(result, "function_calls") and result.function_calls:
+                            for call in result.function_calls:
                                 candidate = self._extract_char(call)
                                 if candidate:
-                                    chosen_char = candidate
-                                    break
-                        elif chosen_char is None and "tool_calls" in result and result["tool_calls"]:
-                            for call in result["tool_calls"]:
-                                candidate = self._extract_char(call)
-                                if candidate:
-                                    chosen_char = candidate
+                                    temp_char = candidate
                                     break
 
-                    elif hasattr(result, "function_calls") and result.function_calls:
-                        for call in result.function_calls:
-                            candidate = self._extract_char(call)
+                        if temp_char is None and isinstance(result, str):
+                            candidate = self._sanitize_char(result)
                             if candidate:
-                                chosen_char = candidate
-                                break
+                                temp_char = candidate
+                            elif len(result.strip()) > 0:
+                                cleaned = re.sub(r"[{} \[\]\"':]", "", result.strip())
+                                if cleaned:
+                                    temp_char = cleaned[0]
 
-                    # 直返却文字列からのパース（フォールバック含む）
-                    if chosen_char is None and isinstance(result, str):
-                        candidate = self._sanitize_char(result)
-                        if candidate:
-                            chosen_char = candidate
-                        elif len(result.strip()) > 0:
-                            # 記号等を除外した先頭1文字を最終フォールバックとして採用
-                            cleaned = re.sub(r"[{} \[\]\"':]", "", result.strip())
-                            if cleaned:
-                                chosen_char = cleaned[0]
+                    # 最小ステップ以下での [END] 出力時は選定を無効化してリトライ
+                    if temp_char == "[END]" and step_count <= self.min_steps:
+                        retry_count += 1
+                        continue
+                    
+                    chosen_char = temp_char
+                    if chosen_char is not None:
+                        break
 
-            except Exception as e:
-                print(f"[Needle Exception Step {step_count}]: {e}")
-                raw_debug_outputs.append(f"Step {step_count:02d} ERR: {e}")
+                except Exception as e:
+                    print(f"[Needle Exception Step {step_count}]: {e}")
+                    raw_debug_outputs.append(f"Step {step_count:02d} ERR: {e}")
+                
+                retry_count += 1
 
             if chosen_char is None:
                 trace_logs.append(f"Step {step_count:02d}: [FAIL (Tool Call None)]")
                 break
 
-            # 早期 [END] 出力の除外制御
             if chosen_char == "[END]":
-                if step_count <= self.min_steps:
-                    trace_logs.append(f"Step {step_count:02d}: '[END]' (IGNORED: Step <= {self.min_steps})")
-                    continue
-                else:
-                    trace_logs.append(f"Step {step_count:02d}: '[END]'")
-                    break
+                trace_logs.append(f"Step {step_count:02d}: '[END]'")
+                break
 
             trace_logs.append(f"Step {step_count:02d}: '{chosen_char}'")
 
