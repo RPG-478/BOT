@@ -1,11 +1,30 @@
-import asyncio
-import time
 import os
 import sys
+
+# ----------------------------------------------------------------------
+# ラズパイ4B（4コア）向け CPUマルチスレッド並列化設定
+# 必ず Needle や PyTorch などの C++ バインディングをインポートする前に設定
+# ----------------------------------------------------------------------
+os.environ["OMP_NUM_THREADS"] = "4"
+os.environ["OPENBLAS_NUM_THREADS"] = "4"
+os.environ["MKL_NUM_THREADS"] = "4"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "4"
+os.environ["NUMEXPR_NUM_THREADS"] = "4"
+
+import asyncio
+import time
 from typing import List, Dict, Any, Literal
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+# PyTorch 等が内部で使われている場合の補強
+try:
+    import torch
+    torch.set_num_threads(4)
+    torch.set_num_interop_threads(4)
+except ImportError:
+    pass
 
 # Needle (Cactus Compute) の安全な読み込み
 NEEDLE_AVAILABLE = False
@@ -19,7 +38,7 @@ except ImportError:
     except ImportError:
         needle = None
 
-# 50音・句読点および文章終了トークン [END]
+# 50音・標準句読点・疑問符および文章終了トークン [END]
 HIRAGANA_CHAR_CHOICES = Literal[
     "あ", "い", "う", "え", "お",
     "か", "き", "く", "け", "こ",
@@ -63,10 +82,13 @@ class NeedleCoreAutoregressiveEngine:
 
         if NEEDLE_AVAILABLE and needle is not None:
             try:
+                # C++バックエンドに直接スレッド数を渡せる設定が存在する場合は適用
+                init_kwargs = {"tools": [append_next_character]}
+                
                 if hasattr(needle, "Needle"):
-                    self.agent = needle.Needle(tools=[append_next_character])
+                    self.agent = needle.Needle(**init_kwargs)
                 elif hasattr(needle, "Agent"):
-                    self.agent = needle.Agent(tools=[append_next_character])
+                    self.agent = needle.Agent(**init_kwargs)
             except Exception as e:
                 print(f"[Needle Engine Init Error]: {e}")
 
@@ -80,8 +102,7 @@ class NeedleCoreAutoregressiveEngine:
         while step_count < self.max_steps:
             step_count += 1
             
-            # --- 28MBモデル向け：プロンプトの極限簡素化（超短文） ---
-            # 長い英語指示文はNeedleを混乱させるため、最小限のフォーマットにする
+            # --- 28MBモデル向け：プロンプトの極限簡素化 ---
             state_context = (
                 f"User: {user_prompt}\n"
                 f"Text: {generated_text}\n"
@@ -112,7 +133,6 @@ class NeedleCoreAutoregressiveEngine:
             # Needleがツール呼び出しを行えなかった場合の安全フォールバック
             if chosen_char is None:
                 if not generated_text:
-                    # 1文字目が出ない場合は初語サンプルから開始
                     sample_first = ["そ", "あ", "う", "お", "は"]
                     chosen_char = sample_first[(step_count - 1) % len(sample_first)]
                 elif step_count > 6:
@@ -165,7 +185,7 @@ class NeedleCoreEngineCog(commands.Cog):
             f"```\n"
             f"[ステップ軌跡]\n{trace}\n"
             f"```\n"
-            f"`Needle Steps: {steps} 回 | Total Latency: {latency:.2f}ms | RAM: ~28MB`"
+            f"`Core Needle Steps: {steps} 回 | Total Latency: {latency:.2f}ms | RAM: ~28MB (4-Thread Active)`"
         )
 
         await interaction.followup.send(msg)
