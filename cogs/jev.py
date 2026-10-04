@@ -9,7 +9,7 @@ from discord.ext import commands
 # Needle (Cactus Compute) の読み込み
 import cactus_needle as needle
 
-# Needleが厳格に選択できるひらがな・音節・文章終了トークン
+# 50音・促音・拗音・記号および文章終了トークン [END] の厳格な型定義
 HIRAGANA_CHAR_CHOICES = Literal[
     "あ", "い", "う", "え", "お",
     "か", "き", "く", "け", "こ",
@@ -21,48 +21,36 @@ HIRAGANA_CHAR_CHOICES = Literal[
     "や", "ゆ", "よ",
     "ら", "り", "る", "れ", "ろ",
     "わ", "を", "ん",
-    "っ", "ー", "！", "？", "♪", "〜",
+    "っ", "ゃ", "ゅ", "ょ", "ー",
+    "！", "？", "♪", "〜",
     "[END]"
 ]
 
-# 通信往復を減らすためのSpeculative（投機的）2文字チャンク
-CHUNK_CHOICES = Literal[
-    "ね！", "だよ", "です", "かな", "ー！", "〜♪", "[END]"
-]
-
-def append_single_char(char: HIRAGANA_CHAR_CHOICES) -> str:
-    """Select the IMMEDIATELY NEXT single hiragana character or '[END]' token to naturally build the response.
+def append_next_character(char: HIRAGANA_CHAR_CHOICES) -> str:
+    """Select the IMMEDIATELY NEXT single Japanese character or '[END]' token to construct the response.
     
     Args:
-        char: The single character to append, or '[END]' if sentence is complete.
+        char: The single character to append to the generated sentence, or '[END]' if the sentence is complete.
     """
     return str(char)
 
-def append_speculative_chunk(chunk: CHUNK_CHOICES) -> str:
-    """Select a 2-character ending chunk or '[END]' token when the sentence is close to completion.
-    
-    Args:
-        chunk: The ending chunk to append, or '[END]' if sentence is complete.
-    """
-    return str(chunk)
 
-
-class NeedleAutoregressiveEngine:
+class NeedleCoreAutoregressiveEngine:
     """
     Needle (100% ローカル / 28MB RAM) を使用した
-    1文字・音節自己回帰（Autoregressive）日本語文章生成エンジン
+    堅実・堅牢な1文字自己回帰（Autoregressive）日本語生成エンジン
     """
     def __init__(self):
-        # Needleエージェントの初期化（1文字選択ツール ＆ チャンク選択ツールを登録）
+        # 1文字追加ツールのみを厳格に登録
         self.agent = needle.Needle(
-            tools=[append_single_char, append_speculative_chunk]
+            tools=[append_next_character]
         )
-        self.max_steps = 20  # 最大ステップ数（ループ安全限界）
+        self.max_steps = 25  # ループ安全限界ステップ数
 
     async def generate_sentence(self, user_prompt: str) -> Dict[str, Any]:
         """
-        Needleで1文字/音節ごとにルーティング・判定を行い、
-        [END] トークンが選ばれるまでローカルで文字を追加していくメイン生成ループ
+        1ステップ＝1文字の確実な決定ループ。
+        [END] トークンが選ばれるまで純粋にローカル推論のみでテキストを伸長する。
         """
         start_time = time.perf_counter()
         
@@ -73,39 +61,39 @@ class NeedleAutoregressiveEngine:
         while step_count < self.max_steps:
             step_count += 1
             
-            # --- needle.run 用のコンテキストプロンプト構築 ---
-            # これまでに選択された文字列と、元メッセージを文脈として入力
-            state_prompt = (
-                f"User Input: \"{user_prompt}\"\n"
-                f"Generated Text So Far: \"{generated_text}\"\n"
-                f"Step: {step_count}\n"
-                "Task: Pick the best next single character or speculative chunk from available tools to make a natural Japanese response. "
-                "If 'Generated Text So Far' is already complete and makes sense, choose '[END]' immediately."
+            # --- Needleへ渡す文脈Stateの明瞭な構造化 ---
+            state_context = (
+                "[SYSTEM ROLE]\n"
+                "You are an empathetic, natural Japanese assistant.\n"
+                "Construct a friendly, grammatically correct Japanese response character by character.\n\n"
+                f"[USER INPUT]: \"{user_prompt}\"\n"
+                f"[CURRENT GENERATED TEXT]: \"{generated_text}\"\n"
+                f"[CURRENT STEP]: {step_count} / {self.max_steps}\n\n"
+                "[TASK INSTRUCTION]\n"
+                "Choose the single best NEXT character from 'append_next_character' to logically continue '[CURRENT GENERATED TEXT]'.\n"
+                "CRITICAL: If '[CURRENT GENERATED TEXT]' already forms a complete, natural, and friendly Japanese sentence, you MUST choose '[END]' immediately."
             )
 
-            # --- Needle によるミリ秒単位のローカル推論＆型制約抽出 ---
-            # CPU/RAM負荷ほぼゼロで数ミリ秒で決定される
-            result = self.agent.run(state_prompt)
+            # --- Needle ローカル文法制約推論 (数ミリ秒) ---
+            result = self.agent.run(state_context)
             
-            chosen_token = "[END]"
+            chosen_char = "[END]"
             
             if result and result.get("function_calls"):
                 for call in result["function_calls"]:
-                    # ツールの戻り値（選ばれた1文字またはチャンク）を取得
-                    output = str(call.execute())
-                    chosen_token = output
+                    chosen_char = str(call.execute())
                     break
             else:
-                # 該当ツールが選ばれなかった場合のフォールバック（文字数に応じて[END]か記号）
-                chosen_token = "[END]" if step_count > 5 else "！"
+                # ツール非選択時の安全フォールバック
+                chosen_char = "[END]" if step_count > 5 else "！"
 
-            trace_logs.append(f"Step {step_count:02d}: '{chosen_token}'")
+            trace_logs.append(f"Step {step_count:02d}: '{chosen_char}'")
 
-            # [END] トークンが出現したら即時生成終了
-            if chosen_token == "[END]":
+            # [END] トークンが選ばれたら即座にループ終了
+            if chosen_char == "[END]":
                 break
 
-            generated_text += chosen_token
+            generated_text += chosen_char
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
@@ -117,23 +105,23 @@ class NeedleAutoregressiveEngine:
         }
 
 
-class NeedleCharEngineCog(commands.Cog):
-    """Needle 1文字・音節自己回帰 Discord Cog"""
+class NeedleCoreEngineCog(commands.Cog):
+    """Needle 堅実1文字自己回帰 Discord Cog"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.engine = NeedleAutoregressiveEngine()
+        self.engine = NeedleCoreAutoregressiveEngine()
 
     @app_commands.command(
         name="ai_needle",
-        description="[100%ローカル / Needle] 1文字・音節自己回帰でミリ秒単位の文章生成を行います"
+        description="[100%ローカル / Needle] 1文字自己回帰ループによる堅実な文章生成"
     )
     @app_commands.describe(prompt="メッセージを入力してください")
     async def ai_needle_command(self, interaction: discord.Interaction, prompt: str):
-        """/ai_needle コマンド: Needleのツール文法制約で1文字ずつ繋ぎ合わせる"""
+        """/ai_needle コマンド実行ハンドラ"""
         await interaction.response.defer()
 
-        # Needleローカル生成の実行
+        # 生成処理実行
         res = await self.engine.generate_sentence(prompt)
 
         sentence = res["sentence"]
@@ -144,13 +132,13 @@ class NeedleCharEngineCog(commands.Cog):
         msg = (
             f"**[生成結果]: {sentence}**\n\n"
             f"```\n"
-            f"[Needle 1文字/音節 ルーティング軌跡]\n{trace}\n"
+            f"[Needle 1文字選択ステップ軌跡]\n{trace}\n"
             f"```\n"
-            f"`⚡ Needle Local Steps: {steps} 回 | Latency: {latency:.2f}ms | Memory: ~28MB (Zero API Cost)`"
+            f"`⚡ Core Needle Steps: {steps} 回 | Total Latency: {latency:.2f}ms | RAM: ~28MB`"
         )
 
         await interaction.followup.send(msg)
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(NeedleCharEngineCog(bot))
+    await bot.add_cog(NeedleCoreEngineCog(bot))
