@@ -40,7 +40,7 @@ except ImportError:
 # 1文字限定 ツール関数定義（ひらがな・句読点）
 # ----------------------------------------------------------------------
 def append_next_character(char: str) -> str:
-    """文脈に続く最初の1文字（ひらがな、句読点「、」「。」）、または文章完成時の '[END]' を選択します。
+    """文脈に続く最初のひらがな1文字、句読点（、。）、または '[END]' を選択します。
 
     Args:
         char: ひらがな1文字、句読点（、。）、または '[END]'。
@@ -61,22 +61,14 @@ if NEEDLE_AVAILABLE and hasattr(needle, "tool"):
 class Needle1CharEngine:
     """
     1文字（ひらがな・句読点）自己回帰生成エンジン。
-    初期ステップでの [END] 無効化ガードおよび動的プロンプト制御を適用。
+    JSON制御記号の除去フィルターおよび抽出安全機構を搭載。
     """
     def __init__(self, max_steps: int = 30, min_steps: int = 3):
         self.agent = None
         self.max_steps = max_steps
         self.min_steps = min_steps
-
-        if NEEDLE_AVAILABLE and needle is not None:
-            try:
-                init_kwargs = {"tools": [append_next_character]}
-                if hasattr(needle, "Needle"):
-                    self.agent = needle.Needle(**init_kwargs)
-                elif hasattr(needle, "Agent"):
-                    self.agent = needle.Agent(**init_kwargs)
-            except Exception as e:
-                print(f"[Needle Engine Init Error]: {e}")
+        # 有効な文字パターン（ひらがな、句読点、または [END]）
+        self.valid_char_pattern = re.compile(r"^[ぁ-ん、。]$|^\\[END\\]$")
 
     async def generate_sentence(self, user_prompt: str) -> Dict[str, Any]:
         start_time = time.perf_counter()
@@ -90,17 +82,16 @@ class Needle1CharEngine:
         while step_count < self.max_steps:
             step_count += 1
 
-            # ステップ数に応じたプロンプト指示の切り替え
             end_instruction = (
                 "文章が未完成のため '[END]' は選択不可。"
                 if step_count <= self.min_steps
-                else "文章が自然に完結した場合は '[END]' を選択のこと。"
+                else "文章が完結した場合は '[END]' を選択。"
             )
 
             state_context = (
                 f"ユーザー指示: {user_prompt}\n"
                 f"現在生成済みのテキスト: '{generated_text}'\n"
-                f"指示: 'append_next_character' を呼び出し、次に続く適切なひらがな1文字または句読点（、。）を選択してください。{end_instruction}"
+                f"指示: 'append_next_character' を呼び出し、次に続く適切な「ひらがな1文字」または「句読点（、。）」を選択してください。{end_instruction}"
             )
 
             chosen_char = None
@@ -114,33 +105,34 @@ class Needle1CharEngine:
                         if isinstance(result, dict):
                             if "results" in result and result["results"]:
                                 for res in result["results"]:
-                                    if res is not None:
-                                        chosen_char = str(res)
+                                    candidate = self._sanitize_char(res)
+                                    if candidate:
+                                        chosen_char = candidate
                                         break
                             if chosen_char is None and "function_calls" in result and result["function_calls"]:
                                 for call in result["function_calls"]:
-                                    chosen_char = self._extract_char(call)
-                                    if chosen_char:
+                                    candidate = self._extract_char(call)
+                                    if candidate:
+                                        chosen_char = candidate
                                         break
                             elif chosen_char is None and "tool_calls" in result and result["tool_calls"]:
                                 for call in result["tool_calls"]:
-                                    chosen_char = self._extract_char(call)
-                                    if chosen_char:
+                                    candidate = self._extract_char(call)
+                                    if candidate:
+                                        chosen_char = candidate
                                         break
 
                         elif hasattr(result, "function_calls") and result.function_calls:
                             for call in result.function_calls:
-                                chosen_char = self._extract_char(call)
-                                if chosen_char:
+                                candidate = self._extract_char(call)
+                                if candidate:
+                                    chosen_char = candidate
                                     break
 
                         if chosen_char is None and isinstance(result, str):
-                            if "[END]" in result:
-                                chosen_char = "[END]"
-                            else:
-                                match = re.search(r"['\"]?([^'\"\)\s])['\"]?", result)
-                                if match:
-                                    chosen_char = match.group(1)
+                            candidate = self._sanitize_char(result)
+                            if candidate:
+                                chosen_char = candidate
 
                 except Exception as e:
                     print(f"[Needle Exception Step {step_count}]: {e}")
@@ -150,11 +142,7 @@ class Needle1CharEngine:
                 trace_logs.append(f"Step {step_count:02d}: [FAIL (Tool Call None)]")
                 break
 
-            # 1文字制限の切詰め（[END] 以外の複数文字返却時）
-            if chosen_char != "[END]" and len(chosen_char) > 1:
-                chosen_char = chosen_char[0]
-
-            # 早期 [END] 出力の破棄制御
+            # 早期 [END] 出力の除外制御
             if chosen_char == "[END]":
                 if step_count <= self.min_steps:
                     trace_logs.append(f"Step {step_count:02d}: '[END]' (IGNORED: Step <= {self.min_steps})")
@@ -165,7 +153,7 @@ class Needle1CharEngine:
 
             trace_logs.append(f"Step {step_count:02d}: '{chosen_char}'")
 
-            # 同一文字の連続発生（ループ）抑止
+            # 同一文字の連続発生抑止
             if chosen_char == last_char:
                 consecutive_repeat_count += 1
                 if consecutive_repeat_count >= 3:
@@ -187,20 +175,35 @@ class Needle1CharEngine:
             "latency_ms": elapsed_ms
         }
 
+    def _sanitize_char(self, val: Any) -> Optional[str]:
+        """文字列からひらがな・句読点・[END] のみを抽出および検証します。"""
+        if val is None:
+            return None
+        text = str(val)
+
+        if "[END]" in text:
+            return "[END]"
+
+        # ひらがな、または句読点（、。）の最初の一文字を抽出
+        match = re.search(r"[ぁ-ん、。]", text)
+        if match:
+            return match.group(0)
+
+        return None
+
     def _extract_char(self, call: Any) -> Optional[str]:
-        """ツール呼出オブジェクトより引数を抽出します。"""
+        """ツール呼出オブジェクトより引数を安全に抽出します。"""
         if hasattr(call, "execute"):
-            return str(call.execute())
+            return self._sanitize_char(call.execute())
         if hasattr(call, "arguments"):
             args = call.arguments
             if isinstance(args, dict):
-                return str(args.get("char", args.get("token", "")))
+                return self._sanitize_char(args.get("char", args.get("token", "")))
         if isinstance(call, dict):
             args = call.get("arguments", call.get("args", {}))
             if isinstance(args, dict):
                 val = args.get("char", args.get("token", None))
-                if val is not None:
-                    return str(val)
+                return self._sanitize_char(val)
         return None
 
 
