@@ -23,7 +23,6 @@ from scipy import signal
 import numpy as np
 import re
 import aiohttp
-from spotify_scraper import AsyncSpotifyClient
 import wave
 import discord.opus
 
@@ -1904,8 +1903,16 @@ class VoiceCog(commands.Cog):
             raise ValueError('有効なSpotifyプレイリストURLを指定してください。')
 
         try:
+            # 外部依存の未インストールで音楽Cog全体が読み込めなくならないよう、
+            # Spotify URLを実際に処理する時だけ読み込む。
+            from spotify_scraper import AsyncSpotifyClient
+
             async with AsyncSpotifyClient(locale='ja-JP') as client:
                 playlist = await client.get_playlist(playlist_url, max_tracks=MAX_PLAYLIST_ITEMS)
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                'Spotifyスクレイパーが未インストールです。requirements.txtを再インストールしてください。'
+            ) from exc
         except Exception as exc:
             raise RuntimeError(
                 'Spotifyプレイリストを読み込めませんでした。公開されているプレイリストURLを指定してください。'
@@ -2368,6 +2375,31 @@ class VoiceCog(commands.Cog):
         )
         state['panel_message'] = await interaction.original_response()
         await self.update_panel(interaction.guild_id)
+
+    @app_commands.command(name="spotify_link", description="Spotify連携は不要です（互換用コマンド）")
+    async def spotify_link(self, interaction: discord.Interaction):
+        """旧コマンドを残し、認証不要の新しい利用方法へ案内する。"""
+        await interaction.response.send_message(
+            '現在はSpotifyアカウント連携は不要です。公開プレイリストURLを `/play` に貼り付けてください。',
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="spotify_unlink", description="Spotify連携情報を解除します（互換用コマンド）")
+    async def spotify_unlink(self, interaction: discord.Interaction):
+        """旧連携機能の残存データに依存せず、互換応答だけを返す。"""
+        await interaction.response.send_message(
+            '現在のSpotify再生ではアカウント連携情報を保存していません。',
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="spotify_playlists", description="公開Spotifyプレイリストの再生方法を案内します（互換用コマンド）")
+    async def spotify_playlists(self, interaction: discord.Interaction):
+        """旧プレイリスト一覧コマンドを残し、公開URL方式へ案内する。"""
+        await interaction.response.send_message(
+            '公開SpotifyプレイリストのURLを `/play` に貼り付けて再生してください。'
+            '\n非公開プレイリストの一覧取得には対応していません。',
+            ephemeral=True,
+        )
 
     @app_commands.command(name="play", description="添付ファイル、Spotify/YouTube URL、検索キーワードで音楽を再生します")
     @app_commands.describe(
