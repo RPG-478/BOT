@@ -3,6 +3,7 @@ import sys
 import re
 import asyncio
 import time
+from enum import Enum
 from typing import List, Dict, Any, Optional
 import discord
 from discord import app_commands
@@ -39,15 +40,47 @@ except ImportError as e1:
 
 
 # ----------------------------------------------------------------------
-# 英語1文字限定 ツール関数定義
+# 厳格な Enum（列挙型）による選択肢の物理的制限定義
 # ----------------------------------------------------------------------
-def append_next_character(char: str) -> str:
-    """Select and append the next single English character (a-z, A-Z), space, punctuation (.,!?), or '[END]' to construct the output text.
+class CharChoice(str, Enum):
+    A = "A"
+    B = "B"
+    C = "C"
+    D = "D"
+    E = "E"
+    F = "F"
+    G = "G"
+    H = "H"
+    I = "I"
+    J = "J"
+    K = "K"
+    L = "L"
+    M = "M"
+    N = "N"
+    O = "O"
+    P = "P"
+    Q = "Q"
+    R = "R"
+    S = "S"
+    T = "T"
+    U = "U"
+    V = "V"
+    W = "W"
+    X = "X"
+    Y = "Y"
+    Z = "Z"
+    SPACE = " "
+    PERIOD = "."
+    END = "[END]"
+
+
+def append_next_character(char: CharChoice) -> str:
+    """Append the single selected character to construct the output text.
 
     Args:
-        char: Single character (a-z, A-Z, space, .,!?) or '[END]'.
+        char: The exact single character selected from the permitted Enum choices.
     """
-    return str(char)
+    return str(char.value if isinstance(char, CharChoice) else char)
 
 
 if NEEDLE_AVAILABLE and hasattr(needle, "tool"):
@@ -60,10 +93,9 @@ if NEEDLE_AVAILABLE and hasattr(needle, "tool"):
             print(f"[Needle Tool Register Warning]: {e}")
 
 
-class Needle1CharEnglishEngine:
+class NeedleEnumChoiceEngine:
     """
-    英語アルファベット 1文字自己回帰生成エンジン。
-    文字種を英語アルファベットおよび記号へ絞り込み、生成精度を高めた構成。
+    Enum（列挙型）スキーマ制限による厳格な選択式自己回帰生成エンジン。
     """
     def __init__(self, max_steps: int = 50, min_steps: int = 5):
         self.agent = None
@@ -112,16 +144,10 @@ class Needle1CharEnglishEngine:
             retry_count = 0
 
             while retry_count < 3:
-                end_instruction = (
-                    "DO NOT select '[END]'. Select the first appropriate English character."
-                    if step_count <= self.min_steps
-                    else "If the response is naturally completed, select '[END]'."
-                )
-
                 state_context = (
                     f"User Prompt: {user_prompt}\n"
                     f"Current Output: '{generated_text}'\n"
-                    f"Instruction: Call 'append_next_character' with exactly ONE English character (a-z, A-Z, space, punctuation) to continue the response. {end_instruction}"
+                    f"Action: Call 'append_next_character' choosing the best single character to continue."
                 )
 
                 try:
@@ -133,38 +159,32 @@ class Needle1CharEnglishEngine:
                         if isinstance(result, dict):
                             if "results" in result and result["results"]:
                                 for res in result["results"]:
-                                    candidate = self._sanitize_char(res)
+                                    candidate = self._parse_enum_value(res)
                                     if candidate:
                                         temp_char = candidate
                                         break
                             if temp_char is None and "function_calls" in result and result["function_calls"]:
                                 for call in result["function_calls"]:
-                                    candidate = self._extract_char(call)
+                                    candidate = self._extract_enum(call)
                                     if candidate:
                                         temp_char = candidate
                                         break
                             elif temp_char is None and "tool_calls" in result and result["tool_calls"]:
                                 for call in result["tool_calls"]:
-                                    candidate = self._extract_char(call)
+                                    candidate = self._extract_enum(call)
                                     if candidate:
                                         temp_char = candidate
                                         break
 
                         elif hasattr(result, "function_calls") and result.function_calls:
                             for call in result.function_calls:
-                                candidate = self._extract_char(call)
+                                candidate = self._extract_enum(call)
                                 if candidate:
                                     temp_char = candidate
                                     break
 
                         if temp_char is None and isinstance(result, str):
-                            candidate = self._sanitize_char(result)
-                            if candidate:
-                                temp_char = candidate
-                            elif len(result.strip()) > 0:
-                                cleaned = re.sub(r"[{} \[\]\"':]", "", result.strip())
-                                if cleaned:
-                                    temp_char = cleaned[0]
+                            temp_char = self._parse_enum_value(result)
 
                     if temp_char == "[END]" and step_count <= self.min_steps:
                         retry_count += 1
@@ -190,8 +210,8 @@ class Needle1CharEnglishEngine:
 
             trace_logs.append(f"Step {step_count:02d}: '{chosen_char}'")
 
-            # 同一文字の連続発生抑止
-            if chosen_char == last_char:
+            # ループ検知（空白を除く同文字の連続）
+            if chosen_char != " " and chosen_char == last_char:
                 consecutive_repeat_count += 1
                 if consecutive_repeat_count >= 4:
                     trace_logs.append(f"Step {step_count:02d}: [LOOP DETECTED - FORCED END]")
@@ -212,48 +232,52 @@ class Needle1CharEnglishEngine:
             "latency_ms": elapsed_ms
         }
 
-    def _sanitize_char(self, val: Any) -> Optional[str]:
+    def _parse_enum_value(self, val: Any) -> Optional[str]:
+        """引数または返却値を Enum の値へ厳格にマッピング"""
         if val is None:
             return None
-        text = str(val)
+        if isinstance(val, CharChoice):
+            return val.value
 
-        if "[END]" in text:
-            return "[END]"
+        text = str(val).strip()
+        # Enum のキー名（例: "SPACE", "PERIOD", "END", "A"）直接指定への対応
+        if text in CharChoice.__members__:
+            return CharChoice[text].value
 
-        # アルファベット、記号（, . ! ?）、スペースから最初の一文字を抽出
-        match = re.search(r"[a-zA-Z0-9,\.!\?\s]", text)
-        if match:
-            return match.group(0)
+        # Enum の値（例: " ", ".", "[END]", "A"）直接指定への対応
+        for item in CharChoice:
+            if item.value == text or item.value == text.upper():
+                return item.value
 
         return None
 
-    def _extract_char(self, call: Any) -> Optional[str]:
+    def _extract_enum(self, call: Any) -> Optional[str]:
         if hasattr(call, "execute"):
-            return self._sanitize_char(call.execute())
+            return self._parse_enum_value(call.execute())
         if hasattr(call, "arguments"):
             args = call.arguments
             if isinstance(args, dict):
-                return self._sanitize_char(args.get("char", args.get("token", "")))
+                return self._parse_enum_value(args.get("char", args.get("token", "")))
         if isinstance(call, dict):
             args = call.get("arguments", call.get("args", {}))
             if isinstance(args, dict):
                 val = args.get("char", args.get("token", None))
-                return self._sanitize_char(val)
+                return self._parse_enum_value(val)
         return None
 
 
-class Needle1CharEnglishCog(commands.Cog):
-    """Needle 英語1文字自己回帰 Discord Cog"""
+class NeedleEnumChoiceCog(commands.Cog):
+    """Needle Enum 選択式自己回帰 Discord Cog"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.engine = Needle1CharEnglishEngine(max_steps=50, min_steps=5)
+        self.engine = NeedleEnumChoiceEngine(max_steps=50, min_steps=5)
 
     @app_commands.command(
         name="ai_needle",
-        description="[100%ローカル / Needle] 英語1文字自己回帰による文章生成"
+        description="[100%ローカル / Needle] Enum厳格選択による自己回帰生成"
     )
-    @app_commands.describe(prompt="Please enter your prompt in English")
+    @app_commands.describe(prompt="プロンプトを入力してください")
     async def ai_needle_command(self, interaction: discord.Interaction, prompt: str):
         await interaction.response.defer()
 
@@ -272,7 +296,7 @@ class Needle1CharEnglishCog(commands.Cog):
         msg = (
             f"**[生成結果]: {sentence}**\n\n"
             f"```\n"
-            f"[軌跡]\n{trace}\n"
+            f"[文字選択]\n{trace}\n"
             f"```\n"
             f"`Steps: {steps} 回 | Latency: {latency:.2f}ms | RAM: ~28MB`"
         )
@@ -281,4 +305,4 @@ class Needle1CharEnglishCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(Needle1CharEnglishCog(bot))
+    await bot.add_cog(NeedleEnumChoiceCog(bot))
