@@ -1,24 +1,121 @@
+import asyncio
+import logging
 import random
+from typing import Literal
+
 import discord
 from discord import app_commands
 from discord.ext import commands
+from pydantic import Field, create_model
+
 import needle
 
-# 判定パターンの設定辞書
-JUDGE_TYPES = {
-    "safety": {"name": "安全度", "instruction": "0.0 is dangerous, 1.0 is safe"},
-    "hentai": {"name": "変態度", "instruction": "0.0 is normal, 1.0 is highly perverted"},
-    "intelligent": {"name": "知性度", "instruction": "0.0 is unintelligent, 1.0 is highly intelligent"},
-    "kichigai": {"name": "キチガイ度", "instruction": "0.0 is normal, 1.0 is insane"},
-    "hage": {"name": "ハゲ度", "instruction": "0.0 is hairy, 1.0 is bald-related"},
-    "bot": {"name": "ボット度", "instruction": "0.0 is human-like, 1.0 is bot-like"},
-    "kire": {"name": "キレ度", "instruction": "0.0 is calm, 1.0 is extremely angry"},
+log = logging.getLogger(__name__)
+
+# Needle は「入力文中に根拠のある値」しか引数に入れられない（grounding）。
+# 「0.73」のような数値は発言ログのどこにも書かれていないため、
+# score: float 方式では必須引数が埋まらず呼び出しが suppressed_calls に回され、
+# results が空 → 常に 0.5 になっていた。
+# → enum（閉じた選択肢）による分類にする。enum は文法で出力が固定され、
+#    根拠スパンがなくても選べる（公式の "classification is extraction with an enum"）。
+LEVELS = ("very_low", "low", "medium", "high", "very_high")
+LEVEL_SCORES = {
+    "very_low": 0.0,
+    "low": 25.0,
+    "medium": 50.0,
+    "high": 75.0,
+    "very_high": 100.0,
 }
+
+# 判定パターンの設定辞書（low / high は very_low / very_high が何を意味するか）
+JUDGE_TYPES = {
+    "safety": {
+        "name": "安全度",
+        "low": "dangerous, threatening or reckless",
+        "high": "safe, harmless and friendly",
+    },
+    "hentai": {
+        "name": "変態度",
+        "low": "normal, nothing sexual",
+        "high": "highly perverted, sexual",
+    },
+    "intelligent": {
+        "name": "知性度",
+        "low": "unintelligent, careless",
+        "high": "highly intelligent, thoughtful",
+    },
+    "kichigai": {
+        "name": "キチガイ度",
+        "low": "normal and sane",
+        "high": "insane, bizarre, incoherent",
+    },
+    "hage": {
+        "name": "ハゲ度",
+        "low": "no relation to hair loss or baldness",
+        "high": "about baldness or hair loss",
+    },
+    "bot": {
+        "name": "ボット度",
+        "low": "human-like, natural",
+        "high": "bot-like, repetitive, templated",
+    },
+    "kire": {
+        "name": "キレ度",
+        "low": "calm",
+        "high": "extremely angry",
+    },
+}
+
+
+def _build_rating_model(info: dict):
+    """判定項目ごとの分類スキーマ（Needle の唯一のツールになる）を作る。"""
+    return create_model(
+        "rate_message",
+        __doc__=f"Rate the {info['name']} level of one chat message.",
+        level=(
+            Literal[LEVELS],
+            Field(
+                description=(
+                    f"{info['name']} level: very_low = {info['low']}, "
+                    f"very_high = {info['high']}"
+                )
+            ),
+        ),
+    )
 
 
 class JudgeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # 項目ごとのスキーマを1回だけ作る
+        self._models = {key: _build_rating_model(info) for key, info in JUDGE_TYPES.items()}
+        # Needle のエンジンは同時実行を想定しないので直列化する
+        self._lock = asyncio.Lock()
+
+    async def cog_load(self):
+        # 初回はエンジンと重み(needle3.cact)のダウンロードが走るので、先に温めておく
+        try:
+            model = next(iter(self._models.values()))
+            await asyncio.to_thread(needle.extract, "hello", model)
+        except Exception:
+            log.exception("Needle warm-up failed")
+
+    def _rate_messages(self, key: str, messages: list[str]) -> list[float]:
+        """同期処理。メッセージごとに分類して 0-100 の点数リストを返す。"""
+        model = self._models[key]
+        scores: list[float] = []
+        for msg in messages:
+            try:
+                # extract は「ツール1個だけの呼び出し」。メッセージ本文を query として渡す。
+                result = needle.extract(msg, model)
+            except Exception:
+                log.exception("needle.extract failed")
+                continue
+            # None = 何もマッチしなかった（拒否）。0.5 などで埋めずに除外する。
+            if result is None:
+                continue
+            scores.append(LEVEL_SCORES[result.level])
+        return scores
 
     @app_commands.command(
         name="judge",
@@ -81,42 +178,23 @@ class JudgeCog(commands.Cog):
         sample_count = min(len(user_messages), 30)
         sampled_messages = random.sample(user_messages, sample_count)
 
-        # ツール定義：数値（score）のみを受け取る構造に変更
-        @needle.tool
-        def record_score(score: float):
-            """
-            Record the score evaluation for the user messages.
-
-            Args:
-                score: Float value between 0.0 and 1.0.
-            """
-            return {"score": score}
-
-        agent = needle.Needle(tools=[record_score])
-
-        formatted_logs = "\n".join([f"- {msg}" for msg in sampled_messages])
-        prompt = (
-            f"Rate the level of {judge_info['name']} ({judge_info['instruction']}) "
-            f"for the following messages.\n"
-            f"Call record_score with a score between 0.0 and 1.0.\n\n"
-            f"Messages:\n{formatted_logs}"
-        )
-
+        # agent.run / extract は同期関数なので、イベントループを止めないようスレッドで実行
         try:
-            response = agent.run(prompt)
-            results = response.get("results", [])
-
-            if results and isinstance(results, list):
-                eval_data = results[0]
-                score_raw = float(eval_data.get("score", 0.5))
-            else:
-                score_raw = 0.5
-
+            async with self._lock:
+                scores = await asyncio.to_thread(
+                    self._rate_messages, type.value, sampled_messages
+                )
         except Exception as e:
             await interaction.followup.send(f"エラーが発生しました: {e}")
             return
 
-        score_100 = max(0.0, min(100.0, score_raw * 100))
+        if not scores:
+            await interaction.followup.send(
+                f"{target.mention} 氏の発言から判定できるメッセージがありませんでした。"
+            )
+            return
+
+        score_100 = sum(scores) / len(scores)
         embed_color = self._calculate_gradient_color(score_100)
         status_label = self._get_status_label(score_100)
 
@@ -132,7 +210,7 @@ class JudgeCog(commands.Cog):
         )
         embed.add_field(
             name="抽出メッセージ数",
-            value=f"{sample_count} 件 (サーバー全体より選出)",
+            value=f"{len(scores)} / {sample_count} 件判定 (サーバー全体より選出)",
             inline=True,
         )
         embed.add_field(name="評価ステータス", value=status_label, inline=False)
