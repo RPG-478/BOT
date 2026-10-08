@@ -24,6 +24,26 @@ JUDGE_TYPES = {
         "description": "発言から推測される知性・論理的思考力・博識さ",
         "prompt_instruction": "0.0は単細胞・思考放棄、1.0は極めて知的・論理的・博識であることを意味します。",
     },
+    "kichigai": {
+        "name": "キチガイ度",
+        "description": "発言の狂気度・常軌を脱したニュアンス・支離滅裂さ",
+        "prompt_instruction": "0.0は極めて常識的・正常、1.0は極めて狂気的・支離滅裂であることを意味します。",
+    },
+    "hage": {
+        "name": "ハゲ度",
+        "description": "薄毛・ハゲに関する話題や自虐・抜け毛的ニュアンス",
+        "prompt_instruction": "0.0はフサフサ・無縁、1.0は極めてハゲ・薄毛的ニュアンスが強いことを意味します。",
+    },
+    "bot": {
+        "name": "ボット度",
+        "description": "発言の機械的・定型文的・自動応答のようなニュアンス",
+        "prompt_instruction": "0.0は人間的・感情的、1.0は極めて機械的・ボット的であることを意味します。",
+    },
+    "kire": {
+        "name": "キレ度",
+        "description": "発言に含まれる怒り・攻撃性・激怒度合い",
+        "prompt_instruction": "0.0は極めて穏やか・冷静、1.0は極めて激怒・攻撃的であることを意味します。",
+    },
 }
 
 
@@ -47,7 +67,7 @@ class JudgeCog(commands.Cog):
 
     @app_commands.command(
         name="judge",
-        description="指定したユーザーの過去ログから各種レベル（0〜100点）を判定します",
+        description="指定したユーザーのサーバー全体の発言ログから各種レベル（0〜100点）を判定します",
     )
     @app_commands.describe(
         target="判定対象のユーザー",
@@ -58,6 +78,10 @@ class JudgeCog(commands.Cog):
             app_commands.Choice(name="安全度 (Safety)", value="safety"),
             app_commands.Choice(name="変態度 (Hentai)", value="hentai"),
             app_commands.Choice(name="知性度 (Intelligent)", value="intelligent"),
+            app_commands.Choice(name="キチガイ度 (Kichigai)", value="kichigai"),
+            app_commands.Choice(name="ハゲ度 (Hage)", value="hage"),
+            app_commands.Choice(name="ボット度 (Bot)", value="bot"),
+            app_commands.Choice(name="キレ度 (Kire)", value="kire"),
         ]
     )
     async def judge(
@@ -73,11 +97,29 @@ class JudgeCog(commands.Cog):
             await interaction.followup.send("無効な判定タイプが指定されました。")
             return
 
-        # 過去ログの取得（直近500件から対象ユーザーの発言を取得）
+        if not interaction.guild:
+            await interaction.followup.send("このコマンドはサーバー内でのみ実行可能です。")
+            return
+
+        # サーバー全体のテキストチャンネルから対象ユーザーの発言を取得（最大500件）
         user_messages = []
-        async for message in interaction.channel.history(limit=500):
-            if message.author.id == target.id and message.content:
-                user_messages.append(message.content)
+        for channel in interaction.guild.text_channels:
+            # ボットにチャンネルの閲覧・履歴閲覧権限があるか確認
+            permissions = channel.permissions_for(interaction.guild.me)
+            if not permissions.read_messages or not permissions.read_message_history:
+                continue
+
+            try:
+                async for message in channel.history(limit=100):
+                    if message.author.id == target.id and message.content:
+                        user_messages.append(message.content)
+                        if len(user_messages) >= 500:
+                            break
+            except Exception:
+                continue
+
+            if len(user_messages) >= 500:
+                break
 
         if not user_messages:
             await interaction.followup.send(
@@ -150,7 +192,7 @@ class JudgeCog(commands.Cog):
         )
         embed.add_field(
             name="抽出メッセージ数",
-            value=f"{sample_count} 件 (過去500件より選出)",
+            value=f"{sample_count} 件 (サーバー全体ログより選出)",
             inline=True,
         )
         embed.add_field(
