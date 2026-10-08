@@ -6,13 +6,13 @@ import needle
 
 # 判定パターンの設定辞書
 JUDGE_TYPES = {
-    "safety": {"name": "安全度", "instruction": "0.0は危険、1.0は安全"},
-    "hentai": {"name": "変態度", "instruction": "0.0は健全、1.0は変態"},
-    "intelligent": {"name": "知性度", "instruction": "0.0は低知性、1.0は高知性"},
-    "kichigai": {"name": "キチガイ度", "instruction": "0.0は正常、1.0は狂気"},
-    "hage": {"name": "ハゲ度", "instruction": "0.0はフサフサ、1.0はハゲ"},
-    "bot": {"name": "ボット度", "instruction": "0.0は人間、1.0はボット"},
-    "kire": {"name": "キレ度", "instruction": "0.0は穏やか、1.0は激怒"},
+    "safety": {"name": "安全度", "instruction": "0.0 is dangerous, 1.0 is safe"},
+    "hentai": {"name": "変態度", "instruction": "0.0 is normal, 1.0 is highly perverted"},
+    "intelligent": {"name": "知性度", "instruction": "0.0 is unintelligent, 1.0 is highly intelligent"},
+    "kichigai": {"name": "キチガイ度", "instruction": "0.0 is normal, 1.0 is insane"},
+    "hage": {"name": "ハゲ度", "instruction": "0.0 is hairy, 1.0 is bald-related"},
+    "bot": {"name": "ボット度", "instruction": "0.0 is human-like, 1.0 is bot-like"},
+    "kire": {"name": "キレ度", "instruction": "0.0 is calm, 1.0 is extremely angry"},
 }
 
 
@@ -62,7 +62,8 @@ class JudgeCog(commands.Cog):
             try:
                 async for message in channel.history(limit=100):
                     if message.author.id == target.id and message.content:
-                        user_messages.append(message.content)
+                        cleaned_msg = message.content.replace("\n", " ")[:100]
+                        user_messages.append(cleaned_msg)
                         if len(user_messages) >= 500:
                             break
             except Exception:
@@ -77,24 +78,28 @@ class JudgeCog(commands.Cog):
             )
             return
 
-        # 最大100件をランダム抽出
-        sample_count = min(len(user_messages), 100)
+        sample_count = min(len(user_messages), 30)
         sampled_messages = random.sample(user_messages, sample_count)
 
-        # ツール呼び出し用関数の定義
+        # ツール定義：数値（score）のみを受け取る構造に変更
         @needle.tool
-        def record_score(score: float, reason: str):
-            "ユーザーのスコア(0.0〜1.0)と判定理由を記録します。"
-            return {"score": score, "reason": reason}
+        def record_score(score: float):
+            """
+            Record the score evaluation for the user messages.
 
-        # 標準の Needle エージェントを初期化（デフォルトでフル20層を使用）
+            Args:
+                score: Float value between 0.0 and 1.0.
+            """
+            return {"score": score}
+
         agent = needle.Needle(tools=[record_score])
 
         formatted_logs = "\n".join([f"- {msg}" for msg in sampled_messages])
         prompt = (
-            f"発言ログを分析し、【{judge_info['name']}】（{judge_info['instruction']}）を測定して"
-            "record_score ツールを実行してください。\n\n"
-            f"発言ログ:\n{formatted_logs}"
+            f"Rate the level of {judge_info['name']} ({judge_info['instruction']}) "
+            f"for the following messages.\n"
+            f"Call record_score with a score between 0.0 and 1.0.\n\n"
+            f"Messages:\n{formatted_logs}"
         )
 
         try:
@@ -104,10 +109,8 @@ class JudgeCog(commands.Cog):
             if results and isinstance(results, list):
                 eval_data = results[0]
                 score_raw = float(eval_data.get("score", 0.5))
-                reason = str(eval_data.get("reason", "理由なし"))
             else:
                 score_raw = 0.5
-                reason = "ツール呼び出しが発生しませんでした。"
 
         except Exception as e:
             await interaction.followup.send(f"エラーが発生しました: {e}")
@@ -115,6 +118,7 @@ class JudgeCog(commands.Cog):
 
         score_100 = max(0.0, min(100.0, score_raw * 100))
         embed_color = self._calculate_gradient_color(score_100)
+        status_label = self._get_status_label(score_100)
 
         embed = discord.Embed(
             title=f"{judge_info['name']}判定結果: {target.display_name}",
@@ -128,12 +132,25 @@ class JudgeCog(commands.Cog):
         )
         embed.add_field(
             name="抽出メッセージ数",
-            value=f"{sample_count} 件 (サーバー全体より抽出)",
+            value=f"{sample_count} 件 (サーバー全体より選出)",
             inline=True,
         )
-        embed.add_field(name="判定理由", value=reason, inline=False)
+        embed.add_field(name="評価ステータス", value=status_label, inline=False)
 
         await interaction.followup.send(embed=embed)
+
+    def _get_status_label(self, score: float) -> str:
+        """スコアに応じた固定ラベルの生成"""
+        if score >= 80.0:
+            return "極めて高い傾向が検出されました。"
+        elif score >= 60.0:
+            return "やや高い傾向が見られます。"
+        elif score >= 40.0:
+            return "標準的な範囲内です。"
+        elif score >= 20.0:
+            return "傾向は控えめです。"
+        else:
+            return "該当する傾向はほぼ見られません。"
 
     def _calculate_gradient_color(self, score: float) -> discord.Color:
         normalized = max(0.0, min(1.0, score / 100.0))
