@@ -1,9 +1,11 @@
+import json
 import random
+import re
+import torch
 import discord
 from discord import app_commands
 from discord.ext import commands
-import needle
-from pydantic import BaseModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # 判定パターンの設定辞書
 JUDGE_TYPES = {
@@ -25,19 +27,22 @@ JUDGE_TYPES = {
 }
 
 
-# Needle 3 の構造化抽出（Structured Extraction）用 Pydantic スキーマ
-class JudgeResponse(BaseModel):
-    score: float
-    reason: str
-
-
 class JudgeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # 最大深度である20層（20L）で Needle 3 モデルをロード
-        self.agent = needle.Needle(
-            weights="Cactus-Compute/needle3",
-            layers=20
+        self.model_name = "Cactus-Compute/needle3"
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # Hugging Face経由でのモデルおよびトークナイザのロード
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.model_name,
+            trust_remote_code=True
+        )
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.model_name,
+            torch_dtype=torch.bfloat16 if self.device == "cuda" else torch.float32,
+            device_map="auto" if self.device == "cuda" else None,
+            trust_remote_code=True
         )
 
     @app_commands.command(
@@ -68,7 +73,7 @@ class JudgeCog(commands.Cog):
             await interaction.followup.send("無効な判定タイプが指定されました。")
             return
 
-        # 直近500件から対象ユーザーの発言を取得
+        # 過去ログの取得（直近500件から対象ユーザーの発言を取得）
         user_messages = []
         async for message in interaction.channel.history(limit=500):
             if message.author.id == target.id and message.content:
@@ -88,21 +93,37 @@ class JudgeCog(commands.Cog):
         formatted_logs = "\n".join([f"- {msg}" for msg in sampled_messages])
         prompt = (
             f"以下のユーザーの発言ログを分析し、ユーザーの【{judge_info['name']}】スコア（0.0〜1.0）と"
-            "その判定理由を抽出してください。\n"
+            "その判定理由をJSON形式で出力してください。\n"
             f"※{judge_info['prompt_instruction']}\n\n"
-            f"発言ログ:\n{formatted_logs}"
+            f"発言ログ:\n{formatted_logs}\n\n"
+            '出力フォーマット: {"score": 0.85, "reason": "理由のテキスト"}'
         )
 
         try:
-            # 20層（layers=20）を指定し、Pydanticモデル経由で構造化データを抽出
-            result: JudgeResponse = needle.extract(
-                prompt,
-                response_model=JudgeResponse,
-                weights="Cactus-Compute/needle3",
-                layers=20
+            # 推論処理の実行
+            inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=256,
+                    temperature=0.3,
+                    do_sample=True,
+                )
+
+            response_text = self.tokenizer.decode(
+                outputs[0][inputs.input_ids.shape[1]:],
+                skip_special_tokens=True
             )
-            score_raw = result.score
-            reason = result.reason
+
+            # JSON文字列の抽出およびパース
+            json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group(0))
+                score_raw = float(data.get("score", 0.5))
+                reason = data.get("reason", "理由が記載されていません。")
+            else:
+                score_raw = 0.5
+                reason = "出力解析に失敗しました。"
 
         except Exception as e:
             await interaction.followup.send(
