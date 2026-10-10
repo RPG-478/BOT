@@ -9,6 +9,7 @@ import base64
 import io
 import os
 import random
+import time
 
 import aiohttp
 import discord
@@ -57,6 +58,65 @@ class D1DungeonPlayerCog(commands.Cog):
         self.bot = bot
         self._tasks = {}
         self._stops = {}
+        self.service_name = os.environ.get("D1_SERVICE_NAME", "llama-d1-omni")
+        self._service_lock = asyncio.Lock()
+        self._ready_until = 0.0
+
+    async def _test_response(self):
+        """d1_test.pyと同じ最小pingでsystemoneの稼働を確認する。"""
+        payload = {
+            "state": "ping",
+            "questions": {
+                "ping": {
+                    "type": "noul",
+                    "instructions": "Is this a test?",
+                }
+            },
+        }
+        try:
+            timeout = aiohttp.ClientTimeout(total=3.0)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(D1_ENDPOINT, json=payload) as response:
+                    return response.status == 200
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+            return False
+
+    async def _start_service(self):
+        """d1_test.pyと同じsystemdサービス起動手順を実行する。"""
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "sudo", "systemctl", "start", self.service_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await asyncio.wait_for(process.communicate(), timeout=15.0)
+            return process.returncode == 0
+        except (asyncio.TimeoutError, OSError):
+            return False
+
+    async def _ensure_d1_ready(self, logs):
+        """ping→起動→モデルロード待機→再pingを一度だけ行う。"""
+        if time.monotonic() < self._ready_until:
+            return True
+        async with self._service_lock:
+            if time.monotonic() < self._ready_until:
+                return True
+            if await self._test_response():
+                self._ready_until = time.monotonic() + 30.0
+                return True
+            logs.append("D1応答なし。systemdサービスを起動します。")
+            if not await self._start_service():
+                logs.append(f"D1サービス起動失敗: {self.service_name}")
+                return False
+            logs.append("D1サービスを起動しました。モデルロードを待機中です。")
+            for _ in range(12):
+                await asyncio.sleep(2.5)
+                if await self._test_response():
+                    self._ready_until = time.monotonic() + 30.0
+                    logs.append("D1サービスの応答を確認しました。")
+                    return True
+            logs.append("D1サービスは起動しましたが、応答待ちがタイムアウトしました。")
+            return False
 
     def _log_text(self, logs):
         """D1へ渡す唯一のテキスト入力。長すぎる状態やJSONは渡さない。"""
@@ -64,6 +124,8 @@ class D1DungeonPlayerCog(commands.Cog):
 
     async def _call_d1(self, logs, image_bytes, questions):
         """d1-omniのchoice結果を安全に取り出す。失敗時は空文字を返す。"""
+        if not await self._ensure_d1_ready(logs):
+            return ""
         payload = {
             "state": self._log_text(logs),
             "images": ["data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")],
@@ -75,12 +137,15 @@ class D1DungeonPlayerCog(commands.Cog):
                 async with session.post(D1_ENDPOINT, json=payload) as response:
                     body = await response.text()
                     if response.status != 200:
-                        logs.append(f"D1 APIエラー: HTTP {response.status}")
+                        self._ready_until = 0.0
+                        detail = " ".join(body.split())[:240]
+                        logs.append(f"D1 APIエラー: HTTP {response.status}" + (f" / {detail}" if detail else ""))
                         return ""
                     try:
                         data = await response.json(content_type=None)
                     except Exception:
-                        logs.append("D1 APIエラー: JSON応答を解釈できません")
+                        detail = " ".join(body.split())[:240]
+                        logs.append("D1 APIエラー: JSON応答を解釈できません" + (f" / {detail}" if detail else ""))
                         return ""
                     answers = data.get("answers", {}) if isinstance(data, dict) else {}
                     key = next(iter(questions), "")
@@ -88,7 +153,11 @@ class D1DungeonPlayerCog(commands.Cog):
                     if isinstance(answer, str):
                         return answer
                     if isinstance(answer, dict):
-                        return str(answer.get("choice", ""))
+                        choice = answer.get("choice") or answer.get("answer") or answer.get("value")
+                        if choice is not None:
+                            return str(choice)
+                    if isinstance(data, dict) and data.get("choice") is not None:
+                        return str(data["choice"])
                     logs.append("D1 APIエラー: choice結果がありません")
         except asyncio.CancelledError:
             raise
