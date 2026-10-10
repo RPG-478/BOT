@@ -17,6 +17,8 @@ from discord.ext import commands
 from cogs.dangeon import (
     D1_ENDPOINT,
     D_CHEST,
+    D_EVENT,
+    D_SHRINE,
     D_ENCOUNTER_RATES,
     D_FLOORS,
     D_MINE,
@@ -39,6 +41,8 @@ from cogs.dangeon import (
     d_make_enemy,
     d_render_pillow,
     d_trigger_trap,
+    d_floor_modifier,
+    d_progress_quest,
     dg_save_map,
     dg_save_player,
     dg_starts,
@@ -124,13 +128,15 @@ class D1DungeonPlayerCog(commands.Cog):
             description="\n".join(logs[-8:])[-3500:] or "ログはまだありません。",
             color=0x8B5CF6 if not final else 0x666666,
         )
+        embed.add_field(name="作戦", value=getattr(view, "d1_plan", "安全探索") + " / 停止: 終了ボタン", inline=False)
         embed.add_field(name="状態", value=f"{p['floor']}F / HP {p['hp']}/{stats['max_hp']} / {p.get('job', 'warrior')}", inline=False)
         embed.set_image(url="attachment://map.png")
         map_file = d_render_pillow(uid, p["floor"], p["x"], p["y"])
         await message.edit(embed=embed, view=None if final else view, attachments=[map_file])
 
     async def _run_loop(self, uid, message, view, stop_event):
-        logs = ["D1が代理プレイを開始しました。終了ボタンで停止できます。"]
+        plan = getattr(view, "d1_plan", "安全探索")
+        logs = [f"D1が代理プレイを開始しました。作戦: {plan} / 終了ボタンで停止できます。"]
         try:
             while not stop_event.is_set():
                 await self._play_turn(uid, logs)
@@ -180,6 +186,7 @@ class D1DungeonPlayerCog(commands.Cog):
                 from cogs.dangeon import d_ensure_map
                 d_ensure_map(p["floor"])
                 p["x"], p["y"] = dg_starts[p["floor"]]
+                d_progress_quest(uid, "floor", 1)
                 logs.append(f"階段を上り、{p['floor']}Fへ進みました。")
             else:
                 logs.append("階段では探索を続けました。")
@@ -231,24 +238,34 @@ class D1DungeonPlayerCog(commands.Cog):
             return
 
         choice = await self._choose(uid, logs, {
-            "move": {"type": "choice", "instructions": "Choose one legal next action.", "criteria": {
-                "up": "Move north", "down": "Move south", "left": "Move west", "right": "Move east", "check": "Stay and inspect"
+            "move": {"type": "choice", "instructions": "Choose one legal next action. ENTER inspects the current tile.", "criteria": {
+                "up": "Move north", "down": "Move south", "left": "Move west", "right": "Move east",
+                "leftup": "Move northwest", "rightup": "Move northeast", "leftdown": "Move southwest", "rightdown": "Move southeast",
+                "enter": "Inspect or interact with the current tile"
             }}
         })
-        directions = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
-        if choice == "check":
-            logs.append(f"{floor}F ({x},{y})を確認しました。")
+        directions = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0),
+                      "leftup": (-1, -1), "rightup": (1, -1), "leftdown": (-1, 1), "rightdown": (1, 1)}
+        if choice in ("check", "enter"):
+            logs.append(f"ENTER: {floor}F ({x},{y}) / {d_floor_modifier(floor)}を確認しました。")
             return
         if choice not in directions:
             logs.append("D1の応答が不正だったため、安全に待機しました。")
             return
         dx, dy = directions[choice]
         nx, ny = x + dx, y + dy
-        if not (0 <= nx < D_MAP_W and 0 <= ny < D_MAP_H) or d_get_cell(floor, nx, ny) == D_WALL:
+        corner_cut = dx != 0 and dy != 0 and (
+            d_get_cell(floor, x + dx, y) == D_WALL or d_get_cell(floor, x, y + dy) == D_WALL
+        )
+        if (not (0 <= nx < D_MAP_W and 0 <= ny < D_MAP_H)
+                or d_get_cell(floor, nx, ny) == D_WALL or corner_cut):
             logs.append(f"{choice}へ進もうとしましたが壁でした。")
             return
         p["x"], p["y"] = nx, ny
-        logs.append(f"{choice}へ移動しました。現在地: {floor}F ({nx},{ny})")
+        p["turns"] += 1
+        p["season_score"] += 1
+        d_progress_quest(uid, "turns", 1)
+        logs.append(f"{choice}へ移動しました。現在地: {floor}F ({nx},{ny}) / {d_floor_modifier(floor)}")
         await self._resolve_tile(uid, logs)
         await dg_save_player(uid, self.bot.supabase)
 
@@ -268,6 +285,19 @@ class D1DungeonPlayerCog(commands.Cog):
             await d_apply_reward(uid, self.bot.supabase, **penalty)
             d_consume(floor, x, y)
             logs.append(text)
+            await dg_save_map(floor, self.bot.supabase)
+            return
+        if cell == D_SHRINE:
+            p["atk"] += 2
+            d_consume(floor, x, y)
+            logs.append("祭壇の祝福: 基礎ATKが2上昇しました。")
+            await dg_save_map(floor, self.bot.supabase)
+            return
+        if cell == D_EVENT:
+            gain = random.randint(40, 120)
+            await d_apply_reward(uid, self.bot.supabase, coins=gain, xp=gain, season_score=25, material="ancient_shard")
+            d_consume(floor, x, y)
+            logs.append(f"旅人の依頼: コイン+{gain} / XP+{gain} / 古代欠片+1")
             await dg_save_map(floor, self.bot.supabase)
             return
         biome, *_ = d_get_biome(floor)
