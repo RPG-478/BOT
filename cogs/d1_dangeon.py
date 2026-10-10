@@ -48,6 +48,11 @@ from cogs.dangeon import (
     dg_save_player,
     dg_starts,
     d_use_job_skill,
+    d1_candidate_log,
+    d_normalize_choice,
+    d_record_action,
+    d_begin_run,
+    d_end_run,
 )
 
 
@@ -201,6 +206,7 @@ class D1DungeonPlayerCog(commands.Cog):
             color=0x8B5CF6 if not final else 0x666666,
         )
         embed.add_field(name="作戦", value=getattr(view, "d1_plan", "安全探索") + " / 停止: 終了ボタン", inline=False)
+        embed.add_field(name="停止条件", value="HP30%未満 / ボス / 遺物 / 10ターン / APIエラー3回 / 同一地点3回", inline=False)
         embed.add_field(name="状態", value=f"{p['floor']}F / HP {p['hp']}/{stats['max_hp']} / {p.get('job', 'warrior')}", inline=False)
         embed.set_image(url="attachment://map.png")
         map_file = d_render_pillow(uid, p["floor"], p["x"], p["y"])
@@ -209,6 +215,7 @@ class D1DungeonPlayerCog(commands.Cog):
     async def _run_loop(self, uid, message, view, stop_event):
         plan = getattr(view, "d1_plan", "安全探索")
         logs = [f"D1が代理プレイを開始しました。作戦: {plan} / 終了ボタンで停止できます。"]
+        d_begin_run(uid, "d1")
         self._run_stats[uid] = {"turns": 0, "positions": [], "battles": 0}
         try:
             while not stop_event.is_set():
@@ -216,7 +223,7 @@ class D1DungeonPlayerCog(commands.Cog):
                 if reason:
                     logs.append(f"D1を停止しました: {reason}")
                     break
-                await self._play_turn(uid, logs)
+                await self._play_turn(uid, logs, plan)
                 self._run_stats[uid]["turns"] += 1
                 await self._edit_screen(message, view, logs)
                 reason = self._stop_reason(uid, logs)
@@ -233,6 +240,7 @@ class D1DungeonPlayerCog(commands.Cog):
             self._tasks.pop(uid, None)
             self._stops.pop(uid, None)
             self._run_stats.pop(uid, None)
+            d_end_run(uid, "d1_stop")
             logs.append("D1代理プレイを終了しました。")
             try:
                 await self._edit_screen(message, view, logs, final=True)
@@ -253,6 +261,14 @@ class D1DungeonPlayerCog(commands.Cog):
             return "HPが0"
         if p["hp"] < stats["max_hp"] * 0.30:
             return "HPが30%未満"
+        if p.get("coins", 0) >= 10000:
+            return "所持金が停止閾値に到達"
+        if p.get("active_effects"):
+            return "状態異常を検知"
+        if any("ボス" in line for line in logs[-8:]):
+            return "ボス遭遇"
+        if any("遺物" in line or "リ relic" in line for line in logs[-8:]):
+            return "希少アイテム発見"
         if run.get("turns", 0) >= 10:
             return "1回のD1実行が10ターンに到達"
         if len(positions) >= 3 and positions[-1] == positions[-2] == positions[-3]:
@@ -274,10 +290,12 @@ class D1DungeonPlayerCog(commands.Cog):
     async def _choose(self, uid, logs, questions):
         return await self._call_d1(logs, await self._image_bytes(uid), questions)
 
-    async def _play_turn(self, uid, logs):
+    async def _play_turn(self, uid, logs, plan="安全探索"):
         p = d_get_player(uid)
         floor, x, y = p["floor"], p["x"], p["y"]
         cell = d_get_cell(floor, x, y)
+        logs.append(d1_candidate_log(uid, plan))
+        d_record_action(uid, "decision", source="d1", result=plan)
 
         if cell == D_STAIRS:
             choice = await self._choose(uid, logs, {
@@ -285,6 +303,7 @@ class D1DungeonPlayerCog(commands.Cog):
                     "up": "Go to the next floor and recover HP", "stay": "Stay and keep exploring"
                 }}
             })
+            choice = d_normalize_choice(choice, {"up", "stay"}, "stay")
             if choice == "up" and floor < D_FLOORS:
                 p["floor"] = floor + 1
                 p["hp"] = d_effective_stats(p)["max_hp"]
@@ -304,6 +323,7 @@ class D1DungeonPlayerCog(commands.Cog):
                     "dig": "Mine coins", "leave": "Leave the mine"
                 }}
             })
+            choice = d_normalize_choice(choice, {"dig", "leave"}, "leave")
             if choice == "dig":
                 gain = d_do_mine(uid)
                 await d_apply_reward(uid, self.bot.supabase, coins=gain, season_score=10)
@@ -331,6 +351,7 @@ class D1DungeonPlayerCog(commands.Cog):
                     "buy": "Buy one healing bread for 30 coins", "leave": "Leave the shop"
                 }}
             })
+            choice = d_normalize_choice(choice, {"buy", "leave"}, "leave")
             if choice == "buy":
                 try:
                     await d_apply_reward(uid, self.bot.supabase, coins=-30, bread=1)
@@ -351,7 +372,8 @@ class D1DungeonPlayerCog(commands.Cog):
         })
         directions = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0),
                       "leftup": (-1, -1), "rightup": (1, -1), "leftdown": (-1, 1), "rightdown": (1, 1)}
-        if choice in ("check", "enter"):
+        choice = d_normalize_choice(choice, {"up", "down", "left", "right", "leftup", "rightup", "leftdown", "rightdown", "enter"}, "enter")
+        if choice == "enter":
             logs.append(f"ENTER: {floor}F ({x},{y}) / {d_floor_modifier(floor)}を確認しました。")
             return
         if choice not in directions:
@@ -419,6 +441,7 @@ class D1DungeonPlayerCog(commands.Cog):
                     "attack": "Attack normally", "skill": "Use the class skill", "defend": "Defend", "escape": "Try to escape"
                 }}
             })
+            choice = d_normalize_choice(choice, {"attack", "skill", "defend", "escape"}, "defend")
             p = d_get_player(uid)
             if choice == "skill":
                 text, damage = d_use_job_skill(uid, enemy)

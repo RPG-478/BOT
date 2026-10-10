@@ -903,6 +903,13 @@ async def dg_load_all(supabase):
                 "run_modifiers": meta.get("run_modifiers", []) or [],
                 "camp_facilities": meta.get("camp_facilities", {"inn": 1, "forge": 0, "guild": 0}),
                 "battle_stats": meta.get("battle_stats", {"kills": 0, "chests": 0, "escapes": 0}),
+                "skill_points": meta.get("skill_points", 0), "skills": meta.get("skills", []) or [],
+                "npc_flags": meta.get("npc_flags", {}) or {}, "story_flags": meta.get("story_flags", {}) or {},
+                "run_id": meta.get("run_id"), "run_summary": meta.get("run_summary", {}) or {},
+                "pending_rewards": meta.get("pending_rewards", []) or [], "reward_ledger": meta.get("reward_ledger", []) or [],
+                "action_log": meta.get("action_log", []) or [], "state_version": meta.get("state_version", 0),
+                "front_back": meta.get("front_back", "front"), "battle_resource": meta.get("battle_resource", {"mp": 20, "max_mp": 20, "rage": 0, "combo": 0, "guard": 0}),
+                "floor_goals": meta.get("floor_goals", {}) or {},
             }
         print(f"✓ ダンジョンプレイヤー読み込み完了: {len(dg_players)}人")
     except Exception as e:
@@ -1301,7 +1308,7 @@ class DungeonCombatView(DungeonViewBase):
             log_msg = f"{c_msg}{e['name']}の攻撃：{dmg} ダメージ"
 
         if p["hp"] > 0 and random.random() < 0.25 and e.get("status_effect"):
-            d_apply_status(self.uid, e["status_effect"])
+            d_apply_special_status(self.uid, e["status_effect"])
             log_msg += f" / {STATUS_EFFECTS[e['status_effect']]['name']}を受けた"
 
         self.defending = False
@@ -2002,3 +2009,283 @@ async def setup(bot):
     """Cogをロード"""
     await bot.add_cog(DungeonCog(bot))
     print("✓ DungeonCog loaded")
+# -*- coding: utf-8 -*-
+"""MD差分を既存のダンジョン状態へ接続する拡張ブロック。"""
+
+# 追加職業とスキル選択
+JOB_MASTER.update({
+    "priest": {"name": "僧侶", "atk": 0, "def_": 5, "max_hp": 15, "spd": 0, "crit": 0.0, "skill": "heal", "skills": ["heal", "blessing", "cleanse"]},
+    "hunter": {"name": "狩人", "atk": 5, "def_": 1, "max_hp": 0, "spd": 4, "crit": 0.10, "skill": "mark", "skills": ["mark", "first_shot", "track"]},
+    "alchemist": {"name": "錬金術師", "atk": 3, "def_": 1, "max_hp": 5, "spd": 2, "crit": 0.03, "skill": "acid", "skills": ["acid", "tonic", "smoke"]},
+    "knight": {"name": "騎士", "atk": 2, "def_": 8, "max_hp": 25, "spd": -2, "crit": 0.0, "skill": "taunt", "skills": ["taunt", "iron_wall", "counter"]},
+    "warlock": {"name": "呪術師", "atk": 6, "def_": -1, "max_hp": -5, "spd": 1, "crit": 0.04, "skill": "curse", "skills": ["curse", "silence", "drain"]},
+    "adventurer": {"name": "冒険家", "atk": 2, "def_": 2, "max_hp": 8, "spd": 3, "crit": 0.05, "skill": "scout", "skills": ["scout", "lucky_find", "escape"]},
+    "chef": {"name": "料理人", "atk": 1, "def_": 3, "max_hp": 20, "spd": 0, "crit": 0.0, "skill": "cook", "skills": ["cook", "season", "feast"]},
+})
+D1_PLANS.update({"xp": "経験値優先"})
+
+# 装備の固定効果スキーマを全装備へ付与し、追加装備を登録する。
+for _item in EQUIPMENT_MASTER.values():
+    _item.setdefault("attack_count", 1); _item.setdefault("range", 1); _item.setdefault("penetration", 0)
+    _item.setdefault("status_effect", None); _item.setdefault("passive_effects", []); _item.setdefault("set_id", None); _item.setdefault("upgrade_level", 0)
+EQUIPMENT_MASTER.update({
+    "hunter_bow": {"name": "狩人の長弓", "slot": "weapon", "atk": 8, "def_": 0, "hp": 0, "crit": .12, "element": "none", "kind": "bow", "description": "射程3・先制", "attack_count": 1, "range": 3, "passive_effects": ["first_strike"]},
+    "knight_lance": {"name": "騎士槍", "slot": "weapon", "atk": 9, "def_": 3, "hp": 0, "crit": .02, "element": "light", "kind": "spear", "description": "防御貫通", "penetration": 5},
+    "venom_cloak": {"name": "毒蛇外套", "slot": "armor", "atk": 0, "def_": 4, "hp": 10, "crit": 0, "element": "dark", "status_effect": "poison", "passive_effects": ["poison_resist"]},
+    "scholar_ring": {"name": "賢者の指輪", "slot": "accessory", "atk": 4, "def_": 1, "hp": 5, "crit": .04, "element": "fire", "passive_effects": ["skill_cooldown"]},
+})
+
+NPC_MASTER = {
+    "traveler": {"name": "旅人レオン", "steps": [{"text": "安全な道を教える", "flag": "traveler_help", "reward": {"bread": 2}}, {"text": "地図を交換する", "flag": "traveler_map", "reward": {"material": "map_fragment"}}]},
+    "blacksmith": {"name": "鍛冶師ミナ", "steps": [{"text": "素材を渡す", "flag": "forge_help", "reward": {"material": "iron_ore"}}, {"text": "武器を強化する", "flag": "forge_upgrade", "reward": {"season_score": 30}}]},
+    "scholar": {"name": "学者ユイ", "steps": [{"text": "図鑑を読む", "flag": "library_seen", "reward": {"xp": 50}}, {"text": "古代文字を解読する", "flag": "library_decode", "reward": {"relic": "explorer_compass"}}]},
+    "prisoner": {"name": "囚人カイ", "steps": [{"text": "救出する", "flag": "prisoner_saved", "reward": {"coins": 100}}, {"text": "秘密を聞く", "flag": "prisoner_secret", "reward": {"season_score": 50}}]},
+    "guildmaster": {"name": "ギルド長", "steps": [{"text": "依頼を受ける", "flag": "guild_quest", "reward": {"xp": 100}}, {"text": "深層の報告をする", "flag": "guild_report", "reward": {"relic": "d1_tactics"}}]},
+}
+FLOOR_GOALS = {
+    "open_chests": {"name": "宝箱を開ける", "kind": "chests", "target": 3, "reward": {"relic": "lucky_coin"}},
+    "defeat_enemies": {"name": "敵を倒す", "kind": "kills", "target": 3, "reward": {"season_score": 100}},
+    "reach_floor": {"name": "深層へ進む", "kind": "floor", "target": 5, "reward": {"material": "ancient_shard"}},
+}
+
+_LEGACY_GET_PLAYER = d_get_player
+_LEGACY_EFFECTIVE_STATS = d_effective_stats
+_LEGACY_OPEN_CHEST = d_open_chest
+_LEGACY_TRIGGER_TRAP = d_trigger_trap
+
+def d_get_player(uid):
+    p = _LEGACY_GET_PLAYER(uid)
+    p.setdefault("skill_points", 0); p.setdefault("skills", []); p.setdefault("npc_flags", {})
+    p.setdefault("story_flags", {}); p.setdefault("run_id", None); p.setdefault("run_started_at", None)
+    p.setdefault("floor_goals", {}); p.setdefault("pending_rewards", []); p.setdefault("run_summary", {})
+    p.setdefault("reward_ledger", []); p.setdefault("action_log", []); p.setdefault("state_version", 0)
+    p.setdefault("front_back", "front"); p.setdefault("battle_resource", {"mp": 20, "max_mp": 20, "rage": 0, "combo": 0, "guard": 0})
+    return p
+
+def d_effective_stats(player):
+    stats = _LEGACY_EFFECTIVE_STATS(player)
+    p = player
+    # upgrade level and set/passive effects are deterministic and persist in the JSON state.
+    equipped = list(p.get("equipment", {}).values())
+    for key in equipped:
+        item = EQUIPMENT_MASTER.get(key, {})
+        level = int(item.get("upgrade_level", 0))
+        stats["atk"] += level; stats["def_"] += level
+        if "speed_up" in item.get("passive_effects", []): stats["spd"] += 2
+    if "set_steel" in [EQUIPMENT_MASTER.get(k, {}).get("set_id") for k in equipped]:
+        stats["def_"] += 3
+    if p.get("battle_resource", {}).get("guard", 0) > 0: stats["def_"] += p["battle_resource"]["guard"]
+    return stats
+
+def d_equipment_profile(uid):
+    p = d_get_player(uid)
+    return [dict(EQUIPMENT_MASTER.get(k, {}), key=k) for k in p.get("inventory", {}) if k in EQUIPMENT_MASTER]
+
+def d_upgrade_equipment(uid, key, material="iron_ore"):
+    p = d_get_player(uid)
+    if key not in EQUIPMENT_MASTER or p.get("materials", {}).get(material, 0) <= 0: return False
+    p["materials"][material] -= 1; EQUIPMENT_MASTER[key]["upgrade_level"] = int(EQUIPMENT_MASTER[key].get("upgrade_level", 0)) + 1
+    return True
+
+def d_open_chest(uid, supabase=None):
+    text, reward = _LEGACY_OPEN_CHEST(uid, supabase)
+    d_apply_floor_goal(uid, "chests", 1)
+    p = d_get_player(uid)
+    if "lucky_coin" in p.get("relics", []) and random.random() < .25:
+        reward = {"coins": random.randint(100, 350)}; text = "幸運硬貨が輝いた！ " + text
+    return text, reward
+
+def d_trigger_trap(uid):
+    p = d_get_player(uid)
+    if "explorer_compass" in p.get("relics", []) and random.random() < .25:
+        return "羅針盤が罠を発見し、回避しました。", {}
+    return _LEGACY_TRIGGER_TRAP(uid)
+
+def d_apply_special_status(uid, key, turns=None):
+    d_apply_status(uid, key, turns)
+    p = d_get_player(uid)
+    if key == "freeze": p.setdefault("battle_flags", {})["skip_next"] = True
+    elif key == "paralyze": p.setdefault("battle_flags", {})["paralyzed"] = True
+    elif key == "silence": p.setdefault("battle_flags", {})["silenced"] = True
+    elif key == "curse": p.setdefault("battle_flags", {})["cursed"] = True
+
+def d_apply_floor_goal(uid, kind, amount=1):
+    p = d_get_player(uid); goal = p.setdefault("floor_goals", {}).setdefault(str(p["floor"]), {"kind": "chests", "progress": 0, "target": 3, "completed": False})
+    if goal.get("completed") or goal.get("kind") != kind: return None
+    goal["progress"] = min(goal.get("target", 1), goal.get("progress", 0) + int(amount))
+    if goal["progress"] >= goal["target"]: goal["completed"] = True; return goal
+    return None
+
+def d_floor_routes(uid):
+    p = d_get_player(uid); floor = p.get("floor", 1)
+    return [{"id": "safe", "label": "安全", "risk": 1, "reward": 1, "score": 4}, {"id": "treasure", "label": "財宝", "risk": 3, "reward": 4, "score": 3}, {"id": "battle", "label": "戦闘", "risk": 4, "reward": 5, "score": 2}]
+
+def d1_action_candidates(uid, plan="安全探索"):
+    p = d_get_player(uid); routes = d_floor_routes(uid); names = {v: k for k, v in D1_PLANS.items()}; key = names.get(plan, "safe")
+    weights = {"safe": (3, -2), "speed": (1, 5), "treasure": (4, 0), "battle": (-1, 2), "explore": (2, 1), "boss": (1, 3), "xp": (0, 4)}
+    risk_w, reward_w = weights.get(key, weights["safe"])
+    for route in routes: route["plan_score"] = route["reward"] * reward_w - route["risk"] * risk_w
+    return routes
+
+def d1_candidate_log(uid, plan):
+    candidates = d1_action_candidates(uid, plan)
+    return "候補評価: " + " / ".join(f"{c['id']}:{c['label']} 危険度{c['risk']} 報酬{c['reward']} 作戦点{c['plan_score']}" for c in candidates)
+
+def d_normalize_choice(value, legal, fallback=None):
+    value = str(value or "").strip().lower().replace(" ", "")
+    aliases = {"enter": "enter", "check": "enter", "upward": "up", "downward": "down"}
+    value = aliases.get(value, value)
+    return value if value in legal else (fallback if fallback in legal else None)
+
+def d_make_reward_choices(uid, enemy):
+    p = d_get_player(uid); base = [{"label": "コイン", "reward": {"coins": enemy.get("reward_coins", 0)}}, {"label": "経験値", "reward": {"xp": enemy.get("reward_xp", 0)}}, {"label": "宝箱", "reward": {"boxes": max(1, enemy.get("reward_box", 0))}}]
+    if "d1_tactics" in p.get("relics", []): base[0]["reward"]["season_score"] = 10
+    return base
+
+def d_choose_reward(uid, choice):
+    p = d_get_player(uid); pending = p.setdefault("pending_rewards", [])
+    if not pending or choice not in range(len(pending)): return None
+    reward = pending.pop(choice); return reward
+
+def d_begin_run(uid, mode="manual"):
+    p = d_get_player(uid); p["run_id"] = f"run-{uid}-{int(datetime.datetime.now().timestamp())}"; p["run_started_at"] = datetime.datetime.now(JST).isoformat(); p["run_summary"] = {"mode": mode, "turns": 0, "kills": 0, "floor": p["floor"]}; return p["run_id"]
+
+def d_end_run(uid, reason="ended"):
+    p = d_get_player(uid); p.setdefault("run_summary", {})["end_reason"] = reason; p["run_id"] = None; p["active_effects"] = []; p["cooldowns"] = {}; return p["run_summary"]
+
+def d_record_action(uid, action, source="manual", result=None, reward=None, hp_before=None):
+    p = d_get_player(uid); p["state_version"] += 1; entry = {"id": p["state_version"], "run_id": p.get("run_id"), "turn": p.get("turns", 0), "floor": p["floor"], "x": p["x"], "y": p["y"], "action": action, "source": source, "result": result, "reward": reward, "hp_before": hp_before, "hp_after": p["hp"], "created_at": datetime.datetime.now(JST).isoformat()}; p["action_log"] = (p.get("action_log", []) + [entry])[-100:]; return entry
+
+def d_record_reward(uid, action_id, reward):
+    p = d_get_player(uid); keys = [x.get("action_id") for x in p.get("reward_ledger", [])]
+    if action_id in keys: return False
+    p["reward_ledger"].append({"action_id": action_id, "reward": reward, "created_at": datetime.datetime.now(JST).isoformat()}); return True
+
+# Existing code resolves these globals at call time, so wrappers become active immediately.
+
+# 追加職業のスキル効果と拡張状態の接続
+_LEGACY_USE_JOB_SKILL = d_use_job_skill
+def d_use_job_skill(uid, enemy):
+    p = d_get_player(uid); job = JOB_MASTER.get(p.get("job", "warrior"), JOB_MASTER["warrior"])
+    skill = job.get("skill", "power_strike"); cooldowns = p.setdefault("cooldowns", {})
+    if cooldowns.get(skill, 0) > 0:
+        return f"{skill}はあと{cooldowns[skill]}ターン使用できません。", 0
+    stats = d_effective_stats(p); cooldowns[skill] = 3
+    if skill == "heal":
+        before = p["hp"]; p["hp"] = min(stats["max_hp"], p["hp"] + max(20, stats["max_hp"] // 3)); return f"僧侶の回復！ HPが{p['hp'] - before}回復", 0
+    if skill == "blessing":
+        cooldowns["blessing_buff"] = 3; return "僧侶の祝福！ 次の防御力が上昇", 0
+    if skill in ("cleanse", "tonic"):
+        p["active_effects"] = []; p.setdefault("battle_flags", {}).clear(); return "状態異常を解除しました", 0
+    if skill in ("mark", "curse", "acid"):
+        d_apply_special_status(uid, "curse" if skill == "curse" else "bleed", 3)
+        damage = max(1, int(stats["atk"] * 1.4) - enemy.get("def_", 0)); return f"{job['name']}の{skill}！ {damage}ダメージ", damage
+    if skill in ("first_shot", "scout", "lucky_find"):
+        damage = max(1, int(stats["atk"] * 1.8) - enemy.get("def_", 0)); return f"{job['name']}の先制攻撃！ {damage}ダメージ", damage
+    if skill in ("taunt", "iron_wall"):
+        p.setdefault("battle_resource", {})["guard"] = 8; return f"{job['name']}の鉄壁！ 防御力が上昇", 0
+    if skill in ("counter", "drain"):
+        damage = max(1, int(stats["atk"] * 1.6) - enemy.get("def_", 0)); return f"{job['name']}の反撃！ {damage}ダメージ", damage
+    if skill in ("cook", "feast"):
+        p["battle_resource"]["rage"] = min(100, p["battle_resource"].get("rage", 0) + 30); return "料理人の料理！ 怒気が上昇", 0
+    return _LEGACY_USE_JOB_SKILL(uid, enemy)
+
+# 既存の敵ターンへ凍結・麻痺・沈黙・呪いを接続する。
+_LEGACY_ENEMY_TURN = DungeonCombatView._enemy_turn
+def _enemy_turn_with_status(self):
+    p = d_get_player(self.uid); flags = p.setdefault("battle_flags", {})
+    if flags.pop("skip_next", False):
+        self.defending = False; return "凍結で行動できませんでした"
+    if flags.pop("paralyzed", False) and random.random() < .5:
+        self.defending = False; return "麻痺で行動に失敗しました"
+    result = _LEGACY_ENEMY_TURN(self)
+    if flags.get("cursed"):
+        p["hp"] = max(0, p["hp"] - 2); result += " / 呪いで2ダメージ"
+    return result
+DungeonCombatView._enemy_turn = _enemy_turn_with_status
+
+# 報酬・状態ログを既存保存へ追加する。
+_LEGACY_SAVE_PLAYER = dg_save_player
+async def dg_save_player(uid, supabase):
+    await _LEGACY_SAVE_PLAYER(uid, supabase)
+    if not supabase or str(uid) not in dg_players:
+        return
+    p = d_get_player(uid); inventory = dict(p.get("inventory", {})); inventory["_dungeon_meta"] = {
+        "relics": p.get("relics", []), "active_effects": p.get("active_effects", []), "materials": p.get("materials", {}),
+        "quests": p.get("quests", {}), "run_modifiers": p.get("run_modifiers", []), "camp_facilities": p.get("camp_facilities", {}),
+        "battle_stats": p.get("battle_stats", {}), "skill_points": p.get("skill_points", 0), "skills": p.get("skills", []),
+        "npc_flags": p.get("npc_flags", {}), "story_flags": p.get("story_flags", {}), "run_id": p.get("run_id"),
+        "run_summary": p.get("run_summary", {}), "pending_rewards": p.get("pending_rewards", []), "reward_ledger": p.get("reward_ledger", []),
+        "action_log": p.get("action_log", [])[-100:], "state_version": p.get("state_version", 0), "front_back": p.get("front_back", "front"),
+        "battle_resource": p.get("battle_resource", {}), "floor_goals": p.get("floor_goals", {}),
+    }
+    try:
+        supabase.table("dungeon_players").update({"inventory": inventory}).eq("user_id", str(uid)).execute()
+    except Exception:
+        logger.warning("extended dungeon state save failed", exc_info=True)
+
+class DungeonRewardChoiceView(DungeonViewBase):
+    """戦闘勝利時に3候補から1つだけ受け取るView。"""
+    def __init__(self, uid, floor, x, y, supabase, choices):
+        super().__init__(uid, timeout=120); self.floor, self.x, self.y, self.supabase, self.choices = floor, x, y, supabase, choices
+        for index, item in enumerate(choices):
+            button = discord.ui.Button(label=item["label"], style=discord.ButtonStyle.green, row=0)
+            async def choose(interaction, index=index):
+                await interaction.response.defer(); p = d_get_player(self.uid)
+                if not p.get("pending_rewards"):
+                    await interaction.edit_original_response(embed=discord.Embed(title="報酬は受取済みです"), view=None, attachments=[]); return
+                reward = d_choose_reward(self.uid, index)
+                if reward is None:
+                    await interaction.edit_original_response(embed=discord.Embed(title="報酬の選択に失敗しました"), view=self); return
+                await d_apply_reward(self.uid, self.supabase, **reward); await dg_save_player(self.uid, self.supabase); self.stop()
+                mv = DungeonMainView(self.uid, p["floor"], p["x"], p["y"], self.supabase)
+                await interaction.edit_original_response(embed=mv._embed(f"報酬を選択: {item['label']}"), view=mv, attachments=[d_render_pillow(self.uid, p["floor"], p["x"], p["y"])])
+            button.callback = choose; self.add_item(button)
+
+_LEGACY_COMBAT_WIN = DungeonCombatView._win
+async def _combat_win_with_choices(self, interaction):
+    if interaction.__class__.__name__ == "_NoopInteraction":
+        return await _LEGACY_COMBAT_WIN(self, interaction)
+    choices = d_make_reward_choices(self.uid, self.enemy); p = d_get_player(self.uid); p["pending_rewards"] = [x["reward"] for x in choices]
+    self.log.append("勝利！報酬を3候補から1つ選択してください")
+    await dg_save_player(self.uid, self.supabase); self.stop()
+    view = DungeonRewardChoiceView(self.uid, self.floor, self.x, self.y, self.supabase, choices)
+    await interaction.edit_original_response(embed=self._embed(), view=view, attachments=[d_render_pillow(self.uid, self.floor, self.x, self.y)])
+DungeonCombatView._win = _combat_win_with_choices
+
+async def _show_inventory(self, interaction):
+    await interaction.response.defer(); p = d_get_player(self.uid)
+    lines = [f"{EQUIPMENT_MASTER[k]['name']} ×{v}" for k, v in p.get("inventory", {}).items() if k in EQUIPMENT_MASTER]
+    lines += [f"素材: {k} ×{v}" for k, v in p.get("materials", {}).items()]
+    await self._back(interaction, "所持品\n" + ("\n".join(lines) or "なし"))
+
+async def _show_npcs(self, interaction):
+    await interaction.response.defer(); p = d_get_player(self.uid)
+    lines = [f"{v['name']}: {'進行済み' if any(x.get('flag') in p.get('npc_flags', {}) for x in v['steps']) else '未訪問'}" for v in NPC_MASTER.values()]
+    await self._back(interaction, "NPC・依頼\n" + "\n".join(lines))
+
+async def _show_goals(self, interaction):
+    await interaction.response.defer(); p = d_get_player(self.uid)
+    goal = p.setdefault("floor_goals", {}).get(str(p["floor"]), {"kind": "chests", "progress": 0, "target": 3, "completed": False})
+    name = next((v["name"] for v in FLOOR_GOALS.values() if v["kind"] == goal.get("kind")), "宝箱を開ける")
+    await self._back(interaction, f"フロア目標: {name} {goal.get('progress', 0)}/{goal.get('target', 3)}")
+
+async def _upgrade_forge(self, interaction):
+    await interaction.response.defer(); p = d_get_player(self.uid)
+    weapon = p.get("equipment", {}).get("weapon")
+    msg = "鍛冶対象の武器がありません。"
+    if weapon and d_upgrade_equipment(self.uid, weapon): msg = f"{EQUIPMENT_MASTER[weapon]['name']}を強化しました。"
+    await dg_save_player(self.uid, self.supabase); await self._back(interaction, msg)
+
+DungeonOperationView.show_inventory = _show_inventory
+DungeonOperationView.show_npcs = _show_npcs
+DungeonOperationView.show_goals = _show_goals
+DungeonOperationView.upgrade_forge = _upgrade_forge
+_OLD_OPERATION_INIT = DungeonOperationView.__init__
+def _extended_operation_init(self, uid, floor, x, y, supabase):
+    _OLD_OPERATION_INIT(self, uid, floor, x, y, supabase)
+    self._add("所持品", self.show_inventory, 2, discord.ButtonStyle.grey)
+    self._add("NPC/依頼", self.show_npcs, 2, discord.ButtonStyle.grey)
+    self._add("フロア目標", self.show_goals, 3, discord.ButtonStyle.primary)
+    self._add("鍛冶強化", self.upgrade_forge, 3, discord.ButtonStyle.grey)
+DungeonOperationView.__init__ = _extended_operation_init
