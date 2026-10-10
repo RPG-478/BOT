@@ -1746,7 +1746,7 @@ class DungeonOperationView(DungeonViewBase):
         em = status._embed()
         em.set_image(url="attachment://map.png")
         await interaction.edit_original_response(
-            embed=em, view=self,
+            embed=em, view=status,
             attachments=[d_render_pillow(self.uid, p["floor"], p["x"], p["y"])]
         )
 
