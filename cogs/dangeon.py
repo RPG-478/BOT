@@ -1398,6 +1398,211 @@ class DungeonMainView(DungeonViewBase):
         await i.edit_original_response(embed=status_embed, attachments=[], view=sv)
 
 
+
+class DungeonUnifiedView(DungeonMainView):
+    """/dungeon一つで操作を完結させる圧縮UI。"""
+    def __init__(self, uid, floor, x, y, supabase):
+        super().__init__(uid, floor, x, y, supabase)
+        self.clear_items()
+        for label, dx, dy in (("⬅️", -1, 0), ("⬆️", 0, -1), ("⬇️", 0, 1), ("➡️", 1, 0)):
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.grey)
+            async def move_callback(interaction, dx=dx, dy=dy):
+                await self._move(interaction, dx, dy)
+            button.callback = move_callback
+            self.add_item(button)
+
+        operation = discord.ui.Button(label="操作 / STATUS", style=discord.ButtonStyle.green, row=1)
+        operation.callback = self.open_operations
+        self.add_item(operation)
+        d1 = discord.ui.Button(label="🤖 D1開始", style=discord.ButtonStyle.blurple, row=1)
+        d1.callback = self.start_d1
+        self.add_item(d1)
+        stop = discord.ui.Button(label="■ 終了", style=discord.ButtonStyle.red, row=1)
+        stop.callback = self.end_session
+        self.add_item(stop)
+
+    async def open_operations(self, interaction):
+        await interaction.response.defer()
+        op = DungeonOperationView(self.uid, self.floor, self.x, self.y, self.supabase)
+        p = d_get_player(self.uid)
+        await interaction.edit_original_response(
+            embed=op._embed("操作メニュー"), view=op,
+            attachments=[d_render_pillow(self.uid, p["floor"], p["x"], p["y"])]
+        )
+
+    async def start_d1(self, interaction):
+        cog = interaction.client.get_cog("D1DungeonPlayerCog")
+        if cog is None:
+            await interaction.response.send_message("D1機能が読み込まれていません。", ephemeral=True)
+            return
+        await cog.start_loop(interaction, self)
+
+    async def end_session(self, interaction):
+        cog = interaction.client.get_cog("D1DungeonPlayerCog")
+        if cog:
+            await cog.stop_loop(self.uid)
+        self.stop()
+        await interaction.response.defer()
+        p = d_get_player(self.uid)
+        embed = self._embed("ダンジョンを終了しました。再開する場合は `/dungeon` を実行してください。")
+        await interaction.edit_original_response(
+            embed=embed, view=None,
+            attachments=[d_render_pillow(self.uid, p["floor"], p["x"], p["y"])]
+        )
+
+
+class DungeonOperationView(DungeonViewBase):
+    """ステータス・アイテム・拠点・現在地操作を1画面に集約する。"""
+    def __init__(self, uid, floor, x, y, supabase):
+        super().__init__(uid, timeout=600)
+        self.floor, self.x, self.y, self.supabase = floor, x, y, supabase
+
+    def _embed(self, msg=""):
+        p = d_get_player(self.uid)
+        stats = d_effective_stats(p)
+        em = discord.Embed(title="ダンジョン操作メニュー", description=msg, color=0x4EA1FF)
+        em.add_field(name="位置", value=f"{p['floor']}F ({p['x']},{p['y']})", inline=True)
+        em.add_field(name="HP", value=f"{p['hp']}/{stats['max_hp']}", inline=True)
+        em.add_field(name="所持", value=f"パン:{p['bread']} / 宝箱:{p['boxes']}", inline=False)
+        return em
+
+    async def _back(self, interaction, msg=""):
+        p = d_get_player(self.uid)
+        view = DungeonUnifiedView(self.uid, p["floor"], p["x"], p["y"], self.supabase)
+        await interaction.edit_original_response(
+            embed=view._embed(msg, has_image=True, image_url="attachment://map.png"),
+            view=view, attachments=[d_render_pillow(self.uid, p["floor"], p["x"], p["y"])]
+        )
+
+    async def status(self, interaction):
+        await interaction.response.defer()
+        p = d_get_player(self.uid)
+        status = DungeonStatusView(self.uid, p["floor"], p["x"], p["y"], self.supabase)
+        em = status._embed()
+        em.set_image(url="attachment://map.png")
+        await interaction.edit_original_response(
+            embed=em, view=self,
+            attachments=[d_render_pillow(self.uid, p["floor"], p["x"], p["y"])]
+        )
+
+    async def use_bread(self, interaction):
+        await interaction.response.defer()
+        p = d_get_player(self.uid)
+        if p.get("bread", 0) <= 0:
+            await self._back(interaction, "レアパンを持っていません。")
+            return
+        stats = d_effective_stats(p)
+        before = p["hp"]
+        p["bread"] -= 1
+        p["hp"] = min(stats["max_hp"], p["hp"] + max(25, stats["max_hp"] // 4))
+        await dg_save_player(self.uid, self.supabase)
+        await self._back(interaction, f"レアパンを使用し、HPが {p['hp'] - before} 回復しました。")
+
+    async def camp(self, interaction):
+        await interaction.response.defer()
+        p = d_get_player(self.uid)
+        if p["floor"] != 1 and p["floor"] % 5 != 0:
+            await self._back(interaction, "拠点は1階または5階ごとのフロアで設置できます。")
+            return
+        d_ensure_map(p["floor"])
+        dg_maps[p["floor"]][p["y"]][p["x"]] = D_BASE
+        await dg_save_base(self.uid, p["floor"], p["x"], p["y"], self.supabase)
+        await dg_save_map(p["floor"], self.supabase)
+        d_unlock_achievement(self.uid, "camp_builder")
+        await dg_save_player(self.uid, self.supabase)
+        await self._back(interaction, "現在地に拠点を設置しました。")
+
+    async def achievements(self, interaction):
+        await interaction.response.defer()
+        p = d_get_player(self.uid)
+        unlocked = [f"✅ {ACHIEVEMENTS[k]}" for k in p["achievements"] if k in ACHIEVEMENTS]
+        locked = [f"🔒 {name}" for k, name in ACHIEVEMENTS.items() if k not in p["achievements"]]
+        await self._back(interaction, "\n".join(unlocked + locked))
+
+    async def select_job(self, interaction):
+        await interaction.response.defer()
+        p = d_get_player(self.uid)
+        if p.get("turns", 0) > 0:
+            await self._back(interaction, "冒険開始後は職業を変更できません。")
+            return
+        selected = interaction.data.get("values", [""])[0]
+        if selected not in JOB_MASTER:
+            await self._back(interaction, "無効な職業です。")
+            return
+        p["job"] = selected
+        await dg_save_player(self.uid, self.supabase)
+        await self._back(interaction, f"職業を **{JOB_MASTER[selected]['name']}** に設定しました。")
+
+    async def current_action(self, interaction):
+        await interaction.response.defer()
+        p = d_get_player(self.uid)
+        cell = d_get_cell(p["floor"], p["x"], p["y"])
+        msg = "この場所では操作できません。"
+        if cell == D_STAIRS and p["floor"] < D_FLOORS:
+            p["floor"] += 1
+            p["hp"] = d_effective_stats(p)["max_hp"]
+            d_ensure_map(p["floor"])
+            p["x"], p["y"] = dg_starts[p["floor"]]
+            msg = f"階段を上り、{p['floor']}Fへ進みました。"
+        elif cell == D_MINE:
+            gain = d_do_mine(self.uid)
+            await d_apply_reward(self.uid, self.supabase, coins=gain)
+            d_consume(p["floor"], p["x"], p["y"])
+            await dg_save_map(p["floor"], self.supabase)
+            msg = f"採掘してコインを{gain}枚獲得しました。"
+        elif cell == D_REST:
+            stats = d_effective_stats(p)
+            before = p["hp"]
+            p["hp"] = min(stats["max_hp"], p["hp"] + max(20, stats["max_hp"] // 3))
+            d_consume(p["floor"], p["x"], p["y"])
+            await dg_save_map(p["floor"], self.supabase)
+            msg = f"休憩してHPが {p['hp'] - before} 回復しました。"
+        elif cell == D_SHOP:
+            try:
+                await d_apply_reward(self.uid, self.supabase, coins=-30, bread=1)
+                msg = "商店でレアパンを購入しました。"
+            except Exception:
+                msg = "コイン不足で購入できません。"
+        await dg_save_player(self.uid, self.supabase)
+        await self._back(interaction, msg)
+
+    async def back(self, interaction):
+        await interaction.response.defer()
+        await self._back(interaction)
+
+    def _add(self, label, callback, row=0, style=discord.ButtonStyle.grey):
+        button = discord.ui.Button(label=label, style=style, row=row)
+        button.callback = callback
+        self.add_item(button)
+
+    def __init_subclass__(cls, **kwargs):
+        return super().__init_subclass__(**kwargs)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+
+
+# Operation buttons are attached after class creation to keep the screen compact.
+def _operation_buttons_init(self, uid, floor, x, y, supabase):
+    DungeonViewBase.__init__(self, uid, timeout=600)
+    self.floor, self.x, self.y, self.supabase = floor, x, y, supabase
+    self._add("STATUS", self.status, 0, discord.ButtonStyle.green)
+    self._add("🍞 パン", self.use_bread, 0, discord.ButtonStyle.blurple)
+    self._add("現在地を操作", self.current_action, 1, discord.ButtonStyle.primary)
+    self._add("🏕 拠点", self.camp, 1, discord.ButtonStyle.grey)
+    self._add("実績", self.achievements, 2, discord.ButtonStyle.grey)
+    self._add("⬅️ 戻る", self.back, 2, discord.ButtonStyle.grey)
+    job_select = discord.ui.Select(
+        placeholder="職業を選択（冒険開始前のみ）",
+        options=[discord.SelectOption(label=data["name"], value=key) for key, data in JOB_MASTER.items()],
+        row=3,
+    )
+    job_select.callback = self.select_job
+    self.add_item(job_select)
+
+DungeonOperationView.__init__ = _operation_buttons_init
+
 # ============================================================
 #  Cog クラス
 # ============================================================
@@ -1449,106 +1654,13 @@ class DungeonCog(Cog):
             if self.supabase:
                 await dg_save_player(uid, self.supabase)
 
-        # Viewの作成
-        mv = DungeonMainView(uid, floor, x, y, self.supabase)
+        # すべての通常操作・ステータス・D1開始/停止を1つの画面へ集約する。
+        mv = DungeonUnifiedView(uid, floor, x, y, self.supabase)
         
         # 初期画像は専用チャンネルへ投げず、コマンド応答へ直接添付する。
         map_file = d_render_pillow(uid, floor, x, y)
-        em = mv._embed("ダンジョンへようこそ！", has_image=True, image_url="attachment://map.png")
+        em = mv._embed("ダンジョンへようこそ！ 操作/STATUSから詳細操作を開けます。", has_image=True, image_url="attachment://map.png")
         await interaction.followup.send(embed=em, view=mv, file=map_file)
-
-    @app_commands.command(name="dungeon_profile", description="職業・装備・成長状態を確認します")
-    async def dungeon_profile(self, interaction: Interaction):
-        await interaction.response.defer(ephemeral=True)
-        p = d_get_player(str(interaction.user.id))
-        st = d_effective_stats(p)
-        equipment = [EQUIPMENT_MASTER[k]["name"] for k in p["equipment"].values() if k in EQUIPMENT_MASTER] or ["なし"]
-        em = discord.Embed(title=f"{interaction.user.display_name}の冒険者情報", color=0x4EA1FF)
-        em.add_field(name="職業", value=d_job_name(str(interaction.user.id)), inline=True)
-        em.add_field(name="レベル", value=f"Lv.{p['level']} ({p['xp']} XP)", inline=True)
-        em.add_field(name="能力", value=f"HP {p['hp']}/{st['max_hp']}\nATK {st['atk']} / DEF {st['def_']} / SPD {st['spd']}\nCRIT {int(st['crit']*100)}%", inline=False)
-        em.add_field(name="装備", value="、".join(equipment), inline=False)
-        em.add_field(name="シーズン", value=f"{p['season_id']} / {p['season_score']}pt", inline=True)
-        em.add_field(name="実績", value=f"{len(p['achievements'])}/{len(ACHIEVEMENTS)}", inline=True)
-        await interaction.followup.send(embed=em, ephemeral=True)
-
-    @app_commands.command(name="dungeon_job", description="職業を選択します（初回のみ）")
-    @app_commands.describe(job="選択する職業")
-    @app_commands.choices(job=[
-        app_commands.Choice(name="戦士", value="warrior"),
-        app_commands.Choice(name="盗賊", value="rogue"),
-        app_commands.Choice(name="魔術師", value="mage"),
-    ])
-    async def dungeon_job(self, interaction: Interaction, job: app_commands.Choice[str]):
-        await interaction.response.defer(ephemeral=True)
-        p = d_get_player(str(interaction.user.id))
-        if p.get("turns", 0) > 0:
-            await interaction.followup.send("冒険開始後は職業を変更できません。", ephemeral=True)
-            return
-        p["job"] = job.value
-        await dg_save_player(str(interaction.user.id), self.supabase)
-        await interaction.followup.send(f"職業を **{JOB_MASTER[job.value]['name']}** に設定しました。", ephemeral=True)
-
-    @app_commands.command(name="dungeon_use", description="ダンジョンアイテムを使用します")
-    @app_commands.describe(item="使用するアイテム")
-    @app_commands.choices(item=[app_commands.Choice(name="レアパン", value="bread")])
-    async def dungeon_use(self, interaction: Interaction, item: app_commands.Choice[str]):
-        await interaction.response.defer(ephemeral=True)
-        uid = str(interaction.user.id)
-        p = d_get_player(uid)
-        if item.value != "bread" or p.get("bread", 0) <= 0:
-            await interaction.followup.send("そのアイテムは所持していません。", ephemeral=True)
-            return
-        stats = d_effective_stats(p)
-        before = p["hp"]
-        p["bread"] -= 1
-        p["hp"] = min(stats["max_hp"], p["hp"] + max(25, stats["max_hp"] // 4))
-        await dg_save_player(uid, self.supabase)
-        await interaction.followup.send(f"レアパンを使用し、HPが {p['hp'] - before} 回復しました。", ephemeral=True)
-
-    @app_commands.command(name="dungeon_camp", description="現在地に拠点を設置します")
-    async def dungeon_camp(self, interaction: Interaction):
-        await interaction.response.defer(ephemeral=True)
-        uid = str(interaction.user.id)
-        p = d_get_player(uid)
-        if p["floor"] != 1 and p["floor"] % 5 != 0:
-            await interaction.followup.send("拠点は1階または5階ごとの中継地点に設置できます。", ephemeral=True)
-            return
-        floor, x, y = p["floor"], p["x"], p["y"]
-        d_ensure_map(floor)
-        dg_maps[floor][y][x] = D_BASE
-        await dg_save_base(uid, floor, x, y, self.supabase)
-        await dg_save_map(floor, self.supabase)
-        d_unlock_achievement(uid, "camp_builder")
-        await dg_save_player(uid, self.supabase)
-        await interaction.followup.send("現在地に拠点を設置しました。", ephemeral=True)
-
-    @app_commands.command(name="dungeon_achievements", description="実績と称号を確認します")
-    async def dungeon_achievements(self, interaction: Interaction):
-        await interaction.response.defer(ephemeral=True)
-        p = d_get_player(str(interaction.user.id))
-        unlocked = [f"✅ {ACHIEVEMENTS[k]}" for k in p["achievements"] if k in ACHIEVEMENTS]
-        locked = [f"🔒 {name}" for k, name in ACHIEVEMENTS.items() if k not in p["achievements"]]
-        await interaction.followup.send("\n".join(unlocked + locked), ephemeral=True)
-
-    @app_commands.command(name="dungeon_leaderboard", description="シーズンのダンジョンランキングを表示します")
-    async def dungeon_leaderboard(self, interaction: Interaction):
-        await interaction.response.defer()
-        if not self.supabase:
-            await interaction.followup.send("ランキングにはSupabaseが必要です。")
-            return
-        try:
-            res = (self.supabase.table("dungeon_players")
-                   .select("user_id, floor, season_score")
-                   .eq("season_id", SEASON_ID)
-                   .order("season_score", desc=True).limit(10).execute())
-            lines = []
-            for idx, row in enumerate(res.data or [], 1):
-                lines.append(f"**{idx}.** <@{row['user_id']}> — {row.get('season_score', 0)}pt / {row.get('floor', 1)}F")
-            await interaction.followup.send("🏆 **ダンジョン シーズンランキング**\n" + ("\n".join(lines) or "まだ記録がありません。"))
-        except Exception:
-            logger.exception("leaderboard failed")
-            await interaction.followup.send("ランキングの取得に失敗しました。", ephemeral=True)
 
     @app_commands.command(name="dungeon_reset", description="ダンジョンマップをリセット（管理者のみ）")
     @app_commands.checks.has_permissions(administrator=True)
