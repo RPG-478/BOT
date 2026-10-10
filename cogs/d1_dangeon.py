@@ -20,6 +20,7 @@ from cogs.dangeon import (
     d_do_mine,
     d_make_enemy,
     d_apply_reward,
+    d_effective_stats,
     DungeonCombatView,
     d_get_biome,
     dg_save_player,
@@ -32,6 +33,8 @@ from cogs.dangeon import (
     D_CHEST,
     D_TRAP,
     D_MINE,
+    D_REST,
+    D_SHOP,
     D_FLOORS,
     D_ENCOUNTER_RATES
 )
@@ -131,7 +134,46 @@ class D1DungeonPlayerCog(commands.Cog):
                 await interaction.followup.send(f"🤖 **D1の判断**: `mine_back` を選択。採掘せずに戻りました。")
                 return
 
-        # 3. 通常探索移動（※ status 選択肢を除外）
+        # 3. 休憩所・商店はD1の単発選択だけで処理する。
+        if current_cell == D_REST:
+            await d_apply_reward(uid, supabase, xp=10, season_score=10)
+            p["hp"] = min(d_effective_stats(p)["max_hp"], p["hp"] + max(20, d_effective_stats(p)["max_hp"] // 3))
+            d_consume(floor, x, y)
+            if supabase:
+                await dg_save_map(floor, supabase)
+                await dg_save_player(uid, supabase)
+            await interaction.followup.send("🤖 **D1**: 休憩所で回復しました。")
+            return
+
+        if current_cell == D_SHOP:
+            questions = {
+                "shop_action": {
+                    "type": "choice",
+                    "instructions": "Choose whether to buy a healing bread at the shop.",
+                    "criteria": {
+                        "buy_bread": "Spend 30 coins to buy one healing bread",
+                        "leave": "Leave the shop and keep exploring",
+                    },
+                }
+            }
+            choice = await self._call_d1(
+                f"Floor {floor} ({x}, {y}) - Shop. Coins are handled by the game server.",
+                questions,
+                b64_img,
+            )
+            if choice == "buy_bread":
+                try:
+                    await d_apply_reward(uid, supabase, coins=-30, bread=1)
+                    if supabase:
+                        await dg_save_player(uid, supabase)
+                    await interaction.followup.send("🤖 **D1の判断**: パンを購入しました。")
+                except Exception:
+                    await interaction.followup.send("🤖 **D1の判断**: コイン不足のため購入できませんでした。")
+            else:
+                await interaction.followup.send("🤖 **D1の判断**: 購入せず探索を続けます。")
+            return
+
+        # 4. 通常探索移動（※ status 選択肢を除外）
         questions = {
             "move_action": {
                 "type": "choice",
@@ -149,7 +191,9 @@ class D1DungeonPlayerCog(commands.Cog):
                 }
             }
         }
-        state_str = f"Floor {floor} ({x}, {y}) - Exploring. HP: {p['hp']}/{p['max_hp']}"
+        state_str = (f"Floor {floor} ({x}, {y}) - Exploring. "
+                     f"HP: {p['hp']}/{d_effective_stats(p)['max_hp']}. "
+                     "Choose exactly one legal next action.")
         choice = await self._call_d1(state_str, questions, b64_img)
 
         # 移動方向の適用処理
