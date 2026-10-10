@@ -1746,7 +1746,7 @@ class DungeonOperationView(DungeonViewBase):
         em = status._embed()
         em.set_image(url="attachment://map.png")
         await interaction.edit_original_response(
-            embed=em, view=self,
+            embed=em, view=status,
             attachments=[d_render_pillow(self.uid, p["floor"], p["x"], p["y"])]
         )
 
@@ -2148,10 +2148,11 @@ def d_choose_reward(uid, choice):
     reward = pending.pop(choice); return reward
 
 def d_begin_run(uid, mode="manual"):
-    p = d_get_player(uid); p["run_id"] = f"run-{uid}-{int(datetime.datetime.now().timestamp())}"; p["run_started_at"] = datetime.datetime.now(JST).isoformat(); p["run_summary"] = {"mode": mode, "turns": 0, "kills": 0, "floor": p["floor"]}; return p["run_id"]
+    p = d_get_player(uid); p["run_id"] = f"run-{uid}-{int(datetime.datetime.now().timestamp())}"; p["run_started_at"] = datetime.datetime.now(JST).isoformat(); p["run_summary"] = {"mode": mode, "turns": p.get("turns", 0), "kills": p.get("battle_stats", {}).get("kills", 0), "floor": p["floor"], "inherited": True}; return p["run_id"]
 
 def d_end_run(uid, reason="ended"):
-    p = d_get_player(uid); p.setdefault("run_summary", {})["end_reason"] = reason; p["run_id"] = None; p["active_effects"] = []; p["cooldowns"] = {}; return p["run_summary"]
+    # D1は既存の/dungeon状態を共有するため、終了時にHP・状態異常・クールダウンを初期化しない。
+    p = d_get_player(uid); p.setdefault("run_summary", {})["end_reason"] = reason; p["run_id"] = None; return p["run_summary"]
 
 def d_record_action(uid, action, source="manual", result=None, reward=None, hp_before=None):
     p = d_get_player(uid); p["state_version"] += 1; entry = {"id": p["state_version"], "run_id": p.get("run_id"), "turn": p.get("turns", 0), "floor": p["floor"], "x": p["x"], "y": p["y"], "action": action, "source": source, "result": result, "reward": reward, "hp_before": hp_before, "hp_after": p["hp"], "created_at": datetime.datetime.now(JST).isoformat()}; p["action_log"] = (p.get("action_log", []) + [entry])[-100:]; return entry
@@ -2286,6 +2287,7 @@ def _extended_operation_init(self, uid, floor, x, y, supabase):
     _OLD_OPERATION_INIT(self, uid, floor, x, y, supabase)
     self._add("所持品", self.show_inventory, 2, discord.ButtonStyle.grey)
     self._add("NPC/依頼", self.show_npcs, 2, discord.ButtonStyle.grey)
-    self._add("フロア目標", self.show_goals, 3, discord.ButtonStyle.primary)
-    self._add("鍛冶強化", self.upgrade_forge, 3, discord.ButtonStyle.grey)
+    # row 3 is occupied by the 5-column job select; keep these on row 4.
+    self._add("フロア目標", self.show_goals, 4, discord.ButtonStyle.primary)
+    self._add("鍛冶強化", self.upgrade_forge, 4, discord.ButtonStyle.grey)
 DungeonOperationView.__init__ = _extended_operation_init

@@ -64,9 +64,26 @@ class D1DungeonPlayerCog(commands.Cog):
         self._tasks = {}
         self._stops = {}
         self.service_name = os.environ.get("D1_SERVICE_NAME", "llama-d1-omni")
+        self.mmproj_path = os.environ.get("D1_MMPROJ", "")
+        self.start_command = os.environ.get("D1_START_COMMAND", "")
+        self._vision_ready = False
         self._service_lock = asyncio.Lock()
         self._ready_until = 0.0
         self._run_stats = {}
+
+    async def _test_vision_capability(self):
+        """/v1/modelsを確認し、現在のサービスが画像対応で起動しているか判定する。"""
+        try:
+            timeout = aiohttp.ClientTimeout(total=3.0)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(D1_ENDPOINT.rsplit("/", 1)[0] + "/models") as response:
+                    if response.status != 200:
+                        return False
+                    data = await response.json(content_type=None)
+                    text = str(data).lower()
+                    return "multimodal" in text or "vision" in text or "image" in text
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError):
+            return False
 
     async def _test_response(self):
         """d1_test.pyと同じ最小pingでsystemoneの稼働を確認する。"""
@@ -90,11 +107,18 @@ class D1DungeonPlayerCog(commands.Cog):
     async def _start_service(self):
         """d1_test.pyと同じsystemdサービス起動手順を実行する。"""
         try:
-            process = await asyncio.create_subprocess_exec(
-                "sudo", "systemctl", "start", self.service_name,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            if self.start_command:
+                process = await asyncio.create_subprocess_shell(
+                    self.start_command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            else:
+                process = await asyncio.create_subprocess_exec(
+                    "sudo", "systemctl", "restart", self.service_name,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
             await asyncio.wait_for(process.communicate(), timeout=15.0)
             return process.returncode == 0
         except (asyncio.TimeoutError, OSError):
@@ -103,12 +127,15 @@ class D1DungeonPlayerCog(commands.Cog):
     async def _ensure_d1_ready(self, logs):
         """ping→起動→モデルロード待機→再pingを一度だけ行う。"""
         if time.monotonic() < self._ready_until:
-            return True
+            return self._vision_ready
         async with self._service_lock:
             if time.monotonic() < self._ready_until:
-                return True
+                return self._vision_ready
             if await self._test_response():
+                self._vision_ready = await self._test_vision_capability()
                 self._ready_until = time.monotonic() + 30.0
+                if not self._vision_ready:
+                    logs.append("D1サービスは応答しますが画像機能が無効です。mmproj付き起動が必要です。")
                 return True
             logs.append("D1応答なし。systemdサービスを起動します。")
             if not await self._start_service():
@@ -118,8 +145,11 @@ class D1DungeonPlayerCog(commands.Cog):
             for _ in range(12):
                 await asyncio.sleep(2.5)
                 if await self._test_response():
+                    self._vision_ready = await self._test_vision_capability()
                     self._ready_until = time.monotonic() + 30.0
                     logs.append("D1サービスの応答を確認しました。")
+                    if not self._vision_ready:
+                        logs.append("D1サービスの画像機能を確認できません。D1_MMPROJまたは--mmprojを設定してください。")
                     return True
             logs.append("D1サービスは起動しましたが、応答待ちがタイムアウトしました。")
             return False
@@ -146,7 +176,8 @@ class D1DungeonPlayerCog(commands.Cog):
                         self._ready_until = 0.0
                         detail = " ".join(body.split())[:240]
                         if response.status == 501 and ("image input" in body.lower() or "mmproj" in body.lower()):
-                            logs.append("D1画像入力が拒否されました。D1サービスをmmproj付きで起動してください。")
+                            self._vision_ready = False
+                            logs.append("D1画像入力が拒否されました。クライアント形式は正しいため、D1サービスをmmproj付きで再起動してください。")
                         logs.append(f"D1 APIエラー: HTTP {response.status}" + (f" / {detail}" if detail else ""))
                         return ""
                     try:
@@ -184,7 +215,8 @@ class D1DungeonPlayerCog(commands.Cog):
             await interaction.response.send_message("D1はすでにプレイ中です。", ephemeral=True)
             return
         await interaction.response.defer()
-        message = await interaction.original_response()
+        # ボタンを押した元の/dungeonメッセージをそのまま使う。
+        message = interaction.message or await interaction.original_response()
         stop_event = asyncio.Event()
         self._stops[uid] = stop_event
         task = asyncio.create_task(self._run_loop(uid, message, view, stop_event))
@@ -217,6 +249,8 @@ class D1DungeonPlayerCog(commands.Cog):
         logs = [f"D1が代理プレイを開始しました。作戦: {plan} / 終了ボタンで停止できます。"]
         d_begin_run(uid, "d1")
         self._run_stats[uid] = {"turns": 0, "positions": [], "battles": 0}
+        # 初回判断前に、/dungeonと完全に同じ現在状態のフレームを表示する。
+        await self._edit_screen(message, view, logs)
         try:
             while not stop_event.is_set():
                 reason = self._stop_reason(uid, logs)
