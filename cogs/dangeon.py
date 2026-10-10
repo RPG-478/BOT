@@ -22,6 +22,9 @@ import json
 import random
 import asyncio
 import io
+import time
+import base64
+import aiohttp
 import datetime
 import logging
 from discord.ui import View
@@ -161,11 +164,39 @@ ROOM_MODIFIERS = {
 D1_PLANS = {
     "safe": "安全探索", "speed": "最短攻略", "treasure": "財宝優先",
     "battle": "戦闘優先", "explore": "探索優先", "boss": "ボス準備優先",
+    "xp": "経験値優先",
+}
+# D1は小型の意思決定モデルなので、渡す文脈は常に短く保つ（コンテキスト長対策）。
+D1_STATE_CHARS = int(os.environ.get("D1_STATE_CHARS", 2400))
+D1_LOG_LINES = int(os.environ.get("D1_LOG_LINES", 6))
+D1_MAX_TURNS = int(os.environ.get("D1_MAX_TURNS", 10))
+D1_HTTP_TIMEOUT = float(os.environ.get("D1_HTTP_TIMEOUT", 30))
+# 8方向の定義。移動・経路探索・選択肢の基準提示で共通利用する。
+_DIRECTIONS = {
+    "up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0),
+    "leftup": (-1, -1), "rightup": (1, -1), "leftdown": (-1, 1), "rightdown": (1, 1),
+}
+_DIRECTION_LABELS = {
+    "up": "北", "down": "南", "left": "西", "right": "東",
+    "leftup": "北西", "rightup": "北東", "leftdown": "南西", "rightdown": "南東",
 }
 ACHIEVEMENTS = {
     "first_step": "初めての一歩", "floor_10": "森の踏破者", "floor_20": "氷原の生存者",
     "floor_40": "深層の覇者", "first_boss": "ボスブレイカー", "treasure_hunter": "宝箱荒らし",
     "skill_user": "スキルの使い手", "camp_builder": "野営地の開拓者",
+}
+# NPCとフロア目標。D1へ渡すゴール提示にも利用する。
+NPC_MASTER = {
+    "traveler": {"name": "旅人レオン", "steps": [{"text": "安全な道を教える", "flag": "traveler_help", "reward": {"bread": 2}}, {"text": "地図を交換する", "flag": "traveler_map", "reward": {"material": "map_fragment"}}]},
+    "blacksmith": {"name": "鍛冶師ミナ", "steps": [{"text": "素材を渡す", "flag": "forge_help", "reward": {"material": "iron_ore"}}, {"text": "武器を強化する", "flag": "forge_upgrade", "reward": {"season_score": 30}}]},
+    "scholar": {"name": "学者ユイ", "steps": [{"text": "図鑑を読む", "flag": "library_seen", "reward": {"xp": 50}}, {"text": "古代文字を解読する", "flag": "library_decode", "reward": {"relic": "explorer_compass"}}]},
+    "prisoner": {"name": "囚人カイ", "steps": [{"text": "救出する", "flag": "prisoner_saved", "reward": {"coins": 100}}, {"text": "秘密を聞く", "flag": "prisoner_secret", "reward": {"season_score": 50}}]},
+    "guildmaster": {"name": "ギルド長", "steps": [{"text": "依頼を受ける", "flag": "guild_quest", "reward": {"xp": 100}}, {"text": "深層の報告をする", "flag": "guild_report", "reward": {"relic": "d1_tactics"}}]},
+}
+FLOOR_GOALS = {
+    "open_chests": {"name": "宝箱を開ける", "kind": "chests", "target": 3, "reward": {"relic": "lucky_coin"}},
+    "defeat_enemies": {"name": "敵を倒す", "kind": "kills", "target": 3, "reward": {"season_score": 100}},
+    "reach_floor": {"name": "深層へ進む", "kind": "floor", "target": 5, "reward": {"material": "ancient_shard"}},
 }
 
 # タイルカラー (RGB)
@@ -298,46 +329,49 @@ def d_consume(floor, x, y):
     dg_used[floor].add((x, y))
     dg_maps[floor][y][x] = D_FLOOR
 
+def d_default_player():
+    """新規プレイヤーの初期状態。拡張項目も含めてここで一元管理する。"""
+    return {
+        "floor": 1, "x": 1, "y": 1,
+        "hp": 100, "max_hp": 100,
+        "atk": 10, "def_": 3, "spd": 10, "crit": 0.05,
+        "xp": 0, "level": 1, "boxes": 0,
+        "bread": 0, "chips": 0,
+        "job": "warrior", "equipment": {}, "inventory": {},
+        "achievements": [], "season_id": SEASON_ID, "season_score": 0,
+        "turns": 0, "cooldowns": {},
+        "relics": [], "active_effects": [], "materials": {},
+        "quests": {key: {"progress": 0, "completed": False} for key in QUEST_MASTER},
+        "run_modifiers": [], "camp_facilities": {"inn": 1, "forge": 0, "guild": 0},
+        "battle_stats": {"kills": 0, "chests": 0, "escapes": 0},
+        "skill_points": 0, "skills": [], "npc_flags": {}, "story_flags": {},
+        "run_id": None, "run_started_at": None, "run_summary": {},
+        "floor_goals": {}, "pending_rewards": [], "reward_ledger": [],
+        "action_log": [], "state_version": 0, "front_back": "front",
+        "battle_resource": {"mp": 20, "max_mp": 20, "rage": 0, "combo": 0, "guard": 0},
+        "battle_flags": {},
+    }
+
 def d_get_player(uid):
     """プレイヤーのダンジョンデータを取得する。未保存の新規ユーザーも安全な初期値を持つ。"""
     uid = str(uid)
-    if uid not in dg_players:
-        dg_players[uid] = {
-            "floor": 1, "x": 1, "y": 1,
-            "hp": 100, "max_hp": 100,
-            "atk": 10, "def_": 3, "spd": 10, "crit": 0.05,
-            "xp": 0, "level": 1, "boxes": 0,
-            "bread": 0, "chips": 0,
-            "job": "warrior", "equipment": {}, "inventory": {},
-            "achievements": [], "season_id": SEASON_ID, "season_score": 0,
-            "turns": 0, "cooldowns": {},
-            "relics": [], "active_effects": [], "materials": {},
-            "quests": {key: {"progress": 0, "completed": False} for key in QUEST_MASTER},
-            "run_modifiers": [], "camp_facilities": {"inn": 1, "forge": 0, "guild": 0},
-            "battle_stats": {"kills": 0, "chests": 0, "escapes": 0},
-        }
+    p = dg_players.get(uid)
+    if p is None:
+        p = dg_players[uid] = d_default_player()
     else:
-        p = dg_players[uid]
-        p.setdefault("xp", 0); p.setdefault("level", 1)
-        p.setdefault("boxes", 0); p.setdefault("bread", 0); p.setdefault("chips", 0)
-        p.setdefault("job", "warrior"); p.setdefault("equipment", {})
-        p.setdefault("inventory", {}); p.setdefault("achievements", [])
-        p.setdefault("season_id", SEASON_ID); p.setdefault("season_score", 0)
-        p.setdefault("turns", 0); p.setdefault("cooldowns", {})
-        p.setdefault("relics", []); p.setdefault("active_effects", []); p.setdefault("materials", {})
-        p.setdefault("quests", {key: {"progress": 0, "completed": False} for key in QUEST_MASTER})
-        p.setdefault("run_modifiers", []); p.setdefault("camp_facilities", {"inn": 1, "forge": 0, "guild": 0})
-        p.setdefault("battle_stats", {"kills": 0, "chests": 0, "escapes": 0})
+        for key, value in d_default_player().items():
+            if key not in p:
+                p[key] = value
         for key in QUEST_MASTER:
             p["quests"].setdefault(key, {"progress": 0, "completed": False})
-        if p["season_id"] != SEASON_ID:
+        if p.get("season_id") != SEASON_ID:
             p["season_id"] = SEASON_ID
             p["season_score"] = 0
-    return dg_players[uid]
+    return p
 
 
 def d_effective_stats(player):
-    """職業・装備込みの実効ステータスを返す。"""
+    """職業・装備・強化・パッシブ込みの実効ステータスを返す。"""
     p = player
     job = JOB_MASTER.get(p.get("job", "warrior"), JOB_MASTER["warrior"])
     stats = {
@@ -347,17 +381,28 @@ def d_effective_stats(player):
         "spd": p.get("spd", 10) + job["spd"],
         "crit": p.get("crit", 0.05) + job["crit"],
     }
-    for key in p.get("equipment", {}).values():
+    equipped = list(p.get("equipment", {}).values())
+    for key in equipped:
         item = EQUIPMENT_MASTER.get(key, {})
         stats["atk"] += item.get("atk", 0)
         stats["def_"] += item.get("def_", 0)
         stats["max_hp"] += item.get("hp", 0)
         stats["crit"] += item.get("crit", 0)
+        # 強化レベルとパッシブは保存済みJSON状態から決定的に再現する。
+        upgrade = int(item.get("upgrade_level", 0))
+        stats["atk"] += upgrade
+        stats["def_"] += upgrade
+        if "speed_up" in item.get("passive_effects", []):
+            stats["spd"] += 2
+    if "set_steel" in [EQUIPMENT_MASTER.get(k, {}).get("set_id") for k in equipped]:
+        stats["def_"] += 3
+    if p.get("battle_resource", {}).get("guard", 0) > 0:
+        stats["def_"] += p["battle_resource"]["guard"]
     if "iron_will" in p.get("relics", []) and p.get("hp", 0) <= stats["max_hp"] * 0.30:
         stats["def_"] += 8
     if "storm_bow" in p.get("inventory", {}) and p.get("inventory", {}).get("storm_bow", 0) > 0:
         stats["spd"] += 2
-    if "giant_axe" in p.get("equipment", {}).values():
+    if "giant_axe" in equipped:
         stats["spd"] -= 2
     stats["max_hp"] = max(1, stats["max_hp"])
     stats["def_"] = max(0, stats["def_"])
@@ -385,6 +430,47 @@ def d_grant_relic(uid, relic_key):
         p["relics"].append(relic_key)
         return RELIC_MASTER[relic_key]["name"]
     return None
+
+def d_apply_special_status(uid, key, turns=None):
+    """状態異常を付与し、戦闘フラグにも反映する。"""
+    d_apply_status(uid, key, turns)
+    flags = d_get_player(uid).setdefault("battle_flags", {})
+    if key == "freeze":
+        flags["skip_next"] = True
+    elif key == "paralyze":
+        flags["paralyzed"] = True
+    elif key == "silence":
+        flags["silenced"] = True
+    elif key == "curse":
+        flags["cursed"] = True
+
+def d_apply_floor_goal(uid, kind, amount=1):
+    """フロア目標の進捗を進め、達成時は目標を返す。"""
+    p = d_get_player(uid)
+    goal = p.setdefault("floor_goals", {}).setdefault(
+        str(p["floor"]), {"kind": "chests", "progress": 0, "target": 3, "completed": False}
+    )
+    if goal.get("completed") or goal.get("kind") != kind:
+        return None
+    goal["progress"] = min(goal.get("target", 1), goal.get("progress", 0) + int(amount))
+    if goal["progress"] >= goal["target"]:
+        goal["completed"] = True
+        return goal
+    return None
+
+def d_equipment_profile(uid):
+    """所持している装備の一覧を返す。"""
+    p = d_get_player(uid)
+    return [dict(EQUIPMENT_MASTER.get(k, {}), key=k) for k in p.get("inventory", {}) if k in EQUIPMENT_MASTER]
+
+def d_upgrade_equipment(uid, key, material="iron_ore"):
+    """素材を消費して装備を1段階強化する。"""
+    p = d_get_player(uid)
+    if key not in EQUIPMENT_MASTER or p.get("materials", {}).get(material, 0) <= 0:
+        return False
+    p["materials"][material] -= 1
+    EQUIPMENT_MASTER[key]["upgrade_level"] = int(EQUIPMENT_MASTER[key].get("upgrade_level", 0)) + 1
+    return True
 
 def d_floor_modifier(floor):
     """フロアごとの軽量な変異。固定化してD1にもログで伝えられる。"""
@@ -518,8 +604,13 @@ def d_hpbar(hp, max_hp, width=10):
 def d_open_chest(uid, supabase):
     """宝箱の結果を決定する。反映は呼び出し側のd_apply_rewardで行う。"""
     p = d_get_player(uid)
-    p.setdefault("battle_stats", {}).update({"chests": p.setdefault("battle_stats", {}).get("chests", 0) + 1})
+    stats = p.setdefault("battle_stats", {})
+    stats["chests"] = stats.get("chests", 0) + 1
     d_progress_quest(uid, "chests", 1)
+    d_apply_floor_goal(uid, "chests", 1)
+    if "lucky_coin" in p.get("relics", []) and random.random() < 0.25:
+        coins = random.randint(100, 350)
+        return f"幸運硬貨が輝いた！ 宝箱からコイン **+{coins}** 枚", {"coins": coins}
     roll = random.random()
     if roll < 0.5:
         coins = random.randint(50, 300)
@@ -539,6 +630,8 @@ def d_open_chest(uid, supabase):
 def d_trigger_trap(uid):
     """罠の結果を決定し、HPだけ即時反映する。資産減少は呼び出し側で反映する。"""
     p = d_get_player(uid)
+    if "explorer_compass" in p.get("relics", []) and random.random() < 0.25:
+        return "羅針盤が罠を発見し、回避しました。", {}
     roll = random.random()
     if roll < 0.4:
         loss = random.randint(30, 150)
@@ -828,13 +921,29 @@ def d_build_map_image(uid, floor, px, py, radius=D_VIEW_R):
 
     return img
 
-def d_render_pillow(uid, floor, px, py, radius=D_VIEW_R):
-    """マップをPillow画像として生成しdiscord.Fileを返す"""
+# Discordはメッセージ編集で同名添付のURLを再利用するため、同じmap.pngを使い回すと
+# クライアント/CDNキャッシュが古いフレームを表示し続ける（別のPNGに見える）。
+# フレームごとに一意な添付名を発行し、Embed画像URLもその名前へ合わせる。
+_MAP_SEQ = 0
+
+def d_next_map_filename():
+    """フレームごとに一意な添付ファイル名を発行する。"""
+    global _MAP_SEQ
+    _MAP_SEQ += 1
+    return f"map_{_MAP_SEQ:06d}.png"
+
+def d_map_attachment(uid, floor, px, py, radius=D_VIEW_R):
+    """現在の状態を描画し、(discord.File, Embed用画像URL) を返す。"""
+    filename = d_next_map_filename()
     img = d_build_map_image(uid, floor, px, py, radius)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
-    return discord.File(fp=buf, filename="map.png")
+    return discord.File(fp=buf, filename=filename), f"attachment://{filename}"
+
+def d_render_pillow(uid, floor, px, py, radius=D_VIEW_R):
+    """マップをPillow画像として生成しdiscord.Fileを返す（互換API）。"""
+    return d_map_attachment(uid, floor, px, py, radius)[0]
 
 async def d_render_image(uid, floor, px, py, bot, radius=D_VIEW_R):
     """マップを画像として生成しDiscordにアップロード、URLを返す"""
@@ -947,6 +1056,7 @@ async def dg_save_player(uid, supabase):
     try:
         p = dg_players[uid]
         inventory = dict(p.get("inventory", {}))
+        # テーブル列を増やさずに拡張状態を保存するため、JSONメタへ集約する。
         inventory["_dungeon_meta"] = {
             "relics": p.get("relics", []),
             "active_effects": p.get("active_effects", []),
@@ -955,6 +1065,19 @@ async def dg_save_player(uid, supabase):
             "run_modifiers": p.get("run_modifiers", []),
             "camp_facilities": p.get("camp_facilities", {"inn": 1, "forge": 0, "guild": 0}),
             "battle_stats": p.get("battle_stats", {"kills": 0, "chests": 0, "escapes": 0}),
+            "skill_points": p.get("skill_points", 0),
+            "skills": p.get("skills", []),
+            "npc_flags": p.get("npc_flags", {}),
+            "story_flags": p.get("story_flags", {}),
+            "run_id": p.get("run_id"),
+            "run_summary": p.get("run_summary", {}),
+            "pending_rewards": p.get("pending_rewards", []),
+            "reward_ledger": p.get("reward_ledger", []),
+            "action_log": p.get("action_log", [])[-100:],
+            "state_version": p.get("state_version", 0),
+            "front_back": p.get("front_back", "front"),
+            "battle_resource": p.get("battle_resource", {}),
+            "floor_goals": p.get("floor_goals", {}),
         }
         supabase.table("dungeon_players").upsert({
             "user_id": uid,
@@ -996,8 +1119,366 @@ async def dg_save_base(uid, floor, x, y, supabase):
 # ============================================================
 #  Views
 # ============================================================
+# ============================================================
+#  D1 作戦ヘルパー（旧 d1_dangeon.py から統廃合）
+# ============================================================
+# D1へ渡す合法手。待機（enter/check）は選択肢に含めない。
+D1_MOVE_KEYS = tuple(_DIRECTIONS)
+
+D1_PLAN_GUIDANCE = {
+    "safe": "HPと被弾を最優先で避け、敵の少ない経路で階段を目指す",
+    "speed": "最短手数で階段へ向かう",
+    "treasure": "宝箱・鉱山・祭壇などの報酬タイルを優先して回収する",
+    "battle": "敵との戦闘を積極的に選び、経験値とドロップを稼ぐ",
+    "explore": "未探索の床を広く踏んでマップを開拓する",
+    "boss": "回復と装備を整え、ボスに備えてHPを高く保つ",
+    "xp": "経験値効率の良い行動を選ぶ",
+}
+
+
+def d1_plan_key(plan):
+    """表示名・キーのどちらからでも作戦キーを解決する。"""
+    if plan in D1_PLANS:
+        return plan
+    for key, name in D1_PLANS.items():
+        if name == plan:
+            return key
+    return "safe"
+
+
+def d1_plan_guidance(plan):
+    """作戦ごとの優先基準。D1への指示文に含める。"""
+    return D1_PLAN_GUIDANCE.get(d1_plan_key(plan), D1_PLAN_GUIDANCE["safe"])
+
+
+def d_floor_routes(uid):
+    """フロア内の代表的な進み方。作戦スコアの比較対象。"""
+    return [
+        {"id": "safe", "label": "安全", "risk": 1, "reward": 1, "score": 4},
+        {"id": "treasure", "label": "財宝", "risk": 3, "reward": 4, "score": 3},
+        {"id": "battle", "label": "戦闘", "risk": 4, "reward": 5, "score": 2},
+    ]
+
+
+def d1_action_candidates(uid, plan="安全探索"):
+    """作戦の重みを掛けた候補評価。危険度と報酬のどちらを取るかを明示する。"""
+    routes = d_floor_routes(uid)
+    weights = {"safe": (3, -2), "speed": (1, 5), "treasure": (4, 0), "battle": (-1, 2),
+               "explore": (2, 1), "boss": (1, 3), "xp": (0, 4)}
+    risk_w, reward_w = weights.get(d1_plan_key(plan), weights["safe"])
+    for route in routes:
+        route["plan_score"] = route["reward"] * reward_w - route["risk"] * risk_w
+    return routes
+
+
+def d1_candidate_log(uid, plan):
+    """画面表示用の候補評価ログ。D1への入力には含めない（コンテキスト長対策）。"""
+    candidates = d1_action_candidates(uid, plan)
+    return "候補評価: " + " / ".join(
+        f"{c['id']}:{c['label']} 危険度{c['risk']} 報酬{c['reward']} 作戦点{c['plan_score']}" for c in candidates
+    )
+
+
+def d_normalize_choice(value, legal, fallback=None):
+    """D1の応答を合法手へ寄せる。表記ゆれだけを吸収し、それ以外はfallbackを返す。"""
+    value = str(value or "").strip().lower().replace(" ", "")
+    aliases = {"north": "up", "south": "down", "west": "left", "east": "right",
+               "upward": "up", "downward": "down", "leftward": "left", "rightward": "right",
+               "northeast": "rightup", "northwest": "leftup", "southeast": "rightdown", "southwest": "leftdown"}
+    value = aliases.get(value, value)
+    return value if value in legal else (fallback if fallback in legal else None)
+
+
+def d1_cell_label(floor, x, y):
+    """セルの日本語ラベル。D1へ選択肢の基準を渡すために使う。"""
+    cell = d_get_cell(floor, x, y)
+    return {
+        D_WALL: "壁", D_FLOOR: "床", D_START: "開始地点", D_STAIRS: "階段", D_CHEST: "宝箱",
+        D_TRAP: "罠", D_SHOP: "商店", D_BASE: "拠点", D_MINE: "鉱山", D_REST: "休憩所",
+        D_SHRINE: "祭壇", D_EVENT: "イベント",
+    }.get(cell, "床")
+
+
+def d1_relative_label(dx, dy):
+    """差分ベクトルを方角ラベルへ変換する。"""
+    if dx == 0 and dy == 0:
+        return "現在地"
+    parts = []
+    if dy < 0:
+        parts.append("北")
+    elif dy > 0:
+        parts.append("南")
+    if dx < 0:
+        parts.append("西")
+    elif dx > 0:
+        parts.append("東")
+    return "".join(parts)
+
+
+def d1_bfs(floor, x, y):
+    """現在地からの歩数マップ（8方向・壁と角抜けは通行不可）。"""
+    dist = {(x, y): 0}
+    queue = [(x, y)]
+    head = 0
+    while head < len(queue):
+        cx, cy = queue[head]
+        head += 1
+        step = dist[(cx, cy)] + 1
+        for dx, dy in _DIRECTIONS.values():
+            nx, ny = cx + dx, cy + dy
+            if (nx, ny) in dist or not (0 <= nx < D_MAP_W and 0 <= ny < D_MAP_H):
+                continue
+            if d_get_cell(floor, nx, ny) == D_WALL:
+                continue
+            if dx and dy and (d_get_cell(floor, cx + dx, cy) == D_WALL or d_get_cell(floor, cx, cy + dy) == D_WALL):
+                continue
+            dist[(nx, ny)] = step
+            queue.append((nx, ny))
+    return dist
+
+
+def d1_stairs_cell(floor):
+    """フロア内の階段座標を返す。"""
+    d_ensure_map(floor)
+    for gy, row in enumerate(dg_maps[floor]):
+        for gx, cell in enumerate(row):
+            if cell == D_STAIRS:
+                return (gx, gy)
+    return None
+
+
+def d1_stairs_hint(floor, x, y, dist=None):
+    """階段までの方角と歩数。D1が迷わないための明示的な目標情報。"""
+    stairs = d1_stairs_cell(floor)
+    if not stairs:
+        return "このフロアに階段なし"
+    if dist is None:
+        dist = d1_bfs(floor, x, y)
+    steps = dist.get(stairs)
+    if steps is None:
+        return "階段は壁で区切られ到達不可"
+    return f"{d1_relative_label(stairs[0] - x, stairs[1] - y)} {steps}マス"
+
+
+def d1_surround_text(floor, x, y):
+    """現在地と8方向のタイルを短く列挙する。"""
+    parts = [f"現在地={d1_cell_label(floor, x, y)}"]
+    for key, (dx, dy) in _DIRECTIONS.items():
+        parts.append(f"{_DIRECTION_LABELS[key]}={d1_cell_label(floor, x + dx, y + dy)}")
+    return " ".join(parts)
+
+
+def d1_move_criteria(floor, x, y, dist=None):
+    """D1へ渡す「各方向がどういう状況か」の基準。壁・特殊タイル・階段距離を明示する。"""
+    if dist is None:
+        dist = d1_bfs(floor, x, y)
+    stairs = d1_stairs_cell(floor)
+    stairs_steps = dist.get(stairs) if stairs else None
+    criteria = {}
+    for key, (dx, dy) in _DIRECTIONS.items():
+        label = _DIRECTION_LABELS[key]
+        nx, ny = x + dx, y + dy
+        if not (0 <= nx < D_MAP_W and 0 <= ny < D_MAP_H):
+            criteria[key] = f"{label}はマップ外（進めない）"
+            continue
+        if d_get_cell(floor, nx, ny) == D_WALL:
+            criteria[key] = f"{label}は壁（進めない）"
+            continue
+        if dx and dy and (d_get_cell(floor, x + dx, y) == D_WALL or d_get_cell(floor, x, y + dy) == D_WALL):
+            criteria[key] = f"{label}は角の壁に阻まれて進めない"
+            continue
+        note = f"{label}は{d1_cell_label(floor, nx, ny)}（移動可）"
+        steps = dist.get((nx, ny))
+        if stairs_steps is not None and steps is not None:
+            note += f" 階段まで{steps}マス" + ("（近づく）" if steps < stairs_steps else "")
+        criteria[key] = note
+    return criteria
+
+
+def d1_goal_text(uid):
+    """D1へ渡すゴール。階層目標・フロア目標・クエストを短くまとめる。"""
+    p = d_get_player(uid)
+    floor = p["floor"]
+    parts = [f"{min(floor + 1, D_FLOORS)}Fへ進むため階段を探す"]
+    goal = p.get("floor_goals", {}).get(str(floor))
+    if goal and not goal.get("completed"):
+        name = next((v["name"] for v in FLOOR_GOALS.values() if v["kind"] == goal.get("kind")), "フロア目標")
+        parts.append(f"フロア目標: {name} {goal.get('progress', 0)}/{goal.get('target', 3)}")
+    quests, _ = d_content_summary(uid)
+    if quests:
+        parts.append("クエスト: " + "、".join(quests[:2]))
+    return " / ".join(parts)
+
+
+def d1_best_direction(uid, plan="安全探索", dist=None):
+    """D1の応答が使えない時のフォールバック。作戦に沿った合法手を必ず1つ返す。"""
+    p = d_get_player(uid)
+    floor, x, y = p["floor"], p["x"], p["y"]
+    if dist is None:
+        dist = d1_bfs(floor, x, y)
+    criteria = d1_move_criteria(floor, x, y, dist)
+    legal = [key for key, text in criteria.items() if "移動可" in text]
+    if not legal:
+        return "up"
+    specials = ("宝箱", "鉱山", "祭壇", "イベント", "商店", "休憩所", "階段")
+    if d1_plan_key(plan) == "treasure":
+        ranked = sorted(legal, key=lambda k: (
+            not any(word in criteria[k] for word in specials),
+            dist.get((x + _DIRECTIONS[k][0], y + _DIRECTIONS[k][1]), 9999),
+        ))
+    else:
+        ranked = sorted(legal, key=lambda k: dist.get((x + _DIRECTIONS[k][0], y + _DIRECTIONS[k][1]), 9999))
+    return ranked[0]
+
+
+def d_make_reward_choices(uid, enemy):
+    """戦闘勝利時の3候補。作戦教本を持つとコイン報酬が少し強化される。"""
+    p = d_get_player(uid)
+    base = [
+        {"label": "コイン", "reward": {"coins": enemy.get("reward_coins", 0)}},
+        {"label": "経験値", "reward": {"xp": enemy.get("reward_xp", 0)}},
+        {"label": "宝箱", "reward": {"boxes": max(1, enemy.get("reward_box", 0))}},
+    ]
+    if "d1_tactics" in p.get("relics", []):
+        base[0]["reward"]["season_score"] = 10
+    return base
+
+
+def d_choose_reward(uid, choice):
+    """保留中の報酬から1つだけ取り出し、残りは破棄する。
+
+    候補を残したままにすると、古い報酬ボタンをもう一度押された時に
+    2つ目の報酬まで受け取れてしまうため、選択と同時に必ず空にする。
+    """
+    p = d_get_player(uid)
+    pending = p.setdefault("pending_rewards", [])
+    if not pending or choice not in range(len(pending)):
+        return None
+    reward = pending[choice]
+    p["pending_rewards"] = []
+    return reward
+
+
+def d_begin_run(uid, mode="manual"):
+    """既存の/dungeon状態を引き継いで走行記録だけを開始する。"""
+    p = d_get_player(uid)
+    p["run_id"] = f"run-{uid}-{int(datetime.datetime.now().timestamp())}"
+    p["run_started_at"] = datetime.datetime.now(JST).isoformat()
+    p["run_summary"] = {
+        "mode": mode, "turns": p.get("turns", 0), "kills": p.get("battle_stats", {}).get("kills", 0),
+        "floor": p["floor"], "inherited": True,
+    }
+    return p["run_id"]
+
+
+def d_end_run(uid, reason="ended"):
+    """走行記録だけを閉じる。HP・状態異常・クールダウンは/dungeonと共有のため初期化しない。"""
+    p = d_get_player(uid)
+    p.setdefault("run_summary", {})["end_reason"] = reason
+    p["run_id"] = None
+    return p["run_summary"]
+
+
+def d_record_action(uid, action, source="manual", result=None, reward=None, hp_before=None):
+    """行動ログを記録する。D1の判断材料とUI表示の双方で使う。"""
+    p = d_get_player(uid)
+    p["state_version"] += 1
+    entry = {
+        "id": p["state_version"], "run_id": p.get("run_id"), "turn": p.get("turns", 0),
+        "floor": p["floor"], "x": p["x"], "y": p["y"], "action": action, "source": source,
+        "result": result, "reward": reward, "hp_before": hp_before, "hp_after": p["hp"],
+        "created_at": datetime.datetime.now(JST).isoformat(),
+    }
+    p["action_log"] = (p.get("action_log", []) + [entry])[-100:]
+    return entry
+
+
+def d_record_reward(uid, action_id, reward):
+    """同じ行動への二重付与を防ぐ台帳。"""
+    p = d_get_player(uid)
+    if action_id in [x.get("action_id") for x in p.get("reward_ledger", [])]:
+        return False
+    p["reward_ledger"].append({
+        "action_id": action_id, "reward": reward, "created_at": datetime.datetime.now(JST).isoformat()
+    })
+    return True
+
+
+def d_use_job_skill(uid, enemy):
+    """職業スキルを1回実行し、表示用ログとダメージを返す。"""
+    p = d_get_player(uid)
+    job = JOB_MASTER.get(p.get("job", "warrior"), JOB_MASTER["warrior"])
+    skill = job.get("skill", "power_strike")
+    cooldowns = p.setdefault("cooldowns", {})
+    if cooldowns.get(skill, 0) > 0:
+        return f"{skill}はあと{cooldowns[skill]}ターン使用できません。", 0
+    stats = d_effective_stats(p)
+    cooldowns[skill] = 3
+    if skill == "power_strike":
+        damage = max(1, stats["atk"] * 2 - enemy.get("def_", 0))
+        cooldowns[skill] = 2
+        return f"戦士の強撃！ {damage}ダメージ", damage
+    if skill == "smoke_bomb":
+        cooldowns["smoke_buff"] = 2
+        return "盗賊の煙幕！ 次の逃走成功率が上がった。", 0
+    if skill == "fireball":
+        damage = max(1, int(stats["atk"] * 2.2) - enemy.get("def_", 0))
+        return f"魔術師の火球！ {damage}ダメージ", damage
+    if skill == "heal":
+        before = p["hp"]
+        p["hp"] = min(stats["max_hp"], p["hp"] + max(20, stats["max_hp"] // 3))
+        return f"僧侶の回復！ HPが{p['hp'] - before}回復", 0
+    if skill == "blessing":
+        cooldowns["blessing_buff"] = 3
+        return "僧侶の祝福！ 次の防御力が上昇", 0
+    if skill in ("cleanse", "tonic"):
+        p["active_effects"] = []
+        p.setdefault("battle_flags", {}).clear()
+        return "状態異常を解除しました", 0
+    if skill in ("mark", "curse", "acid"):
+        d_apply_special_status(uid, "curse" if skill == "curse" else "bleed", 3)
+        damage = max(1, int(stats["atk"] * 1.4) - enemy.get("def_", 0))
+        return f"{job['name']}の{skill}！ {damage}ダメージ", damage
+    if skill in ("first_shot", "scout", "lucky_find"):
+        damage = max(1, int(stats["atk"] * 1.8) - enemy.get("def_", 0))
+        return f"{job['name']}の先制攻撃！ {damage}ダメージ", damage
+    if skill in ("taunt", "iron_wall"):
+        p.setdefault("battle_resource", {})["guard"] = 8
+        return f"{job['name']}の鉄壁！ 防御力が上昇", 0
+    if skill in ("counter", "drain"):
+        damage = max(1, int(stats["atk"] * 1.6) - enemy.get("def_", 0))
+        return f"{job['name']}の反撃！ {damage}ダメージ", damage
+    if skill in ("cook", "feast"):
+        resource = p.setdefault("battle_resource", {"mp": 20, "max_mp": 20, "rage": 0, "combo": 0, "guard": 0})
+        resource["rage"] = min(100, resource.get("rage", 0) + 30)
+        return "料理人の料理！ 怒気が上昇", 0
+    return "様子を見た。", 0
+
+
+class _NoopResponse:
+    """D1代理プレイ中に画面更新を無効化するためのダミー応答。"""
+
+    async def edit_original_response(self, **kwargs):
+        return None
+
+    async def send_message(self, *args, **kwargs):
+        return None
+
+
+class _NoopInteraction:
+    """D1代理プレイから既存のView処理を再利用するためのダミーInteraction。"""
+    response = _NoopResponse()
+
+    async def edit_original_response(self, **kwargs):
+        return None
+
+
+# 実行中のD1代理プレイヤー。DungeonCogが生成し、各Viewから参照する。
+_D1_PLAYER = None
+
 
 def d_lock_callback(func):
+    """ユーザー単位のロックを取り、同時操作による二重適用を防ぐ。"""
     async def wrapped(self, interaction, button):
         lock = d_get_lock(self.uid)
         if lock.locked():
@@ -1011,10 +1492,17 @@ def d_lock_callback(func):
 
 
 class DungeonViewBase(View):
-    """全ダンジョンUIの共通基底。所有者以外の操作を拒否する。"""
+    """全ダンジョンUIの共通基底。所有者以外の操作を拒否し、常に最新のプレイヤー状態を参照する。"""
+
     def __init__(self, uid, *, timeout):
         super().__init__(timeout=timeout)
         self.uid = str(uid)
+
+    def sync_state(self):
+        """生成時のスナップショットではなく、保存済みプレイヤー状態を正とする。"""
+        p = d_get_player(self.uid)
+        self.floor, self.x, self.y = p["floor"], p["x"], p["y"]
+        return p
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if str(interaction.user.id) != self.uid:
@@ -1029,21 +1517,54 @@ class DungeonViewBase(View):
             item.disabled = True
 
 
+def d_dungeon_view(uid, supabase=None, plan=None):
+    """保存済み状態から統合パネルを作り直す。全画面の「戻る」はここへ揃える。"""
+    p = d_get_player(uid)
+    return DungeonUnifiedView(uid, p["floor"], p["x"], p["y"], supabase, plan=plan)
+
+
+async def d_return_to_dungeon(interaction, uid, supabase, msg=""):
+    """現在状態の統合パネルへ戻る。全画面共通の復帰処理。"""
+    p = d_get_player(uid)
+    view = d_dungeon_view(uid, supabase)
+    map_file, map_url = d_map_attachment(uid, p["floor"], p["x"], p["y"])
+    await interaction.edit_original_response(
+        embed=view._embed(msg, image_url=map_url), view=view, attachments=[map_file]
+    )
+
+
+def d1_plan_for(uid):
+    """現在のD1作戦。実行中は実行中のもの、停止中は最後に選んだものを返す。"""
+    if _D1_PLAYER is None:
+        return D1_PLANS["safe"]
+    return _D1_PLAYER.plan_for(uid)
+
+
+def d1_status_text(uid):
+    """ステータス画面に表示するD1の実行状況。"""
+    if _D1_PLAYER is None:
+        return "未初期化"
+    return _D1_PLAYER.status_text(uid)
+
+
 class DungeonStatusView(DungeonViewBase):
-    """ステータス表示"""
+    """ステータス表示。D1代理プレイの接続と作戦選択はこの画面へ集約する。"""
+
     def __init__(self, uid, floor, x, y, supabase):
-        super().__init__(uid, timeout=60)
-        self.uid = uid
+        super().__init__(uid, timeout=300)
         self.floor = floor
         self.x = x
         self.y = y
         self.supabase = supabase
-    
-    def _embed(self):
-        p = d_get_player(self.uid)
+        self.d1_plan = d1_plan_for(uid)
+
+    def _embed(self, msg="", image_url=None):
+        p = self.sync_state()
         stats = d_effective_stats(p)
-        em = discord.Embed(title="ダンジョン ステータス", color=0xFFFFFF)
-        em.add_field(name="現在位置", value=f"フロア **{self.floor}** ({self.x}, {self.y})", inline=False)
+        em = discord.Embed(title="ダンジョン ステータス", description=msg, color=0xFFFFFF)
+        if image_url:
+            em.set_image(url=image_url)
+        em.add_field(name="現在位置", value=f"フロア **{p['floor']}** ({p['x']}, {p['y']}) / {d_floor_modifier(p['floor'])}", inline=False)
         em.add_field(name="HP", value=f"{d_hpbar(p['hp'], stats['max_hp'])} {p['hp']}/{stats['max_hp']}", inline=False)
         em.add_field(name="職業", value=d_job_name(self.uid), inline=True)
         em.add_field(name="ステータス", value=f"ATK:{stats['atk']} DEF:{stats['def_']} SPD:{stats['spd']} CRIT:{int(stats['crit']*100)}%", inline=False)
@@ -1053,75 +1574,116 @@ class DungeonStatusView(DungeonViewBase):
         em.add_field(name="遺物・属性", value=f"遺物: {', '.join(RELIC_MASTER.get(k, {}).get('name', k) for k in p.get('relics', [])) or 'なし'}\n装備属性: {', '.join(EQUIPMENT_MASTER.get(k, {}).get('element', 'none') for k in p.get('equipment', {}).values()) or 'none'}", inline=False)
         quests, _ = d_content_summary(self.uid)
         em.add_field(name="クエスト", value="\n".join(quests) if quests else "全クエスト達成", inline=False)
+        em.add_field(name="D1代理プレイ", value=f"作戦: **{self.d1_plan}**\n状態: {d1_status_text(self.uid)}", inline=False)
         return em
 
-    @discord.ui.button(label="⬅️ ダンジョンへ戻る", style=discord.ButtonStyle.grey)
-    async def back(self, i, b):
-        await i.response.defer()
-        p = d_get_player(self.uid)
-        mv = DungeonMainView(self.uid, p["floor"], p["x"], p["y"], self.supabase)
-        await i.edit_original_response(
-            embed=mv._embed(""), view=mv,
-            attachments=[d_render_pillow(self.uid, p["floor"], p["x"], p["y"])]
+    async def _render(self, interaction, msg=""):
+        p = self.sync_state()
+        map_file, map_url = d_map_attachment(self.uid, p["floor"], p["x"], p["y"])
+        await interaction.edit_original_response(
+            embed=self._embed(msg, image_url=map_url), view=self, attachments=[map_file]
         )
+
+    @discord.ui.button(label="🤖 D1開始", style=discord.ButtonStyle.blurple, row=0)
+    async def start_d1(self, interaction, button):
+        if _D1_PLAYER is None:
+            await interaction.response.send_message("D1機能が初期化されていません。", ephemeral=True)
+            return
+        # 押した時点の現在状態と作戦でD1を開始する（状態は/dungeonと共有）。
+        await _D1_PLAYER.start(interaction, self.d1_plan)
+
+    @discord.ui.button(label="⚙ 操作メニュー", style=discord.ButtonStyle.green, row=0)
+    async def operations(self, interaction, button):
+        await interaction.response.defer()
+        p = self.sync_state()
+        op = DungeonOperationView(self.uid, p["floor"], p["x"], p["y"], self.supabase)
+        map_file, map_url = d_map_attachment(self.uid, p["floor"], p["x"], p["y"])
+        await interaction.edit_original_response(
+            embed=op._embed("操作メニュー", image_url=map_url), view=op, attachments=[map_file]
+        )
+
+    @discord.ui.button(label="⬅️ ダンジョンへ戻る", style=discord.ButtonStyle.grey, row=0)
+    async def back(self, interaction, button):
+        await interaction.response.defer()
+        await d_return_to_dungeon(interaction, self.uid, self.supabase, "")
+
+    @discord.ui.select(
+        placeholder="D1作戦を選択",
+        options=[discord.SelectOption(label=name, value=key) for key, name in D1_PLANS.items()],
+        row=1,
+    )
+    async def select_plan(self, interaction, select):
+        await interaction.response.defer()
+        self.d1_plan = D1_PLANS.get(select.values[0], D1_PLANS["safe"])
+        if _D1_PLAYER is not None:
+            # 実行中の場合は走行中の作戦も即時更新する。
+            _D1_PLAYER.set_plan(self.uid, self.d1_plan)
+        await self._render(interaction, f"D1作戦を **{self.d1_plan}** に設定しました。")
+
 
 class DungeonStairsView(DungeonViewBase):
     """階段View"""
+
     def __init__(self, uid, floor, x, y, supabase):
         super().__init__(uid, timeout=180)
-        self.uid = uid
         self.floor = floor
         self.x = x
         self.y = y
         self.supabase = supabase
-    
-    def _embed(self, msg=""):
+
+    def _embed(self, msg="", image_url=None):
         em = discord.Embed(title="階段がある", color=0xFFFFFF, description=msg)
-        em.set_image(url="attachment://map.png")
+        if image_url:
+            em.set_image(url=image_url)
         return em
-    
+
+    async def _render(self, interaction, msg=""):
+        p = self.sync_state()
+        map_file, map_url = d_map_attachment(self.uid, p["floor"], p["x"], p["y"])
+        await interaction.edit_original_response(
+            embed=self._embed(msg, image_url=map_url), view=self, attachments=[map_file]
+        )
+
     @discord.ui.button(label="⬆️ 上へ進む", style=discord.ButtonStyle.green)
     @d_lock_callback
     async def up(self, i, b):
         await i.response.defer()
-        if self.floor < D_FLOORS:
-            p = d_get_player(self.uid)
-            p["floor"] = self.floor + 1
-            p["hp"] = p["max_hp"]
-            next_floor = self.floor + 1
-            d_ensure_map(next_floor)
-            p["x"], p["y"] = dg_starts[next_floor]
-            d_progress_quest(self.uid, "floor", max(1, next_floor - self.floor))
+        p = self.sync_state()
+        floor = p["floor"]
+        if floor < D_FLOORS:
+            p["floor"] = floor + 1
+            p["hp"] = d_effective_stats(p)["max_hp"]
+            d_ensure_map(p["floor"])
+            p["x"], p["y"] = dg_starts[p["floor"]]
+            d_progress_quest(self.uid, "floor", 1)
             await dg_save_player(self.uid, self.supabase)
-            mv = DungeonMainView(self.uid, p["floor"], p["x"], p["y"], self.supabase)
-            map_file = d_render_pillow(self.uid, p["floor"], p["x"], p["y"])
-            await i.edit_original_response(embed=mv._embed(f"フロア {self.floor + 1}へ到達！"), view=mv, attachments=[map_file])
+            await d_return_to_dungeon(i, self.uid, self.supabase, f"フロア {p['floor']}へ到達！")
         else:
             await i.edit_original_response(embed=discord.Embed(title="ゴール！", description="ダンジョンをクリアしました！", color=0xFFFFFF))
-    
+
     @discord.ui.button(label="⬅️ 戻る", style=discord.ButtonStyle.grey)
     @d_lock_callback
     async def back(self, i, b):
         await i.response.defer()
-        mv = DungeonMainView(self.uid, self.floor, self.x, self.y, self.supabase)
-        map_file = d_render_pillow(self.uid, self.floor, self.x, self.y)
-        await i.edit_original_response(embed=mv._embed(""), view=mv, attachments=[map_file])
+        await d_return_to_dungeon(i, self.uid, self.supabase, "")
+
 
 class DungeonMineView(DungeonViewBase):
     """採掘View"""
+
     def __init__(self, uid, floor, x, y, supabase):
         super().__init__(uid, timeout=60)
-        self.uid = uid
         self.floor = floor
         self.x = x
         self.y = y
         self.supabase = supabase
-    
-    def _embed(self, msg=""):
+
+    def _embed(self, msg="", image_url=None):
         em = discord.Embed(title="鉱山", color=0xFFFFFF, description=msg)
-        em.set_image(url="attachment://map.png")
+        if image_url:
+            em.set_image(url=image_url)
         return em
-    
+
     @discord.ui.button(label="⛏ 採掘する", style=discord.ButtonStyle.green)
     @d_lock_callback
     async def mine(self, i, b):
@@ -1131,50 +1693,27 @@ class DungeonMineView(DungeonViewBase):
         d_consume(self.floor, self.x, self.y)
         await dg_save_map(self.floor, self.supabase)
         await dg_save_player(self.uid, self.supabase)
-        mv = DungeonMainView(self.uid, self.floor, self.x, self.y, self.supabase)
-        map_file = d_render_pillow(self.uid, self.floor, self.x, self.y)
-        await i.edit_original_response(embed=mv._embed(f"採掘！ **+{gain}** コイン"), view=mv, attachments=[map_file])
-    
+        await d_return_to_dungeon(i, self.uid, self.supabase, f"採掘！ **+{gain}** コイン")
+
     @discord.ui.button(label="⬅️ 戻る", style=discord.ButtonStyle.grey)
     @d_lock_callback
     async def back(self, i, b):
         await i.response.defer()
-        mv = DungeonMainView(self.uid, self.floor, self.x, self.y, self.supabase)
-        map_file = d_render_pillow(self.uid, self.floor, self.x, self.y)
-        await i.edit_original_response(embed=mv._embed(""), view=mv, attachments=[map_file])
-
-def d_use_job_skill(uid, enemy):
-    """職業スキルを1回実行し、表示用ログとダメージを返す。"""
-    p = d_get_player(uid)
-    job = p.get("job", "warrior")
-    skill = JOB_MASTER.get(job, JOB_MASTER["warrior"])["skill"]
-    cooldowns = p.setdefault("cooldowns", {})
-    if cooldowns.get(skill, 0) > 0:
-        return f"{skill}はあと{cooldowns[skill]}ターン使用できません。", 0
-    stats = d_effective_stats(p)
-    if skill == "power_strike":
-        damage = max(1, stats["atk"] * 2 - enemy.get("def_", 0))
-        cooldowns[skill] = 2
-        return f"戦士の強撃！ {damage}ダメージ", damage
-    if skill == "smoke_bomb":
-        cooldowns[skill] = 3
-        cooldowns["smoke_buff"] = 2
-        return "盗賊の煙幕！ 次の逃走成功率が上がった。", 0
-    damage = max(1, int(stats["atk"] * 2.2) - enemy.get("def_", 0))
-    cooldowns[skill] = 3
-    return f"魔術師の火球！ {damage}ダメージ", damage
+        await d_return_to_dungeon(i, self.uid, self.supabase, "")
 
 
 class DungeonShopView(DungeonViewBase):
     """軽量な商店View。購入はサーバー側で価格を検証する。"""
+
     def __init__(self, uid, floor, x, y, supabase):
         super().__init__(uid, timeout=120)
         self.floor, self.x, self.y, self.supabase = floor, x, y, supabase
 
-    def _embed(self, msg=""):
+    def _embed(self, msg="", image_url=None):
         p = d_get_player(self.uid)
         em = discord.Embed(title="旅の商店", description=msg, color=0xB450C8)
-        em.set_image(url="attachment://map.png")
+        if image_url:
+            em.set_image(url=image_url)
         em.add_field(name="レアパン 30 AGO", value="HPを回復するアイテム", inline=True)
         em.add_field(name="革鎧 250 AGO", value="DEF+3 / HP+15", inline=True)
         em.add_field(name="所持", value=f"レアパン:{p['bread']} / 宝箱:{p['boxes']}", inline=False)
@@ -1188,7 +1727,9 @@ class DungeonShopView(DungeonViewBase):
         except Exception:
             msg = "コインが足りないか、購入に失敗しました。"
         await dg_save_player(self.uid, self.supabase)
-        await i.edit_original_response(embed=self._embed(msg), view=self, attachments=[d_render_pillow(self.uid, self.floor, self.x, self.y)])
+        p = self.sync_state()
+        map_file, map_url = d_map_attachment(self.uid, p["floor"], p["x"], p["y"])
+        await i.edit_original_response(embed=self._embed(msg, image_url=map_url), view=self, attachments=[map_file])
 
     @discord.ui.button(label="パンを買う", style=discord.ButtonStyle.green)
     @d_lock_callback
@@ -1204,12 +1745,12 @@ class DungeonShopView(DungeonViewBase):
     @d_lock_callback
     async def back(self, i, b):
         await i.response.defer()
-        mv = DungeonMainView(self.uid, self.floor, self.x, self.y, self.supabase)
-        await i.edit_original_response(embed=mv._embed(""), view=mv, attachments=[d_render_pillow(self.uid, self.floor, self.x, self.y)])
+        await d_return_to_dungeon(i, self.uid, self.supabase, "")
 
 
 class DungeonCombatView(DungeonViewBase):
     """戦闘View"""
+
     def __init__(self, uid, floor, x, y, enemy, supabase):
         super().__init__(uid, timeout=180)
         self.uid = uid
@@ -1220,27 +1761,26 @@ class DungeonCombatView(DungeonViewBase):
         self.log = []
         self.defending = False
         self.supabase = supabase
-    
-    def _embed(self):
-        p = d_get_player(self.uid)
+
+    def _embed(self, msg="", image_url=None):
+        p = self.sync_state()
         e = self.enemy
         p_stats = d_effective_stats(p)
-        ratio = p["hp"] / max(p_stats["max_hp"], 1)
-        color = 0x00ff88 if ratio > 0.5 else (0xffaa00 if ratio > 0.25 else 0xff4444)
 
         etype = e.get("type", "normal")
         type_text = {"normal": "通常", "elite": "精鋭", "boss": "ボス"}.get(etype, "通常")
 
         em = discord.Embed(title=f"{e['name']}（{type_text}）が現れた！", color=0xFFFFFF)
-        em.set_image(url="attachment://map.png")
+        if image_url:
+            em.set_image(url=image_url)
 
         em.add_field(name="あなた",
-            value=f"`{d_hpbar(p['hp'],p_stats['max_hp'])}`{p['hp']}/{p_stats['max_hp']}\nATK:{p_stats['atk']} DEF:{p_stats['def_']}",
-            inline=True)
+                     value=f"`{d_hpbar(p['hp'],p_stats['max_hp'])}`{p['hp']}/{p_stats['max_hp']}\nATK:{p_stats['atk']} DEF:{p_stats['def_']}",
+                     inline=True)
 
         em.add_field(name=e["name"],
-            value=f"`{d_hpbar(e['hp'],e['max_hp'])}`{e['hp']}/{e['max_hp']}\nATK:{e['atk']} DEF:{e['def_']}",
-            inline=True)
+                     value=f"`{d_hpbar(e['hp'],e['max_hp'])}`{e['hp']}/{e['max_hp']}\nATK:{e['atk']} DEF:{e['def_']}",
+                     inline=True)
 
         player_first = p_stats.get("spd", 10) >= e.get("spd", 10)
         raw_name = e["name"].split()[0].replace("👾", "").strip()
@@ -1257,6 +1797,13 @@ class DungeonCombatView(DungeonViewBase):
             em.add_field(name="ログ", value="\n".join(self.log[-5:]), inline=False)
         return em
 
+    async def _render(self, interaction, msg=""):
+        p = self.sync_state()
+        map_file, map_url = d_map_attachment(self.uid, p["floor"], p["x"], p["y"])
+        await interaction.edit_original_response(
+            embed=self._embed(msg, image_url=map_url), view=self, attachments=[map_file]
+        )
+
     def _calculate_damage(self, attacker, defender, is_defending=False):
         attacker_stats = d_effective_stats(attacker) if "job" in attacker else attacker
         defender_stats = d_effective_stats(defender) if "job" in defender else defender
@@ -1265,8 +1812,7 @@ class DungeonCombatView(DungeonViewBase):
         if is_defending:
             target_def *= 2
         dmg = max(1, attacker_stats["atk"] - target_def + random.randint(-2, 3))
-        # プレイヤーの属性は装備中の武器から解決する。従来はEmbedに属性を
-        # 表示するだけで、実際のダメージ計算へ接続されていなかった。
+        # プレイヤーの属性は装備中の武器から解決する。
         attacker_element = attacker.get("element", "none") if isinstance(attacker, dict) else "none"
         if "job" in attacker:
             weapon_key = attacker.get("equipment", {}).get("weapon")
@@ -1284,11 +1830,20 @@ class DungeonCombatView(DungeonViewBase):
     def _enemy_turn(self):
         p = d_get_player(self.uid)
         e = self.enemy
+        flags = p.setdefault("battle_flags", {})
+        # 凍結・麻痺は行動そのものを失う。付与時の状態異常処理はここで消化する。
+        if flags.pop("skip_next", False):
+            self.defending = False
+            return "凍結で行動できませんでした"
+        if flags.pop("paralyzed", False) and random.random() < 0.5:
+            self.defending = False
+            return "麻痺で行動に失敗しました"
+
         effect_logs = d_tick_status(self.uid)
         raw_name = e["name"].split()[0].replace("👾", "").strip()
         master = ENEMY_STATS_MASTER.get(raw_name, ENEMY_STATS_MASTER["default"])
         action = random.choice(master.get("ai", ["attack"]))
-        
+
         log_msg = ""
         if action == "strong_attack":
             dmg, crit = self._calculate_damage(e, p, self.defending)
@@ -1316,42 +1871,64 @@ class DungeonCombatView(DungeonViewBase):
         for key in list(p_cooldowns):
             if p_cooldowns[key] > 0:
                 p_cooldowns[key] -= 1
-        return " / ".join(effect_logs + [log_msg])
+        result = " / ".join(effect_logs + [log_msg])
+        if flags.get("cursed"):
+            p["hp"] = max(0, p["hp"] - 2)
+            result += " / 呪いで2ダメージ"
+        return result
+
+    async def _register_kill(self):
+        """撃破の記録・実績・クエストを、報酬の受け取り方法に関わらず一度だけ処理する。"""
+        p = d_get_player(self.uid)
+        stats = p.setdefault("battle_stats", {})
+        stats["kills"] = stats.get("kills", 0) + 1
+        if self.enemy.get("type") == "boss":
+            d_unlock_achievement(self.uid, "first_boss")
+        d_apply_floor_goal(self.uid, "kills", 1)
+        for quest_key in d_progress_quest(self.uid, "kills", 1):
+            await d_apply_reward(self.uid, self.supabase, **QUEST_MASTER[quest_key]["reward"])
 
     async def _win(self, i):
         e = self.enemy
-        await d_apply_reward(
-            self.uid, self.supabase,
-            coins=e["reward_coins"], xp=e["reward_xp"], boxes=e["reward_box"],
-            achievement="first_boss" if e.get("type") == "boss" else None,
-            season_score=500 if e.get("type") == "boss" else 25
-        )
         p = d_get_player(self.uid)
-        p.setdefault("battle_stats", {})["kills"] = p.setdefault("battle_stats", {}).get("kills", 0) + 1
-        completed_quests = d_progress_quest(self.uid, "kills", 1)
-        for quest_key in completed_quests:
-            await d_apply_reward(self.uid, self.supabase, **QUEST_MASTER[quest_key]["reward"])
-        msg = f"勝利！ +{e['reward_coins']}コイン +{e['reward_xp']}XP"
-        if e["reward_box"] > 0:
-            msg += f" +宝箱{e['reward_box']}個"
-        self.log.append(msg)
+        if isinstance(i, _NoopInteraction):
+            # D1代理プレイ中は選択UIを挟まず、その場で戦利品を反映する。
+            p["pending_rewards"] = []
+            await self._register_kill()
+            await d_apply_reward(
+                self.uid, self.supabase,
+                coins=e["reward_coins"], xp=e["reward_xp"], boxes=e["reward_box"],
+                season_score=500 if e.get("type") == "boss" else 25,
+            )
+            msg = f"勝利！ +{e['reward_coins']}コイン +{e['reward_xp']}XP"
+            if e["reward_box"] > 0:
+                msg += f" +宝箱{e['reward_box']}個"
+            self.log.append(msg)
+            await dg_save_player(self.uid, self.supabase)
+            return
+
+        choices = d_make_reward_choices(self.uid, e)
+        await self._register_kill()
+        p["pending_rewards"] = [c["reward"] for c in choices]
+        self.log.append("勝利！報酬を3候補から1つ選択してください")
         await dg_save_player(self.uid, self.supabase)
         self.stop()
-        mv = DungeonMainView(self.uid, self.floor, self.x, self.y, self.supabase)
-        map_file = d_render_pillow(self.uid, self.floor, self.x, self.y)
-        await i.edit_original_response(embed=mv._embed(msg), view=mv, attachments=[map_file])
+        view = DungeonRewardChoiceView(self.uid, self.floor, self.x, self.y, self.supabase, choices)
+        p = self.sync_state()
+        map_file, map_url = d_map_attachment(self.uid, p["floor"], p["x"], p["y"])
+        await i.edit_original_response(embed=self._embed(image_url=map_url), view=view, attachments=[map_file])
 
     async def _lose(self, i):
         p = d_get_player(self.uid)
-        p["hp"] = p["max_hp"]
+        p["hp"] = d_effective_stats(p)["max_hp"]
         p["floor"] = 1
         p["x"], p["y"] = dg_starts.get(1, (1, 1))
         self.log.append("敗北… スタート地点へ送還された")
         await dg_save_player(self.uid, self.supabase)
         self.stop()
-        mv = DungeonMainView(self.uid, 1, p["x"], p["y"], self.supabase)
-        map_file = d_render_pillow(self.uid, 1, p["x"], p["y"])
-        await i.edit_original_response(embed=mv._embed("敗北して戻された…"), view=mv, attachments=[map_file])
+        if isinstance(i, _NoopInteraction):
+            return
+        await d_return_to_dungeon(i, self.uid, self.supabase, "敗北して戻された…")
 
     @discord.ui.button(label="⚔ 攻撃", style=discord.ButtonStyle.red, row=0)
     @d_lock_callback
@@ -1360,7 +1937,7 @@ class DungeonCombatView(DungeonViewBase):
         p = d_get_player(self.uid)
         e = self.enemy
         p_first = d_effective_stats(p).get("spd", 10) >= e.get("spd", 10)
-        
+
         if p_first:
             dmg, crit = self._calculate_damage(p, e)
             e["hp"] = max(0, e["hp"] - dmg)
@@ -1384,9 +1961,7 @@ class DungeonCombatView(DungeonViewBase):
         if p["hp"] <= 0:
             await self._lose(i)
             return
-        
-        map_file = d_render_pillow(self.uid, self.floor, self.x, self.y)
-        await i.edit_original_response(embed=self._embed(), view=self, attachments=[map_file])
+        await self._render(i)
 
     @discord.ui.button(label="🛡 防御", style=discord.ButtonStyle.blurple, row=0)
     @d_lock_callback
@@ -1397,8 +1972,7 @@ class DungeonCombatView(DungeonViewBase):
         if d_get_player(self.uid)["hp"] <= 0:
             await self._lose(i)
             return
-        map_file = d_render_pillow(self.uid, self.floor, self.x, self.y)
-        await i.edit_original_response(embed=self._embed(), view=self, attachments=[map_file])
+        await self._render(i)
 
     @discord.ui.button(label="逃げる", style=discord.ButtonStyle.grey, row=0)
     @d_lock_callback
@@ -1409,23 +1983,22 @@ class DungeonCombatView(DungeonViewBase):
             if d_get_player(self.uid)["hp"] <= 0:
                 await self._lose(i)
                 return
-            await i.edit_original_response(embed=self._embed(), view=self, attachments=[d_render_pillow(self.uid, self.floor, self.x, self.y)])
+            await self._render(i)
             return
-        
+
         p = d_get_player(self.uid)
         escape_rate = 0.2 if self.enemy.get("type") == "elite" else 0.5
         if p.get("cooldowns", {}).get("smoke_buff", 0) > 0:
             escape_rate = min(0.95, escape_rate + 0.30)
         if random.random() < escape_rate:
             self.stop()
-            mv = DungeonMainView(self.uid, self.floor, self.x, self.y, self.supabase)
-            await i.edit_original_response(embed=mv._embed("逃走成功"), view=mv, attachments=[d_render_pillow(self.uid, self.floor, self.x, self.y)])
+            await d_return_to_dungeon(i, self.uid, self.supabase, "逃走成功")
         else:
             self.log.append("逃げ失敗！\n" + self._enemy_turn())
             if d_get_player(self.uid)["hp"] <= 0:
                 await self._lose(i)
                 return
-            await i.edit_original_response(embed=self._embed(), view=self, attachments=[d_render_pillow(self.uid, self.floor, self.x, self.y)])
+            await self._render(i)
 
     @discord.ui.button(label="✨ スキル", style=discord.ButtonStyle.blurple, row=1)
     @d_lock_callback
@@ -1444,11 +2017,12 @@ class DungeonCombatView(DungeonViewBase):
             await self._lose(i)
             return
         await dg_save_player(self.uid, self.supabase)
-        await i.edit_original_response(embed=self._embed(), view=self, attachments=[d_render_pillow(self.uid, self.floor, self.x, self.y)])
+        await self._render(i)
 
 
 class DungeonMainView(DungeonViewBase):
-    """ダンジョンメインView"""
+    """ダンジョンメインView（統合パネルの基底）"""
+
     def __init__(self, uid, floor, x, y, supabase):
         super().__init__(uid, timeout=600)
         self.uid = uid
@@ -1456,22 +2030,32 @@ class DungeonMainView(DungeonViewBase):
         self.x = x
         self.y = y
         self.supabase = supabase
-    
-    def _embed(self, msg="", has_image=True, image_url=None):
-        p = d_get_player(self.uid)
+
+    def _embed(self, msg="", image_url=None):
+        p = self.sync_state()
         stats = d_effective_stats(p)
-        bname, _, _, _, _ = d_get_biome(self.floor)
-        em = discord.Embed(title=f"フロア {self.floor} ({bname})", color=0xFFFFFF)
-        if has_image and image_url:
+        bname, _, _, _, _ = d_get_biome(p["floor"])
+        em = discord.Embed(title=f"フロア {p['floor']} ({bname})", color=0xFFFFFF)
+        if image_url:
             em.set_image(url=image_url)
-        em.add_field(name="位置", value=f"{p['floor']}F / ({p['x']}, {p['y']}) / {d_floor_modifier(self.floor)}", inline=True)
+        em.add_field(name="位置", value=f"{p['floor']}F / ({p['x']}, {p['y']}) / {d_floor_modifier(p['floor'])}", inline=True)
         em.add_field(name="HP", value=f"{d_hpbar(p['hp'], stats['max_hp'])} {p['hp']}/{stats['max_hp']}", inline=True)
         quests, relics = d_content_summary(self.uid)
         em.add_field(name="冒険パネル", value=f"職業: {d_job_name(self.uid)}\nターン: {p['turns']} / スコア: {p['season_score']}\n遺物: {', '.join(relics) if relics else 'なし'}", inline=False)
         em.add_field(name="進行中の目的", value="\n".join(quests) if quests else "全クエスト達成", inline=False)
+        em.add_field(name="D1代理プレイ", value=f"作戦: {getattr(self, 'd1_plan', d1_plan_for(self.uid))} / 状態: {d1_status_text(self.uid)}", inline=False)
         if msg:
             em.add_field(name="ログ", value=msg, inline=False)
         return em
+
+    async def _redraw(self, interaction, msg, p, view=None):
+        """現在のプレイヤー状態から1枚の画面（Embed＋画像）を作り直す。"""
+        target = view or self
+        target.floor, target.x, target.y = p["floor"], p["x"], p["y"]
+        map_file, map_url = d_map_attachment(self.uid, p["floor"], p["x"], p["y"])
+        await interaction.edit_original_response(
+            embed=target._embed(msg, image_url=map_url), view=target, attachments=[map_file]
+        )
 
     async def _move(self, i, dx, dy):
         lock = d_get_lock(self.uid)
@@ -1486,30 +2070,30 @@ class DungeonMainView(DungeonViewBase):
 
     async def _move_locked(self, i, dx, dy):
         await i.response.defer()
-        
-        p = d_get_player(self.uid)
+
+        # ビュー生成時のスナップショットではなく、常に保存済みの現在状態を使う。
+        p = self.sync_state()
+        floor = p["floor"]
         nx, ny = p["x"] + dx, p["y"] + dy
-        
+
         # 境界チェック
         if not (0 <= nx < D_MAP_W and 0 <= ny < D_MAP_H):
-            map_file = d_render_pillow(self.uid, self.floor, p["x"], p["y"])
-            await i.edit_original_response(embed=self._embed("壁！進めない"), attachments=[map_file], view=self)
+            await self._redraw(i, "壁！進めない", p)
             return
-        
-        ct = d_get_cell(self.floor, nx, ny)
+
+        ct = d_get_cell(floor, nx, ny)
         if dx != 0 and dy != 0 and (
-            d_get_cell(self.floor, p["x"] + dx, p["y"]) == D_WALL
-            or d_get_cell(self.floor, p["x"], p["y"] + dy) == D_WALL
+            d_get_cell(floor, p["x"] + dx, p["y"]) == D_WALL
+            or d_get_cell(floor, p["x"], p["y"] + dy) == D_WALL
         ):
             ct = D_WALL
         if ct == D_WALL:
-            map_file = d_render_pillow(self.uid, self.floor, p["x"], p["y"])
-            await i.edit_original_response(embed=self._embed("壁！進めない"), attachments=[map_file], view=self)
+            await self._redraw(i, "壁！進めない", p)
             return
-        
+
         # 座標更新
         p["x"], p["y"] = nx, ny
-        
+
         msg = ""
 
         p["turns"] += 1
@@ -1519,129 +2103,122 @@ class DungeonMainView(DungeonViewBase):
             quest_reward = QUEST_MASTER[quest_key]["reward"]
             await d_apply_reward(self.uid, self.supabase, **quest_reward)
         d_unlock_achievement(self.uid, "first_step")
-        if self.floor >= 10: d_unlock_achievement(self.uid, "floor_10")
-        if self.floor >= 20: d_unlock_achievement(self.uid, "floor_20")
-        if self.floor >= 40: d_unlock_achievement(self.uid, "floor_40")
+        if floor >= 10: d_unlock_achievement(self.uid, "floor_10")
+        if floor >= 20: d_unlock_achievement(self.uid, "floor_20")
+        if floor >= 40: d_unlock_achievement(self.uid, "floor_40")
 
         # 特殊タイル判定
         if ct == D_STAIRS:
-            sv = DungeonStairsView(self.uid, self.floor, p["x"], p["y"], self.supabase)
-            map_file = d_render_pillow(self.uid, self.floor, p["x"], p["y"])
             await dg_save_player(self.uid, self.supabase)
-            await i.edit_original_response(embed=self._embed("階段がある。どうする？"), attachments=[map_file], view=sv)
+            sv = DungeonStairsView(self.uid, floor, p["x"], p["y"], self.supabase)
+            await self._redraw(i, "階段がある。どうする？", p, view=sv)
             return
 
         elif ct == D_CHEST:
             msg, reward = d_open_chest(self.uid, self.supabase)
             await d_apply_reward(self.uid, self.supabase, **reward)
-            d_consume(self.floor, p["x"], p["y"])
-            await dg_save_map(self.floor, self.supabase)
+            d_consume(floor, p["x"], p["y"])
+            await dg_save_map(floor, self.supabase)
 
         elif ct == D_TRAP:
             msg, penalty = d_trigger_trap(self.uid)
             await d_apply_reward(self.uid, self.supabase, **penalty)
-            d_consume(self.floor, p["x"], p["y"])
-            await dg_save_map(self.floor, self.supabase)
+            d_consume(floor, p["x"], p["y"])
+            await dg_save_map(floor, self.supabase)
 
         elif ct == D_SHOP:
-            shop = DungeonShopView(self.uid, self.floor, p["x"], p["y"], self.supabase)
-            map_file = d_render_pillow(self.uid, self.floor, p["x"], p["y"])
             await dg_save_player(self.uid, self.supabase)
-            await i.edit_original_response(embed=shop._embed("商店を発見！"), attachments=[map_file], view=shop)
+            shop = DungeonShopView(self.uid, floor, p["x"], p["y"], self.supabase)
+            await self._redraw(i, "商店を発見！", p, view=shop)
             return
 
         elif ct == D_REST:
             before = p["hp"]
             p["hp"] = min(d_effective_stats(p)["max_hp"], p["hp"] + max(20, d_effective_stats(p)["max_hp"] // 3))
             msg = f"休憩した。HPが {p['hp'] - before} 回復した。"
-            d_consume(self.floor, p["x"], p["y"])
-            await dg_save_map(self.floor, self.supabase)
+            d_consume(floor, p["x"], p["y"])
+            await dg_save_map(floor, self.supabase)
 
         elif ct == D_SHRINE:
             p["atk"] += 2
             msg = "祭壇の祝福！ 基礎ATKが2上昇した。"
-            d_consume(self.floor, p["x"], p["y"])
-            await dg_save_map(self.floor, self.supabase)
+            d_consume(floor, p["x"], p["y"])
+            await dg_save_map(floor, self.supabase)
 
         elif ct == D_EVENT:
             gain = random.randint(20, 80)
             await d_apply_reward(self.uid, self.supabase, coins=gain, xp=gain, season_score=25)
             msg = f"旅人の依頼を達成した。コイン+{gain}、XP+{gain}"
-            d_consume(self.floor, p["x"], p["y"])
-            await dg_save_map(self.floor, self.supabase)
+            d_consume(floor, p["x"], p["y"])
+            await dg_save_map(floor, self.supabase)
 
         elif ct == D_MINE:
-            mv = DungeonMineView(self.uid, self.floor, p["x"], p["y"], self.supabase)
-            map_file = d_render_pillow(self.uid, self.floor, p["x"], p["y"])
-            await i.edit_original_response(embed=mv._embed("鉱山を発見！"), attachments=[map_file], view=mv)
+            mv = DungeonMineView(self.uid, floor, p["x"], p["y"], self.supabase)
+            await self._redraw(i, "鉱山を発見！", p, view=mv)
             return
 
         else:
-            bname, _, _, _, _ = d_get_biome(self.floor)
-            rate = D_ENCOUNTER_RATES.get(bname, 0.10)
+            rate = D_ENCOUNTER_RATES.get(d_get_biome(floor)[0], 0.10)
             if random.random() < rate:
-                enemy = d_make_enemy(self.floor)
-                cv = DungeonCombatView(self.uid, self.floor, p["x"], p["y"], enemy, self.supabase)
-                map_file = d_render_pillow(self.uid, self.floor, p["x"], p["y"])
+                enemy = d_make_enemy(floor)
+                cv = DungeonCombatView(self.uid, floor, p["x"], p["y"], enemy, self.supabase)
                 await dg_save_player(self.uid, self.supabase)
-                await i.edit_original_response(embed=cv._embed(), attachments=[map_file], view=cv)
+                await self._redraw(i, "", p, view=cv)
                 return
 
         # 死亡判定
         if p["hp"] <= 0:
-            p["hp"] = p["max_hp"]
+            p["hp"] = d_effective_stats(p)["max_hp"]
             p["floor"] = 1
-            start_pos = dg_starts.get(1, (1, 1))
-            p["x"], p["y"] = start_pos
-            self.floor = 1
+            p["x"], p["y"] = dg_starts.get(1, (1, 1))
             msg += "\n力尽きた… スタート地点へ戻された"
 
         # 最終的な画面更新
         await dg_save_player(self.uid, self.supabase)
-        map_file = d_render_pillow(self.uid, self.floor, p["x"], p["y"])
-        await i.edit_original_response(embed=self._embed(msg), attachments=[map_file], view=self)
+        await self._redraw(i, msg, p)
 
     @discord.ui.button(label="↖️", style=discord.ButtonStyle.grey, row=0, custom_id="dg_lu")
     async def leftup(self, i, b): await self._move(i, -1, -1)
-    
+
     @discord.ui.button(label="⬆️", style=discord.ButtonStyle.grey, row=0, custom_id="dg_u")
     async def up(self, i, b): await self._move(i, 0, -1)
-    
+
     @discord.ui.button(label="↗️", style=discord.ButtonStyle.grey, row=0, custom_id="dg_ru")
     async def rightup(self, i, b): await self._move(i, 1, -1)
-    
+
     @discord.ui.button(label="⬅️", style=discord.ButtonStyle.grey, row=1, custom_id="dg_l")
     async def left(self, i, b): await self._move(i, -1, 0)
-    
+
     @discord.ui.button(label="☑️", style=discord.ButtonStyle.grey, row=1, custom_id="dg_c")
     async def check(self, i, b): await self._move(i, 0, 0)
-    
+
     @discord.ui.button(label="➡️", style=discord.ButtonStyle.grey, row=1, custom_id="dg_r")
     async def right(self, i, b): await self._move(i, 1, 0)
-    
+
     @discord.ui.button(label="↙️", style=discord.ButtonStyle.grey, row=2, custom_id="dg_ld")
     async def leftdown(self, i, b): await self._move(i, -1, 1)
-    
+
     @discord.ui.button(label="⬇️", style=discord.ButtonStyle.grey, row=2, custom_id="dg_d")
     async def down(self, i, b): await self._move(i, 0, 1)
-    
+
     @discord.ui.button(label="↘️", style=discord.ButtonStyle.grey, row=2, custom_id="dg_rd")
     async def rightdown(self, i, b): await self._move(i, 1, 1)
 
     @discord.ui.button(label="STATUS", style=discord.ButtonStyle.green, row=3, custom_id="dg_status")
     async def status(self, i, b):
         await i.response.defer()
-        sv = DungeonStatusView(self.uid, self.floor, self.x, self.y, self.supabase)
-        status_embed = sv._embed()
-        await i.edit_original_response(embed=status_embed, attachments=[], view=sv)
-
-
-
+        p = self.sync_state()
+        sv = DungeonStatusView(self.uid, p["floor"], p["x"], p["y"], self.supabase)
+        await sv._render(i, "")
 class DungeonUnifiedView(DungeonMainView):
-    """/dungeon一つで操作を完結させる圧縮UI。"""
-    def __init__(self, uid, floor, x, y, supabase):
+    """/dungeon一つで操作を完結させる圧縮UI。
+
+    D1の接続ボタンと作戦選択はSTATUS画面へ集約し、このパネルには移動と終了だけを残す。
+    """
+
+    def __init__(self, uid, floor, x, y, supabase, plan=None):
         super().__init__(uid, floor, x, y, supabase)
-        self.d1_plan = "安全探索"
+        self.d1_plan = plan or d1_plan_for(uid)
         self.clear_items()
         directions = [
             ("↖️", -1, -1, 0), ("⬆️", 0, -1, 0), ("↗️", 1, -1, 0),
@@ -1649,79 +2226,76 @@ class DungeonUnifiedView(DungeonMainView):
             ("↙️", -1, 1, 2), ("⬇️", 0, 1, 2), ("↘️", 1, 1, 2),
         ]
         for label, dx, dy, row in directions:
-            button = discord.ui.Button(label=label, style=discord.ButtonStyle.green if label == "ENTER" else discord.ButtonStyle.grey, row=row)
+            button = discord.ui.Button(
+                label=label, style=discord.ButtonStyle.green if label == "ENTER" else discord.ButtonStyle.grey, row=row
+            )
             async def move_callback(interaction, dx=dx, dy=dy):
                 await self._move(interaction, dx, dy)
             button.callback = move_callback
             self.add_item(button)
 
-        operation = discord.ui.Button(label="操作 / STATUS", style=discord.ButtonStyle.green, row=3)
-        operation.callback = self.open_operations
-        self.add_item(operation)
-        d1 = discord.ui.Button(label="🤖 D1開始", style=discord.ButtonStyle.blurple, row=3)
-        d1.callback = self.start_d1
-        self.add_item(d1)
+        status_button = discord.ui.Button(label="STATUS / 操作", style=discord.ButtonStyle.green, row=3)
+        status_button.callback = self.open_status
+        self.add_item(status_button)
         stop = discord.ui.Button(label="■ 終了", style=discord.ButtonStyle.red, row=3)
         stop.callback = self.end_session
         self.add_item(stop)
-        plan_select = discord.ui.Select(
-            placeholder="D1作戦を選択",
-            options=[discord.SelectOption(label=name, value=key) for key, name in D1_PLANS.items()],
-            row=4,
-        )
-        plan_select.callback = self.select_plan
-        self.add_item(plan_select)
 
-    async def select_plan(self, interaction):
+    async def open_status(self, interaction):
+        """ステータス画面（D1開始・作戦選択を含む）を開く。"""
         await interaction.response.defer()
-        key = interaction.data.get("values", ["safe"])[0]
-        self.d1_plan = D1_PLANS.get(key, D1_PLANS["safe"])
-        p = d_get_player(self.uid)
-        await interaction.edit_original_response(
-            embed=self._embed(f"D1作戦を **{self.d1_plan}** に設定しました。", has_image=True, image_url="attachment://map.png"),
-            view=self, attachments=[d_render_pillow(self.uid, p["floor"], p["x"], p["y"])]
-        )
-
-    async def open_operations(self, interaction):
-        await interaction.response.defer()
-        op = DungeonOperationView(self.uid, self.floor, self.x, self.y, self.supabase)
-        p = d_get_player(self.uid)
-        await interaction.edit_original_response(
-            embed=op._embed("操作メニュー"), view=op,
-            attachments=[d_render_pillow(self.uid, p["floor"], p["x"], p["y"])]
-        )
-
-    async def start_d1(self, interaction):
-        cog = interaction.client.get_cog("D1DungeonPlayerCog")
-        if cog is None:
-            await interaction.response.send_message("D1機能が読み込まれていません。", ephemeral=True)
-            return
-        await cog.start_loop(interaction, self)
+        p = self.sync_state()
+        sv = DungeonStatusView(self.uid, p["floor"], p["x"], p["y"], self.supabase)
+        sv.d1_plan = self.d1_plan
+        await sv._render(interaction, "")
 
     async def end_session(self, interaction):
-        cog = interaction.client.get_cog("D1DungeonPlayerCog")
-        if cog:
-            await cog.stop_loop(self.uid)
+        """D1を止め、操作を終了する。"""
+        if _D1_PLAYER is not None:
+            await _D1_PLAYER.stop(self.uid)
         self.stop()
         await interaction.response.defer()
-        p = d_get_player(self.uid)
-        embed = self._embed("ダンジョンを終了しました。再開する場合は `/dungeon` を実行してください。")
-        await interaction.edit_original_response(
-            embed=embed, view=None,
-            attachments=[d_render_pillow(self.uid, p["floor"], p["x"], p["y"])]
-        )
+        p = self.sync_state()
+        map_file, map_url = d_map_attachment(self.uid, p["floor"], p["x"], p["y"])
+        embed = self._embed("ダンジョンを終了しました。再開する場合は `/dungeon` を実行してください。", image_url=map_url)
+        await interaction.edit_original_response(embed=embed, view=None, attachments=[map_file])
 
 
 class DungeonOperationView(DungeonViewBase):
     """ステータス・アイテム・拠点・現在地操作を1画面に集約する。"""
+
     def __init__(self, uid, floor, x, y, supabase):
         super().__init__(uid, timeout=600)
         self.floor, self.x, self.y, self.supabase = floor, x, y, supabase
+        self._add("STATUS / D1", self.status, 0, discord.ButtonStyle.green)
+        self._add("🍞 パン", self.use_bread, 0, discord.ButtonStyle.blurple)
+        self._add("現在地を操作", self.current_action, 1, discord.ButtonStyle.primary)
+        self._add("🏕 拠点", self.camp, 1, discord.ButtonStyle.grey)
+        self._add("実績", self.achievements, 2, discord.ButtonStyle.grey)
+        self._add("所持品", self.show_inventory, 2, discord.ButtonStyle.grey)
+        self._add("NPC/依頼", self.show_npcs, 2, discord.ButtonStyle.grey)
+        self._add("フロア目標", self.show_goals, 3, discord.ButtonStyle.primary)
+        self._add("鍛冶強化", self.upgrade_forge, 3, discord.ButtonStyle.grey)
+        self._add("⬅️ 戻る", self.back, 3, discord.ButtonStyle.grey)
+        job_select = discord.ui.Select(
+            placeholder="職業を選択（冒険開始前のみ）",
+            options=[discord.SelectOption(label=data["name"], value=key) for key, data in JOB_MASTER.items()],
+            row=4,
+        )
+        job_select.callback = self.select_job
+        self.add_item(job_select)
 
-    def _embed(self, msg=""):
-        p = d_get_player(self.uid)
+    def _add(self, label, callback, row=0, style=discord.ButtonStyle.grey):
+        button = discord.ui.Button(label=label, style=style, row=row)
+        button.callback = callback
+        self.add_item(button)
+
+    def _embed(self, msg="", image_url=None):
+        p = self.sync_state()
         stats = d_effective_stats(p)
         em = discord.Embed(title="ダンジョン操作メニュー", description=msg, color=0x4EA1FF)
+        if image_url:
+            em.set_image(url=image_url)
         em.add_field(name="位置", value=f"{p['floor']}F ({p['x']},{p['y']}) / {d_floor_modifier(p['floor'])}", inline=True)
         em.add_field(name="HP", value=f"{p['hp']}/{stats['max_hp']}", inline=True)
         em.add_field(name="所持資源", value=f"パン:{p['bread']} / 宝箱:{p['boxes']} / チップ:{p['chips']}", inline=False)
@@ -1732,27 +2306,18 @@ class DungeonOperationView(DungeonViewBase):
         return em
 
     async def _back(self, interaction, msg=""):
-        p = d_get_player(self.uid)
-        view = DungeonUnifiedView(self.uid, p["floor"], p["x"], p["y"], self.supabase)
-        await interaction.edit_original_response(
-            embed=view._embed(msg, has_image=True, image_url="attachment://map.png"),
-            view=view, attachments=[d_render_pillow(self.uid, p["floor"], p["x"], p["y"])]
-        )
+        await d_return_to_dungeon(interaction, self.uid, self.supabase, msg)
 
     async def status(self, interaction):
+        """ステータス画面（D1開始・作戦選択）を開く。"""
         await interaction.response.defer()
-        p = d_get_player(self.uid)
+        p = self.sync_state()
         status = DungeonStatusView(self.uid, p["floor"], p["x"], p["y"], self.supabase)
-        em = status._embed()
-        em.set_image(url="attachment://map.png")
-        await interaction.edit_original_response(
-            embed=em, view=status,
-            attachments=[d_render_pillow(self.uid, p["floor"], p["x"], p["y"])]
-        )
+        await status._render(interaction, "")
 
     async def use_bread(self, interaction):
         await interaction.response.defer()
-        p = d_get_player(self.uid)
+        p = self.sync_state()
         if p.get("bread", 0) <= 0:
             await self._back(interaction, "レアパンを持っていません。")
             return
@@ -1765,7 +2330,7 @@ class DungeonOperationView(DungeonViewBase):
 
     async def camp(self, interaction):
         await interaction.response.defer()
-        p = d_get_player(self.uid)
+        p = self.sync_state()
         if p["floor"] != 1 and p["floor"] % 5 != 0:
             await self._back(interaction, "拠点は1階または5階ごとのフロアで設置できます。")
             return
@@ -1779,14 +2344,47 @@ class DungeonOperationView(DungeonViewBase):
 
     async def achievements(self, interaction):
         await interaction.response.defer()
-        p = d_get_player(self.uid)
+        p = self.sync_state()
         unlocked = [f"✅ {ACHIEVEMENTS[k]}" for k in p["achievements"] if k in ACHIEVEMENTS]
         locked = [f"🔒 {name}" for k, name in ACHIEVEMENTS.items() if k not in p["achievements"]]
         await self._back(interaction, "\n".join(unlocked + locked))
 
+    async def show_inventory(self, interaction):
+        await interaction.response.defer()
+        p = self.sync_state()
+        lines = [f"{EQUIPMENT_MASTER[k]['name']} ×{v}" for k, v in p.get("inventory", {}).items() if k in EQUIPMENT_MASTER]
+        lines += [f"素材: {k} ×{v}" for k, v in p.get("materials", {}).items()]
+        await self._back(interaction, "所持品\n" + ("\n".join(lines) or "なし"))
+
+    async def show_npcs(self, interaction):
+        await interaction.response.defer()
+        p = self.sync_state()
+        lines = [
+            f"{v['name']}: {'進行済み' if any(x.get('flag') in p.get('npc_flags', {}) for x in v['steps']) else '未訪問'}"
+            for v in NPC_MASTER.values()
+        ]
+        await self._back(interaction, "NPC・依頼\n" + "\n".join(lines))
+
+    async def show_goals(self, interaction):
+        await interaction.response.defer()
+        p = self.sync_state()
+        goal = p.setdefault("floor_goals", {}).get(str(p["floor"]), {"kind": "chests", "progress": 0, "target": 3, "completed": False})
+        name = next((v["name"] for v in FLOOR_GOALS.values() if v["kind"] == goal.get("kind")), "宝箱を開ける")
+        await self._back(interaction, f"フロア目標: {name} {goal.get('progress', 0)}/{goal.get('target', 3)}")
+
+    async def upgrade_forge(self, interaction):
+        await interaction.response.defer()
+        p = self.sync_state()
+        weapon = p.get("equipment", {}).get("weapon")
+        msg = "鍛冶対象の武器がありません。"
+        if weapon and d_upgrade_equipment(self.uid, weapon):
+            msg = f"{EQUIPMENT_MASTER[weapon]['name']}を強化しました。"
+        await dg_save_player(self.uid, self.supabase)
+        await self._back(interaction, msg)
+
     async def select_job(self, interaction):
         await interaction.response.defer()
-        p = d_get_player(self.uid)
+        p = self.sync_state()
         if p.get("turns", 0) > 0:
             await self._back(interaction, "冒険開始後は職業を変更できません。")
             return
@@ -1800,27 +2398,29 @@ class DungeonOperationView(DungeonViewBase):
 
     async def current_action(self, interaction):
         await interaction.response.defer()
-        p = d_get_player(self.uid)
-        cell = d_get_cell(p["floor"], p["x"], p["y"])
+        p = self.sync_state()
+        floor = p["floor"]
+        cell = d_get_cell(floor, p["x"], p["y"])
         msg = "この場所では操作できません。"
-        if cell == D_STAIRS and p["floor"] < D_FLOORS:
-            p["floor"] += 1
+        if cell == D_STAIRS and floor < D_FLOORS:
+            p["floor"] = floor + 1
             p["hp"] = d_effective_stats(p)["max_hp"]
             d_ensure_map(p["floor"])
             p["x"], p["y"] = dg_starts[p["floor"]]
+            d_progress_quest(self.uid, "floor", 1)
             msg = f"階段を上り、{p['floor']}Fへ進みました。"
         elif cell == D_MINE:
             gain = d_do_mine(self.uid)
             await d_apply_reward(self.uid, self.supabase, coins=gain)
-            d_consume(p["floor"], p["x"], p["y"])
-            await dg_save_map(p["floor"], self.supabase)
+            d_consume(floor, p["x"], p["y"])
+            await dg_save_map(floor, self.supabase)
             msg = f"採掘してコインを{gain}枚獲得しました。"
         elif cell == D_REST:
             stats = d_effective_stats(p)
             before = p["hp"]
             p["hp"] = min(stats["max_hp"], p["hp"] + max(20, stats["max_hp"] // 3))
-            d_consume(p["floor"], p["x"], p["y"])
-            await dg_save_map(p["floor"], self.supabase)
+            d_consume(floor, p["x"], p["y"])
+            await dg_save_map(floor, self.supabase)
             msg = f"休憩してHPが {p['hp'] - before} 回復しました。"
         elif cell == D_SHOP:
             try:
@@ -1835,38 +2435,610 @@ class DungeonOperationView(DungeonViewBase):
         await interaction.response.defer()
         await self._back(interaction)
 
-    def _add(self, label, callback, row=0, style=discord.ButtonStyle.grey):
-        button = discord.ui.Button(label=label, style=style, row=row)
-        button.callback = callback
-        self.add_item(button)
 
-    def __init_subclass__(cls, **kwargs):
-        return super().__init_subclass__(**kwargs)
+class DungeonRewardChoiceView(DungeonViewBase):
+    """戦闘勝利時に3候補から1つだけ受け取るView。"""
 
-    async def on_timeout(self):
-        for child in self.children:
-            child.disabled = True
+    def __init__(self, uid, floor, x, y, supabase, choices):
+        super().__init__(uid, timeout=120)
+        self.floor, self.x, self.y, self.supabase, self.choices = floor, x, y, supabase, choices
+        for index, item in enumerate(choices):
+            button = discord.ui.Button(label=item["label"], style=discord.ButtonStyle.green, row=0)
+
+            async def choose(interaction, index=index):
+                await interaction.response.defer()
+                p = d_get_player(self.uid)
+                if not p.get("pending_rewards"):
+                    await interaction.edit_original_response(
+                        embed=discord.Embed(title="報酬は受取済みです"), view=None, attachments=[]
+                    )
+                    return
+                reward = d_choose_reward(self.uid, index)
+                if reward is None:
+                    await interaction.edit_original_response(
+                        embed=discord.Embed(title="報酬の選択に失敗しました"), view=self
+                    )
+                    return
+                await d_apply_reward(self.uid, self.supabase, **reward)
+                await dg_save_player(self.uid, self.supabase)
+                self.stop()
+                await d_return_to_dungeon(interaction, self.uid, self.supabase, f"報酬を選択: {item['label']}")
+
+            button.callback = choose
+            self.add_item(button)
 
 
-# Operation buttons are attached after class creation to keep the screen compact.
-def _operation_buttons_init(self, uid, floor, x, y, supabase):
-    DungeonViewBase.__init__(self, uid, timeout=600)
-    self.floor, self.x, self.y, self.supabase = floor, x, y, supabase
-    self._add("STATUS", self.status, 0, discord.ButtonStyle.green)
-    self._add("🍞 パン", self.use_bread, 0, discord.ButtonStyle.blurple)
-    self._add("現在地を操作", self.current_action, 1, discord.ButtonStyle.primary)
-    self._add("🏕 拠点", self.camp, 1, discord.ButtonStyle.grey)
-    self._add("実績", self.achievements, 2, discord.ButtonStyle.grey)
-    self._add("⬅️ 戻る", self.back, 2, discord.ButtonStyle.grey)
-    job_select = discord.ui.Select(
-        placeholder="職業を選択（冒険開始前のみ）",
-        options=[discord.SelectOption(label=data["name"], value=key) for key, data in JOB_MASTER.items()],
-        row=3,
-    )
-    job_select.callback = self.select_job
-    self.add_item(job_select)
+class D1DungeonPlayer:
+    """d1-omni によるダンジョン代理プレイ（旧 d1_dangeon.py を統合）。
 
-DungeonOperationView.__init__ = _operation_buttons_init
+    D1へ渡すのは「現在の状態」「今回の選択肢と判断基準」「直近のログ」だけに絞る。
+    ゲーム状態の確定・ダメージ・報酬・保存はすべて本体側が担当し、
+    モデルは次の1手を選ぶことだけに責務を限定する。
+    """
+
+    def __init__(self, bot):
+        self.bot = bot
+        self._tasks = {}
+        self._stops = {}
+        self._plans = {}
+        self._run_stats = {}
+        self.service_name = os.environ.get("D1_SERVICE_NAME", "llama-d1-omni")
+        self.start_command = os.environ.get("D1_START_COMMAND", "")
+        self._vision_ready = False
+        self._service_lock = asyncio.Lock()
+        self._ready_until = 0.0
+
+    # ---------- D1サービス疎通 ----------
+
+    async def _test_vision_capability(self):
+        """/v1/modelsを確認し、現在のサービスが画像対応で起動しているか判定する。"""
+        try:
+            timeout = aiohttp.ClientTimeout(total=3.0)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(D1_ENDPOINT.rsplit("/", 1)[0] + "/models") as response:
+                    if response.status != 200:
+                        return False
+                    data = await response.json(content_type=None)
+                    text = str(data).lower()
+                    return "multimodal" in text or "vision" in text or "image" in text
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError):
+            return False
+
+    async def _test_response(self):
+        """d1_test.pyと同じ最小pingでsystemoneの稼働を確認する。"""
+        payload = {"state": "ping", "questions": {"ping": {"type": "noul", "instructions": "Is this a test?"}}}
+        try:
+            timeout = aiohttp.ClientTimeout(total=3.0)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(D1_ENDPOINT, json=payload) as response:
+                    return response.status == 200
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+            return False
+
+    async def _start_service(self):
+        """d1_test.pyと同じsystemdサービス起動手順を実行する。"""
+        try:
+            if self.start_command:
+                process = await asyncio.create_subprocess_shell(
+                    self.start_command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+            else:
+                process = await asyncio.create_subprocess_exec(
+                    "sudo", "systemctl", "restart", self.service_name,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+            await asyncio.wait_for(process.communicate(), timeout=15.0)
+            return process.returncode == 0
+        except (asyncio.TimeoutError, OSError):
+            return False
+
+    async def _ensure_d1_ready(self, logs):
+        """ping→起動→モデルロード待機→再pingを一度だけ行う。"""
+        if time.monotonic() < self._ready_until and self._vision_ready:
+            return True
+        async with self._service_lock:
+            if time.monotonic() < self._ready_until and self._vision_ready:
+                return True
+            if await self._test_response():
+                self._vision_ready = await self._test_vision_capability()
+                self._ready_until = time.monotonic() + 30.0
+                if not self._vision_ready:
+                    logs.append("D1サービスは応答しますが画像機能が無効です。mmproj付き起動が必要です。")
+                return True
+            logs.append("D1応答なし。systemdサービスを起動します。")
+            if not await self._start_service():
+                logs.append(f"D1サービス起動失敗: {self.service_name}")
+                return False
+            logs.append("D1サービスを起動しました。モデルロードを待機中です。")
+            for _ in range(12):
+                await asyncio.sleep(2.5)
+                if await self._test_response():
+                    self._vision_ready = await self._test_vision_capability()
+                    self._ready_until = time.monotonic() + 30.0
+                    logs.append("D1サービスの応答を確認しました。")
+                    if not self._vision_ready:
+                        logs.append("D1サービスの画像機能を確認できません。D1_MMPROJまたは--mmprojを設定してください。")
+                    return True
+            logs.append("D1サービスは起動しましたが、応答待ちがタイムアウトしました。")
+            return False
+
+    # ---------- D1への入力生成 ----------
+
+    def _state_text(self, uid, plan, logs):
+        """D1へ渡す唯一のテキスト。ゴールと現在状態を先頭に、ログは短く末尾へ置く。"""
+        p = d_get_player(uid)
+        stats = d_effective_stats(p)
+        floor, x, y = p["floor"], p["x"], p["y"]
+        bname, *_ = d_get_biome(floor)
+        dist = d1_bfs(floor, x, y)
+        hp_pct = int(p["hp"] / max(1, stats["max_hp"]) * 100)
+        header = [
+            "# 現在の状態",
+            f"作戦: {plan}",
+            f"階層: {floor}F({bname}) / 位置: ({x},{y}) / フロア特性: {d_floor_modifier(floor)}",
+            f"HP: {p['hp']}/{stats['max_hp']} ({hp_pct}%) / ATK {stats['atk']} DEF {stats['def_']} / 職業: {d_job_name(uid)}",
+            f"目的: {d1_goal_text(uid)}",
+            f"階段: {d1_stairs_hint(floor, x, y, dist)}",
+            f"周囲: {d1_surround_text(floor, x, y)}",
+        ]
+        last = self._run_stats.get(uid, {}).get("last_result")
+        if last:
+            header.append(f"前回の結果: {last}")
+        header.append("直近のログ:")
+        head_text = "\n".join(header)
+        lines = []
+        for line in [entry for entry in logs if entry and not str(entry).startswith("候補評価:")][-D1_LOG_LINES:]:
+            lines.append("- " + " ".join(str(line).split())[:160])
+        log_text = "\n".join(lines)
+        remaining = D1_STATE_CHARS - len(head_text) - 1
+        if remaining <= 0:
+            return head_text[:D1_STATE_CHARS]
+        return head_text + "\n" + log_text[-remaining:]
+
+    def _battle_criteria(self, uid, enemy):
+        """戦闘の選択肢と基準。HPとクールダウンから状況を明示する。"""
+        p = d_get_player(uid)
+        stats = d_effective_stats(p)
+        job = JOB_MASTER.get(p.get("job", "warrior"), JOB_MASTER["warrior"])
+        skill = job.get("skill", "power_strike")
+        cooldown = p.get("cooldowns", {}).get(skill, 0)
+        hp_pct = int(p["hp"] / max(1, stats["max_hp"]) * 100)
+        return {
+            "attack": f"通常攻撃（自分のHP {hp_pct}% / 敵HP {enemy['hp']}/{enemy['max_hp']}）",
+            "skill": f"{job['name']}のスキル" + ("（使用可）" if cooldown <= 0 else f"（あと{cooldown}ターン使用不可）"),
+            "defend": "防御して次の被ダメージを半減する（HPが少ない時に有効）",
+            "escape": "逃走する（ボスからは逃げられない・失敗すると攻撃を受ける）" if enemy.get("type") == "boss" else "逃走する（失敗すると攻撃を受ける）",
+        }
+
+    async def _decide(self, uid, logs, plan, questions):
+        """現在状態と地図画像を組み立ててD1へ1問だけ投げる。"""
+        p = d_get_player(uid)
+        image = d_build_map_image(uid, p["floor"], p["x"], p["y"])
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        return await self._call_d1(logs, self._state_text(uid, plan, logs), buf.getvalue(), questions)
+
+    async def _call_d1(self, logs, state_text, image_bytes, questions):
+        """公式のSystem One形式でd1-omniへ画像＋テキストを送る。"""
+        if not await self._ensure_d1_ready(logs):
+            return ""
+        payload = {
+            "state": state_text,
+            "images": ["data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")],
+            "questions": questions,
+        }
+        try:
+            timeout = aiohttp.ClientTimeout(total=D1_HTTP_TIMEOUT)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(D1_ENDPOINT, json=payload) as response:
+                    body = await response.text()
+                    if response.status != 200:
+                        self._ready_until = 0.0
+                        detail = " ".join(body.split())[:240]
+                        if response.status == 501 and ("image input" in body.lower() or "mmproj" in body.lower()):
+                            self._vision_ready = False
+                            logs.append("D1画像入力が拒否されました。クライアント形式は正しいため、D1サービスをmmproj付きで再起動してください。")
+                        logs.append(f"D1 APIエラー: HTTP {response.status}" + (f" / {detail}" if detail else ""))
+                        return ""
+                    try:
+                        data = await response.json(content_type=None)
+                    except Exception:
+                        detail = " ".join(body.split())[:240]
+                        logs.append("D1 APIエラー: JSON応答を解釈できません" + (f" / {detail}" if detail else ""))
+                        return ""
+                    answers = data.get("answers", {}) if isinstance(data, dict) else {}
+                    key = next(iter(questions), "")
+                    answer = answers.get(key, {}) if isinstance(answers, dict) else {}
+                    if isinstance(answer, str):
+                        return answer
+                    if isinstance(answer, dict):
+                        choice = answer.get("choice") or answer.get("answer") or answer.get("value")
+                        if choice is not None:
+                            return str(choice)
+                    if isinstance(data, dict) and data.get("choice") is not None:
+                        return str(data["choice"])
+                    logs.append("D1 APIエラー: choice結果がありません")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logs.append(f"D1接続エラー: {type(exc).__name__}")
+        return ""
+
+    # ---------- 実行制御 ----------
+
+    def is_running(self, uid):
+        task = self._tasks.get(str(uid))
+        return bool(task and not task.done())
+
+    def plan_for(self, uid):
+        return self._plans.get(str(uid), D1_PLANS["safe"])
+
+    def set_plan(self, uid, plan):
+        self._plans[str(uid)] = plan
+
+    def status_text(self, uid):
+        uid = str(uid)
+        if self.is_running(uid):
+            run = self._run_stats.get(uid, {})
+            return f"実行中（{run.get('turns', 0)}ターン / 作戦: {self.plan_for(uid)}）"
+        return "停止中"
+
+    async def start(self, interaction, plan=None):
+        """現在の/dungeon状態をそのまま引き継いでD1代理プレイを開始する。"""
+        uid = str(interaction.user.id)
+        plan = plan or self.plan_for(uid)
+        if self.is_running(uid):
+            await interaction.response.send_message("D1はすでにプレイ中です。", ephemeral=True)
+            return False
+        await interaction.response.defer()
+        self._plans[uid] = plan
+        # 押した時点の保存済み状態から、表示もD1の判断も同一のフレームで始める。
+        p = d_get_player(uid)
+        view = DungeonUnifiedView(uid, p["floor"], p["x"], p["y"], self.bot.supabase, plan=plan)
+        message = interaction.message or await interaction.original_response()
+        stop_event = asyncio.Event()
+        self._stops[uid] = stop_event
+        # 連続実行はバックグラウンドで進め、ボタン操作を待たせない。
+        self._tasks[uid] = asyncio.create_task(self._run_loop(uid, message, view, stop_event, plan))
+        return True
+
+    async def stop(self, uid):
+        event = self._stops.get(str(uid))
+        if event:
+            event.set()
+
+    def shutdown(self):
+        for event in self._stops.values():
+            event.set()
+        for task in self._tasks.values():
+            task.cancel()
+        self._tasks.clear()
+        self._stops.clear()
+
+    async def _edit_screen(self, message, view, logs, *, final=False):
+        """1フレームを描画する。添付名は毎回変え、キャッシュされた古い画像を表示させない。"""
+        uid = view.uid
+        p = view.sync_state()
+        stats = d_effective_stats(p)
+        embed = discord.Embed(
+            title=f"D1代理プレイ {'終了' if final else '実行中'}",
+            description="\n".join(str(x) for x in logs[-8:])[-1500:] or "ログはまだありません。",
+            color=0x666666 if final else 0x8B5CF6,
+        )
+        embed.add_field(name="作戦", value=f"{view.d1_plan} / 停止: 終了ボタン", inline=False)
+        embed.add_field(
+            name="停止条件",
+            value=f"HP30%未満 / ボス / 遺物 / {D1_MAX_TURNS}ターン / APIエラー3回 / 同一地点3回",
+            inline=False,
+        )
+        embed.add_field(
+            name="状態",
+            value=f"{p['floor']}F ({p['x']},{p['y']}) / HP {p['hp']}/{stats['max_hp']} / {d_job_name(uid)}",
+            inline=False,
+        )
+        map_file, map_url = d_map_attachment(uid, p["floor"], p["x"], p["y"])
+        embed.set_image(url=map_url)
+        await message.edit(embed=embed, view=None if final else view, attachments=[map_file])
+
+    def _note_result(self, uid, text):
+        self._run_stats.setdefault(uid, {"turns": 0, "positions": []})["last_result"] = text
+
+    def _stop_reason(self, uid, logs):
+        """D1の安全停止条件をゲーム側で一元判定する。1ターンにつき1回だけ呼ぶ。"""
+        p = d_get_player(uid)
+        stats = d_effective_stats(p)
+        run = self._run_stats.setdefault(uid, {"turns": 0, "positions": []})
+        positions = run.setdefault("positions", [])
+        positions.append((p["floor"], p["x"], p["y"]))
+        del positions[:-12]
+        if p["hp"] <= 0:
+            return "HPが0"
+        if p["hp"] < stats["max_hp"] * 0.30:
+            return "HPが30%未満"
+        if p.get("active_effects"):
+            return "状態異常を検知"
+        if any("ボス" in line for line in logs[-8:]):
+            return "ボス遭遇"
+        if any("遺物" in line for line in logs[-8:]):
+            return "希少アイテム発見"
+        if run.get("turns", 0) >= D1_MAX_TURNS:
+            return f"1回のD1実行が{D1_MAX_TURNS}ターンに到達"
+        if len(positions) >= 3 and positions[-1] == positions[-2] == positions[-3]:
+            return "同じ場所で3回連続停止"
+        if sum("D1 APIエラー" in line or "D1接続エラー" in line for line in logs[-6:]) >= 3:
+            return "D1 APIエラーが連続3回"
+        if sum("と遭遇しました" in line for line in logs[-8:]) >= 3:
+            return "連続戦闘が多いため"
+        return ""
+
+    async def _run_loop(self, uid, message, view, stop_event, plan):
+        logs = [f"D1が代理プレイを開始しました。作戦: {plan} / 終了ボタンで停止できます。"]
+        d_begin_run(uid, "d1")
+        self._run_stats[uid] = {"turns": 0, "positions": [], "last_result": ""}
+        # 初回判断の前に、/dungeonと完全に同じ現在状態のフレームを表示する。
+        await self._edit_screen(message, view, logs)
+        try:
+            while not stop_event.is_set():
+                reason = self._stop_reason(uid, logs)
+                if reason:
+                    logs.append(f"D1を停止しました: {reason}")
+                    break
+                await self._play_turn(uid, logs, plan)
+                self._run_stats[uid]["turns"] += 1
+                await self._edit_screen(message, view, logs)
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            logs.append("D1のタスクをキャンセルしました。")
+            raise
+        except Exception as exc:
+            logs.append(f"D1プレイエラー: {type(exc).__name__}: {exc}")
+        finally:
+            self._tasks.pop(uid, None)
+            self._stops.pop(uid, None)
+            self._run_stats.pop(uid, None)
+            d_end_run(uid, "d1_stop")
+            logs.append("D1代理プレイを終了しました。")
+            try:
+                await self._edit_screen(message, view, logs, final=True)
+            except Exception:
+                pass
+
+    # ---------- 1ターンの判断 ----------
+
+    async def _play_turn(self, uid, logs, plan):
+        p = d_get_player(uid)
+        stats = d_effective_stats(p)
+        floor, x, y = p["floor"], p["x"], p["y"]
+        cell = d_get_cell(floor, x, y)
+        logs.append(d1_candidate_log(uid, plan))
+        d_record_action(uid, "decision", source="d1", result=plan)
+
+        if cell == D_STAIRS:
+            raw = await self._decide(uid, logs, plan, {
+                "stairs": {
+                    "type": "choice",
+                    "instructions": (
+                        "階段の上にいます。次に取る行動を1つだけ選んでください。\n"
+                        f"目的: {d1_goal_text(uid)}\n"
+                        f"作戦: {plan}（{d1_plan_guidance(plan)}）\n"
+                        "基準: 上の階へ進むとHPが全回復し、より深い階へ移動します。"
+                        "この階の探索や回収を優先したい場合は残ってください。\n"
+                        "回答は up か stay のどちらか1語のみ。"
+                    ),
+                    "criteria": {
+                        "up": f"上の階へ進む（HPが全回復して{min(floor + 1, D_FLOORS)}Fへ移動する）",
+                        "stay": f"この階に残って探索を続ける（現在HP {p['hp']}/{stats['max_hp']}）",
+                    },
+                }
+            })
+            choice = d_normalize_choice(raw, {"up", "stay"}, "stay")
+            if choice == "up" and floor < D_FLOORS:
+                p["floor"] = floor + 1
+                p["hp"] = d_effective_stats(p)["max_hp"]
+                d_ensure_map(p["floor"])
+                p["x"], p["y"] = dg_starts[p["floor"]]
+                d_progress_quest(uid, "floor", 1)
+                logs.append(f"階段を上り、{p['floor']}Fへ進みました。")
+            else:
+                logs.append("階段では探索を続けました。")
+            await dg_save_player(uid, self.bot.supabase)
+            return
+
+        if cell == D_MINE:
+            raw = await self._decide(uid, logs, plan, {
+                "mine": {
+                    "type": "choice",
+                    "instructions": (
+                        "鉱山の上にいます。次に取る行動を1つだけ選んでください。\n"
+                        f"目的: {d1_goal_text(uid)}\n"
+                        f"作戦: {plan}（{d1_plan_guidance(plan)}）\n"
+                        "基準: 採掘するとコインを獲得でき、この鉱山は消滅します。\n"
+                        "回答は dig か leave のどちらか1語のみ。"
+                    ),
+                    "criteria": {
+                        "dig": "その場で採掘してコインを獲得する",
+                        "leave": "採掘せずにそのまま探索を続ける",
+                    },
+                }
+            })
+            choice = d_normalize_choice(raw, {"dig", "leave"}, "leave")
+            if choice == "dig":
+                gain = d_do_mine(uid)
+                await d_apply_reward(uid, self.bot.supabase, coins=gain, season_score=10)
+                d_consume(floor, x, y)
+                logs.append(f"鉱山を採掘し、コインを{gain}枚獲得しました。")
+                await dg_save_map(floor, self.bot.supabase)
+            else:
+                logs.append("鉱山を見送りました。")
+            await dg_save_player(uid, self.bot.supabase)
+            return
+
+        if cell == D_REST:
+            before = p["hp"]
+            p["hp"] = min(stats["max_hp"], p["hp"] + max(20, stats["max_hp"] // 3))
+            d_consume(floor, x, y)
+            logs.append(f"休憩所でHPを{p['hp'] - before}回復しました。")
+            await dg_save_map(floor, self.bot.supabase)
+            await dg_save_player(uid, self.bot.supabase)
+            return
+
+        if cell == D_SHOP:
+            raw = await self._decide(uid, logs, plan, {
+                "shop": {
+                    "type": "choice",
+                    "instructions": (
+                        "商店の上にいます。次に取る行動を1つだけ選んでください。\n"
+                        f"目的: {d1_goal_text(uid)}\n"
+                        f"作戦: {plan}（{d1_plan_guidance(plan)}）\n"
+                        f"基準: レアパンは30コインでHP回復に使えます（所持パン {p['bread']} 個）。\n"
+                        "回答は buy か leave のどちらか1語のみ。"
+                    ),
+                    "criteria": {
+                        "buy": "レアパンを1個購入する（30コイン）",
+                        "leave": "購入せずに探索を続ける",
+                    },
+                }
+            })
+            choice = d_normalize_choice(raw, {"buy", "leave"}, "leave")
+            if choice == "buy":
+                try:
+                    await d_apply_reward(uid, self.bot.supabase, coins=-30, bread=1)
+                    logs.append("商店でレアパンを購入しました。")
+                except Exception:
+                    logs.append("コイン不足で購入できませんでした。")
+            else:
+                logs.append("商店で購入せずに進みました。")
+            await dg_save_player(uid, self.bot.supabase)
+            return
+
+        # 通常移動。待機手は用意せず、必ず1方向を選ばせる。
+        dist = d1_bfs(floor, x, y)
+        instructions = (
+            "あなたはダンジョン探索の意思決定者です。上の状態と地図画像を見て、次の1手を1つだけ選んでください。\n"
+            f"目的: {d1_goal_text(uid)}\n"
+            f"作戦: {plan}（{d1_plan_guidance(plan)}）\n"
+            f"現在地: {floor}F ({x},{y}) / 階段: {d1_stairs_hint(floor, x, y, dist)}\n"
+            "制約: 壁へは進めません。階段へ近づく方向を優先します。HPが30%未満なら無理をせず、"
+            "回復タイルや階段へ向かってください。\n"
+            "前回と同じ行動で壁になった場合は、必ず別の方向を選んでください。\n"
+            "回答は次のいずれか1語のみ: " + ", ".join(D1_MOVE_KEYS)
+        )
+        raw = await self._decide(uid, logs, plan, {
+            "move": {
+                "type": "choice",
+                "instructions": instructions,
+                "criteria": d1_move_criteria(floor, x, y, dist),
+            }
+        })
+        choice = d_normalize_choice(raw, set(D1_MOVE_KEYS), None)
+        if choice is None:
+            choice = d1_best_direction(uid, plan, dist)
+            logs.append(f"D1の応答を解釈できなかったため、作戦に沿って{_DIRECTION_LABELS[choice]}へ進みます。")
+        dx, dy = _DIRECTIONS[choice]
+        nx, ny = x + dx, y + dy
+        corner_cut = dx != 0 and dy != 0 and (
+            d_get_cell(floor, x + dx, y) == D_WALL or d_get_cell(floor, x, y + dy) == D_WALL
+        )
+        if (not (0 <= nx < D_MAP_W and 0 <= ny < D_MAP_H)
+                or d_get_cell(floor, nx, ny) == D_WALL or corner_cut):
+            logs.append(f"{_DIRECTION_LABELS[choice]}({choice})へ進もうとしましたが壁でした。")
+            self._note_result(uid, f"{choice}へ進もうとして壁に阻まれた")
+            return
+        p["x"], p["y"] = nx, ny
+        p["turns"] += 1
+        p["season_score"] += 1
+        d_progress_quest(uid, "turns", 1)
+        logs.append(f"{choice}へ移動しました。現在地: {floor}F ({nx},{ny}) / {d_floor_modifier(floor)}")
+        self._note_result(uid, f"{choice}へ移動して ({nx},{ny}) に到着")
+        await self._resolve_tile(uid, logs)
+        await dg_save_player(uid, self.bot.supabase)
+
+    async def _resolve_tile(self, uid, logs):
+        p = d_get_player(uid)
+        floor, x, y = p["floor"], p["x"], p["y"]
+        cell = d_get_cell(floor, x, y)
+        if cell == D_CHEST:
+            text, reward = d_open_chest(uid, self.bot.supabase)
+            await d_apply_reward(uid, self.bot.supabase, **reward)
+            d_consume(floor, x, y)
+            logs.append(text)
+            await dg_save_map(floor, self.bot.supabase)
+            return
+        if cell == D_TRAP:
+            text, penalty = d_trigger_trap(uid)
+            await d_apply_reward(uid, self.bot.supabase, **penalty)
+            d_consume(floor, x, y)
+            logs.append(text)
+            await dg_save_map(floor, self.bot.supabase)
+            return
+        if cell == D_SHRINE:
+            p["atk"] += 2
+            d_consume(floor, x, y)
+            logs.append("祭壇の祝福: 基礎ATKが2上昇しました。")
+            await dg_save_map(floor, self.bot.supabase)
+            return
+        if cell == D_EVENT:
+            gain = random.randint(40, 120)
+            await d_apply_reward(uid, self.bot.supabase, coins=gain, xp=gain, season_score=25, material="ancient_shard")
+            d_consume(floor, x, y)
+            logs.append(f"旅人の依頼: コイン+{gain} / XP+{gain} / 古代欠片+1")
+            await dg_save_map(floor, self.bot.supabase)
+            return
+        if cell in (D_STAIRS, D_MINE, D_REST, D_SHOP):
+            # 特殊タイルは次のターンの判断（階段・採掘・休憩・購入）で扱う。
+            # ここでエンカウントを引くと、到着した特殊タイルを無視して戦闘に入ってしまう。
+            return
+        biome, *_ = d_get_biome(floor)
+        if random.random() < D_ENCOUNTER_RATES.get(biome, 0.1):
+            enemy = d_make_enemy(floor)
+            logs.append(f"{enemy['name']}と遭遇しました。")
+            await self._auto_combat(uid, enemy, logs)
+
+    async def _auto_combat(self, uid, enemy, logs):
+        """戦闘もD1に選ばせる。ダメージ計算と結果確定は本体側で行う。"""
+        p = d_get_player(uid)
+        combat = DungeonCombatView(uid, p["floor"], p["x"], p["y"], enemy, self.bot.supabase)
+        while enemy["hp"] > 0 and d_get_player(uid)["hp"] > 0:
+            raw = await self._decide(uid, logs, "戦闘", {
+                "battle": {
+                    "type": "choice",
+                    "instructions": (
+                        "戦闘中です。次の行動を1つだけ選んでください。\n"
+                        f"目的: {d1_goal_text(uid)}\n"
+                        f"敵: {enemy['name']}（HP {enemy['hp']}/{enemy['max_hp']}）\n"
+                        "基準: HPが少ない時は防御や逃走も有効です。ボスからは逃げられません。\n"
+                        "回答は attack, skill, defend, escape のいずれか1語のみ。"
+                    ),
+                    "criteria": self._battle_criteria(uid, enemy),
+                }
+            })
+            choice = d_normalize_choice(raw, {"attack", "skill", "defend", "escape"}, "defend")
+            p = d_get_player(uid)
+            if choice == "skill":
+                text, damage = d_use_job_skill(uid, enemy)
+                enemy["hp"] = max(0, enemy["hp"] - damage)
+                logs.append(text)
+            elif choice == "defend":
+                combat.defending = True
+                logs.append("防御しました。")
+            elif choice == "escape" and enemy.get("type") != "boss":
+                if random.random() < 0.5:
+                    logs.append("逃走に成功しました。")
+                    return
+                logs.append("逃走に失敗しました。")
+            else:
+                damage, critical = combat._calculate_damage(p, enemy)
+                enemy["hp"] = max(0, enemy["hp"] - damage)
+                logs.append(f"攻撃で{damage}ダメージを与えました。")
+            if enemy["hp"] <= 0:
+                await combat._win(_NoopInteraction())
+                logs.append("戦闘に勝利しました。")
+                return
+            logs.append(combat._enemy_turn())
+        if d_get_player(uid)["hp"] <= 0:
+            await combat._lose(_NoopInteraction())
+            logs.append("敗北し、1Fへ戻されました。")
+
 
 # ============================================================
 #  Cog クラス
@@ -1874,26 +3046,32 @@ DungeonOperationView.__init__ = _operation_buttons_init
 
 class DungeonCog(Cog):
     """ダンジョンシステムCog"""
+
     def __init__(self, bot):
         self.bot = bot
         self.supabase = None
-    
+        # D1代理プレイは同一ファイル内で管理する（旧 d1_dangeon.py を統合）。
+        self.d1 = D1DungeonPlayer(bot)
+
     async def cog_load(self):
         """Cog読み込み時"""
+        global _D1_PLAYER
+        _D1_PLAYER = self.d1
         # 親botのsupabaseを取得
         if hasattr(self.bot, 'supabase'):
             self.supabase = self.bot.supabase
             await dg_load_all(self.supabase)
-        
+
         # アセットを読み込み
         load_all_assets()
-        
+
         # タスク開始
         if not self.dungeon_monthly_task.is_running():
             self.dungeon_monthly_task.start()
 
     def cog_unload(self):
         """Cog アンロード時"""
+        self.d1.shutdown()
         if self.dungeon_monthly_task.is_running():
             self.dungeon_monthly_task.cancel()
 
@@ -1902,14 +3080,14 @@ class DungeonCog(Cog):
         """ダンジョンコマンド"""
         await interaction.response.defer()
         uid = str(interaction.user.id)
-        
+
         # プレイヤーデータ取得
         p = d_get_player(uid)
         floor, x, y = p["floor"], p["x"], p["y"]
-        
+
         # マップ確認
         d_ensure_map(floor)
-        
+
         # 初期位置設定
         sx, sy = dg_starts.get(floor, (1, 1))
         if x == 1 and y == 1:
@@ -1921,10 +3099,10 @@ class DungeonCog(Cog):
 
         # すべての通常操作・ステータス・D1開始/停止を1つの画面へ集約する。
         mv = DungeonUnifiedView(uid, floor, x, y, self.supabase)
-        
+
         # 初期画像は専用チャンネルへ投げず、コマンド応答へ直接添付する。
-        map_file = d_render_pillow(uid, floor, x, y)
-        em = mv._embed("ダンジョンへようこそ！ 操作/STATUSから詳細操作を開けます。", has_image=True, image_url="attachment://map.png")
+        map_file, map_url = d_map_attachment(uid, floor, x, y)
+        em = mv._embed("ダンジョンへようこそ！ D1の接続と作戦はSTATUS画面から選べます。", image_url=map_url)
         await interaction.followup.send(embed=em, view=mv, file=map_file)
 
     @app_commands.command(name="dungeon_reset", description="ダンジョンマップをリセット（管理者のみ）")
@@ -1938,7 +3116,7 @@ class DungeonCog(Cog):
         dg_starts.clear()
         dg_used.clear()
         dg_bases.clear()
-        
+
         # DBも全消去
         if self.supabase:
             try:
@@ -1947,12 +3125,12 @@ class DungeonCog(Cog):
                 self.supabase.table("dungeon_bases").delete().neq("user_id", "").execute()
             except Exception as e:
                 print(f"dungeon_reset DB削除失敗: {e}")
-        
+
         for fl in range(1, D_FLOORS+1):
             d_ensure_map(fl)
             if self.supabase:
                 await dg_save_map(fl, self.supabase)
-        
+
         em = discord.Embed(title="リセット完了", description="マップを再生成しました！", color=0xFFFFFF)
         await interaction.followup.send(embed=em)
 
@@ -1976,7 +3154,7 @@ class DungeonCog(Cog):
                 player["hp"] = d_effective_stats(player)["max_hp"]
                 player["turns"] = 0
                 player["cooldowns"] = {}
-            
+
             if self.supabase:
                 try:
                     self.supabase.table("dungeon_maps").delete().neq("floor", 0).execute()
@@ -1992,11 +3170,11 @@ class DungeonCog(Cog):
                     }).neq("user_id", "").execute()
                 except Exception as e:
                     print(f"dungeon月次リセットDB削除失敗: {e}")
-                
+
                 for fl in range(1, D_FLOORS+1):
                     d_ensure_map(fl)
                     await dg_save_map(fl, self.supabase)
-            
+
             print("✓ ダンジョン月次リセット完了")
 
     @dungeon_monthly_task.before_loop
@@ -2009,285 +3187,3 @@ async def setup(bot):
     """Cogをロード"""
     await bot.add_cog(DungeonCog(bot))
     print("✓ DungeonCog loaded")
-# -*- coding: utf-8 -*-
-"""MD差分を既存のダンジョン状態へ接続する拡張ブロック。"""
-
-# 追加職業とスキル選択
-JOB_MASTER.update({
-    "priest": {"name": "僧侶", "atk": 0, "def_": 5, "max_hp": 15, "spd": 0, "crit": 0.0, "skill": "heal", "skills": ["heal", "blessing", "cleanse"]},
-    "hunter": {"name": "狩人", "atk": 5, "def_": 1, "max_hp": 0, "spd": 4, "crit": 0.10, "skill": "mark", "skills": ["mark", "first_shot", "track"]},
-    "alchemist": {"name": "錬金術師", "atk": 3, "def_": 1, "max_hp": 5, "spd": 2, "crit": 0.03, "skill": "acid", "skills": ["acid", "tonic", "smoke"]},
-    "knight": {"name": "騎士", "atk": 2, "def_": 8, "max_hp": 25, "spd": -2, "crit": 0.0, "skill": "taunt", "skills": ["taunt", "iron_wall", "counter"]},
-    "warlock": {"name": "呪術師", "atk": 6, "def_": -1, "max_hp": -5, "spd": 1, "crit": 0.04, "skill": "curse", "skills": ["curse", "silence", "drain"]},
-    "adventurer": {"name": "冒険家", "atk": 2, "def_": 2, "max_hp": 8, "spd": 3, "crit": 0.05, "skill": "scout", "skills": ["scout", "lucky_find", "escape"]},
-    "chef": {"name": "料理人", "atk": 1, "def_": 3, "max_hp": 20, "spd": 0, "crit": 0.0, "skill": "cook", "skills": ["cook", "season", "feast"]},
-})
-D1_PLANS.update({"xp": "経験値優先"})
-
-# 装備の固定効果スキーマを全装備へ付与し、追加装備を登録する。
-for _item in EQUIPMENT_MASTER.values():
-    _item.setdefault("attack_count", 1); _item.setdefault("range", 1); _item.setdefault("penetration", 0)
-    _item.setdefault("status_effect", None); _item.setdefault("passive_effects", []); _item.setdefault("set_id", None); _item.setdefault("upgrade_level", 0)
-EQUIPMENT_MASTER.update({
-    "hunter_bow": {"name": "狩人の長弓", "slot": "weapon", "atk": 8, "def_": 0, "hp": 0, "crit": .12, "element": "none", "kind": "bow", "description": "射程3・先制", "attack_count": 1, "range": 3, "passive_effects": ["first_strike"]},
-    "knight_lance": {"name": "騎士槍", "slot": "weapon", "atk": 9, "def_": 3, "hp": 0, "crit": .02, "element": "light", "kind": "spear", "description": "防御貫通", "penetration": 5},
-    "venom_cloak": {"name": "毒蛇外套", "slot": "armor", "atk": 0, "def_": 4, "hp": 10, "crit": 0, "element": "dark", "status_effect": "poison", "passive_effects": ["poison_resist"]},
-    "scholar_ring": {"name": "賢者の指輪", "slot": "accessory", "atk": 4, "def_": 1, "hp": 5, "crit": .04, "element": "fire", "passive_effects": ["skill_cooldown"]},
-})
-
-NPC_MASTER = {
-    "traveler": {"name": "旅人レオン", "steps": [{"text": "安全な道を教える", "flag": "traveler_help", "reward": {"bread": 2}}, {"text": "地図を交換する", "flag": "traveler_map", "reward": {"material": "map_fragment"}}]},
-    "blacksmith": {"name": "鍛冶師ミナ", "steps": [{"text": "素材を渡す", "flag": "forge_help", "reward": {"material": "iron_ore"}}, {"text": "武器を強化する", "flag": "forge_upgrade", "reward": {"season_score": 30}}]},
-    "scholar": {"name": "学者ユイ", "steps": [{"text": "図鑑を読む", "flag": "library_seen", "reward": {"xp": 50}}, {"text": "古代文字を解読する", "flag": "library_decode", "reward": {"relic": "explorer_compass"}}]},
-    "prisoner": {"name": "囚人カイ", "steps": [{"text": "救出する", "flag": "prisoner_saved", "reward": {"coins": 100}}, {"text": "秘密を聞く", "flag": "prisoner_secret", "reward": {"season_score": 50}}]},
-    "guildmaster": {"name": "ギルド長", "steps": [{"text": "依頼を受ける", "flag": "guild_quest", "reward": {"xp": 100}}, {"text": "深層の報告をする", "flag": "guild_report", "reward": {"relic": "d1_tactics"}}]},
-}
-FLOOR_GOALS = {
-    "open_chests": {"name": "宝箱を開ける", "kind": "chests", "target": 3, "reward": {"relic": "lucky_coin"}},
-    "defeat_enemies": {"name": "敵を倒す", "kind": "kills", "target": 3, "reward": {"season_score": 100}},
-    "reach_floor": {"name": "深層へ進む", "kind": "floor", "target": 5, "reward": {"material": "ancient_shard"}},
-}
-
-_LEGACY_GET_PLAYER = d_get_player
-_LEGACY_EFFECTIVE_STATS = d_effective_stats
-_LEGACY_OPEN_CHEST = d_open_chest
-_LEGACY_TRIGGER_TRAP = d_trigger_trap
-
-def d_get_player(uid):
-    p = _LEGACY_GET_PLAYER(uid)
-    p.setdefault("skill_points", 0); p.setdefault("skills", []); p.setdefault("npc_flags", {})
-    p.setdefault("story_flags", {}); p.setdefault("run_id", None); p.setdefault("run_started_at", None)
-    p.setdefault("floor_goals", {}); p.setdefault("pending_rewards", []); p.setdefault("run_summary", {})
-    p.setdefault("reward_ledger", []); p.setdefault("action_log", []); p.setdefault("state_version", 0)
-    p.setdefault("front_back", "front"); p.setdefault("battle_resource", {"mp": 20, "max_mp": 20, "rage": 0, "combo": 0, "guard": 0})
-    return p
-
-def d_effective_stats(player):
-    stats = _LEGACY_EFFECTIVE_STATS(player)
-    p = player
-    # upgrade level and set/passive effects are deterministic and persist in the JSON state.
-    equipped = list(p.get("equipment", {}).values())
-    for key in equipped:
-        item = EQUIPMENT_MASTER.get(key, {})
-        level = int(item.get("upgrade_level", 0))
-        stats["atk"] += level; stats["def_"] += level
-        if "speed_up" in item.get("passive_effects", []): stats["spd"] += 2
-    if "set_steel" in [EQUIPMENT_MASTER.get(k, {}).get("set_id") for k in equipped]:
-        stats["def_"] += 3
-    if p.get("battle_resource", {}).get("guard", 0) > 0: stats["def_"] += p["battle_resource"]["guard"]
-    return stats
-
-def d_equipment_profile(uid):
-    p = d_get_player(uid)
-    return [dict(EQUIPMENT_MASTER.get(k, {}), key=k) for k in p.get("inventory", {}) if k in EQUIPMENT_MASTER]
-
-def d_upgrade_equipment(uid, key, material="iron_ore"):
-    p = d_get_player(uid)
-    if key not in EQUIPMENT_MASTER or p.get("materials", {}).get(material, 0) <= 0: return False
-    p["materials"][material] -= 1; EQUIPMENT_MASTER[key]["upgrade_level"] = int(EQUIPMENT_MASTER[key].get("upgrade_level", 0)) + 1
-    return True
-
-def d_open_chest(uid, supabase=None):
-    text, reward = _LEGACY_OPEN_CHEST(uid, supabase)
-    d_apply_floor_goal(uid, "chests", 1)
-    p = d_get_player(uid)
-    if "lucky_coin" in p.get("relics", []) and random.random() < .25:
-        reward = {"coins": random.randint(100, 350)}; text = "幸運硬貨が輝いた！ " + text
-    return text, reward
-
-def d_trigger_trap(uid):
-    p = d_get_player(uid)
-    if "explorer_compass" in p.get("relics", []) and random.random() < .25:
-        return "羅針盤が罠を発見し、回避しました。", {}
-    return _LEGACY_TRIGGER_TRAP(uid)
-
-def d_apply_special_status(uid, key, turns=None):
-    d_apply_status(uid, key, turns)
-    p = d_get_player(uid)
-    if key == "freeze": p.setdefault("battle_flags", {})["skip_next"] = True
-    elif key == "paralyze": p.setdefault("battle_flags", {})["paralyzed"] = True
-    elif key == "silence": p.setdefault("battle_flags", {})["silenced"] = True
-    elif key == "curse": p.setdefault("battle_flags", {})["cursed"] = True
-
-def d_apply_floor_goal(uid, kind, amount=1):
-    p = d_get_player(uid); goal = p.setdefault("floor_goals", {}).setdefault(str(p["floor"]), {"kind": "chests", "progress": 0, "target": 3, "completed": False})
-    if goal.get("completed") or goal.get("kind") != kind: return None
-    goal["progress"] = min(goal.get("target", 1), goal.get("progress", 0) + int(amount))
-    if goal["progress"] >= goal["target"]: goal["completed"] = True; return goal
-    return None
-
-def d_floor_routes(uid):
-    p = d_get_player(uid); floor = p.get("floor", 1)
-    return [{"id": "safe", "label": "安全", "risk": 1, "reward": 1, "score": 4}, {"id": "treasure", "label": "財宝", "risk": 3, "reward": 4, "score": 3}, {"id": "battle", "label": "戦闘", "risk": 4, "reward": 5, "score": 2}]
-
-def d1_action_candidates(uid, plan="安全探索"):
-    p = d_get_player(uid); routes = d_floor_routes(uid); names = {v: k for k, v in D1_PLANS.items()}; key = names.get(plan, "safe")
-    weights = {"safe": (3, -2), "speed": (1, 5), "treasure": (4, 0), "battle": (-1, 2), "explore": (2, 1), "boss": (1, 3), "xp": (0, 4)}
-    risk_w, reward_w = weights.get(key, weights["safe"])
-    for route in routes: route["plan_score"] = route["reward"] * reward_w - route["risk"] * risk_w
-    return routes
-
-def d1_candidate_log(uid, plan):
-    candidates = d1_action_candidates(uid, plan)
-    return "候補評価: " + " / ".join(f"{c['id']}:{c['label']} 危険度{c['risk']} 報酬{c['reward']} 作戦点{c['plan_score']}" for c in candidates)
-
-def d_normalize_choice(value, legal, fallback=None):
-    value = str(value or "").strip().lower().replace(" ", "")
-    aliases = {"enter": "enter", "check": "enter", "upward": "up", "downward": "down"}
-    value = aliases.get(value, value)
-    return value if value in legal else (fallback if fallback in legal else None)
-
-def d_make_reward_choices(uid, enemy):
-    p = d_get_player(uid); base = [{"label": "コイン", "reward": {"coins": enemy.get("reward_coins", 0)}}, {"label": "経験値", "reward": {"xp": enemy.get("reward_xp", 0)}}, {"label": "宝箱", "reward": {"boxes": max(1, enemy.get("reward_box", 0))}}]
-    if "d1_tactics" in p.get("relics", []): base[0]["reward"]["season_score"] = 10
-    return base
-
-def d_choose_reward(uid, choice):
-    p = d_get_player(uid); pending = p.setdefault("pending_rewards", [])
-    if not pending or choice not in range(len(pending)): return None
-    reward = pending.pop(choice); return reward
-
-def d_begin_run(uid, mode="manual"):
-    p = d_get_player(uid); p["run_id"] = f"run-{uid}-{int(datetime.datetime.now().timestamp())}"; p["run_started_at"] = datetime.datetime.now(JST).isoformat(); p["run_summary"] = {"mode": mode, "turns": p.get("turns", 0), "kills": p.get("battle_stats", {}).get("kills", 0), "floor": p["floor"], "inherited": True}; return p["run_id"]
-
-def d_end_run(uid, reason="ended"):
-    # D1は既存の/dungeon状態を共有するため、終了時にHP・状態異常・クールダウンを初期化しない。
-    p = d_get_player(uid); p.setdefault("run_summary", {})["end_reason"] = reason; p["run_id"] = None; return p["run_summary"]
-
-def d_record_action(uid, action, source="manual", result=None, reward=None, hp_before=None):
-    p = d_get_player(uid); p["state_version"] += 1; entry = {"id": p["state_version"], "run_id": p.get("run_id"), "turn": p.get("turns", 0), "floor": p["floor"], "x": p["x"], "y": p["y"], "action": action, "source": source, "result": result, "reward": reward, "hp_before": hp_before, "hp_after": p["hp"], "created_at": datetime.datetime.now(JST).isoformat()}; p["action_log"] = (p.get("action_log", []) + [entry])[-100:]; return entry
-
-def d_record_reward(uid, action_id, reward):
-    p = d_get_player(uid); keys = [x.get("action_id") for x in p.get("reward_ledger", [])]
-    if action_id in keys: return False
-    p["reward_ledger"].append({"action_id": action_id, "reward": reward, "created_at": datetime.datetime.now(JST).isoformat()}); return True
-
-# Existing code resolves these globals at call time, so wrappers become active immediately.
-
-# 追加職業のスキル効果と拡張状態の接続
-_LEGACY_USE_JOB_SKILL = d_use_job_skill
-def d_use_job_skill(uid, enemy):
-    p = d_get_player(uid); job = JOB_MASTER.get(p.get("job", "warrior"), JOB_MASTER["warrior"])
-    skill = job.get("skill", "power_strike"); cooldowns = p.setdefault("cooldowns", {})
-    if cooldowns.get(skill, 0) > 0:
-        return f"{skill}はあと{cooldowns[skill]}ターン使用できません。", 0
-    stats = d_effective_stats(p); cooldowns[skill] = 3
-    if skill == "heal":
-        before = p["hp"]; p["hp"] = min(stats["max_hp"], p["hp"] + max(20, stats["max_hp"] // 3)); return f"僧侶の回復！ HPが{p['hp'] - before}回復", 0
-    if skill == "blessing":
-        cooldowns["blessing_buff"] = 3; return "僧侶の祝福！ 次の防御力が上昇", 0
-    if skill in ("cleanse", "tonic"):
-        p["active_effects"] = []; p.setdefault("battle_flags", {}).clear(); return "状態異常を解除しました", 0
-    if skill in ("mark", "curse", "acid"):
-        d_apply_special_status(uid, "curse" if skill == "curse" else "bleed", 3)
-        damage = max(1, int(stats["atk"] * 1.4) - enemy.get("def_", 0)); return f"{job['name']}の{skill}！ {damage}ダメージ", damage
-    if skill in ("first_shot", "scout", "lucky_find"):
-        damage = max(1, int(stats["atk"] * 1.8) - enemy.get("def_", 0)); return f"{job['name']}の先制攻撃！ {damage}ダメージ", damage
-    if skill in ("taunt", "iron_wall"):
-        p.setdefault("battle_resource", {})["guard"] = 8; return f"{job['name']}の鉄壁！ 防御力が上昇", 0
-    if skill in ("counter", "drain"):
-        damage = max(1, int(stats["atk"] * 1.6) - enemy.get("def_", 0)); return f"{job['name']}の反撃！ {damage}ダメージ", damage
-    if skill in ("cook", "feast"):
-        p["battle_resource"]["rage"] = min(100, p["battle_resource"].get("rage", 0) + 30); return "料理人の料理！ 怒気が上昇", 0
-    return _LEGACY_USE_JOB_SKILL(uid, enemy)
-
-# 既存の敵ターンへ凍結・麻痺・沈黙・呪いを接続する。
-_LEGACY_ENEMY_TURN = DungeonCombatView._enemy_turn
-def _enemy_turn_with_status(self):
-    p = d_get_player(self.uid); flags = p.setdefault("battle_flags", {})
-    if flags.pop("skip_next", False):
-        self.defending = False; return "凍結で行動できませんでした"
-    if flags.pop("paralyzed", False) and random.random() < .5:
-        self.defending = False; return "麻痺で行動に失敗しました"
-    result = _LEGACY_ENEMY_TURN(self)
-    if flags.get("cursed"):
-        p["hp"] = max(0, p["hp"] - 2); result += " / 呪いで2ダメージ"
-    return result
-DungeonCombatView._enemy_turn = _enemy_turn_with_status
-
-# 報酬・状態ログを既存保存へ追加する。
-_LEGACY_SAVE_PLAYER = dg_save_player
-async def dg_save_player(uid, supabase):
-    await _LEGACY_SAVE_PLAYER(uid, supabase)
-    if not supabase or str(uid) not in dg_players:
-        return
-    p = d_get_player(uid); inventory = dict(p.get("inventory", {})); inventory["_dungeon_meta"] = {
-        "relics": p.get("relics", []), "active_effects": p.get("active_effects", []), "materials": p.get("materials", {}),
-        "quests": p.get("quests", {}), "run_modifiers": p.get("run_modifiers", []), "camp_facilities": p.get("camp_facilities", {}),
-        "battle_stats": p.get("battle_stats", {}), "skill_points": p.get("skill_points", 0), "skills": p.get("skills", []),
-        "npc_flags": p.get("npc_flags", {}), "story_flags": p.get("story_flags", {}), "run_id": p.get("run_id"),
-        "run_summary": p.get("run_summary", {}), "pending_rewards": p.get("pending_rewards", []), "reward_ledger": p.get("reward_ledger", []),
-        "action_log": p.get("action_log", [])[-100:], "state_version": p.get("state_version", 0), "front_back": p.get("front_back", "front"),
-        "battle_resource": p.get("battle_resource", {}), "floor_goals": p.get("floor_goals", {}),
-    }
-    try:
-        supabase.table("dungeon_players").update({"inventory": inventory}).eq("user_id", str(uid)).execute()
-    except Exception:
-        logger.warning("extended dungeon state save failed", exc_info=True)
-
-class DungeonRewardChoiceView(DungeonViewBase):
-    """戦闘勝利時に3候補から1つだけ受け取るView。"""
-    def __init__(self, uid, floor, x, y, supabase, choices):
-        super().__init__(uid, timeout=120); self.floor, self.x, self.y, self.supabase, self.choices = floor, x, y, supabase, choices
-        for index, item in enumerate(choices):
-            button = discord.ui.Button(label=item["label"], style=discord.ButtonStyle.green, row=0)
-            async def choose(interaction, index=index):
-                await interaction.response.defer(); p = d_get_player(self.uid)
-                if not p.get("pending_rewards"):
-                    await interaction.edit_original_response(embed=discord.Embed(title="報酬は受取済みです"), view=None, attachments=[]); return
-                reward = d_choose_reward(self.uid, index)
-                if reward is None:
-                    await interaction.edit_original_response(embed=discord.Embed(title="報酬の選択に失敗しました"), view=self); return
-                await d_apply_reward(self.uid, self.supabase, **reward); await dg_save_player(self.uid, self.supabase); self.stop()
-                mv = DungeonMainView(self.uid, p["floor"], p["x"], p["y"], self.supabase)
-                await interaction.edit_original_response(embed=mv._embed(f"報酬を選択: {item['label']}"), view=mv, attachments=[d_render_pillow(self.uid, p["floor"], p["x"], p["y"])])
-            button.callback = choose; self.add_item(button)
-
-_LEGACY_COMBAT_WIN = DungeonCombatView._win
-async def _combat_win_with_choices(self, interaction):
-    if interaction.__class__.__name__ == "_NoopInteraction":
-        return await _LEGACY_COMBAT_WIN(self, interaction)
-    choices = d_make_reward_choices(self.uid, self.enemy); p = d_get_player(self.uid); p["pending_rewards"] = [x["reward"] for x in choices]
-    self.log.append("勝利！報酬を3候補から1つ選択してください")
-    await dg_save_player(self.uid, self.supabase); self.stop()
-    view = DungeonRewardChoiceView(self.uid, self.floor, self.x, self.y, self.supabase, choices)
-    await interaction.edit_original_response(embed=self._embed(), view=view, attachments=[d_render_pillow(self.uid, self.floor, self.x, self.y)])
-DungeonCombatView._win = _combat_win_with_choices
-
-async def _show_inventory(self, interaction):
-    await interaction.response.defer(); p = d_get_player(self.uid)
-    lines = [f"{EQUIPMENT_MASTER[k]['name']} ×{v}" for k, v in p.get("inventory", {}).items() if k in EQUIPMENT_MASTER]
-    lines += [f"素材: {k} ×{v}" for k, v in p.get("materials", {}).items()]
-    await self._back(interaction, "所持品\n" + ("\n".join(lines) or "なし"))
-
-async def _show_npcs(self, interaction):
-    await interaction.response.defer(); p = d_get_player(self.uid)
-    lines = [f"{v['name']}: {'進行済み' if any(x.get('flag') in p.get('npc_flags', {}) for x in v['steps']) else '未訪問'}" for v in NPC_MASTER.values()]
-    await self._back(interaction, "NPC・依頼\n" + "\n".join(lines))
-
-async def _show_goals(self, interaction):
-    await interaction.response.defer(); p = d_get_player(self.uid)
-    goal = p.setdefault("floor_goals", {}).get(str(p["floor"]), {"kind": "chests", "progress": 0, "target": 3, "completed": False})
-    name = next((v["name"] for v in FLOOR_GOALS.values() if v["kind"] == goal.get("kind")), "宝箱を開ける")
-    await self._back(interaction, f"フロア目標: {name} {goal.get('progress', 0)}/{goal.get('target', 3)}")
-
-async def _upgrade_forge(self, interaction):
-    await interaction.response.defer(); p = d_get_player(self.uid)
-    weapon = p.get("equipment", {}).get("weapon")
-    msg = "鍛冶対象の武器がありません。"
-    if weapon and d_upgrade_equipment(self.uid, weapon): msg = f"{EQUIPMENT_MASTER[weapon]['name']}を強化しました。"
-    await dg_save_player(self.uid, self.supabase); await self._back(interaction, msg)
-
-DungeonOperationView.show_inventory = _show_inventory
-DungeonOperationView.show_npcs = _show_npcs
-DungeonOperationView.show_goals = _show_goals
-DungeonOperationView.upgrade_forge = _upgrade_forge
-_OLD_OPERATION_INIT = DungeonOperationView.__init__
-def _extended_operation_init(self, uid, floor, x, y, supabase):
-    _OLD_OPERATION_INIT(self, uid, floor, x, y, supabase)
-    self._add("所持品", self.show_inventory, 2, discord.ButtonStyle.grey)
-    self._add("NPC/依頼", self.show_npcs, 2, discord.ButtonStyle.grey)
-    # row 3 is occupied by the 5-column job select; keep these on row 4.
-    self._add("フロア目標", self.show_goals, 4, discord.ButtonStyle.primary)
-    self._add("鍛冶強化", self.upgrade_forge, 4, discord.ButtonStyle.grey)
-DungeonOperationView.__init__ = _extended_operation_init
