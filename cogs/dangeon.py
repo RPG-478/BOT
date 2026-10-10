@@ -1272,6 +1272,27 @@ def d1_surround_text(floor, x, y):
     return " ".join(parts)
 
 
+def d1_local_grid(floor, x, y):
+    """画像に頼らず壁を判定できる3x3局所盤面を返す。
+
+    ``#`` は壁（進入不可）、``@`` は現在地、``.`` は通行可能な床、
+    特殊タイルは ``S/C/M/R/T`` 等で表す。D1のvisionがテクスチャを
+    誤認しても、移動判断はこのサーバー側の盤面を参照できる。
+    """
+    symbols = {
+        D_WALL: "#", D_FLOOR: ".", D_START: ".", D_STAIRS: "S", D_CHEST: "C",
+        D_TRAP: "T", D_SHOP: "$", D_BASE: "B", D_MINE: "M", D_REST: "R",
+        D_SHRINE: "H", D_EVENT: "E",
+    }
+    rows = []
+    for dy in (-1, 0, 1):
+        cells = []
+        for dx in (-1, 0, 1):
+            cells.append("@" if (dx, dy) == (0, 0) else symbols.get(d_get_cell(floor, x + dx, y + dy), "#"))
+        rows.append("".join(cells))
+    return " / ".join(rows) + "（#=壁・進入不可 @=現在地 .=通行可 S=階段）"
+
+
 def d1_move_criteria(floor, x, y, dist=None):
     """D1へ渡す「各方向がどういう状況か」の基準。壁・特殊タイル・階段距離を明示する。"""
     if dist is None:
@@ -2944,11 +2965,15 @@ class D1DungeonPlayer:
 
         # 通常移動。待機手は用意せず、必ず1方向を選ばせる。
         dist = d1_bfs(floor, x, y)
+        move_criteria = d1_move_criteria(floor, x, y, dist)
+        criteria_text = "\n".join(f"{key}: {value}" for key, value in move_criteria.items())
         instructions = (
             "あなたはダンジョン探索の意思決定者です。上の状態と地図画像を見て、次の1手を1つだけ選んでください。\n"
             f"目的: {d1_goal_text(uid)}\n"
             f"作戦: {plan}（{d1_plan_guidance(plan)}）\n"
             f"現在地: {floor}F ({x},{y}) / 階段: {d1_stairs_hint(floor, x, y, dist)}\n"
+            f"局所盤面（画像よりこちらを優先）: {d1_local_grid(floor, x, y)}\n"
+            f"方向ごとの判定基準:\n{criteria_text}\n"
             "制約: 壁へは進めません。階段へ近づく方向を優先します。HPが30%未満なら無理をせず、"
             "回復タイルや階段へ向かってください。\n"
             "前回と同じ行動で壁になった場合は、必ず別の方向を選んでください。\n"
@@ -2958,7 +2983,7 @@ class D1DungeonPlayer:
             "move": {
                 "type": "choice",
                 "instructions": instructions,
-                "criteria": d1_move_criteria(floor, x, y, dist),
+                "criteria": move_criteria,
             }
         })
         choice = d_normalize_choice(raw, set(D1_MOVE_KEYS), None)
@@ -2972,9 +2997,24 @@ class D1DungeonPlayer:
         )
         if (not (0 <= nx < D_MAP_W and 0 <= ny < D_MAP_H)
                 or d_get_cell(floor, nx, ny) == D_WALL or corner_cut):
-            logs.append(f"{_DIRECTION_LABELS[choice]}({choice})へ進もうとしましたが壁でした。")
-            self._note_result(uid, f"{choice}へ進もうとして壁に阻まれた")
-            return
+            blocked_choice = choice
+            # Visionがテクスチャを壁と誤認／見落としても、ゲーム側の盤面を正とする。
+            # 壁でターンを消費せず、合法な代替方向へ自動補正して探索を継続する。
+            choice = d1_best_direction(uid, plan, dist)
+            dx, dy = _DIRECTIONS[choice]
+            nx, ny = x + dx, y + dy
+            logs.append(
+                f"{_DIRECTION_LABELS[blocked_choice]}({blocked_choice})は壁でした。"
+                f"サーバー判定で{_DIRECTION_LABELS[choice]}({choice})へ補正します。"
+            )
+            self._note_result(uid, f"{blocked_choice}は壁のため{choice}へ補正")
+            fallback_corner_cut = dx != 0 and dy != 0 and (
+                d_get_cell(floor, x + dx, y) == D_WALL or d_get_cell(floor, x, y + dy) == D_WALL
+            )
+            if (not (0 <= nx < D_MAP_W and 0 <= ny < D_MAP_H)
+                    or d_get_cell(floor, nx, ny) == D_WALL or fallback_corner_cut):
+                logs.append("周囲に合法な移動先がないため、このターンは移動しません。")
+                return
         p["x"], p["y"] = nx, ny
         p["turns"] += 1
         p["season_score"] += 1
