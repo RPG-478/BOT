@@ -2,20 +2,25 @@ import io
 import base64
 import aiohttp
 import random
+import os
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-# cogs.dungeon から必要な関数・定数をインポート
-from cogs.dungeon import (
+# cogs.dangeon から必要な関数・定数をインポート
+from cogs.dangeon import (
     d_get_player,
     d_build_map_image,
+    d_render_pillow,
     d_get_cell,
+    d_ensure_map,
     d_consume,
     d_open_chest,
     d_trigger_trap,
     d_do_mine,
     d_make_enemy,
+    d_apply_reward,
+    DungeonCombatView,
     d_get_biome,
     dg_save_player,
     dg_save_map,
@@ -31,7 +36,7 @@ from cogs.dungeon import (
     D_ENCOUNTER_RATES
 )
 
-D1_ENDPOINT = "http://127.0.0.1:8082/v1/systemone"
+D1_ENDPOINT = os.environ.get("D1_ENDPOINT", "http://127.0.0.1:8082/v1/systemone")
 
 class D1DungeonPlayerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -88,7 +93,8 @@ class D1DungeonPlayerCog(commands.Cog):
             if choice == "stairs_up" and floor < D_FLOORS:
                 p["floor"] = floor + 1
                 p["hp"] = p["max_hp"]
-                sx, sy = dg_starts.get(p["floor"], (1, 1))
+                d_ensure_map(p["floor"])
+                sx, sy = dg_starts[p["floor"]]
                 p["x"], p["y"] = sx, sy
                 if supabase:
                     await dg_save_player(uid, supabase)
@@ -115,6 +121,7 @@ class D1DungeonPlayerCog(commands.Cog):
 
             if choice == "mine":
                 gain = d_do_mine(uid)
+                await d_apply_reward(uid, supabase, coins=gain)
                 d_consume(floor, x, y)
                 if supabase:
                     await dg_save_map(floor, supabase)
@@ -157,7 +164,15 @@ class D1DungeonPlayerCog(commands.Cog):
             nx, ny = x + dx, y + dy
 
             if choice != "check":
-                if not (0 <= nx < D_MAP_W and 0 <= ny < D_MAP_H) or d_get_cell(floor, nx, ny) == D_WALL:
+                corner_cut = (
+                    dx != 0 and dy != 0 and (
+                        d_get_cell(floor, x + dx, y) == D_WALL
+                        or d_get_cell(floor, x, y + dy) == D_WALL
+                    )
+                )
+                if (not (0 <= nx < D_MAP_W and 0 <= ny < D_MAP_H)
+                        or d_get_cell(floor, nx, ny) == D_WALL
+                        or corner_cut):
                     await interaction.followup.send(f"🤖 **D1の判断**: `{choice}` を選択しましたが、壁のため移動できませんでした。")
                     return
                 p["x"], p["y"] = nx, ny
@@ -168,14 +183,16 @@ class D1DungeonPlayerCog(commands.Cog):
 
             # 各種マスイベントの適用
             if target_cell == D_CHEST:
-                chest_msg, _ = d_open_chest(uid, supabase)
+                chest_msg, reward = d_open_chest(uid, supabase)
+                await d_apply_reward(uid, supabase, **reward)
                 d_consume(floor, x, y)
                 if supabase:
                     await dg_save_map(floor, supabase)
                 msg += f"\n結果: {chest_msg}"
 
             elif target_cell == D_TRAP:
-                trap_msg, _ = d_trigger_trap(uid)
+                trap_msg, penalty = d_trigger_trap(uid)
+                await d_apply_reward(uid, supabase, **penalty)
                 d_consume(floor, x, y)
                 if supabase:
                     await dg_save_map(floor, supabase)
@@ -186,7 +203,13 @@ class D1DungeonPlayerCog(commands.Cog):
                 rate = D_ENCOUNTER_RATES.get(bname, 0.10)
                 if random.random() < rate:
                     enemy = d_make_enemy(floor)
-                    msg += f"\n敵が現れた: **{enemy['name']}** (HP: {enemy['hp']})"
+                    combat = DungeonCombatView(uid, floor, x, y, enemy, supabase)
+                    map_file = d_render_pillow(uid, floor, x, y)
+                    await interaction.followup.send(
+                        content=msg + f"\n敵が現れた: **{enemy['name']}**",
+                        embed=combat._embed(), view=combat, file=map_file
+                    )
+                    return
 
             if supabase:
                 await dg_save_player(uid, supabase)
