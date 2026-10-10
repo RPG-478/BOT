@@ -175,6 +175,9 @@ D1_MAX_TURNS = int(os.environ.get("D1_MAX_TURNS", 10))
 D1_HTTP_TIMEOUT = float(os.environ.get("D1_HTTP_TIMEOUT", 90))
 D1_HTTP_RETRIES = max(1, int(os.environ.get("D1_HTTP_RETRIES", 2)))
 D1_HTTP_RETRY_DELAY = float(os.environ.get("D1_HTTP_RETRY_DELAY", 1.5))
+# 移動判断に必要な盤面情報はstate/criteriaのテキストで渡す。
+# visionは必要な環境でのみ明示的に有効化する（既定: 無効）。
+D1_SEND_IMAGES = os.environ.get("D1_SEND_IMAGES", "0").lower() in ("1", "true", "yes", "on")
 # 8方向の定義。移動・経路探索・選択肢の基準提示で共通利用する。
 _DIRECTIONS = {
     "up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0),
@@ -2536,17 +2539,17 @@ class D1DungeonPlayer:
         except (asyncio.TimeoutError, OSError):
             return False
 
-    async def _ensure_d1_ready(self, logs):
+    async def _ensure_d1_ready(self, logs, require_vision=False):
         """ping→起動→モデルロード待機→再pingを一度だけ行う。"""
-        if time.monotonic() < self._ready_until and self._vision_ready:
+        if time.monotonic() < self._ready_until and (not require_vision or self._vision_ready):
             return True
         async with self._service_lock:
-            if time.monotonic() < self._ready_until and self._vision_ready:
+            if time.monotonic() < self._ready_until and (not require_vision or self._vision_ready):
                 return True
             if await self._test_response():
-                self._vision_ready = await self._test_vision_capability()
+                self._vision_ready = await self._test_vision_capability() if require_vision else False
                 self._ready_until = time.monotonic() + 30.0
-                if not self._vision_ready:
+                if require_vision and not self._vision_ready:
                     logs.append("D1サービスは応答しますが画像機能が無効です。mmproj付き起動が必要です。")
                 return True
             logs.append("D1応答なし。systemdサービスを起動します。")
@@ -2557,10 +2560,10 @@ class D1DungeonPlayer:
             for _ in range(12):
                 await asyncio.sleep(2.5)
                 if await self._test_response():
-                    self._vision_ready = await self._test_vision_capability()
+                    self._vision_ready = await self._test_vision_capability() if require_vision else False
                     self._ready_until = time.monotonic() + 30.0
                     logs.append("D1サービスの応答を確認しました。")
-                    if not self._vision_ready:
+                    if require_vision and not self._vision_ready:
                         logs.append("D1サービスの画像機能を確認できません。D1_MMPROJまたは--mmprojを設定してください。")
                     return True
             logs.append("D1サービスは起動しましたが、応答待ちがタイムアウトしました。")
@@ -2615,22 +2618,26 @@ class D1DungeonPlayer:
         }
 
     async def _decide(self, uid, logs, plan, questions):
-        """現在状態と地図画像を組み立ててD1へ1問だけ投げる。"""
+        """テキスト盤面を基本に、設定時だけ地図画像を添えてD1へ1問だけ投げる。"""
         p = d_get_player(uid)
-        image = d_build_map_image(uid, p["floor"], p["x"], p["y"])
-        buf = io.BytesIO()
-        image.save(buf, format="PNG")
-        return await self._call_d1(logs, self._state_text(uid, plan, logs), buf.getvalue(), questions)
+        image_bytes = None
+        if D1_SEND_IMAGES:
+            image = d_build_map_image(uid, p["floor"], p["x"], p["y"])
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+            image_bytes = buf.getvalue()
+        return await self._call_d1(logs, self._state_text(uid, plan, logs), image_bytes, questions)
 
     async def _call_d1(self, logs, state_text, image_bytes, questions):
-        """公式のSystem One形式でd1-omniへ画像＋テキストを送る。"""
-        if not await self._ensure_d1_ready(logs):
+        """公式のSystem One形式でd1-omniへテキスト、必要時のみ画像を送る。"""
+        if not await self._ensure_d1_ready(logs, require_vision=bool(image_bytes)):
             return ""
         payload = {
             "state": state_text,
-            "images": ["data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")],
             "questions": questions,
         }
+        if image_bytes:
+            payload["images"] = ["data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")]
         timeout = aiohttp.ClientTimeout(total=D1_HTTP_TIMEOUT)
         for attempt in range(1, D1_HTTP_RETRIES + 1):
             try:
