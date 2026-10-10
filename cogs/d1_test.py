@@ -1,0 +1,76 @@
+import time
+import asyncio
+import aiohttp
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+class D1TestCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.endpoint = "http://127.0.0.1:8082/v1/systemone"
+        self.service_name = "llama-d1-omni"
+
+    async def _test_response(self) -> tuple[bool, float]:
+        """サーバーへテスト送信を行い、(成功判定, 応答時間ms) を返します。"""
+        payload = {
+            "state": "ping",
+            "questions": {
+                "ping": {
+                    "type": "noul",
+                    "instructions": "Is this a test?"
+                }
+            }
+        }
+        
+        start_time = time.perf_counter()
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.endpoint, 
+                    json=payload, 
+                    timeout=aiohttp.ClientTimeout(total=3.0)
+                ) as resp:
+                    if resp.status == 200:
+                        elapsed_ms = (time.perf_counter() - start_time) * 1000
+                        return True, elapsed_ms
+                    return False, 0.0
+        except Exception:
+            return False, 0.0
+
+    async def _start_service(self) -> bool:
+        """systemdサービス起動コマンドを実行します。"""
+        proc = await asyncio.create_subprocess_exec(
+            "sudo", "systemctl", "start", self.service_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await proc.communicate()
+        return proc.returncode == 0
+
+    @app_commands.command(name="d1ping", description="d1-omni サーバーの応答テストと自動起動を行います。")
+    async def d1ping(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        # 応答テストを実行
+        is_running, elapsed_ms = await self._test_response()
+
+        if is_running:
+            # 起動済みの場合は応答時間のみ返却
+            await interaction.followup.send(
+                f"**[d1-omni]** サーバーは稼働中です。\n応答速度: `{elapsed_ms:.2f} ms`"
+            )
+        else:
+            # 停止中の場合は起動コマンドを実行
+            await interaction.followup.send(
+                "**[d1-omni]** 応答が確認できませんでした。サービスを起動します..."
+            )
+            
+            success = await self._start_service()
+            if success:
+                await interaction.channel.send("起動リクエストを送信しました。モデルロード完了まで数秒お待ちください。")
+            else:
+                await interaction.channel.send("起動コマンドの実行に失敗しました。`sudoers` の権限設定を確認してください。")
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(D1TestCog(bot))
