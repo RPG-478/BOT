@@ -126,11 +126,11 @@ class D1DungeonPlayerCog(commands.Cog):
 
     async def _ensure_d1_ready(self, logs):
         """ping→起動→モデルロード待機→再pingを一度だけ行う。"""
-        if time.monotonic() < self._ready_until and self._vision_ready:
-            return True
+        if time.monotonic() < self._ready_until:
+            return self._vision_ready
         async with self._service_lock:
-            if time.monotonic() < self._ready_until and self._vision_ready:
-                return True
+            if time.monotonic() < self._ready_until:
+                return self._vision_ready
             if await self._test_response():
                 self._vision_ready = await self._test_vision_capability()
                 self._ready_until = time.monotonic() + 30.0
