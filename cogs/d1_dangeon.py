@@ -1,266 +1,333 @@
-import io
+"""D1-omniによるダンジョン代理プレイ。
+
+D1へ渡す入力は、直近のゲームログと map.png のみです。
+モデルは次の1手を選ぶだけで、ゲーム状態の確定・ダメージ・報酬・保存は本体が担当します。
+"""
+
+import asyncio
 import base64
-import aiohttp
-import random
+import io
 import os
+import random
+
+import aiohttp
 import discord
-from discord import app_commands
 from discord.ext import commands
 
-# cogs.dangeon から必要な関数・定数をインポート
 from cogs.dangeon import (
-    d_get_player,
-    d_build_map_image,
-    d_render_pillow,
-    d_get_cell,
-    d_ensure_map,
-    d_consume,
-    d_open_chest,
-    d_trigger_trap,
-    d_do_mine,
-    d_make_enemy,
-    d_apply_reward,
-    d_effective_stats,
-    DungeonCombatView,
-    d_get_biome,
-    dg_save_player,
-    dg_save_map,
-    dg_starts,
-    D_MAP_W,
-    D_MAP_H,
-    D_WALL,
-    D_STAIRS,
+    D1_ENDPOINT,
     D_CHEST,
-    D_TRAP,
+    D_ENCOUNTER_RATES,
+    D_FLOORS,
     D_MINE,
     D_REST,
     D_SHOP,
-    D_FLOORS,
-    D_ENCOUNTER_RATES
+    D_STAIRS,
+    D_TRAP,
+    D_WALL,
+    D_MAP_H,
+    D_MAP_W,
+    DungeonCombatView,
+    d_apply_reward,
+    d_build_map_image,
+    d_consume,
+    d_do_mine,
+    d_effective_stats,
+    d_get_biome,
+    d_get_cell,
+    d_get_player,
+    d_make_enemy,
+    d_render_pillow,
+    d_trigger_trap,
+    dg_save_map,
+    dg_save_player,
+    dg_starts,
+    d_use_job_skill,
 )
 
-D1_ENDPOINT = os.environ.get("D1_ENDPOINT", "http://127.0.0.1:8082/v1/systemone")
 
 class D1DungeonPlayerCog(commands.Cog):
+    """/dungeon画面から起動する連続D1プレイヤー。"""
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._tasks = {}
+        self._stops = {}
 
-    async def _call_d1(self, state_str: str, questions: dict, b64_img: str) -> str:
+    def _log_text(self, logs):
+        """D1へ渡す唯一のテキスト入力。長すぎる状態やJSONは渡さない。"""
+        return "\n".join(logs[-12:])[-5000:]
+
+    async def _call_d1(self, logs, image_bytes, questions):
+        """d1-omniのchoice結果を安全に取り出す。失敗時は空文字を返す。"""
         payload = {
-            "state": state_str,
-            "images": [f"data:image/png;base64,{b64_img}"],
-            "questions": questions
+            "state": self._log_text(logs),
+            "images": ["data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")],
+            "questions": questions,
         }
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(D1_ENDPOINT, json=payload, timeout=10) as resp:
-                    if resp.status == 200:
-                        res = await resp.json()
-                        q_key = list(questions.keys())[0]
-                        return res.get("answers", {}).get(q_key, {}).get("choice", "")
-        except Exception:
-            pass
+            timeout = aiohttp.ClientTimeout(total=20)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(D1_ENDPOINT, json=payload) as response:
+                    body = await response.text()
+                    if response.status != 200:
+                        logs.append(f"D1 APIエラー: HTTP {response.status}")
+                        return ""
+                    try:
+                        data = await response.json(content_type=None)
+                    except Exception:
+                        logs.append("D1 APIエラー: JSON応答を解釈できません")
+                        return ""
+                    answers = data.get("answers", {}) if isinstance(data, dict) else {}
+                    key = next(iter(questions), "")
+                    answer = answers.get(key, {}) if isinstance(answers, dict) else {}
+                    if isinstance(answer, str):
+                        return answer
+                    if isinstance(answer, dict):
+                        return str(answer.get("choice", ""))
+                    logs.append("D1 APIエラー: choice結果がありません")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logs.append(f"D1接続エラー: {type(exc).__name__}")
         return ""
 
-    @app_commands.command(name="d1_dungeon", description="D1-omniにダンジョンを1ターン操作させます")
-    async def d1_dungeon(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+    def is_running(self, uid):
+        task = self._tasks.get(str(uid))
+        return bool(task and not task.done())
+
+    async def start_loop(self, interaction, view):
+        """現在の画面メッセージを更新しながら、停止までD1を連続実行する。"""
         uid = str(interaction.user.id)
+        if self.is_running(uid):
+            await interaction.response.send_message("D1はすでにプレイ中です。", ephemeral=True)
+            return
+        await interaction.response.defer()
+        message = await interaction.original_response()
+        stop_event = asyncio.Event()
+        self._stops[uid] = stop_event
+        task = asyncio.create_task(self._run_loop(uid, message, view, stop_event))
+        self._tasks[uid] = task
+        await task
+
+    async def stop_loop(self, uid):
+        event = self._stops.get(str(uid))
+        if event:
+            event.set()
+
+    async def _edit_screen(self, message, view, logs, *, final=False):
+        uid = view.uid
+        p = d_get_player(uid)
+        stats = d_effective_stats(p)
+        embed = discord.Embed(
+            title=f"D1代理プレイ {'終了' if final else '実行中'}",
+            description="\n".join(logs[-8:])[-3500:] or "ログはまだありません。",
+            color=0x8B5CF6 if not final else 0x666666,
+        )
+        embed.add_field(name="状態", value=f"{p['floor']}F / HP {p['hp']}/{stats['max_hp']} / {p.get('job', 'warrior')}", inline=False)
+        embed.set_image(url="attachment://map.png")
+        map_file = d_render_pillow(uid, p["floor"], p["x"], p["y"])
+        await message.edit(embed=embed, view=None if final else view, attachments=[map_file])
+
+    async def _run_loop(self, uid, message, view, stop_event):
+        logs = ["D1が代理プレイを開始しました。終了ボタンで停止できます。"]
+        try:
+            while not stop_event.is_set():
+                await self._play_turn(uid, logs)
+                await self._edit_screen(message, view, logs)
+                if d_get_player(uid)["hp"] <= 0:
+                    logs.append("HPが0になったため、D1を停止しました。")
+                    break
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            logs.append("D1のタスクをキャンセルしました。")
+            raise
+        except Exception as exc:
+            logs.append(f"D1プレイエラー: {type(exc).__name__}: {exc}")
+        finally:
+            self._tasks.pop(uid, None)
+            self._stops.pop(uid, None)
+            logs.append("D1代理プレイを終了しました。")
+            try:
+                await self._edit_screen(message, view, logs, final=True)
+            except Exception:
+                pass
+
+    async def _image_bytes(self, uid):
+        p = d_get_player(uid)
+        image = d_build_map_image(uid, p["floor"], p["x"], p["y"])
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        return buf.getvalue()
+
+    async def _choose(self, uid, logs, questions):
+        return await self._call_d1(logs, await self._image_bytes(uid), questions)
+
+    async def _play_turn(self, uid, logs):
         p = d_get_player(uid)
         floor, x, y = p["floor"], p["x"], p["y"]
-        supabase = getattr(self.bot, "supabase", None)
+        cell = d_get_cell(floor, x, y)
 
-        # マップ画像の生成と Base64 化
-        pil_img = d_build_map_image(uid, floor, x, y)
-        buf = io.BytesIO()
-        pil_img.save(buf, format="PNG")
-        b64_img = base64.b64encode(buf.getvalue()).decode("utf-8")
-
-        current_cell = d_get_cell(floor, x, y)
-
-        # 1. 階段マスにいる場合
-        if current_cell == D_STAIRS:
-            questions = {
-                "stairs_action": {
-                    "type": "choice",
-                    "instructions": "You reached stairs. Select whether to go to the next floor or stay.",
-                    "criteria": {
-                        "stairs_up": "Proceed to the next upper floor and fully restore HP",
-                        "stairs_back": "Stay on current floor and continue exploring"
-                    }
-                }
-            }
-            state_str = f"Floor {floor} ({x}, {y}) - On Stairs Tile. HP: {p['hp']}/{p['max_hp']}"
-            choice = await self._call_d1(state_str, questions, b64_img)
-
-            if choice == "stairs_up" and floor < D_FLOORS:
+        if cell == D_STAIRS:
+            choice = await self._choose(uid, logs, {
+                "stairs": {"type": "choice", "instructions": "Choose the next action.", "criteria": {
+                    "up": "Go to the next floor and recover HP", "stay": "Stay and keep exploring"
+                }}
+            })
+            if choice == "up" and floor < D_FLOORS:
                 p["floor"] = floor + 1
-                p["hp"] = p["max_hp"]
+                p["hp"] = d_effective_stats(p)["max_hp"]
+                from cogs.dangeon import d_ensure_map
                 d_ensure_map(p["floor"])
-                sx, sy = dg_starts[p["floor"]]
-                p["x"], p["y"] = sx, sy
-                if supabase:
-                    await dg_save_player(uid, supabase)
-                await interaction.followup.send(f"🤖 **D1の判断**: `stairs_up` を選択。フロア {p['floor']} へ進みました。")
-                return
+                p["x"], p["y"] = dg_starts[p["floor"]]
+                logs.append(f"階段を上り、{p['floor']}Fへ進みました。")
             else:
-                await interaction.followup.send(f"🤖 **D1の判断**: `stairs_back` を選択。そのまま探索を続けます。")
-                return
+                logs.append("階段では探索を続けました。")
+            await dg_save_player(uid, self.bot.supabase)
+            return
 
-        # 2. 鉱山マスにいる場合
-        elif current_cell == D_MINE:
-            questions = {
-                "mine_action": {
-                    "type": "choice",
-                    "instructions": "You found a mine. Select whether to mine coins or leave.",
-                    "criteria": {
-                        "mine": "Dig and mine coins from the mine",
-                        "mine_back": "Leave the mine without digging"
-                    }
-                }
-            }
-            state_str = f"Floor {floor} ({x}, {y}) - On Mine Tile. HP: {p['hp']}/{p['max_hp']}"
-            choice = await self._call_d1(state_str, questions, b64_img)
-
-            if choice == "mine":
+        if cell == D_MINE:
+            choice = await self._choose(uid, logs, {
+                "mine": {"type": "choice", "instructions": "Choose the action.", "criteria": {
+                    "dig": "Mine coins", "leave": "Leave the mine"
+                }}
+            })
+            if choice == "dig":
                 gain = d_do_mine(uid)
-                await d_apply_reward(uid, supabase, coins=gain)
+                await d_apply_reward(uid, self.bot.supabase, coins=gain, season_score=10)
                 d_consume(floor, x, y)
-                if supabase:
-                    await dg_save_map(floor, supabase)
-                await interaction.followup.send(f"🤖 **D1の判断**: `mine` を選択。採掘で +{gain} コイン獲得しました。")
-                return
+                logs.append(f"鉱山を採掘し、コインを{gain}枚獲得しました。")
+                await dg_save_map(floor, self.bot.supabase)
             else:
-                await interaction.followup.send(f"🤖 **D1の判断**: `mine_back` を選択。採掘せずに戻りました。")
-                return
+                logs.append("鉱山を見送りました。")
+            await dg_save_player(uid, self.bot.supabase)
+            return
 
-        # 3. 休憩所・商店はD1の単発選択だけで処理する。
-        if current_cell == D_REST:
-            await d_apply_reward(uid, supabase, xp=10, season_score=10)
-            p["hp"] = min(d_effective_stats(p)["max_hp"], p["hp"] + max(20, d_effective_stats(p)["max_hp"] // 3))
+        if cell == D_REST:
+            stats = d_effective_stats(p)
+            before = p["hp"]
+            p["hp"] = min(stats["max_hp"], p["hp"] + max(20, stats["max_hp"] // 3))
             d_consume(floor, x, y)
-            if supabase:
-                await dg_save_map(floor, supabase)
-                await dg_save_player(uid, supabase)
-            await interaction.followup.send("🤖 **D1**: 休憩所で回復しました。")
+            logs.append(f"休憩所でHPを{p['hp'] - before}回復しました。")
+            await dg_save_map(floor, self.bot.supabase)
+            await dg_save_player(uid, self.bot.supabase)
             return
 
-        if current_cell == D_SHOP:
-            questions = {
-                "shop_action": {
-                    "type": "choice",
-                    "instructions": "Choose whether to buy a healing bread at the shop.",
-                    "criteria": {
-                        "buy_bread": "Spend 30 coins to buy one healing bread",
-                        "leave": "Leave the shop and keep exploring",
-                    },
-                }
-            }
-            choice = await self._call_d1(
-                f"Floor {floor} ({x}, {y}) - Shop. Coins are handled by the game server.",
-                questions,
-                b64_img,
-            )
-            if choice == "buy_bread":
+        if cell == D_SHOP:
+            choice = await self._choose(uid, logs, {
+                "shop": {"type": "choice", "instructions": "Choose the action.", "criteria": {
+                    "buy": "Buy one healing bread for 30 coins", "leave": "Leave the shop"
+                }}
+            })
+            if choice == "buy":
                 try:
-                    await d_apply_reward(uid, supabase, coins=-30, bread=1)
-                    if supabase:
-                        await dg_save_player(uid, supabase)
-                    await interaction.followup.send("🤖 **D1の判断**: パンを購入しました。")
+                    await d_apply_reward(uid, self.bot.supabase, coins=-30, bread=1)
+                    logs.append("商店でレアパンを購入しました。")
                 except Exception:
-                    await interaction.followup.send("🤖 **D1の判断**: コイン不足のため購入できませんでした。")
+                    logs.append("コイン不足で購入できませんでした。")
             else:
-                await interaction.followup.send("🤖 **D1の判断**: 購入せず探索を続けます。")
+                logs.append("商店で購入せずに進みました。")
+            await dg_save_player(uid, self.bot.supabase)
             return
 
-        # 4. 通常探索移動（※ status 選択肢を除外）
-        questions = {
-            "move_action": {
-                "type": "choice",
-                "instructions": "Select the next direction to move or action to take in the dungeon.",
-                "criteria": {
-                    "up": "Move north / up",
-                    "down": "Move south / down",
-                    "left": "Move west / left",
-                    "right": "Move east / right",
-                    "leftup": "Move northwest",
-                    "rightup": "Move northeast",
-                    "leftdown": "Move southwest",
-                    "rightdown": "Move southeast",
-                    "check": "Stay on current tile and check surroundings"
-                }
-            }
-        }
-        state_str = (f"Floor {floor} ({x}, {y}) - Exploring. "
-                     f"HP: {p['hp']}/{d_effective_stats(p)['max_hp']}. "
-                     "Choose exactly one legal next action.")
-        choice = await self._call_d1(state_str, questions, b64_img)
+        choice = await self._choose(uid, logs, {
+            "move": {"type": "choice", "instructions": "Choose one legal next action.", "criteria": {
+                "up": "Move north", "down": "Move south", "left": "Move west", "right": "Move east", "check": "Stay and inspect"
+            }}
+        })
+        directions = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
+        if choice == "check":
+            logs.append(f"{floor}F ({x},{y})を確認しました。")
+            return
+        if choice not in directions:
+            logs.append("D1の応答が不正だったため、安全に待機しました。")
+            return
+        dx, dy = directions[choice]
+        nx, ny = x + dx, y + dy
+        if not (0 <= nx < D_MAP_W and 0 <= ny < D_MAP_H) or d_get_cell(floor, nx, ny) == D_WALL:
+            logs.append(f"{choice}へ進もうとしましたが壁でした。")
+            return
+        p["x"], p["y"] = nx, ny
+        logs.append(f"{choice}へ移動しました。現在地: {floor}F ({nx},{ny})")
+        await self._resolve_tile(uid, logs)
+        await dg_save_player(uid, self.bot.supabase)
 
-        # 移動方向の適用処理
-        move_map = {
-            "up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0),
-            "leftup": (-1, -1), "rightup": (1, -1), "leftdown": (-1, 1), "rightdown": (1, 1),
-            "check": (0, 0)
-        }
+    async def _resolve_tile(self, uid, logs):
+        p = d_get_player(uid)
+        floor, x, y = p["floor"], p["x"], p["y"]
+        cell = d_get_cell(floor, x, y)
+        if cell == D_CHEST:
+            text, reward = d_open_chest(uid, self.bot.supabase)
+            await d_apply_reward(uid, self.bot.supabase, **reward)
+            d_consume(floor, x, y)
+            logs.append(text)
+            await dg_save_map(floor, self.bot.supabase)
+            return
+        if cell == D_TRAP:
+            text, penalty = d_trigger_trap(uid)
+            await d_apply_reward(uid, self.bot.supabase, **penalty)
+            d_consume(floor, x, y)
+            logs.append(text)
+            await dg_save_map(floor, self.bot.supabase)
+            return
+        biome, *_ = d_get_biome(floor)
+        if random.random() < D_ENCOUNTER_RATES.get(biome, 0.1):
+            enemy = d_make_enemy(floor)
+            logs.append(f"{enemy['name']}と遭遇しました。")
+            await self._auto_combat(uid, enemy, logs)
 
-        if choice in move_map:
-            dx, dy = move_map[choice]
-            nx, ny = x + dx, y + dy
-
-            if choice != "check":
-                corner_cut = (
-                    dx != 0 and dy != 0 and (
-                        d_get_cell(floor, x + dx, y) == D_WALL
-                        or d_get_cell(floor, x, y + dy) == D_WALL
-                    )
-                )
-                if (not (0 <= nx < D_MAP_W and 0 <= ny < D_MAP_H)
-                        or d_get_cell(floor, nx, ny) == D_WALL
-                        or corner_cut):
-                    await interaction.followup.send(f"🤖 **D1の判断**: `{choice}` を選択しましたが、壁のため移動できませんでした。")
+    async def _auto_combat(self, uid, enemy, logs):
+        combat = DungeonCombatView(uid, d_get_player(uid)["floor"], d_get_player(uid)["x"], d_get_player(uid)["y"], enemy, self.bot.supabase)
+        while enemy["hp"] > 0 and d_get_player(uid)["hp"] > 0:
+            choice = await self._choose(uid, logs, {
+                "battle": {"type": "choice", "instructions": "Choose one battle action.", "criteria": {
+                    "attack": "Attack normally", "skill": "Use the class skill", "defend": "Defend", "escape": "Try to escape"
+                }}
+            })
+            p = d_get_player(uid)
+            if choice == "skill":
+                text, damage = d_use_job_skill(uid, enemy)
+                enemy["hp"] = max(0, enemy["hp"] - damage)
+                logs.append(text)
+            elif choice == "defend":
+                combat.defending = True
+                logs.append("防御しました。")
+            elif choice == "escape" and enemy.get("type") != "boss":
+                if random.random() < 0.5:
+                    logs.append("逃走に成功しました。")
                     return
-                p["x"], p["y"] = nx, ny
-                x, y = nx, ny
-
-            msg = f"🤖 **D1の判断**: `{choice}` を実行しました。（現在位置: {x}, {y}）"
-            target_cell = d_get_cell(floor, x, y)
-
-            # 各種マスイベントの適用
-            if target_cell == D_CHEST:
-                chest_msg, reward = d_open_chest(uid, supabase)
-                await d_apply_reward(uid, supabase, **reward)
-                d_consume(floor, x, y)
-                if supabase:
-                    await dg_save_map(floor, supabase)
-                msg += f"\n結果: {chest_msg}"
-
-            elif target_cell == D_TRAP:
-                trap_msg, penalty = d_trigger_trap(uid)
-                await d_apply_reward(uid, supabase, **penalty)
-                d_consume(floor, x, y)
-                if supabase:
-                    await dg_save_map(floor, supabase)
-                msg += f"\n結果: {trap_msg}"
-
+                logs.append("逃走に失敗しました。")
             else:
-                bname, _, _, _, _ = d_get_biome(floor)
-                rate = D_ENCOUNTER_RATES.get(bname, 0.10)
-                if random.random() < rate:
-                    enemy = d_make_enemy(floor)
-                    combat = DungeonCombatView(uid, floor, x, y, enemy, supabase)
-                    map_file = d_render_pillow(uid, floor, x, y)
-                    await interaction.followup.send(
-                        content=msg + f"\n敵が現れた: **{enemy['name']}**",
-                        embed=combat._embed(), view=combat, file=map_file
-                    )
-                    return
+                damage, critical = combat._calculate_damage(p, enemy)
+                enemy["hp"] = max(0, enemy["hp"] - damage)
+                logs.append(f"攻撃で{damage}ダメージを与えました。")
+            if enemy["hp"] <= 0:
+                await combat._win(_NoopInteraction())
+                logs.append("戦闘に勝利しました。")
+                return
+            logs.append(combat._enemy_turn())
+        if d_get_player(uid)["hp"] <= 0:
+            await combat._lose(_NoopInteraction())
+            logs.append("敗北し、1Fへ戻されました。")
 
-            if supabase:
-                await dg_save_player(uid, supabase)
+    async def cog_unload(self):
+        for event in self._stops.values():
+            event.set()
+        for task in self._tasks.values():
+            task.cancel()
 
-            await interaction.followup.send(msg)
-        else:
-            await interaction.followup.send("🤖 **D1の判断**: 判定結果の取得に失敗しました。")
+
+class _NoopResponse:
+    async def edit_original_response(self, **kwargs):
+        return None
+
+
+class _NoopInteraction:
+    response = _NoopResponse()
+
+    async def edit_original_response(self, **kwargs):
+        return None
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(D1DungeonPlayerCog(bot))
