@@ -2287,6 +2287,7 @@ def _extended_operation_init(self, uid, floor, x, y, supabase):
     _OLD_OPERATION_INIT(self, uid, floor, x, y, supabase)
     self._add("所持品", self.show_inventory, 2, discord.ButtonStyle.grey)
     self._add("NPC/依頼", self.show_npcs, 2, discord.ButtonStyle.grey)
-    self._add("フロア目標", self.show_goals, 3, discord.ButtonStyle.primary)
-    self._add("鍛冶強化", self.upgrade_forge, 3, discord.ButtonStyle.grey)
+    # row 3 is occupied by the 5-column job select; keep these on row 4.
+    self._add("フロア目標", self.show_goals, 4, discord.ButtonStyle.primary)
+    self._add("鍛冶強化", self.upgrade_forge, 4, discord.ButtonStyle.grey)
 DungeonOperationView.__init__ = _extended_operation_init
