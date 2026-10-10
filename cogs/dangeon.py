@@ -170,7 +170,11 @@ D1_PLANS = {
 D1_STATE_CHARS = int(os.environ.get("D1_STATE_CHARS", 2400))
 D1_LOG_LINES = int(os.environ.get("D1_LOG_LINES", 6))
 D1_MAX_TURNS = int(os.environ.get("D1_MAX_TURNS", 10))
-D1_HTTP_TIMEOUT = float(os.environ.get("D1_HTTP_TIMEOUT", 30))
+# pingではなく画像付き推論の完了までを測る。画像モデルの初回推論は
+# モデルロード直後に30秒を超えることがあるため、短いpingのtimeoutと分離する。
+D1_HTTP_TIMEOUT = float(os.environ.get("D1_HTTP_TIMEOUT", 90))
+D1_HTTP_RETRIES = max(1, int(os.environ.get("D1_HTTP_RETRIES", 2)))
+D1_HTTP_RETRY_DELAY = float(os.environ.get("D1_HTTP_RETRY_DELAY", 1.5))
 # 8方向の定義。移動・経路探索・選択肢の基準提示で共通利用する。
 _DIRECTIONS = {
     "up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0),
@@ -2627,41 +2631,68 @@ class D1DungeonPlayer:
             "images": ["data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")],
             "questions": questions,
         }
-        try:
-            timeout = aiohttp.ClientTimeout(total=D1_HTTP_TIMEOUT)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(D1_ENDPOINT, json=payload) as response:
-                    body = await response.text()
-                    if response.status != 200:
-                        self._ready_until = 0.0
-                        detail = " ".join(body.split())[:240]
-                        if response.status == 501 and ("image input" in body.lower() or "mmproj" in body.lower()):
-                            self._vision_ready = False
-                            logs.append("D1画像入力が拒否されました。クライアント形式は正しいため、D1サービスをmmproj付きで再起動してください。")
-                        logs.append(f"D1 APIエラー: HTTP {response.status}" + (f" / {detail}" if detail else ""))
+        timeout = aiohttp.ClientTimeout(total=D1_HTTP_TIMEOUT)
+        for attempt in range(1, D1_HTTP_RETRIES + 1):
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(D1_ENDPOINT, json=payload) as response:
+                        body = await response.text()
+                        if response.status != 200:
+                            self._ready_until = 0.0
+                            detail = " ".join(body.split())[:240]
+                            if response.status == 501 and ("image input" in body.lower() or "mmproj" in body.lower()):
+                                self._vision_ready = False
+                                logs.append("D1画像入力が拒否されました。クライアント形式は正しいため、D1サービスをmmproj付きで再起動してください。")
+                            logs.append(f"D1 APIエラー: HTTP {response.status}" + (f" / {detail}" if detail else ""))
+                            # 5xx/429はモデルロードや一時的な過負荷の可能性があるため再試行する。
+                            if attempt < D1_HTTP_RETRIES and response.status in (408, 429, 500, 502, 503, 504):
+                                await asyncio.sleep(D1_HTTP_RETRY_DELAY * attempt)
+                                continue
+                            return ""
+                        try:
+                            data = await response.json(content_type=None)
+                        except Exception:
+                            detail = " ".join(body.split())[:240]
+                            logs.append("D1 APIエラー: JSON応答を解釈できません" + (f" / {detail}" if detail else ""))
+                            if attempt < D1_HTTP_RETRIES:
+                                await asyncio.sleep(D1_HTTP_RETRY_DELAY * attempt)
+                                continue
+                            return ""
+                        answers = data.get("answers", {}) if isinstance(data, dict) else {}
+                        key = next(iter(questions), "")
+                        answer = answers.get(key, {}) if isinstance(answers, dict) else {}
+                        if isinstance(answer, str):
+                            return answer
+                        if isinstance(answer, dict):
+                            choice = answer.get("choice") or answer.get("answer") or answer.get("value")
+                            if choice is not None:
+                                return str(choice)
+                        if isinstance(data, dict) and data.get("choice") is not None:
+                            return str(data["choice"])
+                        logs.append("D1 APIエラー: choice結果がありません")
+                        if attempt < D1_HTTP_RETRIES:
+                            await asyncio.sleep(D1_HTTP_RETRY_DELAY * attempt)
+                            continue
                         return ""
-                    try:
-                        data = await response.json(content_type=None)
-                    except Exception:
-                        detail = " ".join(body.split())[:240]
-                        logs.append("D1 APIエラー: JSON応答を解釈できません" + (f" / {detail}" if detail else ""))
-                        return ""
-                    answers = data.get("answers", {}) if isinstance(data, dict) else {}
-                    key = next(iter(questions), "")
-                    answer = answers.get(key, {}) if isinstance(answers, dict) else {}
-                    if isinstance(answer, str):
-                        return answer
-                    if isinstance(answer, dict):
-                        choice = answer.get("choice") or answer.get("answer") or answer.get("value")
-                        if choice is not None:
-                            return str(choice)
-                    if isinstance(data, dict) and data.get("choice") is not None:
-                        return str(data["choice"])
-                    logs.append("D1 APIエラー: choice結果がありません")
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logs.append(f"D1接続エラー: {type(exc).__name__}")
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                # pingは成功しても、画像エンコード＋推論はモデルロード直後に時間がかかる。
+                # これはサービス停止ではないため、再試行後にのみ1回の判断失敗として記録する。
+                if attempt < D1_HTTP_RETRIES:
+                    logs.append(f"D1推論が{D1_HTTP_TIMEOUT:.0f}秒で未完了。{attempt + 1}回目を再試行します。")
+                    await asyncio.sleep(D1_HTTP_RETRY_DELAY * attempt)
+                    continue
+                logs.append(f"D1推論タイムアウト（{D1_HTTP_RETRIES}回試行）。作戦フォールバックを使用します。")
+            except (aiohttp.ClientError, OSError) as exc:
+                if attempt < D1_HTTP_RETRIES:
+                    logs.append(f"D1接続一時失敗（{type(exc).__name__}）。再試行します。")
+                    await asyncio.sleep(D1_HTTP_RETRY_DELAY * attempt)
+                    continue
+                logs.append(f"D1接続エラー: {type(exc).__name__}")
+            except Exception as exc:
+                logs.append(f"D1接続エラー: {type(exc).__name__}")
+                return ""
         return ""
 
     # ---------- 実行制御 ----------
