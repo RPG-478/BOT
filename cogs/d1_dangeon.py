@@ -61,6 +61,7 @@ class D1DungeonPlayerCog(commands.Cog):
         self.service_name = os.environ.get("D1_SERVICE_NAME", "llama-d1-omni")
         self._service_lock = asyncio.Lock()
         self._ready_until = 0.0
+        self._run_stats = {}
 
     async def _test_response(self):
         """d1_test.pyと同じ最小pingでsystemoneの稼働を確認する。"""
@@ -123,7 +124,7 @@ class D1DungeonPlayerCog(commands.Cog):
         return "\n".join(logs[-12:])[-5000:]
 
     async def _call_d1(self, logs, image_bytes, questions):
-        """d1-omniのchoice結果を安全に取り出す。失敗時は空文字を返す。"""
+        """公式のSystem One形式でd1-omniへ画像＋テキストを送る。"""
         if not await self._ensure_d1_ready(logs):
             return ""
         payload = {
@@ -139,6 +140,8 @@ class D1DungeonPlayerCog(commands.Cog):
                     if response.status != 200:
                         self._ready_until = 0.0
                         detail = " ".join(body.split())[:240]
+                        if response.status == 501 and ("image input" in body.lower() or "mmproj" in body.lower()):
+                            logs.append("D1画像入力が拒否されました。D1サービスをmmproj付きで起動してください。")
                         logs.append(f"D1 APIエラー: HTTP {response.status}" + (f" / {detail}" if detail else ""))
                         return ""
                     try:
@@ -206,12 +209,19 @@ class D1DungeonPlayerCog(commands.Cog):
     async def _run_loop(self, uid, message, view, stop_event):
         plan = getattr(view, "d1_plan", "安全探索")
         logs = [f"D1が代理プレイを開始しました。作戦: {plan} / 終了ボタンで停止できます。"]
+        self._run_stats[uid] = {"turns": 0, "positions": [], "battles": 0}
         try:
             while not stop_event.is_set():
+                reason = self._stop_reason(uid, logs)
+                if reason:
+                    logs.append(f"D1を停止しました: {reason}")
+                    break
                 await self._play_turn(uid, logs)
+                self._run_stats[uid]["turns"] += 1
                 await self._edit_screen(message, view, logs)
-                if d_get_player(uid)["hp"] <= 0:
-                    logs.append("HPが0になったため、D1を停止しました。")
+                reason = self._stop_reason(uid, logs)
+                if reason:
+                    logs.append(f"D1を停止しました: {reason}")
                     break
                 await asyncio.sleep(1.0)
         except asyncio.CancelledError:
@@ -222,11 +232,37 @@ class D1DungeonPlayerCog(commands.Cog):
         finally:
             self._tasks.pop(uid, None)
             self._stops.pop(uid, None)
+            self._run_stats.pop(uid, None)
             logs.append("D1代理プレイを終了しました。")
             try:
                 await self._edit_screen(message, view, logs, final=True)
             except Exception:
                 pass
+
+    def _stop_reason(self, uid, logs):
+        """D1の安全停止条件をゲーム側で一元判定する。"""
+        p = d_get_player(uid)
+        stats = d_effective_stats(p)
+        run = self._run_stats.setdefault(uid, {"turns": 0, "positions": [], "battles": 0})
+        position = (p["floor"], p["x"], p["y"])
+        positions = run.setdefault("positions", [])
+        # 移動できなかったターンも履歴へ記録し、同じ場所での待機・壁選択を検知する。
+        positions.append(position)
+        positions[:] = positions[-12:]
+        if p["hp"] <= 0:
+            return "HPが0"
+        if p["hp"] < stats["max_hp"] * 0.30:
+            return "HPが30%未満"
+        if run.get("turns", 0) >= 10:
+            return "1回のD1実行が10ターンに到達"
+        if len(positions) >= 3 and positions[-1] == positions[-2] == positions[-3]:
+            return "同じ場所で3回連続停止"
+        error_lines = logs[-6:]
+        if sum("D1 APIエラー" in line or "D1接続エラー" in line for line in error_lines) >= 3:
+            return "D1 APIエラーが連続3回"
+        if sum("と遭遇しました" in line for line in logs[-8:]) >= 3:
+            return "連続戦闘が多いため"
+        return ""
 
     async def _image_bytes(self, uid):
         p = d_get_player(uid)

@@ -1235,6 +1235,17 @@ class DungeonCombatView(DungeonViewBase):
             value=f"`{d_hpbar(e['hp'],e['max_hp'])}`{e['hp']}/{e['max_hp']}\nATK:{e['atk']} DEF:{e['def_']}",
             inline=True)
 
+        player_first = p_stats.get("spd", 10) >= e.get("spd", 10)
+        raw_name = e["name"].split()[0].replace("👾", "").strip()
+        enemy_ai = ENEMY_STATS_MASTER.get(raw_name, ENEMY_STATS_MASTER["default"]).get("ai", ["attack"])
+        preview = {"attack": "通常攻撃", "strong_attack": "強攻撃", "heal": "回復", "wait": "様子見"}
+        next_action = preview.get(enemy_ai[0], "通常攻撃")
+        em.add_field(
+            name="行動順 / 敵の予告",
+            value=f"{'あなた → ' + e['name'] if player_first else e['name'] + ' → あなた'}\n次: **{next_action}**",
+            inline=False,
+        )
+
         if self.log:
             em.add_field(name="ログ", value="\n".join(self.log[-5:]), inline=False)
         return em
@@ -1247,7 +1258,12 @@ class DungeonCombatView(DungeonViewBase):
         if is_defending:
             target_def *= 2
         dmg = max(1, attacker_stats["atk"] - target_def + random.randint(-2, 3))
+        # プレイヤーの属性は装備中の武器から解決する。従来はEmbedに属性を
+        # 表示するだけで、実際のダメージ計算へ接続されていなかった。
         attacker_element = attacker.get("element", "none") if isinstance(attacker, dict) else "none"
+        if "job" in attacker:
+            weapon_key = attacker.get("equipment", {}).get("weapon")
+            attacker_element = EQUIPMENT_MASTER.get(weapon_key, {}).get("element", "none")
         defender_element = defender.get("element", "none") if isinstance(defender, dict) else "none"
         if attacker_element in ELEMENTS and defender_element in ELEMENTS:
             if defender_element in ELEMENTS[attacker_element].get("weak", []):
