@@ -175,6 +175,8 @@ D1_MAX_TURNS = int(os.environ.get("D1_MAX_TURNS", 10))
 D1_HTTP_TIMEOUT = float(os.environ.get("D1_HTTP_TIMEOUT", 90))
 D1_HTTP_RETRIES = max(1, int(os.environ.get("D1_HTTP_RETRIES", 2)))
 D1_HTTP_RETRY_DELAY = float(os.environ.get("D1_HTTP_RETRY_DELAY", 1.5))
+D1_READY_CACHE_SECONDS = float(os.environ.get("D1_READY_CACHE_SECONDS", 300))
+D1_TIMING_LOG = os.environ.get("D1_TIMING_LOG", "0").lower() in ("1", "true", "yes", "on")
 # 移動判断に必要な盤面情報はstate/criteriaのテキストで渡す。
 # visionは必要な環境でのみ明示的に有効化する（既定: 無効）。
 D1_SEND_IMAGES = os.environ.get("D1_SEND_IMAGES", "0").lower() in ("1", "true", "yes", "on")
@@ -1275,6 +1277,22 @@ def d1_surround_text(floor, x, y):
     return " ".join(parts)
 
 
+def d1_local_grid(floor, x, y):
+    """画像に依存しない3x3局所盤面。#は壁、@は現在地、.は通行可能。"""
+    symbols = {
+        D_WALL: "#", D_FLOOR: ".", D_START: ".", D_STAIRS: "S", D_CHEST: "C",
+        D_TRAP: "T", D_SHOP: "$", D_BASE: "B", D_MINE: "M", D_REST: "R",
+        D_SHRINE: "H", D_EVENT: "E",
+    }
+    rows = []
+    for dy in (-1, 0, 1):
+        cells = []
+        for dx in (-1, 0, 1):
+            cells.append("@" if (dx, dy) == (0, 0) else symbols.get(d_get_cell(floor, x + dx, y + dy), "#"))
+        rows.append("".join(cells))
+    return " / ".join(rows) + "（#=壁・進入不可 @=現在地 .=通行可 S=階段）"
+
+
 def d1_move_criteria(floor, x, y, dist=None):
     """D1へ渡す「各方向がどういう状況か」の基準。壁・特殊タイル・階段距離を明示する。"""
     if dist is None:
@@ -1463,7 +1481,7 @@ def d_use_job_skill(uid, enemy):
 
 
 class _NoopResponse:
-    """D1代理プレイ中に画面更新を無効化するためのダミー応答。"""
+    """自動操作中に画面更新を無効化するためのダミー応答。"""
 
     async def edit_original_response(self, **kwargs):
         return None
@@ -1473,14 +1491,14 @@ class _NoopResponse:
 
 
 class _NoopInteraction:
-    """D1代理プレイから既存のView処理を再利用するためのダミーInteraction。"""
+    """自動操作から既存のView処理を再利用するためのダミーInteraction。"""
     response = _NoopResponse()
 
     async def edit_original_response(self, **kwargs):
         return None
 
 
-# 実行中のD1代理プレイヤー。DungeonCogが生成し、各Viewから参照する。
+# 実行中の自動操作ヤー。DungeonCogが生成し、各Viewから参照する。
 _D1_PLAYER = None
 
 
@@ -1555,7 +1573,7 @@ def d1_status_text(uid):
 
 
 class DungeonStatusView(DungeonViewBase):
-    """ステータス表示。D1代理プレイの接続と作戦選択はこの画面へ集約する。"""
+    """ステータス表示。自動操作の接続と作戦選択はこの画面へ集約する。"""
 
     def __init__(self, uid, floor, x, y, supabase):
         super().__init__(uid, timeout=300)
@@ -1581,7 +1599,7 @@ class DungeonStatusView(DungeonViewBase):
         em.add_field(name="遺物・属性", value=f"遺物: {', '.join(RELIC_MASTER.get(k, {}).get('name', k) for k in p.get('relics', [])) or 'なし'}\n装備属性: {', '.join(EQUIPMENT_MASTER.get(k, {}).get('element', 'none') for k in p.get('equipment', {}).values()) or 'none'}", inline=False)
         quests, _ = d_content_summary(self.uid)
         em.add_field(name="クエスト", value="\n".join(quests) if quests else "全クエスト達成", inline=False)
-        em.add_field(name="D1代理プレイ", value=f"作戦: **{self.d1_plan}**\n状態: {d1_status_text(self.uid)}", inline=False)
+        em.add_field(name="自動操作", value=f"作戦: **{self.d1_plan}**\n状態: {d1_status_text(self.uid)}", inline=False)
         return em
 
     async def _render(self, interaction, msg=""):
@@ -1591,15 +1609,15 @@ class DungeonStatusView(DungeonViewBase):
             embed=self._embed(msg, image_url=map_url), view=self, attachments=[map_file]
         )
 
-    @discord.ui.button(label="🤖 D1開始", style=discord.ButtonStyle.blurple, row=0)
+    @discord.ui.button(label="自動操作開始", style=discord.ButtonStyle.blurple, row=0)
     async def start_d1(self, interaction, button):
         if _D1_PLAYER is None:
-            await interaction.response.send_message("D1機能が初期化されていません。", ephemeral=True)
+            await interaction.response.send_message("自動操作機能が初期化されていません。", ephemeral=True)
             return
         # 押した時点の現在状態と作戦でD1を開始する（状態は/dungeonと共有）。
         await _D1_PLAYER.start(interaction, self.d1_plan)
 
-    @discord.ui.button(label="⚙ 操作メニュー", style=discord.ButtonStyle.green, row=0)
+    @discord.ui.button(label="操作メニュー", style=discord.ButtonStyle.green, row=0)
     async def operations(self, interaction, button):
         await interaction.response.defer()
         p = self.sync_state()
@@ -1609,7 +1627,7 @@ class DungeonStatusView(DungeonViewBase):
             embed=op._embed("操作メニュー", image_url=map_url), view=op, attachments=[map_file]
         )
 
-    @discord.ui.button(label="⬅️ ダンジョンへ戻る", style=discord.ButtonStyle.grey, row=0)
+    @discord.ui.button(label="ダンジョンへ戻る", style=discord.ButtonStyle.grey, row=0)
     async def back(self, interaction, button):
         await interaction.response.defer()
         await d_return_to_dungeon(interaction, self.uid, self.supabase, "")
@@ -1651,7 +1669,7 @@ class DungeonStairsView(DungeonViewBase):
             embed=self._embed(msg, image_url=map_url), view=self, attachments=[map_file]
         )
 
-    @discord.ui.button(label="⬆️ 上へ進む", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="上へ進む", style=discord.ButtonStyle.green)
     @d_lock_callback
     async def up(self, i, b):
         await i.response.defer()
@@ -1668,7 +1686,7 @@ class DungeonStairsView(DungeonViewBase):
         else:
             await i.edit_original_response(embed=discord.Embed(title="ゴール！", description="ダンジョンをクリアしました！", color=0xFFFFFF))
 
-    @discord.ui.button(label="⬅️ 戻る", style=discord.ButtonStyle.grey)
+    @discord.ui.button(label="戻る", style=discord.ButtonStyle.grey)
     @d_lock_callback
     async def back(self, i, b):
         await i.response.defer()
@@ -1702,7 +1720,7 @@ class DungeonMineView(DungeonViewBase):
         await dg_save_player(self.uid, self.supabase)
         await d_return_to_dungeon(i, self.uid, self.supabase, f"採掘！ **+{gain}** コイン")
 
-    @discord.ui.button(label="⬅️ 戻る", style=discord.ButtonStyle.grey)
+    @discord.ui.button(label="戻る", style=discord.ButtonStyle.grey)
     @d_lock_callback
     async def back(self, i, b):
         await i.response.defer()
@@ -1748,7 +1766,7 @@ class DungeonShopView(DungeonViewBase):
     async def buy_armor(self, i, b):
         await self._buy(i, 250, {"equipment": "leather_armor"}, "革鎧")
 
-    @discord.ui.button(label="⬅️ 戻る", style=discord.ButtonStyle.grey, row=1)
+    @discord.ui.button(label="戻る", style=discord.ButtonStyle.grey, row=1)
     @d_lock_callback
     async def back(self, i, b):
         await i.response.defer()
@@ -1899,7 +1917,7 @@ class DungeonCombatView(DungeonViewBase):
         e = self.enemy
         p = d_get_player(self.uid)
         if isinstance(i, _NoopInteraction):
-            # D1代理プレイ中は選択UIを挟まず、その場で戦利品を反映する。
+            # 自動操作中は選択UIを挟まず、その場で戦利品を反映する。
             p["pending_rewards"] = []
             await self._register_kill()
             await d_apply_reward(
@@ -1937,7 +1955,7 @@ class DungeonCombatView(DungeonViewBase):
             return
         await d_return_to_dungeon(i, self.uid, self.supabase, "敗北して戻された…")
 
-    @discord.ui.button(label="⚔ 攻撃", style=discord.ButtonStyle.red, row=0)
+    @discord.ui.button(label="攻撃", style=discord.ButtonStyle.red, row=0)
     @d_lock_callback
     async def attack(self, i, b):
         await i.response.defer()
@@ -1970,7 +1988,7 @@ class DungeonCombatView(DungeonViewBase):
             return
         await self._render(i)
 
-    @discord.ui.button(label="🛡 防御", style=discord.ButtonStyle.blurple, row=0)
+    @discord.ui.button(label="防御", style=discord.ButtonStyle.blurple, row=0)
     @d_lock_callback
     async def defend(self, i, b):
         await i.response.defer()
@@ -1981,7 +1999,7 @@ class DungeonCombatView(DungeonViewBase):
             return
         await self._render(i)
 
-    @discord.ui.button(label="逃げる", style=discord.ButtonStyle.grey, row=0)
+    @discord.ui.button(label="逃走", style=discord.ButtonStyle.grey, row=0)
     @d_lock_callback
     async def run_away(self, i, b):
         await i.response.defer()
@@ -2007,7 +2025,7 @@ class DungeonCombatView(DungeonViewBase):
                 return
             await self._render(i)
 
-    @discord.ui.button(label="✨ スキル", style=discord.ButtonStyle.blurple, row=1)
+    @discord.ui.button(label="スキル", style=discord.ButtonStyle.blurple, row=1)
     @d_lock_callback
     async def skill(self, i, b):
         await i.response.defer()
@@ -2050,7 +2068,7 @@ class DungeonMainView(DungeonViewBase):
         quests, relics = d_content_summary(self.uid)
         em.add_field(name="冒険パネル", value=f"職業: {d_job_name(self.uid)}\nターン: {p['turns']} / スコア: {p['season_score']}\n遺物: {', '.join(relics) if relics else 'なし'}", inline=False)
         em.add_field(name="進行中の目的", value="\n".join(quests) if quests else "全クエスト達成", inline=False)
-        em.add_field(name="D1代理プレイ", value=f"作戦: {getattr(self, 'd1_plan', d1_plan_for(self.uid))} / 状態: {d1_status_text(self.uid)}", inline=False)
+        em.add_field(name="自動操作", value=f"作戦: {getattr(self, 'd1_plan', d1_plan_for(self.uid))} / 状態: {d1_status_text(self.uid)}", inline=False)
         if msg:
             em.add_field(name="ログ", value=msg, inline=False)
         return em
@@ -2184,31 +2202,31 @@ class DungeonMainView(DungeonViewBase):
         await dg_save_player(self.uid, self.supabase)
         await self._redraw(i, msg, p)
 
-    @discord.ui.button(label="↖️", style=discord.ButtonStyle.grey, row=0, custom_id="dg_lu")
+    @discord.ui.button(label="北西", style=discord.ButtonStyle.grey, row=0, custom_id="dg_lu")
     async def leftup(self, i, b): await self._move(i, -1, -1)
 
-    @discord.ui.button(label="⬆️", style=discord.ButtonStyle.grey, row=0, custom_id="dg_u")
+    @discord.ui.button(label="北", style=discord.ButtonStyle.grey, row=0, custom_id="dg_u")
     async def up(self, i, b): await self._move(i, 0, -1)
 
-    @discord.ui.button(label="↗️", style=discord.ButtonStyle.grey, row=0, custom_id="dg_ru")
+    @discord.ui.button(label="北東", style=discord.ButtonStyle.grey, row=0, custom_id="dg_ru")
     async def rightup(self, i, b): await self._move(i, 1, -1)
 
-    @discord.ui.button(label="⬅️", style=discord.ButtonStyle.grey, row=1, custom_id="dg_l")
+    @discord.ui.button(label="西", style=discord.ButtonStyle.grey, row=1, custom_id="dg_l")
     async def left(self, i, b): await self._move(i, -1, 0)
 
-    @discord.ui.button(label="☑️", style=discord.ButtonStyle.grey, row=1, custom_id="dg_c")
+    @discord.ui.button(label="ENTER", style=discord.ButtonStyle.grey, row=1, custom_id="dg_c")
     async def check(self, i, b): await self._move(i, 0, 0)
 
-    @discord.ui.button(label="➡️", style=discord.ButtonStyle.grey, row=1, custom_id="dg_r")
+    @discord.ui.button(label="東", style=discord.ButtonStyle.grey, row=1, custom_id="dg_r")
     async def right(self, i, b): await self._move(i, 1, 0)
 
-    @discord.ui.button(label="↙️", style=discord.ButtonStyle.grey, row=2, custom_id="dg_ld")
+    @discord.ui.button(label="南西", style=discord.ButtonStyle.grey, row=2, custom_id="dg_ld")
     async def leftdown(self, i, b): await self._move(i, -1, 1)
 
-    @discord.ui.button(label="⬇️", style=discord.ButtonStyle.grey, row=2, custom_id="dg_d")
+    @discord.ui.button(label="南", style=discord.ButtonStyle.grey, row=2, custom_id="dg_d")
     async def down(self, i, b): await self._move(i, 0, 1)
 
-    @discord.ui.button(label="↘️", style=discord.ButtonStyle.grey, row=2, custom_id="dg_rd")
+    @discord.ui.button(label="南東", style=discord.ButtonStyle.grey, row=2, custom_id="dg_rd")
     async def rightdown(self, i, b): await self._move(i, 1, 1)
 
     @discord.ui.button(label="STATUS", style=discord.ButtonStyle.green, row=3, custom_id="dg_status")
@@ -2228,9 +2246,9 @@ class DungeonUnifiedView(DungeonMainView):
         self.d1_plan = plan or d1_plan_for(uid)
         self.clear_items()
         directions = [
-            ("↖️", -1, -1, 0), ("⬆️", 0, -1, 0), ("↗️", 1, -1, 0),
-            ("⬅️", -1, 0, 1), ("ENTER", 0, 0, 1), ("➡️", 1, 0, 1),
-            ("↙️", -1, 1, 2), ("⬇️", 0, 1, 2), ("↘️", 1, 1, 2),
+            ("北西", -1, -1, 0), ("北", 0, -1, 0), ("北東", 1, -1, 0),
+            ("西", -1, 0, 1), ("ENTER", 0, 0, 1), ("東", 1, 0, 1),
+            ("南西", -1, 1, 2), ("南", 0, 1, 2), ("南東", 1, 1, 2),
         ]
         for label, dx, dy, row in directions:
             button = discord.ui.Button(
@@ -2241,10 +2259,10 @@ class DungeonUnifiedView(DungeonMainView):
             button.callback = move_callback
             self.add_item(button)
 
-        status_button = discord.ui.Button(label="STATUS / 操作", style=discord.ButtonStyle.green, row=3)
+        status_button = discord.ui.Button(label="STATUS", style=discord.ButtonStyle.green, row=3)
         status_button.callback = self.open_status
         self.add_item(status_button)
-        stop = discord.ui.Button(label="■ 終了", style=discord.ButtonStyle.red, row=3)
+        stop = discord.ui.Button(label="終了", style=discord.ButtonStyle.red, row=3)
         stop.callback = self.end_session
         self.add_item(stop)
 
@@ -2274,16 +2292,16 @@ class DungeonOperationView(DungeonViewBase):
     def __init__(self, uid, floor, x, y, supabase):
         super().__init__(uid, timeout=600)
         self.floor, self.x, self.y, self.supabase = floor, x, y, supabase
-        self._add("STATUS / D1", self.status, 0, discord.ButtonStyle.green)
-        self._add("🍞 パン", self.use_bread, 0, discord.ButtonStyle.blurple)
+        self._add("STATUS", self.status, 0, discord.ButtonStyle.green)
+        self._add("パン", self.use_bread, 0, discord.ButtonStyle.blurple)
         self._add("現在地を操作", self.current_action, 1, discord.ButtonStyle.primary)
-        self._add("🏕 拠点", self.camp, 1, discord.ButtonStyle.grey)
+        self._add("拠点", self.camp, 1, discord.ButtonStyle.grey)
         self._add("実績", self.achievements, 2, discord.ButtonStyle.grey)
         self._add("所持品", self.show_inventory, 2, discord.ButtonStyle.grey)
         self._add("NPC/依頼", self.show_npcs, 2, discord.ButtonStyle.grey)
         self._add("フロア目標", self.show_goals, 3, discord.ButtonStyle.primary)
         self._add("鍛冶強化", self.upgrade_forge, 3, discord.ButtonStyle.grey)
-        self._add("⬅️ 戻る", self.back, 3, discord.ButtonStyle.grey)
+        self._add("戻る", self.back, 3, discord.ButtonStyle.grey)
         job_select = discord.ui.Select(
             placeholder="職業を選択（冒険開始前のみ）",
             options=[discord.SelectOption(label=data["name"], value=key) for key, data in JOB_MASTER.items()],
@@ -2352,8 +2370,8 @@ class DungeonOperationView(DungeonViewBase):
     async def achievements(self, interaction):
         await interaction.response.defer()
         p = self.sync_state()
-        unlocked = [f"✅ {ACHIEVEMENTS[k]}" for k in p["achievements"] if k in ACHIEVEMENTS]
-        locked = [f"🔒 {name}" for k, name in ACHIEVEMENTS.items() if k not in p["achievements"]]
+        unlocked = [f"解除済み: {ACHIEVEMENTS[k]}" for k in p["achievements"] if k in ACHIEVEMENTS]
+        locked = [f"未解除: {name}" for k, name in ACHIEVEMENTS.items() if k not in p["achievements"]]
         await self._back(interaction, "\n".join(unlocked + locked))
 
     async def show_inventory(self, interaction):
@@ -2514,13 +2532,21 @@ class D1DungeonPlayer:
     async def _test_response(self):
         """d1_test.pyと同じ最小pingでsystemoneの稼働を確認する。"""
         payload = {"state": "ping", "questions": {"ping": {"type": "noul", "instructions": "Is this a test?"}}}
+        started = time.perf_counter()
         try:
             timeout = aiohttp.ClientTimeout(total=3.0)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(D1_ENDPOINT, json=payload) as response:
+                    self._timing("ping status=%s elapsed_ms=%.0f", response.status, (time.perf_counter() - started) * 1000)
                     return response.status == 200
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+            self._timing("ping failed elapsed_ms=%.0f", (time.perf_counter() - started) * 1000)
             return False
+
+    def _timing(self, message, *args):
+        """D1の遅延調査用ログ。通常は無効で、UIには表示しない。"""
+        if D1_TIMING_LOG:
+            logger.info("[d1-timing] " + message, *args)
 
     async def _start_service(self):
         """d1_test.pyと同じsystemdサービス起動手順を実行する。"""
@@ -2548,7 +2574,7 @@ class D1DungeonPlayer:
                 return True
             if await self._test_response():
                 self._vision_ready = await self._test_vision_capability() if require_vision else False
-                self._ready_until = time.monotonic() + 30.0
+                self._ready_until = time.monotonic() + D1_READY_CACHE_SECONDS
                 if require_vision and not self._vision_ready:
                     logs.append("D1サービスは応答しますが画像機能が無効です。mmproj付き起動が必要です。")
                 return True
@@ -2561,7 +2587,7 @@ class D1DungeonPlayer:
                 await asyncio.sleep(2.5)
                 if await self._test_response():
                     self._vision_ready = await self._test_vision_capability() if require_vision else False
-                    self._ready_until = time.monotonic() + 30.0
+                    self._ready_until = time.monotonic() + D1_READY_CACHE_SECONDS
                     logs.append("D1サービスの応答を確認しました。")
                     if require_vision and not self._vision_ready:
                         logs.append("D1サービスの画像機能を確認できません。D1_MMPROJまたは--mmprojを設定してください。")
@@ -2640,10 +2666,16 @@ class D1DungeonPlayer:
             payload["images"] = ["data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")]
         timeout = aiohttp.ClientTimeout(total=D1_HTTP_TIMEOUT)
         for attempt in range(1, D1_HTTP_RETRIES + 1):
+            started = time.perf_counter()
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     async with session.post(D1_ENDPOINT, json=payload) as response:
                         body = await response.text()
+                        self._timing(
+                            "request attempt=%s status=%s elapsed_ms=%.0f state_chars=%s question_chars=%s image_bytes=%s",
+                            attempt, response.status, (time.perf_counter() - started) * 1000,
+                            len(state_text), sum(len(str(v)) for v in questions.values()), len(image_bytes or b""),
+                        )
                         if response.status != 200:
                             self._ready_until = 0.0
                             detail = " ".join(body.split())[:240]
@@ -2722,11 +2754,11 @@ class D1DungeonPlayer:
         return "停止中"
 
     async def start(self, interaction, plan=None):
-        """現在の/dungeon状態をそのまま引き継いでD1代理プレイを開始する。"""
+        """現在の/dungeon状態をそのまま引き継いで自動操作を開始する。"""
         uid = str(interaction.user.id)
         plan = plan or self.plan_for(uid)
         if self.is_running(uid):
-            await interaction.response.send_message("D1はすでにプレイ中です。", ephemeral=True)
+            await interaction.response.send_message("自動操作はすでに実行中です。", ephemeral=True)
             return False
         await interaction.response.defer()
         self._plans[uid] = plan
@@ -2759,7 +2791,7 @@ class D1DungeonPlayer:
         p = view.sync_state()
         stats = d_effective_stats(p)
         embed = discord.Embed(
-            title=f"D1代理プレイ {'終了' if final else '実行中'}",
+            title=f"自動操作 {'終了' if final else '実行中'}",
             description="\n".join(str(x) for x in logs[-8:])[-1500:] or "ログはまだありません。",
             color=0x666666 if final else 0x8B5CF6,
         )
@@ -2810,7 +2842,7 @@ class D1DungeonPlayer:
         return ""
 
     async def _run_loop(self, uid, message, view, stop_event, plan):
-        logs = [f"D1が代理プレイを開始しました。作戦: {plan} / 終了ボタンで停止できます。"]
+        logs = [f"自動操作を開始しました。作戦: {plan} / 終了ボタンで停止できます。"]
         d_begin_run(uid, "d1")
         self._run_stats[uid] = {"turns": 0, "positions": [], "last_result": ""}
         # 初回判断の前に、/dungeonと完全に同じ現在状態のフレームを表示する。
@@ -2819,23 +2851,25 @@ class D1DungeonPlayer:
             while not stop_event.is_set():
                 reason = self._stop_reason(uid, logs)
                 if reason:
-                    logs.append(f"D1を停止しました: {reason}")
+                    logs.append(f"停止しました: {reason}")
                     break
+                turn_started = time.perf_counter()
                 await self._play_turn(uid, logs, plan)
+                self._timing("turn uid=%s elapsed_ms=%.0f", uid, (time.perf_counter() - turn_started) * 1000)
                 self._run_stats[uid]["turns"] += 1
                 await self._edit_screen(message, view, logs)
                 await asyncio.sleep(1.0)
         except asyncio.CancelledError:
-            logs.append("D1のタスクをキャンセルしました。")
+            logs.append("自動操作をキャンセルしました。")
             raise
         except Exception as exc:
-            logs.append(f"D1プレイエラー: {type(exc).__name__}: {exc}")
+            logs.append(f"自動操作エラー: {type(exc).__name__}: {exc}")
         finally:
             self._tasks.pop(uid, None)
             self._stops.pop(uid, None)
             self._run_stats.pop(uid, None)
             d_end_run(uid, "d1_stop")
-            logs.append("D1代理プレイを終了しました。")
+            logs.append("自動操作を終了しました。")
             try:
                 await self._edit_screen(message, view, logs, final=True)
             except Exception:
@@ -2951,21 +2985,23 @@ class D1DungeonPlayer:
 
         # 通常移動。待機手は用意せず、必ず1方向を選ばせる。
         dist = d1_bfs(floor, x, y)
+        move_criteria = d1_move_criteria(floor, x, y, dist)
+        criteria_text = "\n".join(f"{key}: {value}" for key, value in move_criteria.items())
         instructions = (
-            "あなたはダンジョン探索の意思決定者です。上の状態と地図画像を見て、次の1手を1つだけ選んでください。\n"
+            "あなたはダンジョン探索の意思決定者です。画像ではなく、以下のテキスト盤面を正として次の1手を選んでください。\n"
             f"目的: {d1_goal_text(uid)}\n"
             f"作戦: {plan}（{d1_plan_guidance(plan)}）\n"
             f"現在地: {floor}F ({x},{y}) / 階段: {d1_stairs_hint(floor, x, y, dist)}\n"
-            "制約: 壁へは進めません。階段へ近づく方向を優先します。HPが30%未満なら無理をせず、"
-            "回復タイルや階段へ向かってください。\n"
-            "前回と同じ行動で壁になった場合は、必ず別の方向を選んでください。\n"
+            f"局所盤面: {d1_local_grid(floor, x, y)}\n"
+            f"方向ごとの判定基準:\n{criteria_text}\n"
+            "制約: 壁へは進めません。階段へ近づく方向を優先します。HPが30%未満なら回復タイルや階段へ向かってください。\n"
             "回答は次のいずれか1語のみ: " + ", ".join(D1_MOVE_KEYS)
         )
         raw = await self._decide(uid, logs, plan, {
             "move": {
                 "type": "choice",
                 "instructions": instructions,
-                "criteria": d1_move_criteria(floor, x, y, dist),
+                "criteria": move_criteria,
             }
         })
         choice = d_normalize_choice(raw, set(D1_MOVE_KEYS), None)
@@ -2979,9 +3015,19 @@ class D1DungeonPlayer:
         )
         if (not (0 <= nx < D_MAP_W and 0 <= ny < D_MAP_H)
                 or d_get_cell(floor, nx, ny) == D_WALL or corner_cut):
-            logs.append(f"{_DIRECTION_LABELS[choice]}({choice})へ進もうとしましたが壁でした。")
-            self._note_result(uid, f"{choice}へ進もうとして壁に阻まれた")
-            return
+            blocked_choice = choice
+            choice = d1_best_direction(uid, plan, dist)
+            dx, dy = _DIRECTIONS[choice]
+            nx, ny = x + dx, y + dy
+            logs.append(f"{_DIRECTION_LABELS[blocked_choice]}({blocked_choice})は壁でした。サーバー判定で{_DIRECTION_LABELS[choice]}({choice})へ補正します。")
+            self._note_result(uid, f"{blocked_choice}は壁のため{choice}へ補正")
+            fallback_corner_cut = dx != 0 and dy != 0 and (
+                d_get_cell(floor, x + dx, y) == D_WALL or d_get_cell(floor, x, y + dy) == D_WALL
+            )
+            if (not (0 <= nx < D_MAP_W and 0 <= ny < D_MAP_H)
+                    or d_get_cell(floor, nx, ny) == D_WALL or fallback_corner_cut):
+                logs.append("周囲に合法な移動先がないため、このターンは移動しません。")
+                return
         p["x"], p["y"] = nx, ny
         p["turns"] += 1
         p["season_score"] += 1
@@ -3088,7 +3134,7 @@ class DungeonCog(Cog):
     def __init__(self, bot):
         self.bot = bot
         self.supabase = None
-        # D1代理プレイは同一ファイル内で管理する（旧 d1_dangeon.py を統合）。
+        # 自動操作は同一ファイル内で管理する（旧 d1_dangeon.py を統合）。
         self.d1 = D1DungeonPlayer(bot)
 
     async def cog_load(self):
