@@ -1,3 +1,5 @@
+import logging
+from typing import Optional
 import asyncio
 import random
 from collections import Counter
@@ -173,14 +175,21 @@ async def get_player_rating(player_id: int) -> float:
         print(f"Error getting rating: {e}")
         return ELO_STARTING_RATING
 
-async def update_player_rating(player_id: int, new_rating: float):
-    """Supabaseにプレイヤーのレートを保存"""
+async def update_player_rating(player_id: int, new_rating: float, won: Optional[bool] = None):
+    """Supabaseにプレイヤーのレートを保存（won を渡すと勝敗数・試合数も数える）"""
     try:
-        response = supabase.table(RATINGS_TABLE).select("id").eq("player_id", player_id).execute()
-        if response.data and len(response.data) > 0:
-            supabase.table(RATINGS_TABLE).update({"rating": new_rating, "updated_at": "now()"}).eq("player_id", player_id).execute()
+        response = supabase.table(RATINGS_TABLE).select("id, wins, losses, games_played").eq("player_id", player_id).execute()
+        row = response.data[0] if response.data else None
+        values = {"rating": new_rating}
+        if won is not None:
+            values["wins"] = int((row or {}).get("wins") or 0) + (1 if won else 0)
+            values["losses"] = int((row or {}).get("losses") or 0) + (0 if won else 1)
+            values["games_played"] = int((row or {}).get("games_played") or 0) + 1
+        if row:
+            values["updated_at"] = "now()"
+            supabase.table(RATINGS_TABLE).update(values).eq("player_id", player_id).execute()
         else:
-            supabase.table(RATINGS_TABLE).insert({"player_id": player_id, "rating": new_rating}).execute()
+            supabase.table(RATINGS_TABLE).insert({"player_id": player_id, **values}).execute()
     except Exception as e:
         print(f"Error updating rating: {e}")
 
@@ -1052,27 +1061,28 @@ class JinrouCog(commands.Cog):
                 if owner_id not in {p.id for p in game.alive_players}: return True
             return False
 
-        for p in game.players:
-            p_id = p.id
-            player_is_wolf_side = is_wolf_side(p_id)
-            
-            # プレイヤーが勝利陣営に属しているか判定
-            if (player_is_wolf_side and winner_is_wolf) or (not player_is_wolf_side and not winner_is_wolf):
-                # 勝利
-                rating = await get_player_rating(p_id)
-                avg_rating = sum(await get_player_rating(p2.id) for p2 in game.players) / len(game.players)
-                
-                rating_change, _ = calculate_elo_change(rating, avg_rating, player_is_wolf_side)
+        players = list(game.players)
+        if not players:
+            return
+        try:
+            # 先に全員の今のレートを読んでおき、平均も 1 回だけ計算する（更新の順番で結果が変わらないように）。
+            # 以前は sum(await ... for ...) が非同期ジェネレーターになって TypeError で落ち、1 件も保存されていなかった。
+            before = {p.id: await get_player_rating(p.id) for p in players}
+            avg_rating = sum(before.values()) / len(before)
+            for p in players:
+                p_id = p.id
+                player_is_wolf_side = is_wolf_side(p_id)
+                rating = before[p_id]
+                won = player_is_wolf_side == winner_is_wolf
+                if won:
+                    rating_change, _ = calculate_elo_change(rating, avg_rating, player_is_wolf_side)
+                else:
+                    _, rating_change = calculate_elo_change(avg_rating, rating, not player_is_wolf_side)
                 new_rating = max(0, rating + rating_change)
-            else:
-                # 敗北
-                rating = await get_player_rating(p_id)
-                avg_rating = sum(await get_player_rating(p2.id) for p2 in game.players) / len(game.players)
-                
-                _, rating_change = calculate_elo_change(avg_rating, rating, not player_is_wolf_side)
-                new_rating = max(0, rating + rating_change)
-            
-            await update_player_rating(p_id, new_rating)
+                await update_player_rating(p_id, new_rating, won=won)
+        except Exception:
+            # レートの失敗でゲームの終了処理（最終役職の開示など）を止めない
+            logging.getLogger(__name__).exception("人狼のレート更新に失敗しました")
 
     # ======================================================
     #  最終役職開示
