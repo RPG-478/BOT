@@ -88,7 +88,7 @@ class TakeIdleTurnTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(autoplay, "_ask_d1", AsyncMock(return_value="パー")):
             r = await autoplay.take_idle_turn(self.channel, guild_id=5, player_name="ひと でし", state={},
                                               legal_actions=LEGAL, instructions="", describe=lambda a: f"{a}を出")
-        self.assertEqual(r.notice, "⏰ ひと でしさんが放置したため、代わりにパーを出しました")
+        self.assertEqual(r.notice, "ひと でしさんが放置したため、代わりにパーを出しました")
         self.assertIn(r.notice, self.channel.sent[-1].text())
 
     async def test_disabled_server_returns_none(self):
@@ -172,7 +172,7 @@ class JinrouAutoplayTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(self.game.night_actions[1], {2, 3, 4})
         self.assertIn(self.game.night_actions[2], {1, 3, 4})
         self.assertNotIn(4, self.game.night_actions)  # 破道砲は代わりに撃たない
-        self.assertTrue(any('⏰' in m.text() for m in self.channel.sent))
+        self.assertTrue(any('放置したため、代わりに' in m.text() for m in self.channel.sent))
 
     async def test_vote_falls_back_to_skip_and_uses_d1_answer(self):
         self.game.voted_count = {1: "skip", 2: "skip"}

@@ -11,7 +11,7 @@ begin;
 create table if not exists public.party_game_wins (
   guild_id   bigint      not null check (guild_id > 0),
   user_id    bigint      not null check (user_id > 0),
-  game       text        not null check (game in ('ngword', 'shiritori', 'wordwolf', 'jinrou', 'uno', 'doubt', 'janken', 'wordle')),
+  game       text        not null check (game in ('ngword', 'shiritori', 'wordwolf', 'jinrou', 'uno', 'doubt', 'janken', 'wordle', 'shinkei', 'babanuki')),
   wins       integer     not null default 0 check (wins >= 0),
   updated_at timestamptz not null default now(),
   primary key (guild_id, user_id, game)
@@ -35,7 +35,7 @@ begin
   if p_user_id is null or p_user_id <= 0 then
     raise exception 'invalid user_id' using errcode = '22023';
   end if;
-  if p_game is null or p_game not in ('ngword', 'shiritori', 'wordwolf', 'jinrou', 'uno', 'doubt', 'janken', 'wordle') then
+  if p_game is null or p_game not in ('ngword', 'shiritori', 'wordwolf', 'jinrou', 'uno', 'doubt', 'janken', 'wordle', 'shinkei', 'babanuki') then
     raise exception 'unknown game: %', p_game using errcode = '22023';
   end if;
 

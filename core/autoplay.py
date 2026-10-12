@@ -55,7 +55,7 @@ def d1_endpoint() -> str:
 class AutoplayResult:
     action: Any            # legal_actions のどれか
     source: str            # "d1" か "fallback"
-    notice: str = ""       # 「⏰ ○○さんが放置したため、代わりに△△しました」
+    notice: str = ""       # 「○○さんが放置したため、代わりに△△しました」
 
 
 def _label(action: Any) -> str:
@@ -170,7 +170,7 @@ async def choose_action(game: Any, state: dict, legal_actions: Sequence[Any], in
 
 
 def idle_notice(player_name: str, action_text: str) -> str:
-    return f"⏰ {player_name}さんが放置したため、代わりに{action_text}しました"
+    return f"{player_name}さんが放置したため、代わりに{action_text}しました"
 
 
 async def take_idle_turn(channel: Any, *, guild_id: Optional[int], player_name: str, state: dict,
@@ -179,7 +179,7 @@ async def take_idle_turn(channel: Any, *, guild_id: Optional[int], player_name: 
                          game: Any = None, timeout: float = DEFAULT_TIMEOUT) -> Optional[AutoplayResult]:
     """手番の時間切れで呼ぶ。代打ちがオフのサーバーでは None（ゲーム側の元の処理を続ける）。
 
-    オンなら手を選び、channel があれば「⏰ ○○さんが放置したため、代わりに△△しました」を送る。
+    オンなら手を選び、channel があれば「○○さんが放置したため、代わりに△△しました」を送る。
     channel=None なら送らず、result.notice を自分のメッセージに入れて使う。
     """
     try:
