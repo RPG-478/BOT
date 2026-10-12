@@ -153,6 +153,31 @@ def format_permission_report(results: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------- ウィザード
+class ModerationModal(discord.ui.Modal, title="グローバルチャットの荒らし対策"):
+    """このサーバーで足す NG ワードと、このサーバーに届かせないユーザー・サーバー。"""
+
+    def __init__(self, wizard: "SetupWizard"):
+        super().__init__()
+        from core import globalchat_moderation as mod
+        self.wizard = wizard
+        s = mod.settings(wizard.guild.id)
+        self.ng_words = discord.ui.TextInput(label="NG ワード（改行かカンマ区切り。既定の一覧に追加）", required=False,
+                                             style=discord.TextStyle.paragraph, max_length=2000,
+                                             default="\n".join(s["ng_words"]) or None)
+        self.blocked_users = discord.ui.TextInput(label="ブロックするユーザー ID", required=False,
+                                                  style=discord.TextStyle.paragraph, max_length=2000,
+                                                  default="\n".join(map(str, s["blocked_users"])) or None)
+        self.blocked_guilds = discord.ui.TextInput(label="ブロックするサーバー ID", required=False,
+                                                   style=discord.TextStyle.paragraph, max_length=2000,
+                                                   default="\n".join(map(str, s["blocked_guilds"])) or None)
+        for item in (self.ng_words, self.blocked_users, self.blocked_guilds):
+            self.add_item(item)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.wizard.save_moderation(interaction, self.ng_words.value, self.blocked_users.value,
+                                          self.blocked_guilds.value)
+
+
 class SetupWizard(discord.ui.View):
     def __init__(self, cog: "ServerSetup", guild, channel, user_id: int):
         super().__init__(timeout=600)
@@ -242,6 +267,11 @@ class SetupWizard(discord.ui.View):
                 embed.add_field(name="状態", value="グローバルチャットの機能が読み込まれていません")
             else:
                 embed.add_field(name=f"#{getattr(self.channel, 'name', 'このチャンネル')}", value="つないでいます" if connected else "つないでいません")
+                from core import globalchat_moderation as mod
+                m = mod.settings(self.guild.id)
+                embed.add_field(name="荒らし対策", value=(
+                    f"NG ワード: 既定 + {len(m['ng_words'])} 件／ブロック: ユーザー {len(m['blocked_users'])} 人・"
+                    f"サーバー {len(m['blocked_guilds'])} 件／連投: 10 秒に 5 件まで"), inline=False)
                 others = [cid for cid in self.global_channel_ids() if cid != self.channel.id]
                 if others:
                     embed.add_field(name="このサーバーのほかのチャンネル", value=" ".join(f"<#{cid}>" for cid in others))
@@ -313,6 +343,7 @@ class SetupWizard(discord.ui.View):
                 self._button("このチャンネルを外す" if connected else "このチャンネルをつなぐ",
                              discord.ButtonStyle.danger if connected else discord.ButtonStyle.success,
                              self.on_global_toggle, row=0)
+            self._button("荒らし対策（NG ワード・ブロック）", discord.ButtonStyle.secondary, self.on_moderation, row=1)
         elif self.step == "mute":
             cog = self.cog.mute_cog()
             current = self.guild.get_role(cog.admin_roles.get(self.guild.id)) if cog and cog.admin_roles.get(self.guild.id) else None
@@ -408,6 +439,17 @@ class SetupWizard(discord.ui.View):
         self.set_global(connect)
         await self.refresh(interaction, "✅ このチャンネルをグローバルチャットにつなぎました。" if connect
                            else "✅ このチャンネルをグローバルチャットから外しました。")
+
+    async def on_moderation(self, interaction):
+        await interaction.response.send_modal(ModerationModal(self))
+
+    async def save_moderation(self, interaction, ng_text: str, users_text: str, guilds_text: str):
+        from core import globalchat_moderation as mod
+        words, users, guilds = mod.parse_words(ng_text), mod.parse_ids(users_text), mod.parse_ids(guilds_text)
+        guilds = [g for g in guilds if g != self.guild.id]
+        await mod.save(self.guild.id, ng_words=words, blocked_users=users, blocked_guilds=guilds)
+        await self.refresh(interaction, f"✅ 荒らし対策を保存しました（NG ワード {len(words)} 件・"
+                                        f"ブロックしたユーザー {len(users)} 人・サーバー {len(guilds)} 件）。")
 
     async def on_mute_role(self, interaction, select):
         role = select.values[0] if select.values else None
