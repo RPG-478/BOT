@@ -77,6 +77,10 @@ class CustomWordWolf(commands.Cog):
         app_commands.Choice(name="原神", value="genshin")
     ])
     async def wordwolf(self, interaction: discord.Interaction, wordlist: str = "standard"):
+        await self.start_recruit(interaction, wordlist)
+
+    async def start_recruit(self, interaction: discord.Interaction, wordlist: str = "standard"):
+        """募集を始める（/wordwolf と /game のハブから呼ぶ）。interaction にはまだ応答していないこと。"""
         if self.game_running:
             await interaction.response.send_message(embed=self._white_embed("既にゲームが進行中です。"), ephemeral=True)
             return
