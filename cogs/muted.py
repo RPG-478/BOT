@@ -1,83 +1,104 @@
-import json
 import logging
-import os
-import tempfile
 
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 from datetime import datetime, timedelta, timezone
 
+from core.storage import KVStore
+
 logger = logging.getLogger(__name__)
 
-# ミュートの期限と管理ロールを保存するファイル（Bot の作業フォルダ。再起動しても解除されるように）
-STATE_FILE = os.getenv("MUTED_STATE_FILE", "muted_state.json")
+NAMESPACE = "muted"
 
 
-class MuteStore:
-    """ミュートの期限 {(guild_id, user_id): 期限} と管理ロール {guild_id: role_id} を JSON ファイルに保存する。"""
-
-    def __init__(self, path: str = STATE_FILE):
-        self.path = path
-
-    def load(self) -> tuple[dict, dict]:
+def parse_guild(value) -> tuple[dict[int, datetime], int | None]:
+    """保存データ（1 サーバー分）を {user_id: 期限}, 管理ロールID に戻す。"""
+    mutes: dict[int, datetime] = {}
+    if not isinstance(value, dict):
+        return mutes, None
+    for user_id, text in (value.get("mutes") or {}).items():
         try:
-            with open(self.path, encoding="utf-8") as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            return {}, {}
-        except (OSError, ValueError):
-            logger.exception("ミュートの保存ファイルを読めませんでした: %s", self.path)
-            return {}, {}
-        mutes = {}
-        for item in data.get("mutes", []):
-            try:
-                expire = datetime.fromisoformat(item["expires_at"])
-                if expire.tzinfo is None:
-                    expire = expire.replace(tzinfo=timezone.utc)
-                mutes[(int(item["guild_id"]), int(item["user_id"]))] = expire
-            except (KeyError, TypeError, ValueError):
-                logger.warning("ミュートの保存データを読み飛ばしました: %r", item)
-        admin_roles = {}
-        for guild_id, role_id in (data.get("admin_roles") or {}).items():
-            try:
-                admin_roles[int(guild_id)] = int(role_id)
-            except (TypeError, ValueError):
-                logger.warning("管理ロールの保存データを読み飛ばしました: %r", (guild_id, role_id))
-        return mutes, admin_roles
-
-    def save(self, mutes: dict, admin_roles: dict) -> None:
-        data = {
-            "mutes": [
-                {"guild_id": gid, "user_id": uid, "expires_at": expire.isoformat()}
-                for (gid, uid), expire in sorted(mutes.items())
-            ],
-            "admin_roles": {str(gid): rid for gid, rid in sorted(admin_roles.items())},
-        }
-        folder = os.path.dirname(os.path.abspath(self.path))
-        try:
-            # 書きかけのファイルが残らないよう、一時ファイルに書いてから置き換える
-            fd, tmp = tempfile.mkstemp(prefix=".muted_", suffix=".json", dir=folder)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, self.path)
-        except OSError:
-            logger.exception("ミュートの保存ファイルに書けませんでした: %s", self.path)
+            expire = datetime.fromisoformat(text)
+            if expire.tzinfo is None:
+                expire = expire.replace(tzinfo=timezone.utc)
+            mutes[int(user_id)] = expire
+        except (TypeError, ValueError):
+            logger.warning("ミュートの保存データを読み飛ばしました: %r", (user_id, text))
+    role_id = value.get("admin_role_id")
+    try:
+        role_id = int(role_id) if role_id is not None else None
+    except (TypeError, ValueError):
+        role_id = None
+    return mutes, role_id
 
 
 class Muted(commands.Cog):
-    def __init__(self, bot, store: MuteStore | None = None):
+    """ミュートの期限と管理ロールは core/storage.py（Supabase の bot_kv、namespace "muted"）に、
+    サーバーごとに 1 件 {"mutes": {user_id: 期限}, "admin_role_id": ロールID} で保存する。"""
+
+    def __init__(self, bot, store: KVStore | None = None):
         self.bot = bot
-        self.store = store or MuteStore()
-        self.mute_tasks, self.admin_roles = self.store.load()
+        self.store = store or KVStore(NAMESPACE)
+        self.mute_tasks: dict[tuple[int, int], datetime] = {}
+        self.admin_roles: dict[int, int] = {}
+        # まずローカルの控えを読む（Supabase からは Bot の準備ができてから読み直す）
+        self._apply(self.store.load_local())
         self.embed_color = 0xFFFFFF
         self.check_mute_expiry.start()
 
     def cog_unload(self):
         self.check_mute_expiry.cancel()
 
-    def save(self) -> None:
-        self.store.save(self.mute_tasks, self.admin_roles)
+    def _apply(self, data: dict, *, replace: bool = True) -> None:
+        if replace:
+            self.mute_tasks.clear()
+            self.admin_roles.clear()
+        for key, value in data.items():
+            try:
+                guild_id = int(key)
+            except (TypeError, ValueError):
+                continue
+            mutes, role_id = parse_guild(value)
+            for user_id, expire in mutes.items():
+                self.mute_tasks[(guild_id, user_id)] = expire
+            if role_id is not None:
+                self.admin_roles[guild_id] = role_id
+
+    def guild_value(self, guild_id: int) -> dict:
+        mutes = {str(uid): expire.isoformat() for (gid, uid), expire in sorted(self.mute_tasks.items()) if gid == guild_id}
+        value = {}
+        if mutes:
+            value["mutes"] = mutes
+        if guild_id in self.admin_roles:
+            value["admin_role_id"] = self.admin_roles[guild_id]
+        return value
+
+    async def save(self, guild_id: int) -> None:
+        """1 サーバー分を保存する（何も無くなったら消す）。"""
+        value = self.guild_value(guild_id)
+        if value:
+            await self.store.set(str(guild_id), value)
+        else:
+            await self.store.delete(str(guild_id))
+
+    async def load_remote(self) -> None:
+        """Supabase から読み直す。ローカルにしかないサーバーの分は Supabase にも書いておく。"""
+        local_guilds = {gid for gid, _ in self.mute_tasks} | set(self.admin_roles)
+        local_only_values = {}
+        remote = await self.store.load_all()
+        remote_guilds = set()
+        for key in remote:
+            try:
+                remote_guilds.add(int(key))
+            except (TypeError, ValueError):
+                pass
+        for gid in local_guilds - remote_guilds:
+            local_only_values[gid] = self.guild_value(gid)
+        self._apply(remote)
+        for gid, value in local_only_values.items():
+            self._apply({str(gid): value}, replace=False)
+            await self.save(gid)
 
     async def is_admin_role(self, interaction: discord.Interaction) -> bool:
         allowed_role_id = self.admin_roles.get(interaction.guild_id)
@@ -109,6 +130,10 @@ class Muted(commands.Cog):
         wait = getattr(self.bot, "wait_until_ready", None)
         if wait is not None:
             await wait()
+        try:
+            await self.load_remote()
+        except Exception:
+            logger.exception("ミュートの保存データを読み直せませんでした（ローカルの控えで続けます）")
 
     async def unmute_expired(self, now: datetime | None = None) -> list[tuple[int, int]]:
         """期限が過ぎたミュートを解除する。解除（または記録を削除）した (guild_id, user_id) を返す。"""
@@ -127,8 +152,8 @@ class Muted(commands.Cog):
             # 待っている間に延長された場合は消さない
             if key in done and self.mute_tasks.get(key) == expire_time:
                 del self.mute_tasks[key]
-        if done:
-            self.save()
+        for guild_id in sorted({gid for gid, _ in done}):
+            await self.save(guild_id)
         return done
 
     async def _unmute(self, guild_id: int, user_id: int) -> bool:
@@ -218,7 +243,7 @@ class Muted(commands.Cog):
                 embed = discord.Embed(description="権限が不足しています。", color=self.embed_color)
                 return await interaction.response.send_message(embed=embed, ephemeral=True)
             self.admin_roles[interaction.guild_id] = admin_role.id
-            self.save()
+            await self.save(interaction.guild_id)
             embed = discord.Embed(description=f"管理ロールを {admin_role.mention} に設定しました。", color=self.embed_color)
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -230,7 +255,7 @@ class Muted(commands.Cog):
             role, _ = await self.get_or_create_muted_role(interaction.guild)
             await target.add_roles(role)
             self.mute_tasks[(interaction.guild_id, target.id)] = datetime.now(timezone.utc) + timedelta(minutes=minutes)
-            self.save()
+            await self.save(interaction.guild_id)
             embed = discord.Embed(description=f"{target.display_name} を {minutes}分間 Mutedにしました。", color=self.embed_color)
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 

@@ -1,7 +1,6 @@
-"""cogs/muted.py のテスト（ミュート解除ループと、再起動しても残る保存）。ファイルは一時フォルダにだけ書く。"""
+"""cogs/muted.py のテスト（ミュート解除ループと、再起動しても残る保存）。Supabase は偽物、ファイルは一時フォルダにだけ書く。"""
 
 import asyncio
-import json
 import os
 import sys
 import tempfile
@@ -18,6 +17,8 @@ if str(ROOT) not in sys.path:
 import discord  # noqa: E402
 
 from cogs import muted  # noqa: E402
+from core.storage import KVStore  # noqa: E402
+from tests.fake_kv_supabase import FakeKVSupabase, missing_table_error  # noqa: E402
 
 NOW = datetime(2026, 10, 12, 3, 0, tzinfo=timezone.utc)
 
@@ -75,7 +76,8 @@ class Base(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.path = os.path.join(self.tmp.name, "muted_state.json")
+        self.path = os.path.join(self.tmp.name, "bot_kv.json")
+        self.db = FakeKVSupabase()
         self.guild = FakeGuild()
         self.bot = FakeBot([self.guild])
         self.cogs = []
@@ -84,8 +86,11 @@ class Base(unittest.IsolatedAsyncioTestCase):
         for cog in self.cogs:
             cog.cog_unload()
 
-    def cog(self, bot=None):
-        cog = muted.Muted(bot or self.bot, store=muted.MuteStore(self.path))
+    def store(self, client="db"):
+        return KVStore("muted", client=self.db if client == "db" else client, path=self.path)
+
+    def cog(self, bot=None, client="db"):
+        cog = muted.Muted(bot or self.bot, store=self.store(client))
         self.cogs.append(cog)
         return cog
 
@@ -109,7 +114,7 @@ class LoopTest(Base):
 
     async def test_one_failure_does_not_stop_others(self):
         cog = self.cog()
-        a, b = self.guild.member(10), self.guild.member(11)
+        a, _b = self.guild.member(10), self.guild.member(11)
         a.remove_roles = AsyncMock(side_effect=RuntimeError("boom"))
         cog.mute_tasks[(1, 10)] = NOW - timedelta(minutes=1)
         cog.mute_tasks[(1, 11)] = NOW - timedelta(minutes=1)
@@ -156,49 +161,81 @@ class PersistenceTest(Base):
         response = types.SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock())
         return types.SimpleNamespace(guild_id=1, guild=self.guild, user=user, response=response)
 
-    async def test_mute_and_admin_role_survive_restart(self):
-        cog = self.cog()
-        target = self.guild.member(10)
+    async def mute_via_command(self, cog, user_id=10, minutes=5):
+        target = self.guild.member(user_id)
         target.roles.clear()
         with patch.object(cog, "get_or_create_muted_role", AsyncMock(return_value=(self.guild.role, False))):
-            await cog.muted_setting.callback(cog, self.interaction(), target=target, minutes=5)
+            await cog.muted_setting.callback(cog, self.interaction(), target=target, minutes=minutes)
+        return target
+
+    async def test_saved_to_supabase_and_survive_restart(self):
+        cog = self.cog()
+        target = await self.mute_via_command(cog)
         await cog.muted_setting.callback(cog, self.interaction(), admin_role=types.SimpleNamespace(id=555, mention="@mod"))
-        cog.cog_unload()
+        saved = self.db.value("muted", "1")
+        self.assertEqual(saved["admin_role_id"], 555)
+        self.assertEqual(list(saved["mutes"]), ["10"])
 
-        with open(self.path, encoding="utf-8") as f:
-            data = json.load(f)
-        self.assertEqual(data["admin_roles"], {"1": 555})
-        self.assertEqual([(m["guild_id"], m["user_id"]) for m in data["mutes"]], [(1, 10)])
-
-        restarted = self.cog()  # 再起動
+        os.remove(self.path)  # ラズパイの更新でローカルのファイルが消えても
+        restarted = self.cog()
+        self.assertEqual(restarted.mute_tasks, {})
+        await restarted.load_remote()  # Bot の準備ができたら Supabase から読み直す
         self.assertEqual(restarted.admin_roles, {1: 555})
         expire = restarted.mute_tasks[(1, 10)]
         self.assertEqual(expire, cog.mute_tasks[(1, 10)])
         self.assertIsNotNone(expire.tzinfo)
 
-        # 再起動後、期限が来たら解除されて保存からも消える
+        # 期限が来たら解除されて、保存からも消える（管理ロールは残る）
         self.assertEqual(await restarted.unmute_expired(expire + timedelta(seconds=1)), [(1, 10)])
         self.assertNotIn(self.guild.role, target.roles)
-        self.assertEqual(self.cog().mute_tasks, {})
+        self.assertEqual(self.db.value("muted", "1"), {"admin_role_id": 555})
+
+    async def test_last_entry_removed_deletes_row(self):
+        cog = self.cog()
+        await self.mute_via_command(cog)
+        await cog.unmute_expired(NOW + timedelta(days=1))
+        self.assertIsNone(self.db.value("muted", "1"))
 
     async def test_expired_while_offline_unmuted_on_first_check(self):
         member = self.guild.member(10)
-        muted.MuteStore(self.path).save({(1, 10): NOW - timedelta(hours=3)}, {})
+        await self.store().set("1", {"mutes": {"10": (NOW - timedelta(hours=3)).isoformat()}})
+        os.remove(self.path)
         cog = self.cog()
+        await cog.load_remote()
         self.assertEqual(await cog.unmute_expired(NOW), [(1, 10)])
         self.assertNotIn(self.guild.role, member.roles)
 
-    async def test_broken_file_is_ignored(self):
-        with open(self.path, "w", encoding="utf-8") as f:
-            f.write("{not json")
-        with self.assertLogs("cogs.muted", level="ERROR"):
-            cog = self.cog()
-        self.assertEqual((cog.mute_tasks, cog.admin_roles), ({}, {}))
-
-    async def test_missing_file_and_default_path_not_in_tests(self):
+    async def test_missing_table_falls_back_to_local_file(self):
+        self.db.error = missing_table_error()
         cog = self.cog()
-        self.assertEqual((cog.mute_tasks, cog.admin_roles), ({}, {}))
-        self.assertFalse(os.path.exists(self.path))  # 読むだけでは作らない
+        with self.assertLogs("core.storage", level="WARNING"):
+            await self.mute_via_command(cog)
+            await cog.load_remote()
+        self.assertIn((1, 10), cog.mute_tasks)
+        restarted = self.cog()  # ローカルの控えから戻る
+        self.assertIn((1, 10), restarted.mute_tasks)
+
+    async def test_local_only_data_pushed_to_supabase(self):
+        await self.store(client=None).set("1", {"admin_role_id": 7})  # テーブルを作る前に保存されていた分
+        cog = self.cog()
+        await cog.load_remote()
+        self.assertEqual(cog.admin_roles, {1: 7})
+        self.assertEqual(self.db.value("muted", "1"), {"admin_role_id": 7})
+
+    async def test_broken_data_is_skipped(self):
+        await self.store().set("1", {"mutes": {"10": "not-a-date", "11": NOW.isoformat()}, "admin_role_id": "x"})
+        cog = self.cog()
+        with self.assertLogs("cogs.muted", level="WARNING"):
+            await cog.load_remote()
+        self.assertEqual(list(cog.mute_tasks), [(1, 11)])
+        self.assertEqual(cog.admin_roles, {})
+
+    async def test_load_remote_runs_in_before_loop(self):
+        cog = self.cog()
+        cog.bot.wait_until_ready = AsyncMock()
+        with patch.object(cog, "load_remote", AsyncMock()) as load:
+            await cog.before_check_mute_expiry()
+        load.assert_awaited_once()
 
 
 if __name__ == "__main__":
