@@ -7,6 +7,7 @@ import unittest
 
 from game_fakes import FakeChannel, FakeGuild, FakeInteraction, FakeMember, fast_time, press, real_sleep
 from cogs import shiritori as s
+from core import party_ranking
 
 
 def msg(author, channel, content):
@@ -143,6 +144,7 @@ class ShiritoriFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('<@1>', self.channel.sent[-1].text())
         self.assertIn('ゴリラ', self.channel.sent[-1].text())
         self.assertEqual(self.cog.wins[self.guild.id], {1: 1})
+        self.assertEqual(await party_ranking.shared().top(self.guild.id, 'shiritori'), [(1, 1)])
         self.assertEqual(self.cog.games, {})
 
     async def test_topic_vote_ng_eliminates(self):
