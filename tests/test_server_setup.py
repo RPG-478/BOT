@@ -443,3 +443,22 @@ class AuthTest(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WizardModerationTest(Base):
+    async def test_moderation_button_and_save(self):
+        self.cogs["GlobalChatCog"] = types.SimpleNamespace(active_channels=set(), save_channels=MagicMock())
+        view = self.wizard()
+        view.index = view.steps.index("global")
+        view.build()
+        self.assertIn("荒らし対策（NG ワード・ブロック）", self.labels(view))
+        it = fake_interaction(self.guild)
+        await view.on_moderation(it)
+        modal = it.response.send_modal.await_args.args[0]
+        self.assertIsInstance(modal, server_setup.ModerationModal)
+        await view.save_moderation(fake_interaction(self.guild), "スパム, 宣伝\nスパム",
+                                   "<@111> 222", f"333, {self.guild.id}, abc")
+        saved = self.reload("globalchat")
+        self.assertEqual(saved, {"ng_words": ["スパム", "宣伝"], "blocked_users": [111, 222], "blocked_guilds": [333]})
+        await view.save_moderation(fake_interaction(self.guild), "", "", "")
+        self.assertEqual(self.reload("globalchat"), {})

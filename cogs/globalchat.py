@@ -4,12 +4,16 @@ from discord.ext import commands
 import json
 import os
 
+from core import globalchat_moderation as mod
+
 class GlobalChatCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.save_file = "global_channels.json"
         # 登録されたチャンネルIDを保持するセット（重複を防ぐ）
         self.active_channels = self.load_channels()
+        # ユーザーごとの連投制限（サーバーをまたいで数える）
+        self.rate_limiter = mod.RateLimiter()
 
     # JSONファイルから登録チャンネルを読み込む
     def load_channels(self):
@@ -57,6 +61,19 @@ class GlobalChatCog(commands.Cog):
         
         await interaction.response.send_message(f"このチャンネルのグローバルチャットを {status} にしました！", ephemeral=True)
 
+    async def notify_sender(self, message: discord.Message, text: str):
+        """送信者だけに知らせる（DM。送れなければ ❌ リアクションと、すぐ消える返信）。"""
+        try:
+            await message.author.send(text)
+            return
+        except Exception:
+            pass
+        try:
+            await message.add_reaction("❌")
+            await message.reply(text, delete_after=10, mention_author=False)
+        except Exception:
+            pass
+
     # メッセージ送信を検知するイベントリスナー
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -77,6 +94,22 @@ class GlobalChatCog(commands.Cog):
                 pass
             return
 
+        source_guild_id = message.guild.id if message.guild else 0
+
+        # 【NG ワード】既定の一覧と、送信元サーバーで足した言葉に当たれば転送しない
+        own_words = mod.settings(source_guild_id)["ng_words"] if source_guild_id else []
+        hit = mod.find_ng_word(message.content, list(mod.DEFAULT_NG_WORDS) + own_words)
+        if hit is not None:
+            await self.notify_sender(message, "⚠️ NG ワードが含まれていたため、グローバルチャットに転送しませんでした。")
+            return
+
+        # 【連投制限】
+        allowed, wait, first = self.rate_limiter.check(message.author.id)
+        if not allowed:
+            if first:
+                await self.notify_sender(message, f"⏳ 連投が多いため、約 {int(wait)} 秒間グローバルチャットに転送しません。")
+            return
+
         # 自分以外の、登録されているすべてのチャンネルIDを抽出
         target_ids = [cid for cid in self.active_channels if cid != message.channel.id]
 
@@ -92,6 +125,14 @@ class GlobalChatCog(commands.Cog):
                     # チャンネルが削除されている、またはボットが入れない場合はリストから除外
                     self.active_channels.remove(cid)
                     self.save_channels()
+                    continue
+
+            # 転送先サーバーのブロック・NG ワード設定
+            target_guild = getattr(channel, "guild", None)
+            if target_guild is not None and target_guild.id != source_guild_id:
+                if mod.is_blocked_by(target_guild.id, user_id=message.author.id, source_guild_id=source_guild_id):
+                    continue
+                if mod.find_ng_word(message.content, mod.settings(target_guild.id)["ng_words"]) is not None:
                     continue
 
             # 転送先サーバーでボットに「ウェブフックの管理」権限があるか確認
@@ -116,6 +157,7 @@ class GlobalChatCog(commands.Cog):
                 )
             except Exception as e:
                 print(f"チャンネル {cid} への転送中にエラーが発生しました: {e}")
+
 
 # Botへの登録用関数
 async def setup(bot):
