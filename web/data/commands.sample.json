@@ -1,0 +1,36 @@
+{
+  "generated_at": "2026-10-12T12:00:00+09:00",
+  "categories": [
+    {"id": "support", "label": "サポート", "description": "使い方の案内やサーバーの設定", "guide": ""},
+    {"id": "economy", "label": "ウォレット", "description": "コインの確認・送金・履歴", "guide": ""},
+    {"id": "game", "label": "パーティーゲーム", "description": "みんなで遊べるゲーム", "guide": ""},
+    {"id": "voice", "label": "ボイス", "description": "VC で使える機能", "guide": ""},
+    {"id": "fun", "label": "おたのしみ", "description": "ひまつぶし向けの小さな機能", "guide": ""},
+    {"id": "admin", "label": "管理", "description": "サーバー管理者向けの機能", "guide": ""}
+  ],
+  "commands": [
+    {
+      "name": "help", "kind": "slash", "category": "support",
+      "summary": "AGOBOT の使い方を表示します（サンプル）", "usage": "/help",
+      "options": [], "permissions": [], "guild_only": false, "aliases": [], "hidden": false, "guide": ""
+    },
+    {
+      "name": "wallet history", "kind": "slash", "category": "economy",
+      "summary": "直近の入出金を表示します（サンプル）", "usage": "/wallet history 件数:10",
+      "options": [{"name": "件数", "type": "integer", "required": false, "description": "表示する件数"}],
+      "permissions": [], "guild_only": false, "aliases": [], "hidden": false, "guide": ""
+    },
+    {
+      "name": "uno", "kind": "slash", "category": "game",
+      "summary": "UNO の募集を始めます（サンプル）", "usage": "/uno",
+      "options": [], "permissions": [], "guild_only": true, "aliases": [], "hidden": false,
+      "guide": "## 遊び方\n\n1. `/uno` で募集を始めます。\n2. 参加ボタンを押した人で対戦します。\n\n（これはサンプルの説明です）"
+    },
+    {
+      "name": "clear", "kind": "slash", "category": "admin",
+      "summary": "メッセージをまとめて削除します（サンプル）", "usage": "/clear 件数:20",
+      "options": [{"name": "件数", "type": "integer", "required": true, "description": "1〜100"}],
+      "permissions": ["manage_messages"], "guild_only": true, "aliases": [], "hidden": false, "guide": ""
+    }
+  ]
+}
