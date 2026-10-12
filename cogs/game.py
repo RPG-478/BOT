@@ -3,7 +3,7 @@
 
 ゲームを選ぶと、人数の目安・所要時間と「ルール」「募集する」ボタンが出る。
 募集は各ゲームの cog の ``start_recruit(interaction)`` をそのまま呼ぶので、個別のコマンド
-（/jinrou・/wordwolf・/uno_start・!doubt）と同じ流れになる。案内文は core/game_guides.py。
+（/jinrou・!doubt）と同じ流れになる。案内文は core/game_guides.py。
 """
 import discord
 from discord import app_commands
