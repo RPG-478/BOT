@@ -172,7 +172,7 @@ COMMAND_META: dict[str, dict] = {
     "/playlist": {"category": "voice"},
     "/eq": {"category": "voice"},
     "/spatial": {"category": "voice"},
-    "/speak": {"category": "voice"},
+    "/speak": {"category": "voice", "hidden": True},  # VOICEVOX が無い環境なので使えない
     "/spotify_link": {"category": "voice", "hidden": True},
     "/spotify_unlink": {"category": "voice", "hidden": True},
     "/spotify_playlists": {"category": "voice", "hidden": True},

@@ -33,6 +33,8 @@ import discord.opus
 from discord.ext import commands
 from discord.ext import voice_recv
 
+from core.voice_session import VoiceBusy, get_manager
+
 logger = logging.getLogger(__name__)
 
 # ============================================================
@@ -49,6 +51,9 @@ MIN_SAVE_BYTES = int(0.2 * BYTES_PER_SECOND)
 
 # ステータスメッセージの更新間隔(秒)。Discord のレートリミット回避。
 STATUS_UPDATE_INTERVAL = 5.0
+
+# 録音の上限時間(秒)。PCM をメモリに溜め続けるので、これを超えたら自動で停止してファイルを送る。
+RECORD_LIMIT_SECONDS = 30 * 60
 
 # RTP タイムスタンプ由来の位置と壁時計由来の位置が離れた場合の再同期閾値
 RESYNC_THRESHOLD_BYTES = 5 * BYTES_PER_SECOND
@@ -556,22 +561,16 @@ class RecordingCog(commands.Cog):
         self.sessions: dict[int, dict] = {}
         self.echo_sessions: dict[int, dict] = {}
         self._ffmpeg_available: bool | None = None
+        self.voice_sessions = get_manager(bot)
+        # 録音停止後のファイル送信タスク（!rec stop はこれを待ってから終わる）
+        self._deliveries: dict[int, asyncio.Task] = {}
 
     async def cog_unload(self) -> None:
         """Cog アンロード時に全セッションを停止"""
         for guild_id in list(self.sessions):
-            session = self.sessions.pop(guild_id, None)
-            vc = session.get("vc") if session else None
-            if vc is None:
-                continue
-            try:
-                vc.stop_listening()
-            except Exception:
-                pass
-            try:
-                await vc.disconnect(force=True)
-            except Exception:
-                pass
+            await self.voice_sessions.release(guild_id, "record", reason="stop")
+        for guild_id in list(self.echo_sessions):
+            await self.voice_sessions.release(guild_id, "echo", reason="stop")
 
     # --------------------------------------------------
     # コマンドグループ: !rec [start|stop|status]
@@ -668,25 +667,22 @@ class RecordingCog(commands.Cog):
             return await ctx.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"))
 
         guild_id = ctx.guild.id
-        if guild_id in self.sessions or guild_id in self.echo_sessions:
-            return await ctx.send(embed=we("⚠️ 既に録音またはやまびこが実行中です。"))
+        if guild_id in self.echo_sessions:
+            return await ctx.send(embed=we("⚠️ 既にやまびこが実行中です。"))
+        if delay <= 0:
+            return await ctx.send(embed=we("⚠️ 遅延時間は 0 秒より大きく設定してください。"))
 
         target_channel = ctx.author.voice.channel
 
-        # ⭕ 修正後: 残っている接続を強制切断してからクリーンに再接続する
+        # 別の機能（録音・音楽など）が VC を使っているときは追い出さずに断る。
         try:
-            # 1. すでにボイスチャンネルに接続している場合は強制的に切断・クリーンアップ
-            if ctx.voice_client is not None:
-                await ctx.voice_client.disconnect(force=True)
-                await asyncio.sleep(1.0) # ハンドシェイクのリセット待ち
-
-            # 2. voice_recv 拡張を使用した明示的な接続 (cls=voice_recv.VoiceRecvClient)
-            vc = await target_channel.connect(
-                cls=voice_recv.VoiceRecvClient,
+            vc = await self.voice_sessions.acquire(
+                ctx.guild, target_channel, "echo", ctx.author,
+                cleanup=self._echo_cleanup(guild_id), text_channel=ctx.channel, force=True,
                 timeout=30.0,      # DAVE暗号化応答待ちのためタイムアウトを延長
-                reconnect=True,    # 自動再接続を有効化
-                self_deaf=False    # 音声受信のためミュート解除を明示
             )
+        except VoiceBusy as busy:
+            return await ctx.send(embed=we(str(busy)))
         except Exception as e:
             logger.error(f"VC Connection Error: {e}", exc_info=True)
             return await ctx.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
@@ -724,23 +720,31 @@ class RecordingCog(commands.Cog):
     @commands.guild_only()
     async def echo_stop(self, ctx: commands.Context):
         """!echo stop : やまびこを停止"""
-        session = self.echo_sessions.pop(ctx.guild.id, None)
-        if not session:
+        if ctx.guild.id not in self.echo_sessions:
             return await ctx.send(embed=we("⚠️ 現在やまびこは実行されていません。"))
 
-        vc: voice_recv.VoiceRecvClient = session["vc"]
-        sink: RecordingSink = session["sink"]
-
-        try:
-            vc.stop_listening()
-        except Exception:
-            pass
-        try:
-            vc.stop()
-        except Exception:
-            pass
+        if not await self.voice_sessions.release(ctx.guild.id, "echo", reason="stop"):
+            self._echo_cleanup(ctx.guild.id)("stop")
 
         await ctx.send(embed=we("🛑 やまびこを停止しました。"))
+
+    def _echo_cleanup(self, guild_id: int):
+        """VC を手放すとき（停止・切り替え・自動退出・外部切断）に呼ばれる後片付け。"""
+        def cleanup(reason: str) -> None:
+            session = self.echo_sessions.pop(guild_id, None)
+            if not session:
+                return
+            vc = session["vc"]
+            session["sink"].cleanup()
+            try:
+                vc.stop_listening()
+            except Exception:
+                pass
+            try:
+                vc.stop()
+            except Exception:
+                pass
+        return cleanup
     # --------------------------------------------------
     # コマンド処理の実装
     # --------------------------------------------------
@@ -761,19 +765,15 @@ class RecordingCog(commands.Cog):
 
         target_channel = ctx.author.voice.channel
 
+        # 別の機能（音楽・やまびこなど）が VC を使っているときは追い出さずに断る。
         try:
-            # 1. すでにボイスチャンネルに接続している場合は強制的に切断・クリーンアップ
-            if ctx.voice_client is not None:
-                await ctx.voice_client.disconnect(force=True)
-                await asyncio.sleep(1.0) # ハンドシェイクのリセット待ち
-
-            # 2. voice_recv 拡張を使用した明示的な接続 (cls=voice_recv.VoiceRecvClient)
-            vc = await target_channel.connect(
-                cls=voice_recv.VoiceRecvClient,
+            vc = await self.voice_sessions.acquire(
+                ctx.guild, target_channel, "record", ctx.author,
+                cleanup=self._record_cleanup(guild_id), text_channel=ctx.channel, force=True,
                 timeout=30.0,      # DAVE暗号化応答待ちのためタイムアウトを延長
-                reconnect=True,    # 自動再接続を有効化
-                self_deaf=False    # 音声受信のためミュート解除を明示
             )
+        except VoiceBusy as busy:
+            return await ctx.send(embed=we(str(busy)))
         except Exception as e:
             logger.error(f"VC Connection Error: {e}", exc_info=True)
             return await ctx.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
@@ -799,6 +799,7 @@ class RecordingCog(commands.Cog):
             f"🎙️ **{target_channel.name}** で録音を開始しました。\n"
             f"🔐 暗号化: `{negotiated_mode}` / DAVE(E2EE): `{dave_text}`\n"
             f"📦 受信パケット数: `0` 個\n"
+            f"⏱️ 録音は最長 {RECORD_LIMIT_SECONDS // 60} 分です。超えると自動で停止してファイルを送ります。\n"
             f"停止するには `{ctx.prefix}rec stop` を実行してください。"
         ))
 
@@ -824,6 +825,7 @@ class RecordingCog(commands.Cog):
         try:
             vc.listen(sink)
         except Exception as e:
+            await self.voice_sessions.release(guild_id, "record", reason="stop")
             return await ctx.send(embed=we(f"❌ 録音の開始に失敗しました: `{e}`"))
 
         self.sessions[guild_id] = {
@@ -832,30 +834,85 @@ class RecordingCog(commands.Cog):
             "start": time.time(),
             "channel_name": target_channel.name,
             "status_msg": status_msg,
+            "text_channel": ctx.channel,
+            "guild": ctx.guild,
+            "limit_task": asyncio.create_task(self._stop_at_limit(guild_id)),
         }
 
-    async def stop_command(self, ctx: commands.Context):
-        session = self.sessions.pop(ctx.guild.id, None)
+    async def _stop_at_limit(self, guild_id: int) -> None:
+        """上限時間に達したら録音を止めてファイルを送る。"""
+        try:
+            await asyncio.sleep(RECORD_LIMIT_SECONDS)
+        except asyncio.CancelledError:
+            return
+        session = self.sessions.get(guild_id)
         if session is None:
+            return
+        session["limit_task"] = None  # 自分自身を cancel しないように外す
+        if not await self.voice_sessions.release(guild_id, "record", reason="time_limit"):
+            await self._record_cleanup(guild_id)("time_limit")
+        task = self._deliveries.get(guild_id)
+        if task is not None:
+            await task
+
+    def _record_cleanup(self, guild_id: int):
+        """VC を手放すとき（停止・上限・切り替え・自動退出・外部切断）に呼ばれる後片付け。
+
+        受信を止めて音声を取り出し、ファイルの送信は切断後に別タスクで行う。
+        """
+        async def cleanup(reason: str) -> None:
+            session = self.sessions.pop(guild_id, None)
+            if session is None:
+                return
+            task = session.get("limit_task")
+            if task is not None and task is not asyncio.current_task() and not task.done():
+                task.cancel()
+            sink: RecordingSink = session["sink"]
+            try:
+                session["vc"].stop_listening()
+            except Exception as e:
+                logger.error("[REC] stop_listening error: %r", e)
+            audio = sink.snapshot()
+            sink.cleanup()
+            self._deliveries[guild_id] = asyncio.create_task(self._deliver(session, audio, reason))
+        return cleanup
+
+    async def stop_command(self, ctx: commands.Context):
+        if ctx.guild.id not in self.sessions:
             return await ctx.send(embed=we("⚠️ 現在録音は行われていません。"))
 
+        if not await self.voice_sessions.release(ctx.guild.id, "record", reason="stop"):
+            await self._record_cleanup(ctx.guild.id)("stop")
+        task = self._deliveries.get(ctx.guild.id)
+        if task is not None:
+            await task
+
+    STOP_REASONS = {
+        "stop": "💾 録音を停止しました",
+        "time_limit": f"⏱️ 録音が上限の {RECORD_LIMIT_SECONDS // 60} 分に達したため自動で停止しました",
+        "takeover": "💾 別の機能に切り替わったため録音を停止しました",
+        "leave": "💾 /leave で退出したため録音を停止しました",
+        "idle": "💾 ボイスチャンネルに誰もいなくなったため録音を停止しました",
+        "disconnected": "💾 ボイスチャンネルから切断されたため録音を停止しました",
+    }
+
+    async def _deliver(self, session: dict, audio: dict[str, bytes], reason: str) -> None:
+        """録音結果を、録音を始めたチャンネルへ送る。"""
+        channel = session["text_channel"]
         sink: RecordingSink = session["sink"]
-        vc = session["vc"]
-
-        try:
-            vc.stop_listening()
-        except Exception as e:
-            logger.error("[REC] stop_listening error: %r", e)
-
-        audio = sink.snapshot()
-
         elapsed = int(time.time() - session["start"])
         total = sink.total_frame_count
         dave_rate = (sink.dave_error_count / total * 100) if total else 0.0
         opus_rate = (sink.opus_error_count / total * 100) if total else 0.0
+        headline = self.STOP_REASONS.get(reason, self.STOP_REASONS["stop"])
+        try:
+            await self._send_recording(channel, session["guild"], audio, elapsed, total, dave_rate, opus_rate, sink, headline)
+        except Exception:
+            logger.exception("[REC] 録音ファイルの送信に失敗しました")
 
+    async def _send_recording(self, ctx, guild, audio, elapsed, total, dave_rate, opus_rate, sink, headline):
         await ctx.send(embed=we(
-            f"💾 録音を停止しました（録音時間: `{self.format_time(elapsed)}`）。ファイルを生成中...\n"
+            f"{headline}（録音時間: `{self.format_time(elapsed)}`）。ファイルを生成中...\n"
             f"🩺 診断: write() `{sink.write_call_count}` / 有効フレーム `{total}` / "
             f"DAVE復号失敗 `{sink.dave_error_count}` (`{dave_rate:.1f}%`) / "
             f"Opusデコード失敗 `{sink.opus_error_count}` (`{opus_rate:.1f}%`)"
@@ -866,7 +923,9 @@ class RecordingCog(commands.Cog):
                 "❌ 音声バッファが空でした。（発言が検知されなかったか、パケットが届いていません）"
             ))
 
-        limit = getattr(ctx.guild, "filesize_limit", 8 * 1024 * 1024)
+        limit = getattr(guild, "filesize_limit", 8 * 1024 * 1024)
+        if not isinstance(limit, int):
+            limit = 8 * 1024 * 1024
         files, skipped = await self.build_files(audio, limit)
 
         if not files:
