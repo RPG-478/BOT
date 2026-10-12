@@ -1,17 +1,66 @@
-import os
-from datetime import datetime, timezone, timedelta, date
+"""生存確認（/fujo）機能。
+
+Supabase の ``fujo_users``（登録者と設定）と ``fujo_activities``（検知ログ）を使う。
+必要な列は ``docs/sql/fujo.sql`` を参照。
+
+- Supabase のクライアントは同期なので、呼び出しはすべて ``asyncio.to_thread`` で行い、
+  Bot 全体が止まらないようにする。
+- 検知はユーザーごとに ``RECORD_INTERVAL`` に 1 回までに間引く（オンライン状態の変化は
+  サーバーごとに何度も届くため）。
+- 登録者は起動後にまとめて読み込み、メモリに持つ。未登録者の発言では DB を触らない。
+- 見回りタスクはエラーが出ても止まらない。
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+from datetime import date, datetime, timedelta, timezone
+
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from supabase import create_client, Client
+
+try:  # テストでは supabase.create_client が差し替えられる
+    import supabase as supabase_module
+except ImportError:  # pragma: no cover
+    supabase_module = None
+
+import os
+
+log = logging.getLogger(__name__)
+
+JST = timezone(timedelta(hours=9))
+RECORD_INTERVAL = timedelta(minutes=5)
+PAGE_SIZE = 1000
+FOOTER = "Survival Surveillance System"
+USER_COLUMNS = (
+    "user_id, streak_count, last_streak_date, is_frozen, last_pester_level, "
+    "panic_days, panic_message, panic_channel_id, last_panic_at"
+)
+
+
+def _parse_ts(value: str) -> datetime:
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _today() -> date:
+    """連続日数は日本時間の日付で数える。"""
+    return datetime.now(JST).date()
 
 
 class FujoSurvival(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        url: str = os.getenv("SUPABASE_URL", "")
-        key: str = os.getenv("SUPABASE_KEY", "")
-        self.supabase: Client = create_client(url, key)
+        self.supabase = getattr(bot, "supabase", None)
+        if self.supabase is None and supabase_module is not None:
+            url, key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
+            self.supabase = supabase_module.create_client(url, key) if url and key else None
+        # user_id -> fujo_users の行（メモリ上の写し）
+        self.users: dict[int, dict] = {}
+        self.users_loaded = False
+        self._load_lock = asyncio.Lock()
+        self._last_record: dict[int, datetime] = {}
         self.check_panic_alerts.start()
         self.check_duo_pester.start()
 
@@ -22,499 +71,453 @@ class FujoSurvival(commands.Cog):
     fujo_group = app_commands.Group(name="fujo", description="生存確認機能のコマンド一覧")
     panic_group = app_commands.Group(name="panic", description="失踪警報・遺言設定のコマンド一覧", parent=fujo_group)
 
-    # --- ヘルパー関数 (Embed生成・判定) ---
+    # --- DB ヘルパー ---
 
-    def create_simple_embed(self, title: str, description: str, color: int = 0x2b2d31) -> discord.Embed:
+    async def _run(self, build):
+        """``build()`` で組み立てたクエリを別スレッドで実行し、data を返す。"""
+        if self.supabase is None:
+            raise RuntimeError("Supabase が設定されていません")
+        return (await asyncio.to_thread(lambda: build().execute())).data
+
+    async def _fetch_all(self, build) -> list[dict]:
+        """1000 件を超える結果もページを分けて全部読む。"""
+        rows: list[dict] = []
+        start = 0
+        while True:
+            page = await self._run(lambda s=start: build().range(s, s + PAGE_SIZE - 1))
+            page = page or []
+            rows.extend(page)
+            if len(page) < PAGE_SIZE:
+                return rows
+            start += PAGE_SIZE
+
+    async def _ensure_users(self):
+        if self.users_loaded:
+            return
+        async with self._load_lock:
+            if self.users_loaded:
+                return
+            rows = await self._fetch_all(lambda: self.supabase.table("fujo_users").select(USER_COLUMNS))
+            self.users = {int(r["user_id"]): r for r in rows}
+            self.users_loaded = True
+
+    async def _update_user(self, user_id: int, values: dict):
+        await self._run(lambda: self.supabase.table("fujo_users").update(values).eq("user_id", user_id))
+        if user_id in self.users:
+            self.users[user_id].update(values)
+
+    async def _latest_activity(self, user_id: int) -> dict | None:
+        rows = await self._run(
+            lambda: self.supabase.table("fujo_activities")
+            .select("detected_at, signal_type, status")
+            .eq("user_id", user_id)
+            .order("detected_at", desc=True)
+            .limit(1)
+        )
+        return rows[0] if rows else None
+
+    async def _activities_since(self, since: datetime, user_id: int | None = None, columns: str = "detected_at") -> list[dict]:
+        def build():
+            q = self.supabase.table("fujo_activities").select(columns).gte("detected_at", since.isoformat())
+            return q.eq("user_id", user_id) if user_id is not None else q
+        return await self._fetch_all(build)
+
+    def _name(self, user_id: int) -> str:
+        user = self.bot.get_user(user_id)
+        return user.display_name if user else f"<@{user_id}>"
+
+    @staticmethod
+    def create_simple_embed(title: str, description: str, color: int = 0x2b2d31) -> discord.Embed:
         embed = discord.Embed(title=title, description=description, color=color)
-        embed.set_footer(text="Survival Surveillance System")
+        embed.set_footer(text=FOOTER)
         return embed
 
-    def is_registered(self, user_id: int) -> bool:
-        response = self.supabase.table("fujo_users").select("user_id").eq("user_id", user_id).execute()
-        return len(response.data) > 0
+    async def _reply(self, interaction: discord.Interaction, embed: discord.Embed, ephemeral: bool = False):
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
 
-    def record_activity(self, user_id: int, signal_type: str, status: str):
-        if not self.is_registered(user_id):
-            return
+    async def _require_registered(self, interaction: discord.Interaction, user_id: int, self_check: bool) -> bool:
+        await self._ensure_users()
+        if user_id in self.users:
+            return True
+        text = "先に `/fujo register` で追跡登録をしてください。" if self_check else f"<@{user_id}> は追跡登録されていません。"
+        await self._reply(interaction, self.create_simple_embed("未登録", text, 0x95a5a6), ephemeral=True)
+        return False
 
-        now = datetime.now(timezone.utc)
-        now_str = now.isoformat()
-        today = now.date()
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        log.exception("fujo command failed", exc_info=error)
+        embed = self.create_simple_embed("エラー", "生存確認のデータを読み書きできませんでした。少し待ってからもう一度試してください。", 0xe74c3c)
+        try:
+            await self._reply(interaction, embed, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
-        # アクティブログ挿入
-        self.supabase.table("fujo_activities").insert({
-            "user_id": user_id,
-            "detected_at": now_str,
-            "signal_type": signal_type,
-            "status": status
-        }).execute()
+    # --- 検知と連続日数 ---
 
-        # ストリーク更新ロジック
-        user_res = self.supabase.table("fujo_users").select("streak_count, last_streak_date, is_frozen").eq("user_id", user_id).execute()
-        if user_res.data:
-            u_data = user_res.data[0]
-            last_date_str = u_data["last_streak_date"]
-            streak = u_data["streak_count"]
-            is_frozen = u_data["is_frozen"]
+    async def record_activity(self, user_id: int, signal_type: str, status: str):
+        try:
+            await self._ensure_users()
+            user = self.users.get(user_id)
+            if user is None:
+                return
+            now = datetime.now(timezone.utc)
+            last = self._last_record.get(user_id)
+            if last and now - last < RECORD_INTERVAL:
+                return
+            self._last_record[user_id] = now
 
-            last_date = datetime.strptime(last_date_str, "%Y-%m-%d").date() if last_date_str else None
+            await self._run(lambda: self.supabase.table("fujo_activities").insert({
+                "user_id": user_id,
+                "detected_at": now.isoformat(),
+                "signal_type": signal_type,
+                "status": status,
+            }))
 
+            today = _today()
+            last_str = user.get("last_streak_date")
+            last_date = date.fromisoformat(str(last_str)[:10]) if last_str else None
+            changes: dict = {}
             if last_date != today:
-                if last_date == today - timedelta(days=1):
-                    new_streak = streak + 1
-                elif last_date is None:
+                streak = user.get("streak_count") or 0
+                if last_date is None:
                     new_streak = 1
+                elif last_date == today - timedelta(days=1):
+                    new_streak = streak + 1
+                elif user.get("is_frozen") and last_date == today - timedelta(days=2):
+                    new_streak = streak + 1  # フリーズで 1 日分の空白を許す
                 else:
-                    if is_frozen:
-                        new_streak = streak
-                    else:
-                        new_streak = 1
+                    new_streak = 1
+                changes.update(streak_count=new_streak, last_streak_date=today.isoformat(), is_frozen=False)
+            if user.get("last_pester_level"):
+                changes["last_pester_level"] = 0
+            if changes:
+                await self._update_user(user_id, changes)
+        except Exception:
+            log.exception("fujo: failed to record activity for %s", user_id)
 
-                self.supabase.table("fujo_users").update({
-                    "streak_count": new_streak,
-                    "last_streak_date": today.isoformat(),
-                    "is_frozen": False,
-                    "last_pester_level": 0
-                }).eq("user_id", user_id).execute()
-
-    def calculate_title(self, user_id: int) -> str:
-        since_30d = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-        res = self.supabase.table("fujo_activities") \
-            .select("detected_at, signal_type") \
-            .eq("user_id", user_id) \
-            .gte("detected_at", since_30d) \
-            .execute()
-
-        records = res.data
+    def calculate_title(self, records: list[dict]) -> str:
         total = len(records)
         if total < 5:
             return "一般サバイバー"
-
-        msg_count = 0
-        voice_count = 0
-        presence_count = 0
-        night_count = 0
-
+        counts = {"MESSAGE": 0, "VOICE": 0, "PRESENCE": 0}
+        night = 0
         for r in records:
-            stype = r["signal_type"]
-            if stype == "MESSAGE":
-                msg_count += 1
-            elif stype == "VOICE":
-                voice_count += 1
-            elif stype == "PRESENCE":
-                presence_count += 1
-
-            dt = datetime.fromisoformat(r["detected_at"].replace("Z", "+00:00"))
-            jst_hour = (dt.hour + 9) % 24
-            if jst_hour >= 23 or jst_hour < 5:
-                night_count += 1
-
-        if (night_count / total) >= 0.35:
+            counts[r.get("signal_type")] = counts.get(r.get("signal_type"), 0) + 1
+            hour = _parse_ts(r["detected_at"]).astimezone(JST).hour
+            if hour >= 23 or hour < 5:
+                night += 1
+        msg, voice = counts["MESSAGE"], counts["VOICE"]
+        if night / total >= 0.35:
             return "夜行性"
-        if (msg_count + voice_count) / total <= 0.05:
+        if (msg + voice) / total <= 0.05:
             return "永遠のROMラー"
-        if (voice_count / total) >= 0.40:
+        if voice / total >= 0.40:
             return "出会い厨"
-        if (msg_count / total) >= 0.40:
+        if msg / total >= 0.40:
             return "おしゃべりマシン"
-
         return "一般サバイバー"
 
     # --- イベントリスナー ---
 
     @commands.Cog.listener()
+    async def on_ready(self):
+        await self._preload()
+
+    async def _preload(self):
+        try:
+            await self._ensure_users()
+        except Exception:
+            log.exception("fujo: failed to load users")
+
+    @commands.Cog.listener()
     async def on_presence_update(self, before: discord.Member, after: discord.Member):
-        if after.bot:
+        if after.bot or after.status == discord.Status.offline or before.status == after.status:
             return
-        if after.status != discord.Status.offline:
-            self.record_activity(after.id, "PRESENCE", str(after.status))
+        await self.record_activity(after.id, "PRESENCE", str(after.status))
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
             return
-        status = str(message.author.status) if isinstance(message.author, discord.Member) else "unknown"
-        self.record_activity(message.author.id, "MESSAGE", status)
+        status = str(getattr(message.author, "status", "unknown"))
+        await self.record_activity(message.author.id, "MESSAGE", status)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        if member.bot:
+        if member.bot or after.channel is None:
             return
-        self.record_activity(member.id, "VOICE", str(member.status))
+        await self.record_activity(member.id, "VOICE", str(member.status))
 
-    # --- コマンド一覧 ---
+    # --- コマンド ---
 
     @fujo_group.command(name="register", description="生存確認の追跡登録・解除を切り替えます")
     async def register(self, interaction: discord.Interaction):
         user_id = interaction.user.id
-        if self.is_registered(user_id):
-            self.supabase.table("fujo_users").delete().eq("user_id", user_id).execute()
-            embed = self.create_simple_embed("追跡解除通知", "生存確認の追跡登録を解除しました。監視を終了します。", 0xe74c3c)
+        await self._ensure_users()
+        if user_id in self.users:
+            await self._run(lambda: self.supabase.table("fujo_users").delete().eq("user_id", user_id))
+            self.users.pop(user_id, None)
+            self._last_record.pop(user_id, None)
+            embed = self.create_simple_embed("追跡解除", "生存確認の追跡を解除しました。これまでの記録と設定も消えました。", 0xe74c3c)
         else:
-            self.supabase.table("fujo_users").insert({"user_id": user_id}).execute()
-            embed = self.create_simple_embed("追跡開始通知", "生存確認の追跡を登録しました。24時間の監視を開始します。", 0x2ecc71)
-        
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+            row = {"user_id": user_id, "streak_count": 0, "is_frozen": False, "last_pester_level": 0}
+            await self._run(lambda: self.supabase.table("fujo_users").upsert(row, on_conflict="user_id"))
+            self.users[user_id] = dict(row)
+            embed = self.create_simple_embed(
+                "追跡開始",
+                "生存確認の追跡を始めました。発言・通話・オンライン状態から生存を記録します。\n"
+                "もう一度 `/fujo register` を実行すると解除できます。",
+                0x2ecc71,
+            )
+            await self.record_activity(user_id, "COMMAND", "online")
+        await self._reply(interaction, embed, ephemeral=True)
 
     @fujo_group.command(name="status", description="指定ユーザーの生存ステータスを確認します")
-    async def status(self, interaction: discord.Interaction, target: discord.User):
-        if not self.is_registered(target.id):
-            embed = self.create_simple_embed("エラー", f"{target.mention} は追跡登録されていません。", 0x95a5a6)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+    @app_commands.describe(target="確認するユーザー（省略すると自分）")
+    async def status(self, interaction: discord.Interaction, target: discord.User | None = None):
+        target = target or interaction.user
+        if not await self._require_registered(interaction, target.id, target.id == interaction.user.id):
             return
-
-        res = self.supabase.table("fujo_activities") \
-            .select("detected_at, signal_type, status") \
-            .eq("user_id", target.id) \
-            .order("detected_at", desc=True) \
-            .limit(1) \
-            .execute()
-
-        if not res.data:
-            embed = self.create_simple_embed("データなし", f"{target.mention} のアクティブ記録がまだ存在しません。", 0x95a5a6)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+        latest = await self._latest_activity(target.id)
+        if not latest:
+            await self._reply(interaction, self.create_simple_embed("データなし", f"{target.mention} のアクティブ記録はまだありません。", 0x95a5a6), ephemeral=True)
             return
+        records = await self._activities_since(datetime.now(timezone.utc) - timedelta(days=30), target.id, "detected_at, signal_type")
+        user = self.users.get(target.id, {})
+        streak = user.get("streak_count") or 0
+        is_frozen = bool(user.get("is_frozen"))
 
-        user_db = self.supabase.table("fujo_users").select("streak_count, is_frozen").eq("user_id", target.id).execute()
-        streak = user_db.data[0]["streak_count"] if user_db.data else 0
-        is_frozen = user_db.data[0]["is_frozen"] if user_db.data else False
-
-        latest = res.data[0]
-        dt = datetime.fromisoformat(latest["detected_at"].replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
-        unix_ts = int(dt.timestamp())
-
-        hours_passed = (now - dt).total_seconds() / 3600.0
-
+        dt = _parse_ts(latest["detected_at"])
+        hours_passed = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0)
         if hours_passed < 12:
-            status_label = "[状態: 良好]"
-            color = 0x2ecc71
+            status_label, color = "良好", 0x2ecc71
         elif hours_passed < 48:
-            status_label = "[状態: 注意]"
-            color = 0xf1c40f
+            status_label, color = "注意", 0xf1c40f
         elif hours_passed < 168:
-            status_label = "[状態: 警戒]"
-            color = 0xe67e22
+            status_label, color = "警戒", 0xe67e22
         elif hours_passed < 720:
-            status_label = "[状態: 霊体化]"
-            color = 0x9b59b6
+            status_label, color = "霊体化", 0x9b59b6
         else:
-            status_label = "[状態: 化石化]"
-            color = 0x34495e
+            status_label, color = "化石化", 0x34495e
 
-        zombie_rate = min(100, int((hours_passed / (7 * 24)) * 100))
+        zombie_rate = min(100, int(hours_passed / (7 * 24) * 100))
         survival_rate = 100 - zombie_rate
-
-        bar_len = 10
-        filled = int(bar_len * (survival_rate / 100.0))
-        progress_bar = f"[{'█' * filled}{'░' * (bar_len - filled)}] {survival_rate}%"
-
-        title_name = self.calculate_title(target.id)
+        filled = survival_rate // 10
+        bar = f"[{'█' * filled}{'░' * (10 - filled)}] {survival_rate}%"
+        unix_ts = int(dt.timestamp())
 
         embed = discord.Embed(title=f"生存ステータス - {target.display_name}", color=color)
         embed.set_thumbnail(url=target.display_avatar.url)
-        embed.add_field(name="判定レベル", value=status_label, inline=True)
-        embed.add_field(name="称号", value=f"【{title_name}】", inline=True)
-        embed.add_field(name="連続生存日数", value=f"{streak} 日連続 {'(フリーズ適用中)' if is_frozen else ''}", inline=True)
+        embed.add_field(name="判定", value=status_label, inline=True)
+        embed.add_field(name="称号", value=f"【{self.calculate_title(records)}】", inline=True)
+        embed.add_field(name="連続生存日数", value=f"{streak} 日" + ("（フリーズ中）" if is_frozen else ""), inline=True)
         embed.add_field(name="最終アクティブ", value=f"<t:{unix_ts}:R>\n(<t:{unix_ts}:F>)", inline=False)
-        embed.add_field(name="生存確率ゲージ", value=f"`{progress_bar}`", inline=False)
+        embed.add_field(name="生存確率", value=f"`{bar}`", inline=False)
         embed.add_field(name="ゾンビ化率", value=f"{zombie_rate}%", inline=True)
-        embed.add_field(name="検知タイプ", value=latest["signal_type"], inline=True)
-        embed.set_footer(text="Survival Surveillance System")
-
-        await interaction.response.send_message(embed=embed)
+        embed.add_field(name="最後の検知", value=str(latest.get("signal_type") or "-"), inline=True)
+        embed.set_footer(text=FOOTER)
+        await self._reply(interaction, embed)
 
     @fujo_group.command(name="hindo", description="指定ユーザーのアクティブ頻度を確認します")
-    async def hindo(self, interaction: discord.Interaction, target: discord.User):
-        if not self.is_registered(target.id):
-            embed = self.create_simple_embed("エラー", f"{target.mention} は追跡登録されていません。", 0x95a5a6)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+    @app_commands.describe(target="確認するユーザー（省略すると自分）")
+    async def hindo(self, interaction: discord.Interaction, target: discord.User | None = None):
+        target = target or interaction.user
+        if not await self._require_registered(interaction, target.id, target.id == interaction.user.id):
             return
-
         now = datetime.now(timezone.utc)
-        since_30d = (now - timedelta(days=30)).isoformat()
-
-        res = self.supabase.table("fujo_activities") \
-            .select("detected_at") \
-            .eq("user_id", target.id) \
-            .gte("detected_at", since_30d) \
-            .execute()
-
-        records = res.data
+        records = await self._activities_since(now - timedelta(days=30), target.id)
         if not records:
-            embed = self.create_simple_embed("データなし", f"{target.mention} の過去30日間の記録はありません。", 0x95a5a6)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await self._reply(interaction, self.create_simple_embed("データなし", f"{target.mention} の過去 30 日の記録はありません。", 0x95a5a6), ephemeral=True)
             return
-
-        count_24h = 0
-        count_7d = 0
+        ages = [(now - _parse_ts(r["detected_at"])).total_seconds() / 3600 for r in records]
+        count_24h = sum(a <= 24 for a in ages)
+        count_7d = sum(a <= 24 * 7 for a in ages)
         count_30d = len(records)
-        now_ts = now.timestamp()
-
-        for r in records:
-            dt = datetime.fromisoformat(r["detected_at"].replace("Z", "+00:00"))
-            diff_hours = (now_ts - dt.timestamp()) / 3600
-            if diff_hours <= 24:
-                count_24h += 1
-            if diff_hours <= 24 * 7:
-                count_7d += 1
-
-        avg_daily = round(count_30d / 30.0, 1)
+        active_days = len({_parse_ts(r["detected_at"]).astimezone(JST).date() for r in records})
 
         embed = discord.Embed(title=f"アクティブ頻度 - {target.display_name}", color=0x3498db)
         embed.set_thumbnail(url=target.display_avatar.url)
-        embed.add_field(name="直近24時間", value=f"{count_24h} 回", inline=True)
-        embed.add_field(name="直近7日間", value=f"{count_7d} 回", inline=True)
-        embed.add_field(name="直近30日間", value=f"{count_30d} 回", inline=True)
-        embed.add_field(name="1日平均 (30日換算)", value=f"約 {avg_daily} 回/日", inline=False)
-        embed.set_footer(text="Survival Surveillance System")
-
-        await interaction.response.send_message(embed=embed)
+        embed.add_field(name="直近 24 時間", value=f"{count_24h} 回", inline=True)
+        embed.add_field(name="直近 7 日", value=f"{count_7d} 回", inline=True)
+        embed.add_field(name="直近 30 日", value=f"{count_30d} 回", inline=True)
+        embed.add_field(name="30 日のうち姿を見せた日", value=f"{active_days} 日", inline=True)
+        embed.add_field(name="1 日平均", value=f"約 {count_30d / 30:.1f} 回", inline=True)
+        embed.set_footer(text=f"{FOOTER}（検知は 5 分に 1 回まで数えます）")
+        await self._reply(interaction, embed)
 
     @fujo_group.command(name="ranking", description="サーバー内の生存者・化石ランキングを表示します")
+    @app_commands.describe(mode="並べ方")
     @app_commands.choices(mode=[
-        app_commands.Choice(name="アクティブ順 (過去30日の検出数)", value="active"),
-        app_commands.Choice(name="化石順 (放置時間が長い順)", value="fossil")
+        app_commands.Choice(name="アクティブ順（過去 30 日の検知数）", value="active"),
+        app_commands.Choice(name="化石順（最後の検知が古い順）", value="fossil"),
     ])
-    async def ranking(self, interaction: discord.Interaction, mode: str):
-        users_res = self.supabase.table("fujo_users").select("user_id").execute()
-        registered_ids = [r["user_id"] for r in users_res.data]
-
-        if not registered_ids:
-            embed = self.create_simple_embed("エラー", "登録ユーザーが存在しません。", 0x95a5a6)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+    async def ranking(self, interaction: discord.Interaction, mode: str = "active"):
+        await interaction.response.defer()
+        await self._ensure_users()
+        ids = set(self.users)
+        if interaction.guild is not None and getattr(interaction.guild, "members", None):
+            members = {m.id for m in interaction.guild.members}
+            if members:
+                ids &= members
+        if not ids:
+            await self._reply(interaction, self.create_simple_embed("登録者なし", "このサーバーに追跡登録している人がいません。", 0x95a5a6))
             return
 
-        now = datetime.now(timezone.utc)
-
-        if mode == "active":
-            since_30d = (now - timedelta(days=30)).isoformat()
-            act_res = self.supabase.table("fujo_activities") \
-                .select("user_id") \
-                .gte("detected_at", since_30d) \
-                .execute()
-
-            counts = {}
-            for row in act_res.data:
-                uid = row["user_id"]
-                counts[uid] = counts.get(uid, 0) + 1
-
-            sorted_list = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:5]
-
-            embed = discord.Embed(title="アクティブ率 ランキング TOP5", color=0x2ecc71)
-            description = ""
-            for idx, (uid, count) in enumerate(sorted_list, 1):
-                user = self.bot.get_user(uid)
-                name = user.display_name if user else f"User({uid})"
-                description += f"{idx}. **{name}**: {count} 回アクティブ\n"
-
-            embed.description = description if description else "過去30日間のアクティブデータがありません。"
-
+        if mode == "fossil":
+            latest = await asyncio.gather(*(self._latest_activity(uid) for uid in ids))
+            pairs = [(uid, _parse_ts(row["detected_at"])) for uid, row in zip(ids, latest) if row]
+            pairs.sort(key=lambda p: p[1])
+            lines = [f"{i}. **{self._name(uid)}**: 最終検知 <t:{int(dt.timestamp())}:R>" for i, (uid, dt) in enumerate(pairs[:5], 1)]
+            embed = discord.Embed(title="化石ランキング TOP5", color=0x34495e, description="\n".join(lines) or "まだ記録がありません。")
         else:
-            latest_list = []
-            for uid in registered_ids:
-                res = self.supabase.table("fujo_activities") \
-                    .select("detected_at") \
-                    .eq("user_id", uid) \
-                    .order("detected_at", desc=True) \
-                    .limit(1) \
-                    .execute()
-                if res.data:
-                    dt = datetime.fromisoformat(res.data[0]["detected_at"].replace("Z", "+00:00"))
-                    latest_list.append((uid, dt))
-
-            sorted_list = sorted(latest_list, key=lambda x: x[1])[:5]
-
-            embed = discord.Embed(title="化石化 ランキング TOP5 (生存放置順)", color=0x34495e)
-            description = ""
-            for idx, (uid, dt) in enumerate(sorted_list, 1):
-                user = self.bot.get_user(uid)
-                name = user.display_name if user else f"User({uid})"
-                ts = int(dt.timestamp())
-                description += f"{idx}. **{name}**: 最終検知 <t:{ts}:R>\n"
-
-            embed.description = description if description else "データが存在しません。"
-
-        embed.set_footer(text="Survival Surveillance System")
-        await interaction.response.send_message(embed=embed)
+            rows = await self._fetch_all(
+                lambda: self.supabase.table("fujo_activities").select("user_id")
+                .gte("detected_at", (datetime.now(timezone.utc) - timedelta(days=30)).isoformat())
+                .in_("user_id", list(ids))
+            )
+            counts: dict[int, int] = {}
+            for r in rows:
+                counts[int(r["user_id"])] = counts.get(int(r["user_id"]), 0) + 1
+            top = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:5]
+            lines = [f"{i}. **{self._name(uid)}**: {n} 回" for i, (uid, n) in enumerate(top, 1)]
+            embed = discord.Embed(title="アクティブランキング TOP5（30 日）", color=0x2ecc71, description="\n".join(lines) or "過去 30 日の記録がありません。")
+        embed.set_footer(text=FOOTER)
+        await self._reply(interaction, embed)
 
     @fujo_group.command(name="freeze", description="修羅場・旅行用に1日分のストリーク保護を申請します")
     async def freeze(self, interaction: discord.Interaction):
         user_id = interaction.user.id
-        if not self.is_registered(user_id):
-            embed = self.create_simple_embed("エラー", "先に /fujo register で追跡登録を行ってください。", 0x95a5a6)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+        if not await self._require_registered(interaction, user_id, True):
             return
-
-        self.supabase.table("fujo_users").update({"is_frozen": True}).eq("user_id", user_id).execute()
+        await self._update_user(user_id, {"is_frozen": True})
         embed = self.create_simple_embed(
-            "ストリークフリーズ発動",
-            "本日の失踪許可が適用されました。明日アクティブが途絶過しても連続生存記録はリセットされません。",
-            0x3498db
+            "ストリークフリーズ",
+            "1 日分の保護をかけました。1 日まるごと姿を見せなくても、連続生存日数は途切れません。\n次に検知されたときに保護は使い切りになります。",
+            0x3498db,
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # --- パニック機能サブコマンド ---
+        await self._reply(interaction, embed, ephemeral=True)
 
     @panic_group.command(name="set", description="生存反応が途絶えた際の自動警報・遺言を設定します")
-    async def panic_set(self, interaction: discord.Interaction, days: int, message: str):
-        if days < 1:
-            embed = self.create_simple_embed("エラー", "警報日数は1日以上に設定してください。", 0xe74c3c)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
+    @app_commands.describe(days="何日反応がなければ発報するか（1〜365）", message="発報時に流すメッセージ")
+    async def panic_set(self, interaction: discord.Interaction, days: app_commands.Range[int, 1, 365], message: app_commands.Range[str, 1, 1000]):
         user_id = interaction.user.id
-        if not self.is_registered(user_id):
-            embed = self.create_simple_embed("エラー", "先に /fujo register で追跡登録を行ってください。", 0x95a5a6)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+        if not await self._require_registered(interaction, user_id, True):
             return
-
-        self.supabase.table("fujo_users").update({
+        await self._update_user(user_id, {
             "panic_days": days,
             "panic_message": message,
             "panic_channel_id": interaction.channel_id,
-            "last_panic_at": None
-        }).eq("user_id", user_id).execute()
-
+            "last_panic_at": None,
+        })
         embed = self.create_simple_embed(
-            "失踪警報・遺言設定完了",
-            f"{days} 日間アクティブが途絶えた場合、このチャンネルに遺言メッセージを自動発信します。\n\n**設定内容:**\n> {message}",
-            0xf1c40f
+            "失踪警報を設定しました",
+            f"{days} 日間反応がなければ、このチャンネルにメッセージを流します。\n\n> {message}",
+            0xf1c40f,
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await self._reply(interaction, embed, ephemeral=True)
 
     @panic_group.command(name="disable", description="失踪警報の設定を解除します")
     async def panic_disable(self, interaction: discord.Interaction):
         user_id = interaction.user.id
-        self.supabase.table("fujo_users").update({
-            "panic_days": None,
-            "panic_message": None,
-            "panic_channel_id": None,
-            "last_panic_at": None
-        }).eq("user_id", user_id).execute()
+        if not await self._require_registered(interaction, user_id, True):
+            return
+        await self._update_user(user_id, {"panic_days": None, "panic_message": None, "panic_channel_id": None, "last_panic_at": None})
+        await self._reply(interaction, self.create_simple_embed("警報解除", "失踪警報の設定を解除しました。", 0x95a5a6), ephemeral=True)
 
-        embed = self.create_simple_embed("警報解除", "失踪警報の設定を解除しました。", 0x95a5a6)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+    # --- 見回り ---
 
-    # --- バックグラウンドタスク ---
+    async def _get_channel(self, channel_id):
+        if not channel_id:
+            return None
+        channel = self.bot.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(int(channel_id))
+            except discord.HTTPException:
+                return None
+        return channel
 
     @tasks.loop(minutes=30)
     async def check_panic_alerts(self):
-        users_res = self.supabase.table("fujo_users") \
-            .select("user_id, panic_days, panic_message, panic_channel_id, last_panic_at") \
-            .not_.is_("panic_days", "null") \
-            .execute()
-
-        now = datetime.now(timezone.utc)
-
-        for u in users_res.data:
-            uid = u["user_id"]
-            p_days = u["panic_days"]
-            p_msg = u["panic_message"]
-            ch_id = u["panic_channel_id"]
-            last_panic_at_str = u["last_panic_at"]
-
-            act_res = self.supabase.table("fujo_activities") \
-                .select("detected_at") \
-                .eq("user_id", uid) \
-                .order("detected_at", desc=True) \
-                .limit(1) \
-                .execute()
-
-            if not act_res.data:
-                continue
-
-            last_act_dt = datetime.fromisoformat(act_res.data[0]["detected_at"].replace("Z", "+00:00"))
-            hours_silent = (now - last_act_dt).total_seconds() / 3600.0
-
-            if hours_silent >= (p_days * 24):
-                should_alert = False
-                if not last_panic_at_str:
-                    should_alert = True
-                else:
-                    last_panic_dt = datetime.fromisoformat(last_panic_at_str.replace("Z", "+00:00"))
-                    if last_panic_dt < last_act_dt:
-                        should_alert = True
-
-                if should_alert:
-                    channel = self.bot.get_channel(ch_id)
-                    if channel:
-                        user = self.bot.get_user(uid)
-                        user_mention = user.mention if user else f"ID:{uid}"
-
-                        embed = discord.Embed(
-                            title="生存警告: 自動失踪発報",
-                            description=f"{user_mention} のアクティブ反応が {p_days} 日以上途絶えました。",
-                            color=0xc0392b
-                        )
-                        embed.add_field(name="遺言メッセージ", value=f"> {p_msg}", inline=False)
-                        embed.set_footer(text="Survival Surveillance System - Emergency Alert")
-
-                        await channel.send(content=user_mention, embed=embed)
-
-                        self.supabase.table("fujo_users").update({
-                            "last_panic_at": now.isoformat()
-                        }).eq("user_id", uid).execute()
+        try:
+            await self._ensure_users()
+            now = datetime.now(timezone.utc)
+            for uid, u in list(self.users.items()):
+                if not u.get("panic_days"):
+                    continue
+                latest = await self._latest_activity(uid)
+                if not latest:
+                    continue
+                last_act = _parse_ts(latest["detected_at"])
+                if (now - last_act) < timedelta(days=int(u["panic_days"])):
+                    continue
+                last_panic = u.get("last_panic_at")
+                if last_panic and _parse_ts(str(last_panic)) >= last_act:
+                    continue  # この沈黙ではもう発報済み
+                channel = await self._get_channel(u.get("panic_channel_id"))
+                if channel is None:
+                    continue
+                embed = discord.Embed(
+                    title="失踪警報",
+                    description=f"<@{uid}> の反応が {u['panic_days']} 日以上途絶えています。",
+                    color=0xc0392b,
+                )
+                embed.add_field(name="残されたメッセージ", value=f"> {u.get('panic_message') or '（なし）'}", inline=False)
+                embed.set_footer(text=f"{FOOTER} - Emergency Alert")
+                await channel.send(content=f"<@{uid}>", embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
+                await self._update_user(uid, {"last_panic_at": now.isoformat()})
+        except Exception:
+            log.exception("fujo: panic check failed")
 
     @tasks.loop(hours=1)
     async def check_duo_pester(self):
-        users_res = self.supabase.table("fujo_users").select("user_id, last_pester_level, panic_channel_id").execute()
-        now = datetime.now(timezone.utc)
-
-        for u in users_res.data:
-            uid = u["user_id"]
-            last_lvl = u["last_pester_level"]
-            ch_id = u["panic_channel_id"]
-
-            act_res = self.supabase.table("fujo_activities") \
-                .select("detected_at") \
-                .eq("user_id", uid) \
-                .order("detected_at", desc=True) \
-                .limit(1) \
-                .execute()
-
-            if not act_res.data:
-                continue
-
-            last_act_dt = datetime.fromisoformat(act_res.data[0]["detected_at"].replace("Z", "+00:00"))
-            hours = (now - last_act_dt).total_seconds() / 3600.0
-
-            target_lvl = 0
-            pester_msg = ""
-            color = 0xf1c40f
-
-            if hours >= 72:
-                target_lvl = 3
-                pester_msg = "あなたの存在がログから消えかけています。今すぐ何か発言してください。"
-                color = 0x9b59b6
-            elif hours >= 48:
-                target_lvl = 2
-                pester_msg = "連続生存記録が破棄されますよ。生存確認を行ってください。"
-                color = 0xe67e22
-            elif hours >= 24:
-                target_lvl = 1
-                pester_msg = "今日まだ生存が確認できていません。寂しいです。"
-                color = 0xf1c40f
-
-            if target_lvl > last_lvl:
+        try:
+            await self._ensure_users()
+            now = datetime.now(timezone.utc)
+            for uid, u in list(self.users.items()):
+                latest = await self._latest_activity(uid)
+                if not latest:
+                    continue
+                hours = (now - _parse_ts(latest["detected_at"])).total_seconds() / 3600.0
+                if hours >= 72:
+                    level, text, color = 3, "あなたの存在がログから消えかけています。何か発言してください。", 0x9b59b6
+                elif hours >= 48:
+                    level, text, color = 2, "このままだと連続生存日数がリセットされます。生存報告をお願いします。", 0xe67e22
+                elif hours >= 24:
+                    level, text, color = 1, "今日はまだ生存が確認できていません。寂しいです。", 0xf1c40f
+                else:
+                    continue
+                if level <= (u.get("last_pester_level") or 0):
+                    continue
+                embed = discord.Embed(title="生存督促", description=text, color=color)
+                embed.set_footer(text=f"{FOOTER} - Duo Protocol")
                 user = self.bot.get_user(uid)
-                if user:
-                    embed = discord.Embed(
-                        title="生存督促通知",
-                        description=f"{user.mention}\n{pester_msg}",
-                        color=color
-                    )
-                    embed.set_footer(text="Surveillance System - Duo Protocol")
-
+                if user is None:
+                    try:
+                        user = await self.bot.fetch_user(uid)
+                    except discord.HTTPException:
+                        user = None
+                sent = False
+                if user is not None:
                     try:
                         await user.send(embed=embed)
-                    except discord.Forbidden:
-                        if ch_id:
-                            channel = self.bot.get_channel(ch_id)
-                            if channel:
-                                await channel.send(content=user.mention, embed=embed)
+                        sent = True
+                    except discord.HTTPException:
+                        pass
+                if not sent:
+                    channel = await self._get_channel(u.get("panic_channel_id"))
+                    if channel is not None:
+                        await channel.send(content=f"<@{uid}>", embed=embed)
+                await self._update_user(uid, {"last_pester_level": level})
+        except Exception:
+            log.exception("fujo: pester check failed")
 
-                self.supabase.table("fujo_users").update({"last_pester_level": target_lvl}).eq("user_id", uid).execute()
+    @check_panic_alerts.before_loop
+    @check_duo_pester.before_loop
+    async def _wait_ready(self):
+        await self.bot.wait_until_ready()
 
 
 async def setup(bot: commands.Bot):
