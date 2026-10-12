@@ -22,11 +22,10 @@ import numpy as np
 from scipy import signal
 import numpy as np
 import re
-import aiohttp
 import wave
 import discord.opus
 from core.voice_session import VoiceBusy, get_manager
-from core.legacy import Responder, legacy
+from core.legacy import Responder
 
 logger = logging.getLogger(__name__)
  
@@ -1342,7 +1341,6 @@ class VoiceCog(commands.Cog):
         self.default_volume = 1.0
         self.default_speed = 1.0
         self.default_eq = "flat"
-        self.vv_host = "http://localhost:50021"
         self.recorders = {}
         # VC の持ち主管理と、誰もいないときの自動退出は core/voice_session.py に集約した。
         self.voice_sessions = get_manager(bot)
@@ -1369,7 +1367,6 @@ class VoiceCog(commands.Cog):
                 'custom_eq_filter': None,
                 'is_paused': False,
                 'is_changing_setting': False,
-                'resume_music_after_tts': False,
                 'panel_message': None,
                 # --- 録音用ステート ---
                 'is_recording': False,
@@ -1582,7 +1579,7 @@ class VoiceCog(commands.Cog):
         return True
 
     # --------------------------------------------------
-    # 実装（/voice join・/voice leave と旧 /join・/leave の共通）
+    # 実装（/voice join・/voice leave）
     # --------------------------------------------------
     async def _join_impl(self, r: Responder):
         voice = getattr(r.user, "voice", None)
@@ -1633,17 +1630,6 @@ class VoiceCog(commands.Cog):
         else:
             await r.send("ボットはボイスチャンネルに参加していません。", ephemeral=True)
 
-    # 旧コマンド（/voice join・/voice leave に移行）
-    @app_commands.command(name="join", description="ボイスチャンネルに参加します（/voice join に移行）")
-    @legacy("/voice join", "/join")
-    async def join_cmd(self, interaction: discord.Interaction):
-        await self._join_impl(Responder(interaction))
-
-    @app_commands.command(name="leave", description="ボイスチャンネルから退出します（/voice leave に移行）")
-    @legacy("/voice leave", "/leave")
-    async def leave_cmd(self, interaction: discord.Interaction):
-        await self._leave_impl(Responder(interaction))
-
     @staticmethod
     def _stop_hint(feature: str) -> str:
         from core.voice_session import stop_hint
@@ -1675,22 +1661,6 @@ class VoiceCog(commands.Cog):
             await ctx.send(embed=we(f"❌ エラーが発生しました: {e}"))
 
     
-    @commands.command()
-    @legacy("/music spatial", "!rval")
-    async def rval(self, ctx, feedback: float, wet: float = None):
-        """リバーブ値（減衰・ウェット量）を調整するコマンド
-        例: !rval 0.4 0.5  (フィードバック0.4, ウェット量0.5)
-        """
-        await self._spatial_impl(Responder(ctx), feedback=feedback, wet=wet)
-
-    @commands.command()
-    @legacy("/music spatial", "!rres")
-    async def rres(self, ctx, res: int):
-        """FDNリバーブの空間解像度（ディレイラインの密度）を切り替えるコマンド
-        例: !rres 8  (高解像度8次元マトリックスモード)
-        """
-        await self._spatial_impl(Responder(ctx), resolution=res)
-
     async def update_panel(self, guild_id: int):
         """現在の内部ステータスを読み取り、コントロールパネルをリアルタイム更新する"""
         state = self.get_state(guild_id)
@@ -1803,20 +1773,6 @@ class VoiceCog(commands.Cog):
             if current.lower() in choice.name.lower() or current.lower() in choice.value.lower()
         ][:25]
 
-    @app_commands.command(name="eq", description="イコライザ（EQ）や音響エフェクトを設定します（/music eq に移行）")
-    @app_commands.describe(mode="プリセット選択、または直接 FFmpeg フィルター文字列を入力")
-    @legacy("/music eq", "/eq")
-    async def eq(self, interaction: discord.Interaction, mode: str = "flat"):
-        await self._eq_impl(interaction, mode)
-
-    @eq.autocomplete("mode")
-    async def eq_autocomplete(
-        self,
-        interaction: discord.Interaction,
-        current: str
-    ) -> list[app_commands.Choice[str]]:
-        return self._eq_choices(current)
-
     async def _volume_impl(self, r: Responder, value: float):
         if not 0.1 <= value <= 2.0:
             return await r.send(embed=we("音量は 0.1 から 2.0 の間で指定してください。"), ephemeral=True)
@@ -1833,18 +1789,6 @@ class VoiceCog(commands.Cog):
         state['speed'] = value
         await r.send(embed=we(f"⚡ 再生速度を `{value}` 倍に設定しました（現在位置から反映）。"))
         await self.apply_immediate_setting(r.source, elapsed_speed=previous_speed)
-
-    @commands.command()
-    @legacy("/music volume", "!volume")
-    async def volume(self, ctx, vol: float):
-        """音量を調整します"""
-        await self._volume_impl(Responder(ctx), vol)
-
-    @commands.command()
-    @legacy("/music speed", "!speed")
-    async def speed(self, ctx, speed: float):
-        """再生速度を変更します"""
-        await self._speed_impl(Responder(ctx), speed)
 
     async def get_yt_info(self, url_or_search):
         loop = asyncio.get_running_loop()
@@ -2127,18 +2071,6 @@ class VoiceCog(commands.Cog):
         state['panel_message'] = await r.send(embed=embed, view=view, want_message=True)
         await self.update_panel(r.guild.id)
 
-    @commands.command()
-    @legacy("/music search", "!search")
-    async def search(self, ctx, *, keyword: str = None):
-        """Youtubeから検索した結果を10件表示します"""
-        await self._search_impl(Responder(ctx), keyword)
-
-    @commands.command()
-    @legacy("/music panel", "!panel")
-    async def panel(self, ctx):
-        """ボイスコントロールパネルを表示します"""
-        await self._panel_impl(Responder(ctx))
-
     async def check_queue(self, guild_id: int):
         state = self.get_state(guild_id)
         
@@ -2186,7 +2118,7 @@ class VoiceCog(commands.Cog):
             if is_yt:
                 try:
                     info = await self.get_yt_info(target_input)
-                    # /play では先に取得済みの動画タイトルをキューへ保存している。
+                    # /music play では先に取得済みの動画タイトルをキューへ保存している。
                     # ストリームURLを再解析すると、汎用エクストラクタのファイル名
                     # （例: "videoplayback"）になる場合があるため、保存済みのタイトルを優先する。
                     video_title = filename or info['title']
@@ -2370,31 +2302,6 @@ class VoiceCog(commands.Cog):
         state['retry_count'] = 0
         asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), loop)
             
-    @app_commands.command(name="spotify_link", description="Spotify連携は不要です（互換用コマンド）")
-    async def spotify_link(self, interaction: discord.Interaction):
-        """旧コマンドを残し、認証不要の新しい利用方法へ案内する。"""
-        await interaction.response.send_message(
-            '現在はSpotifyアカウント連携は不要です。公開プレイリストURLを `/play` に貼り付けてください。',
-            ephemeral=True,
-        )
-
-    @app_commands.command(name="spotify_unlink", description="Spotify連携情報を解除します（互換用コマンド）")
-    async def spotify_unlink(self, interaction: discord.Interaction):
-        """旧連携機能の残存データに依存せず、互換応答だけを返す。"""
-        await interaction.response.send_message(
-            '現在のSpotify再生ではアカウント連携情報を保存していません。',
-            ephemeral=True,
-        )
-
-    @app_commands.command(name="spotify_playlists", description="公開Spotifyプレイリストの再生方法を案内します（互換用コマンド）")
-    async def spotify_playlists(self, interaction: discord.Interaction):
-        """旧プレイリスト一覧コマンドを残し、公開URL方式へ案内する。"""
-        await interaction.response.send_message(
-            '公開SpotifyプレイリストのURLを `/play` に貼り付けて再生してください。'
-            '\n非公開プレイリストの一覧取得には対応していません。',
-            ephemeral=True,
-        )
-
     async def _ensure_music_connection(self, r: Responder) -> str | None:
         """音楽を流せる状態にする。だめなときは理由（そのまま返信できる文）を返す。
 
@@ -2654,55 +2561,6 @@ class VoiceCog(commands.Cog):
         await interaction.response.send_message(embed=we(f"シャッフル再生を **{label}** に変更しました。"))
         await self.update_panel(interaction.guild_id)
 
-    @app_commands.command(name="play", description="音楽を再生します（/music play に移行）")
-    @app_commands.describe(
-        query="Spotify/YouTube URL / 検索キーワード / ユニバーサルID",
-        file="音声/動画ファイルの添付（ファイル再生時）",
-        start_at="開始位置（秒）。キューが空で再生を開始する場合のみ指定できます。"
-    )
-    @legacy("/music play", "/play")
-    async def play(
-        self, 
-        interaction: discord.Interaction, 
-        query: str = None, 
-        file: discord.Attachment = None,
-        start_at: float | None = None,
-    ):
-        await self._play_impl(interaction, query, file, start_at)
-
-    @commands.command()
-    @legacy("/music stop", "!stop_all")
-    async def stop_all(self, ctx):
-        """今流れている音楽をすべて停止しキューをクリアします"""
-        await self._stop_impl(Responder(ctx))
-
-    @app_commands.command(name="seek", description="現在の曲を指定した秒数へ移動します（/music seek に移行）")
-    @app_commands.describe(seconds="移動先の位置（秒）")
-    @legacy("/music seek", "/seek")
-    async def seek_cmd(self, interaction: discord.Interaction, seconds: float):
-        await self._seek_impl(interaction, seconds)
-
-    @app_commands.command(name="pause", description="再生／一時停止を切り替えます（/music pause に移行）")
-    @legacy("/music pause", "/pause")
-    async def pause(self, interaction: discord.Interaction):
-        await self._pause_impl(interaction)
-
-    @app_commands.command(name="skip", description="次の曲へスキップします（/music skip に移行）")
-    @legacy("/music skip", "/skip")
-    async def skip(self, interaction: discord.Interaction):
-        await self._skip_impl(interaction)
-
-    @app_commands.command(name="loop", description="再生ループを切り替えます（/music loop に移行）")
-    @app_commands.choices(mode=LOOP_CHOICES)
-    @legacy("/music loop", "/loop")
-    async def loop_cmd(self, interaction: discord.Interaction, mode: app_commands.Choice[str]):
-        await self._loop_impl(interaction, mode.value)
-
-    @app_commands.command(name="shuffle", description="シャッフル再生を切り替えます（/music shuffle に移行）")
-    @legacy("/music shuffle", "/shuffle")
-    async def shuffle_cmd(self, interaction: discord.Interaction):
-        await self._shuffle_impl(interaction)
-
     async def _files_impl(self, r: Responder, limit: int = 20):
         """このチャンネルにアップロードされた音声の ID を表示する。"""
         limit = max(1, min(int(limit or 20), 100))
@@ -2717,24 +2575,6 @@ class VoiceCog(commands.Cog):
         desc += "\n".join(lines) if lines else "音声ファイルは見つかりませんでした。"
         embed.description = desc[:4000]
         await r.send(embed=embed)
-
-    @commands.command()
-    @legacy("/music files", "!list")
-    async def list(self, ctx, limit: int = 20):
-        """このチャンネル内にアップロードされた音声のIDを20件表示します。"""
-        await self._files_impl(Responder(ctx), limit)
-
-    @commands.command()
-    @legacy("/music playlist", "!plist")
-    async def plist(self, ctx, *, input_data: str = None):
-        """JSONで作ったプレイリストを再生することができます。"""
-        await self._playlist_impl(Responder(ctx), 'play', input_data, 'server')
-
-    @commands.command()
-    @legacy("/music playlist", "!save_current")
-    async def save_current(self, ctx, name: str):
-        """今のキューをJSONとして保存します。"""
-        await self._playlist_impl(Responder(ctx), 'save', name, 'server')
 
     def _serialize_personal_playlist(self, guild_id: int):
         """現在曲と待機キューを、再解析可能な入力だけで保存する。"""
@@ -2896,34 +2736,9 @@ class VoiceCog(commands.Cog):
                 tracks.append({'input': token, 'attachment_id': token, 'is_youtube': False})
         await self.start_playlist_load(r.source, tracks, name or 'JSONプレイリスト')
 
-    @commands.command(name="plsave")
-    @legacy("/music playlist", "!plsave")
-    async def personal_playlist_save(self, ctx, *, name: str):
-        """現在の曲とキューを自分専用プレイリストへ保存します。"""
-        await self._playlist_impl(Responder(ctx), 'save', name, 'me')
-
-    @commands.command(name="pllist")
-    @legacy("/music playlist", "!pllist")
-    async def personal_playlist_list(self, ctx):
-        """自分の個人プレイリストを一覧表示します。"""
-        await self._playlist_impl(Responder(ctx), 'list', None, 'me')
-
-    @app_commands.command(name="playlist", description="個人プレイリストを保存・一覧・再生します（/music playlist に移行）")
-    @app_commands.choices(action=PLAYLIST_ACTION_CHOICES)
-    @app_commands.describe(action="実行する操作", name="保存または再生するプレイリスト名（一覧では不要）")
-    @legacy("/music playlist", "/playlist")
-    async def playlist_cmd(self, interaction: discord.Interaction, action: app_commands.Choice[str], name: str | None = None):
-        await self._playlist_impl(Responder(interaction), action.value, name, 'me')
-
-    @commands.command(name="plplay")
-    @legacy("/music playlist", "!plplay")
-    async def personal_playlist_play(self, ctx, *, name: str):
-        """自分の個人プレイリストをバックグラウンドでキューへ追加します。"""
-        await self._playlist_impl(Responder(ctx), 'play', name, 'me')
-
     async def _spatial_impl(self, r: Responder, *, feedback: float | None = None, wet: float | None = None,
                             resolution: int | None = None):
-        """オプションなしなら立体音響パネルを出し、指定があればリバーブの値を変える（旧 !rval / !rres）。"""
+        """オプションなしなら立体音響パネルを出し、指定があればリバーブの値を変える。"""
         guild_id = r.guild.id
         if feedback is None and wet is None and resolution is None:
             return await self._spatial_panel(r, guild_id)
@@ -2990,11 +2805,6 @@ class VoiceCog(commands.Cog):
         view = SpatialControlView(self, guild_id)
         await r.send(embed=embed, view=view)
 
-    @app_commands.command(name="spatial", description="立体音響の設定パネルを呼び出します（/music spatial に移行）")
-    @legacy("/music spatial", "/spatial")
-    async def spatial_cmd(self, interaction: discord.Interaction):
-        await self._spatial_impl(Responder(interaction))
-
     def build_queue_embed(self, guild_id: int):
         state = self.get_state(guild_id)
         current_track = state.get('current_track')
@@ -3017,66 +2827,8 @@ class VoiceCog(commands.Cog):
     async def _queue_impl(self, interaction: discord.Interaction):
         await interaction.response.send_message(embed=self.build_queue_embed(interaction.guild_id), ephemeral=True)
 
-    @app_commands.command(name="queue", description="現在の再生キューを表示します（/music queue に移行）")
-    @legacy("/music queue", "/queue")
-    async def queue_cmd(self, interaction: discord.Interaction):
-        await self._queue_impl(interaction)
-
-    async def generate_voicevox_wav(self, text: str, speaker: int = 1) -> bytes | None:
-        """軽量化パラメータを適用してVOICEVOXでWAVを作成"""
-        async with aiohttp.ClientSession() as session:
-            try:
-                # 1. 音声合成クエリを作成
-                async with session.post(
-                    f"{self.vv_host}/audio_query",
-                    params={"text": text, "speaker": speaker},
-                    timeout=aiohttp.ClientTimeout(total=5)
-                ) as resp:
-                    if resp.status != 200:
-                        return None
-                    query_json = await resp.json()
-
-                # --- ⚡ 負荷削減（軽量化）設定 ---
-                query_json["outputSamplingRate"] = 16000  # サンプリングレートを下げてVOICEVOXの計算量を大幅カット(24000→16000)
-                query_json["prePhonemeLength"] = 0.05     # 前の無音時間を短縮して無駄な生成をカット
-                query_json["postPhonemeLength"] = 0.05    # 後ろの無音時間を短縮して無駄な生成をカット
-
-                # 2. 軽量化したクエリで音声データ(WAV)を生成
-                async with session.post(
-                    f"{self.vv_host}/synthesis",
-                    params={"speaker": speaker},
-                    json=query_json,
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as resp:
-                    if resp.status != 200:
-                        return None
-                    return await resp.read()
-            except Exception as e:
-                print(f"VOICEVOX Connection Error: {e}")
-                return None
-
-    def resume_music_after_tts(self, guild_id: int, error=None):
-        """TTSの完了後、TTS開始前に再生中だった音楽だけを安全に再開する。"""
-        state = self.get_state(guild_id)
-        if error:
-            logger.error("TTS playback error: %r", error)
-
-        if not state.get('resume_music_after_tts'):
-            return
-
-        state['resume_music_after_tts'] = False
-        if state.get('is_paused') and state.get('current_track'):
-            state['is_paused'] = False
-            asyncio.create_task(self.check_queue(guild_id))
-
-    @app_commands.command(name="speak", description="読み上げ（VOICEVOX）はこの Bot では使えません")
-    @app_commands.describe(text="喋らせたいテキスト", speaker="話者ID（使えません）")
-    async def speak_cmd(self, interaction: discord.Interaction, text: str, speaker: int = 1):
-        # ラズパイには VOICEVOX が入っていない（重すぎる）ため、VC には触れずに案内だけ返す。
-        await interaction.response.send_message("読み上げはこの Bot では使えません", ephemeral=True)
-
     # ==================================================================
-    # /music グループ（新しい入口）。旧コマンドと同じ実装関数（_xxx_impl）を呼ぶ。
+    # /music グループ。各サブコマンドは実装関数（_xxx_impl）を呼ぶ。
     # ==================================================================
     music_group = app_commands.Group(name="music", description="音楽の再生と操作", guild_only=True)
 

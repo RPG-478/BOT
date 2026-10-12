@@ -1,12 +1,11 @@
 """/music グループ（PR-B）のテスト。Discord・Supabase には接続しない。
 
-- 新しいサブコマンドと旧コマンドが、同じ実装関数（_xxx_impl）を同じ引数で呼ぶこと
-- 旧コマンドの「移りました」案内が、同じ人・同じコマンドには 1 日 1 回だけ出ること
+- サブコマンドが実装関数（_xxx_impl）を正しい引数で呼ぶこと
+- 削除した旧コマンド（/play・!panel・/spotify_* など）が登録されていないこと
 - プレイリストの scope（自分 / サーバー）が別々の保存先を使うこと
 - /music play が VC に自動で参加し、別の機能が使用中なら断ること
 """
 
-import datetime
 import inspect
 import json
 import os
@@ -98,7 +97,6 @@ def choice(value):
 
 class Base(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        legacy_module.NOTICES.clear()
         self.bot, self.manager = make_bot()
         self.bot.supabase = FakeSupabase()
         self.bot.get_guild = lambda gid: self.w.guild if gid == self.w.guild.id else None
@@ -107,7 +105,6 @@ class Base(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.manager.close()
-        legacy_module.NOTICES.clear()
 
     def interaction(self, user=None):
         return FakeInteraction(self.w, user or self.w.alice)
@@ -122,8 +119,8 @@ class Base(unittest.IsolatedAsyncioTestCase):
         return await command.callback(self.cog, ctx, *args, **kwargs)
 
 
-class SameImplementationTest(Base):
-    """新旧のコマンドが同じ実装関数を呼ぶ。"""
+class SubcommandImplementationTest(Base):
+    """/music のサブコマンドが、実装関数（_xxx_impl）を正しい引数で呼ぶ。"""
 
     def group_command(self, name):
         return self.cog.music_group.get_command(name)
@@ -139,19 +136,12 @@ class SameImplementationTest(Base):
         values.pop(next(iter(values)))  # interaction / Responder
         return values
 
-    async def check(self, impl, new_call, old_calls):
+    async def check(self, impl, name, kwargs, expected):
         mock = AsyncMock()
         with patch.object(self.cog, impl, mock):
-            await new_call()
-            self.assertEqual(mock.await_count, 1, impl)
-            expected = self.bound(impl, mock.await_args)
-            for index, old in enumerate(old_calls):
-                mock.reset_mock()
-                await old()
-                with self.subTest(impl=impl, old=index):
-                    self.assertEqual(mock.await_count, 1)
-                    self.assertEqual(self.bound(impl, mock.await_args), expected)
-        return expected
+            await self.slash(self.group_command(name), self.interaction(), **kwargs)
+        self.assertEqual(mock.await_count, 1, impl)
+        self.assertEqual(self.bound(impl, mock.await_args), expected, f'/music {name}')
 
     async def test_sixteen_subcommands(self):
         names = sorted(c.name for c in self.cog.music_group.commands)
@@ -159,110 +149,61 @@ class SameImplementationTest(Base):
             'play', 'pause', 'skip', 'stop', 'seek', 'queue', 'loop', 'shuffle', 'volume', 'speed',
             'eq', 'spatial', 'panel', 'search', 'playlist', 'files']))
 
-    async def test_interaction_based_pairs(self):
-        g, c = self.group_command, self.cog
-        await self.check('_play_impl',
-                         lambda: self.slash(g('play'), self.interaction(), query='song'),
-                         [lambda: self.slash(c.play, self.interaction(), query='song')])
-        for impl, new, old in [('_pause_impl', 'pause', c.pause), ('_skip_impl', 'skip', c.skip),
-                               ('_queue_impl', 'queue', c.queue_cmd), ('_shuffle_impl', 'shuffle', c.shuffle_cmd)]:
-            await self.check(impl, lambda new=new: self.slash(g(new), self.interaction()),
-                             [lambda old=old: self.slash(old, self.interaction())])
-        await self.check('_seek_impl', lambda: self.slash(g('seek'), self.interaction(), seconds=12.0),
-                         [lambda: self.slash(c.seek_cmd, self.interaction(), seconds=12.0)])
-        await self.check('_loop_impl', lambda: self.slash(g('loop'), self.interaction(), mode=choice('track')),
-                         [lambda: self.slash(c.loop_cmd, self.interaction(), mode=choice('track'))])
-        await self.check('_eq_impl', lambda: self.slash(g('eq'), self.interaction(), mode='bass'),
-                         [lambda: self.slash(c.eq, self.interaction(), mode='bass')])
+    async def test_interaction_based(self):
+        await self.check('_play_impl', 'play', {'query': 'song'}, {'query': 'song', 'file': None, 'start_at': None})
+        for impl, name in [('_pause_impl', 'pause'), ('_skip_impl', 'skip'), ('_queue_impl', 'queue'),
+                           ('_shuffle_impl', 'shuffle')]:
+            await self.check(impl, name, {}, {})
+        await self.check('_seek_impl', 'seek', {'seconds': 12.0}, {'seconds': 12.0})
+        await self.check('_loop_impl', 'loop', {'mode': choice('track')}, {'mode': 'track'})
+        await self.check('_eq_impl', 'eq', {'mode': 'bass'}, {'mode': 'bass'})
 
-    async def test_responder_based_pairs(self):
-        g, c = self.group_command, self.cog
-        await self.check('_stop_impl', lambda: self.slash(g('stop'), self.interaction()),
-                         [lambda: self.prefix(c.stop_all, self.ctx())])
-        await self.check('_volume_impl', lambda: self.slash(g('volume'), self.interaction(), value=0.5),
-                         [lambda: self.prefix(c.volume, self.ctx(), 0.5)])
-        await self.check('_speed_impl', lambda: self.slash(g('speed'), self.interaction(), value=1.5),
-                         [lambda: self.prefix(c.speed, self.ctx(), 1.5)])
-        await self.check('_panel_impl', lambda: self.slash(g('panel'), self.interaction()),
-                         [lambda: self.prefix(c.panel, self.ctx())])
-        await self.check('_search_impl', lambda: self.slash(g('search'), self.interaction(), keyword='abc'),
-                         [lambda: self.prefix(c.search, self.ctx(), keyword='abc')])
-        await self.check('_files_impl', lambda: self.slash(g('files'), self.interaction(), limit=20),
-                         [lambda: self.prefix(c.list, self.ctx(), 20)])
+    async def test_responder_based(self):
+        await self.check('_stop_impl', 'stop', {}, {})
+        await self.check('_volume_impl', 'volume', {'value': 0.5}, {'value': 0.5})
+        await self.check('_speed_impl', 'speed', {'value': 1.5}, {'value': 1.5})
+        await self.check('_panel_impl', 'panel', {}, {})
+        await self.check('_search_impl', 'search', {'keyword': 'abc'}, {'keyword': 'abc'})
+        await self.check('_files_impl', 'files', {'limit': 20}, {'limit': 20})
 
-    async def test_spatial_pairs(self):
-        g, c = self.group_command, self.cog
-        await self.check('_spatial_impl', lambda: self.slash(g('spatial'), self.interaction()),
-                         [lambda: self.slash(c.spatial_cmd, self.interaction())])
-        await self.check('_spatial_impl',
-                         lambda: self.slash(g('spatial'), self.interaction(), feedback=0.4, wet=0.5),
-                         [lambda: self.prefix(c.rval, self.ctx(), 0.4, 0.5)])
-        await self.check('_spatial_impl', lambda: self.slash(g('spatial'), self.interaction(), resolution=8),
-                         [lambda: self.prefix(c.rres, self.ctx(), 8)])
+    async def test_spatial(self):
+        none = {'feedback': None, 'wet': None, 'resolution': None}
+        await self.check('_spatial_impl', 'spatial', {}, none)
+        await self.check('_spatial_impl', 'spatial', {'feedback': 0.4, 'wet': 0.5}, {**none, 'feedback': 0.4, 'wet': 0.5})
+        await self.check('_spatial_impl', 'spatial', {'resolution': 8}, {**none, 'resolution': 8})
 
-    async def test_playlist_pairs(self):
-        g, c = self.group_command, self.cog
-        play = g('playlist')
-
-        def new(action, name=None, scope=None):
-            return lambda: self.slash(play, self.interaction(), action=choice(action), name=name,
-                                      scope=choice(scope) if scope else None)
-        await self.check('_playlist_impl', new('save', 'mix'), [
-            lambda: self.slash(c.playlist_cmd, self.interaction(), action=choice('save'), name='mix'),
-            lambda: self.prefix(c.personal_playlist_save, self.ctx(), name='mix')])
-        await self.check('_playlist_impl', new('list'), [
-            lambda: self.slash(c.playlist_cmd, self.interaction(), action=choice('list')),
-            lambda: self.prefix(c.personal_playlist_list, self.ctx())])
-        await self.check('_playlist_impl', new('play', 'mix'), [
-            lambda: self.slash(c.playlist_cmd, self.interaction(), action=choice('play'), name='mix'),
-            lambda: self.prefix(c.personal_playlist_play, self.ctx(), name='mix')])
-        await self.check('_playlist_impl', new('save', 'mix', 'server'), [
-            lambda: self.prefix(c.save_current, self.ctx(), 'mix')])
-        await self.check('_playlist_impl', new('play', 'mix', 'server'), [
-            lambda: self.prefix(c.plist, self.ctx(), input_data='mix')])
-
-    async def test_legacy_signatures_unchanged(self):
-        self.assertIn('vol', self.cog.volume.clean_params)
-        self.assertIn('keyword', self.cog.search.clean_params)
-        self.assertEqual([p.name for p in self.cog.play.parameters], ['query', 'file', 'start_at'])
-        self.assertEqual([p.name for p in self.cog.loop_cmd.parameters], ['mode'])
+    async def test_playlist(self):
+        def kwargs(action, name=None, scope=None):
+            return {'action': choice(action), 'name': name, 'scope': choice(scope) if scope else None}
+        await self.check('_playlist_impl', 'playlist', kwargs('save', 'mix'),
+                         {'action': 'save', 'name': 'mix', 'scope': 'me', 'file': None})
+        await self.check('_playlist_impl', 'playlist', kwargs('list'),
+                         {'action': 'list', 'name': None, 'scope': 'me', 'file': None})
+        await self.check('_playlist_impl', 'playlist', kwargs('play', 'mix', 'server'),
+                         {'action': 'play', 'name': 'mix', 'scope': 'server', 'file': None})
 
 
-class LegacyNoticeTest(Base):
-    async def test_notice_once_per_user_per_day(self):
-        with patch.object(self.cog, '_volume_impl', AsyncMock()):
-            first, second = self.ctx(), self.ctx()
-            await self.prefix(self.cog.volume, first, 0.5)
-            await self.prefix(self.cog.volume, second, 0.5)
-            other = self.ctx(self.w.bob)
-            await self.prefix(self.cog.volume, other, 0.5)
-        self.assertIn('/music volume', first.texts())
-        self.assertIn('に移りました', first.texts())
-        self.assertEqual(second.sent, [])
-        self.assertIn('/music volume', other.texts())
+# 削除した旧コマンド（移行期間を終えて PR で削除）
+REMOVED_SLASH = ['join', 'leave', 'play', 'pause', 'skip', 'seek', 'loop', 'shuffle', 'queue', 'playlist', 'eq',
+                 'spatial', 'speak', 'spotify_link', 'spotify_unlink', 'spotify_playlists']
+REMOVED_PREFIX = ['panel', 'search', 'list', 'plist', 'save_current', 'plsave', 'pllist', 'plplay', 'volume',
+                  'speed', 'stop_all', 'rval', 'rres']
 
-    async def test_notice_again_next_day(self):
-        with patch.object(self.cog, '_skip_impl', AsyncMock()):
-            await self.slash(self.cog.skip, self.interaction())
-            tomorrow = legacy_module.LegacyNotices.today() + datetime.timedelta(days=1)
-            with patch.object(legacy_module.LegacyNotices, 'today', staticmethod(lambda: tomorrow)):
-                again = self.interaction()
-                await self.slash(self.cog.skip, again)
-        self.assertIn('/music skip', again.texts())
 
-    async def test_slash_notice_is_ephemeral_followup(self):
-        interaction = self.interaction()
-        await self.slash(self.cog.shuffle_cmd, interaction)  # 本来の返信のあとに案内
-        self.assertEqual(len(interaction.sent), 2)
-        content, kwargs = interaction.sent[-1]
-        self.assertIn('/music shuffle', content)
-        self.assertTrue(kwargs.get('ephemeral'))
+class LegacyRemovedTest(Base):
+    def test_old_slash_commands_are_not_registered(self):
+        names = {c.name for c in self.cog.get_app_commands()}
+        self.assertEqual(names & set(REMOVED_SLASH), set())
+        self.assertIn('music', names)
 
-    async def test_new_commands_have_no_notice(self):
-        interaction = self.interaction()
-        await self.slash(self.cog.music_group.get_command('shuffle'), interaction)
-        self.assertEqual(len(interaction.sent), 1)
-        self.assertNotIn('移りました', interaction.texts())
+    def test_old_prefix_commands_are_not_registered(self):
+        names = {c.qualified_name for c in self.cog.walk_commands()}
+        self.assertEqual(names & set(REMOVED_PREFIX), set())
+        self.assertIn('ffversion', names)  # 持ち主向けの確認コマンドは残す
+
+    def test_new_commands_have_no_notice(self):
+        self.assertFalse(hasattr(legacy_module, 'legacy'))
+        self.assertFalse(hasattr(legacy_module, 'NOTICES'))
 
 
 class PlaylistScopeTest(Base):
@@ -330,13 +271,12 @@ class PlaylistScopeTest(Base):
         self.assertEqual(len(loaded.await_args.args[1]), 3)
         self.assertIn('見つかりません', missing.texts())
 
-    async def test_legacy_prefix_reads_same_stores(self):
-        await self.prefix(self.cog.save_current, self.ctx(), 'legacy')
-        await self.prefix(self.cog.personal_playlist_save, self.ctx(), name='legacy-me')
+    async def test_reads_rows_saved_by_old_commands(self):
+        # 旧 !save_current（playlists に "ギルドID:名前"）で保存された行も、scope:サーバー で見える
+        self.bot.supabase.tables.setdefault('playlists', []).append(
+            {'id': 99, 'name': f'{self.w.guild.id}:old-saved', 'ids': ['X1']})
         server = await self.run_playlist('list', scope='server')
-        mine = await self.run_playlist('list', scope='me')
-        self.assertIn('legacy', server.texts())
-        self.assertIn('legacy-me', mine.texts())
+        self.assertIn('old-saved', server.texts())
 
 
 class PlayAutoJoinTest(Base):
@@ -383,9 +323,9 @@ class PlayAutoJoinTest(Base):
         await self.slash(self.cog.music_group.get_command('spatial'), interaction, feedback=0.4, wet=0.2, resolution=8)
         state = self.cog.get_state(self.w.guild.id)
         self.assertEqual((state['fdn_feedback'], state['fdn_wet'], state['fdn_resolution']), (0.4, 0.2, 8))
-        ctx = self.ctx()
-        await self.prefix(self.cog.rres, ctx, 5)
-        self.assertIn('4', ctx.texts())
+        interaction = self.interaction()
+        await self.slash(self.cog.music_group.get_command('spatial'), interaction, resolution=5)
+        self.assertIn('4', interaction.texts())
         self.assertEqual(state['fdn_resolution'], 8)
 
     async def test_stop_clears_queue(self):

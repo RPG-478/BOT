@@ -4,7 +4,7 @@
 - 別の機能が使用中なら追い出さずに断ること（バグ10）
 - 開始した本人・管理者は force で切り替えられること
 - 誰もいない状態が続くと退出すること、外部から切断されたら後片付けすること
-- !gvc join / leave が「参加中のまま」残らないこと
+- グローバルVC の参加・退出（/voice global）が「参加中のまま」残らないこと
 - 録音が上限時間で自動停止すること
 を確かめる。
 """
@@ -27,7 +27,7 @@ for _name, _value in {'SUPABASE_URL': 'https://example.supabase.co', 'SUPABASE_K
 import discord  # noqa: E402
 
 from core import voice_session as vs  # noqa: E402
-from core.legacy import NOTICES, Responder  # noqa: E402
+from core.legacy import Responder  # noqa: E402
 from cogs import sio_globalVC as gvc  # noqa: E402
 from cogs import sio_rec as rec  # noqa: E402
 from cogs import sio_saito as saito  # noqa: E402
@@ -363,10 +363,6 @@ class CogTest(unittest.IsolatedAsyncioTestCase):
         gvc.ROOMS['lobby'] = gvc.RoomConfig(name='lobby', owner_id=self.w.alice.id, owner_guild_id=self.w.guild.id)
         self.opus = patch.object(rec.discord.opus, 'is_loaded', return_value=True)
         self.opus.start()
-        # 旧コマンドの「移りました」の案内は、このテストでは出さない（最後のメッセージを確かめるため）
-        self.notices = patch.object(NOTICES, 'should_notify', return_value=False)
-        self.notices.start()
-        self.addCleanup(self.notices.stop)
         self.rec = rec.RecordingCog(self.bot)
         self.gvc = gvc.GlobalVCCog(self.bot)
 
@@ -382,10 +378,10 @@ class CogTest(unittest.IsolatedAsyncioTestCase):
         return fake_ctx(self.w, author, self.bot)
 
     async def gvc_join(self, author):
-        await self.gvc.gvc_join.callback(self.gvc, self.ctx(author), 'lobby')
+        await self.gvc._global_impl(Responder(self.ctx(author)), 'join', 'lobby')
 
     async def gvc_leave(self, author):
-        await self.gvc.gvc_leave.callback(self.gvc, self.ctx(author))
+        await self.gvc._global_impl(Responder(self.ctx(author)), 'leave')
 
     async def test_gvc_join_does_not_kick_recording(self):
         await self.rec.start_command(Responder(self.ctx(self.w.alice)))
@@ -407,7 +403,7 @@ class CogTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_echo_refused_while_recording(self):
         await self.rec.start_command(Responder(self.ctx(self.w.alice)))
-        await self.rec.echo_start.callback(self.rec, self.ctx(self.w.bob), 2.0)
+        await self.rec._echo_impl(Responder(self.ctx(self.w.bob)), 'start', 2.0)
         self.assertNotIn(self.w.guild.id, self.rec.echo_sessions)
         self.assertIn('録音', self.w.text.sent[-1])
 
@@ -498,11 +494,11 @@ class CogTest(unittest.IsolatedAsyncioTestCase):
         cog = saito.SaitoRelay(self.bot)
         other = make_world(20)
         with patch.object(saito.discord, 'FFmpegPCMAudio', lambda *a, **k: object()):
-            await cog.saito.callback(cog, self.ctx(self.w.alice))
-            await cog.saito.callback(cog, fake_ctx(other, other.alice, self.bot))
+            await cog._match_impl(Responder(self.ctx(self.w.alice)), 'start')
+            await cog._match_impl(Responder(fake_ctx(other, other.alice, self.bot)), 'start')
         self.assertEqual(self.manager.owner(self.w.guild.id), 'match')
         self.assertEqual(self.manager.owner(other.guild.id), 'match')
-        await cog.saito_stop.callback(cog, self.ctx(self.w.alice))
+        await cog._match_impl(Responder(self.ctx(self.w.alice)), 'stop')
         await settle(10)
         self.assertIsNone(self.manager.get(self.w.guild.id))
         self.assertIsNone(self.manager.get(other.guild.id))
@@ -519,10 +515,6 @@ class MusicTest(unittest.IsolatedAsyncioTestCase):
         self.music = sio_music.VoiceCog(self.bot)
         self.opus = patch.object(rec.discord.opus, 'is_loaded', return_value=True)
         self.opus.start()
-        # 旧コマンドの「移りました」の案内は、このテストでは出さない（最後のメッセージを確かめるため）
-        self.notices = patch.object(NOTICES, 'should_notify', return_value=False)
-        self.notices.start()
-        self.addCleanup(self.notices.stop)
         self.rec = rec.RecordingCog(self.bot)
 
     async def asyncTearDown(self):
@@ -552,40 +544,33 @@ class MusicTest(unittest.IsolatedAsyncioTestCase):
         await self.rec.start_command(Responder(fake_ctx(self.w, self.w.alice, self.bot)))
         vc = self.w.guild.voice_client
         interaction, sent = self.interaction(self.w.bob)
-        await self.music.join_cmd.callback(self.music, interaction)
+        await self.music._join_impl(Responder(interaction))
         self.assertIn('録音', sent[-1][0])
         self.assertTrue(vc.is_connected())
         self.assertEqual(self.manager.owner(self.w.guild.id), 'record')
 
     async def test_join_and_leave(self):
         interaction, sent = self.interaction(self.w.alice)
-        await self.music.join_cmd.callback(self.music, interaction)
+        await self.music._join_impl(Responder(interaction))
         self.assertEqual(self.manager.owner(self.w.guild.id), 'music')
-        interaction, sent = self.interaction(self.w.bob)  # 音楽は誰でも /leave できる
-        await self.music.leave_cmd.callback(self.music, interaction)
+        interaction, sent = self.interaction(self.w.bob)  # 音楽は誰でも /voice leave できる
+        await self.music._leave_impl(Responder(interaction))
         self.assertIsNone(self.manager.get(self.w.guild.id))
         self.assertIsNone(self.w.guild.voice_client)
 
     async def test_leave_protects_others_recording(self):
         await self.rec.start_command(Responder(fake_ctx(self.w, self.w.alice, self.bot)))
         interaction, sent = self.interaction(self.w.bob)
-        await self.music.leave_cmd.callback(self.music, interaction)
+        await self.music._leave_impl(Responder(interaction))
         self.assertEqual(self.manager.owner(self.w.guild.id), 'record')
         self.assertIn('開始した人か管理者', sent[-1][0])
         interaction, sent = self.interaction(self.w.admin)
-        await self.music.leave_cmd.callback(self.music, interaction)
+        await self.music._leave_impl(Responder(interaction))
         task = self.rec._deliveries.get(self.w.guild.id)
         if task is not None:
             await task
         self.assertIsNone(self.manager.get(self.w.guild.id))
         self.assertIn('/voice leave で退出したため録音を停止しました', self.w.text.text())
-
-    async def test_speak_is_disabled_without_touching_vc(self):
-        interaction, sent = self.interaction(self.w.alice)
-        await self.music.speak_cmd.callback(self.music, interaction, 'こんにちは')
-        self.assertEqual(sent, [('読み上げはこの Bot では使えません', {'ephemeral': True})])
-        self.assertEqual(self.w.voice.connect_calls, 0)
-        self.assertIsNone(self.manager.get(self.w.guild.id))
 
     async def test_join_hints_point_to_slash_join(self):
         source = (ROOT / 'cogs' / 'sio_music.py').read_text(encoding='utf-8')

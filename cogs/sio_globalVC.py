@@ -15,7 +15,7 @@ import discord.opus
 from discord.ext import commands
 from discord.ext import voice_recv
 
-from core.legacy import Responder, legacy
+from core.legacy import Responder
 from core.voice_session import VoiceBusy, get_manager
 
 logger = logging.getLogger(__name__)
@@ -357,7 +357,7 @@ class GlobalVCCog(commands.Cog):
 
     @staticmethod
     def _cleanup(guild_id: int):
-        """VC を手放すとき（!gvc leave・ルーム削除・自動退出・外部切断）にルーム管理から外す。
+        """VC を手放すとき（/voice global の退出・ルーム削除・自動退出・外部切断）にルーム管理から外す。
 
         外部から切断されたときもここが呼ばれるので、GLOBAL_ROOMS に古い接続が残らない。
         """
@@ -508,7 +508,7 @@ class GlobalVCCog(commands.Cog):
         await ctx.send(f"🗑️ ルーム **{room_name}** を削除しました (VC・グロチャの連携もすべて解除)。")
 
     # --------------------------------------------------
-    # 実装（/voice global と旧 !gvc join・!gvc leave の共通）
+    # 実装（/voice global）
     # --------------------------------------------------
     async def _global_impl(self, r: Responder, action: str, room_name: str | None = None, password: str | None = None):
         """action: join / leave"""
@@ -593,16 +593,6 @@ class GlobalVCCog(commands.Cog):
             return await r.send("🌐 グローバルVCから切断しました。ルーム自体は残っています。")
         # 音楽や録音など、グローバルVC 以外の機能は止めない（以前はここで何でも切断していた）
         await r.send("このサーバーはグローバルVCに参加していません。")
-
-    @gvc_group.command(name="join")
-    @legacy("/voice global action:参加", "!gvc join")
-    async def gvc_join(self, ctx: commands.Context, room_name: str, password: str = None):
-        await self._global_impl(Responder(ctx), "join", room_name, password)
-
-    @gvc_group.command(name="leave")
-    @legacy("/voice global action:退出", "!gvc leave")
-    async def gvc_leave(self, ctx: commands.Context):
-        await self._global_impl(Responder(ctx), "leave")
 
     # ------------------------------------------------------------
     # グロチャ (テキストチャット連携)

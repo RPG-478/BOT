@@ -23,7 +23,7 @@ from scipy import signal
 import numpy as np
 
 
-from core.legacy import Responder, legacy
+from core.legacy import Responder
 from core.voice_session import VoiceBusy, get_manager
 
 
@@ -76,7 +76,7 @@ class SaitoRelay(commands.Cog):
         return cleanup
 
     # --------------------------------------------------
-    # 実装（/voice match と旧 !saito・!saito_stop の共通）
+    # 実装（/voice match）
     # --------------------------------------------------
     async def _match_impl(self, r: Responder, action: str):
         """action: start / stop"""
@@ -172,19 +172,6 @@ class SaitoRelay(commands.Cog):
             return await r.send("相手探しを取り消しました。")
         await r.send("通話も相手探しもしていません。", ephemeral=True)
 
-    # --------------------------------------------------
-    # 旧コマンド: !saito / !saito_stop（/voice match に移行）
-    # --------------------------------------------------
-    @commands.command()
-    @legacy("/voice match action:開始", "!saito")
-    async def saito(self, ctx):
-        """音声中継マッチング"""
-        await self._match_impl(Responder(ctx), "start")
-
-    @commands.command()
-    @legacy("/voice match action:終了", "!saito_stop")
-    async def saito_stop(self, ctx):
-        await self._match_impl(Responder(ctx), "stop")
 
 async def setup(bot):
     await bot.add_cog(SaitoRelay(bot))

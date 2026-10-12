@@ -1,9 +1,10 @@
 """/voice グループ（PR-C）のテスト。Discord には接続しない。
 
-- 10 個のサブコマンドが、旧コマンド（/join・!rec・!stt など）と同じ実装関数を同じ引数で呼ぶこと
+- 10 個のサブコマンドが、各機能の実装関数を正しい引数で呼ぶこと
+- 旧コマンド（/join・!rec・!stt・!saito・!gvc join など）が登録されていないこと
 - /voice status が、VC を使っている機能と開始した人を表示すること
 - 音声認識モデルが無いとき、文字起こし・カラオケは VC に入らずに断ること
-- !rec pitch（/voice record action:音程解析）が NameError にならず音階を返すこと
+- /voice record action:音程解析が NameError にならず音階を返すこと
 - 録音を始めると、テキストチャンネルに全員に見えるお知らせが出ること
 """
 
@@ -25,7 +26,6 @@ for _name, _value in {'SUPABASE_URL': 'https://example.supabase.co', 'SUPABASE_K
 import discord  # noqa: E402
 import numpy as np  # noqa: E402
 
-from core import legacy as legacy_module  # noqa: E402
 from core import vosk_model  # noqa: E402
 from core.legacy import Responder  # noqa: E402
 from cogs import (  # noqa: E402
@@ -38,7 +38,6 @@ from tests.test_voice_session import make_bot, make_world  # noqa: E402
 
 class Base(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        legacy_module.NOTICES.clear()
         self.bot, self.manager = make_bot()
         self.bot.supabase = FakeSupabase()
         self.w = make_world()
@@ -59,7 +58,6 @@ class Base(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.manager.close()
-        legacy_module.NOTICES.clear()
 
     def interaction(self, user=None):
         return FakeInteraction(self.w, user or self.w.alice)
@@ -74,8 +72,8 @@ class Base(unittest.IsolatedAsyncioTestCase):
         return interaction
 
 
-class SameImplementationTest(Base):
-    """/voice のサブコマンドと旧コマンドが、同じ実装関数を同じ引数で呼ぶ。"""
+class SubcommandImplementationTest(Base):
+    """/voice のサブコマンドが、各機能の実装関数を正しい引数で呼ぶ。"""
 
     @staticmethod
     def bound(signature, call):
@@ -86,93 +84,105 @@ class SameImplementationTest(Base):
         responder = values.pop(next(iter(values)))
         return responder, values
 
-    async def check(self, cog, impl, new_name, new_kwargs, old_command, *old_args, **old_kwargs):
+    async def check(self, cog, impl, new_name, new_kwargs, expected):
         cls = type(cog)
         signature = inspect.signature(getattr(cls, impl))
         with patch.object(cls, impl, AsyncMock()) as mock:
             interaction = await self.voice(new_name, **new_kwargs)
             self.assertEqual(mock.await_count, 1, f'/voice {new_name}')
-            new_responder, new_values = self.bound(signature, mock.await_args)
-
-            mock.reset_mock()
-            source = self.interaction() if old_command.__class__.__module__.startswith('discord.app_commands') else self.ctx()
-            await old_command.callback(cog, source, *old_args, **old_kwargs)
-            self.assertEqual(mock.await_count, 1, old_command.qualified_name)
-            old_responder, old_values = self.bound(signature, mock.await_args)
-
-        self.assertIsInstance(new_responder, Responder)
-        self.assertIs(new_responder.source, interaction)
-        self.assertIsInstance(old_responder, Responder)
-        self.assertIs(old_responder.source, source)
-        self.assertEqual(new_values, old_values, f'/voice {new_name} と {old_command.qualified_name}')
-        return new_values
+            responder, values = self.bound(signature, mock.await_args)
+        self.assertIsInstance(responder, Responder)
+        self.assertIs(responder.source, interaction)
+        self.assertEqual(values, expected, f'/voice {new_name}')
+        return values
 
     async def test_join_leave(self):
-        await self.check(self.music, '_join_impl', 'join', {}, self.music.join_cmd)
-        await self.check(self.music, '_leave_impl', 'leave', {}, self.music.leave_cmd)
+        await self.check(self.music, '_join_impl', 'join', {}, {})
+        await self.check(self.music, '_leave_impl', 'leave', {}, {})
 
     async def test_record(self):
-        for value, old in (('start', self.rec.rec_start), ('stop', self.rec.rec_stop),
-                           ('status', self.rec.rec_status), ('status', self.rec.rec_group),
-                           ('pitch', self.rec.rec_pitch)):
-            values = await self.check(self.rec, '_record_impl', 'record', {'action': choice(value)}, old)
-            self.assertEqual(values, {'action': value})
+        for value in ('start', 'stop', 'status', 'pitch'):
+            await self.check(self.rec, '_record_impl', 'record', {'action': choice(value)}, {'action': value})
 
     async def test_echo(self):
-        await self.check(self.rec, '_echo_impl', 'echo', {'action': choice('start'), 'delay': 3.0}, self.rec.echo_start, 3.0)
-        values = await self.check(self.rec, '_echo_impl', 'echo', {'action': choice('start')}, self.rec.echo_start)
-        self.assertEqual(values, {'action': 'start', 'delay': None})
-        await self.check(self.rec, '_echo_impl', 'echo', {'action': choice('delay'), 'delay': 1.5}, self.rec.echo_delay, 1.5)
-        await self.check(self.rec, '_echo_impl', 'echo', {'action': choice('stop')}, self.rec.echo_stop)
+        await self.check(self.rec, '_echo_impl', 'echo', {'action': choice('start'), 'delay': 3.0},
+                         {'action': 'start', 'delay': 3.0})
+        await self.check(self.rec, '_echo_impl', 'echo', {'action': choice('start')}, {'action': 'start', 'delay': None})
+        await self.check(self.rec, '_echo_impl', 'echo', {'action': choice('delay'), 'delay': 1.5},
+                         {'action': 'delay', 'delay': 1.5})
+        await self.check(self.rec, '_echo_impl', 'echo', {'action': choice('stop')}, {'action': 'stop', 'delay': None})
 
     async def test_transcribe(self):
         target = self.w.text
-        values = await self.check(self.stt, '_transcribe_impl', 'transcribe', {'action': choice('start'), 'channel': target},
-                                  self.stt.stt_start, target)
-        self.assertIs(values['target_channel'], target)
-        await self.check(self.stt, '_transcribe_impl', 'transcribe', {'action': choice('start')}, self.stt.stt_start)
-        await self.check(self.stt, '_transcribe_impl', 'transcribe', {'action': choice('stop')}, self.stt.stt_stop)
+        await self.check(self.stt, '_transcribe_impl', 'transcribe', {'action': choice('start'), 'channel': target},
+                         {'action': 'start', 'target_channel': target})
+        await self.check(self.stt, '_transcribe_impl', 'transcribe', {'action': choice('start')},
+                         {'action': 'start', 'target_channel': None})
+        await self.check(self.stt, '_transcribe_impl', 'transcribe', {'action': choice('stop')},
+                         {'action': 'stop', 'target_channel': None})
 
     async def test_karaoke(self):
-        values = await self.check(self.karaoke, '_karaoke_impl', 'karaoke', {'action': choice('start'), 'lyrics': 'かえるのうた'},
-                                  self.karaoke.karaoke_start, target_lyrics='かえるのうた')
-        self.assertEqual(values, {'action': 'start', 'target_lyrics': 'かえるのうた'})
-        await self.check(self.karaoke, '_karaoke_impl', 'karaoke', {'action': choice('score')}, self.karaoke.karaoke_score)
-        await self.check(self.karaoke, '_karaoke_impl', 'karaoke', {'action': choice('stop')}, self.karaoke.karaoke_stop)
+        await self.check(self.karaoke, '_karaoke_impl', 'karaoke', {'action': choice('start'), 'lyrics': 'かえるのうた'},
+                         {'action': 'start', 'target_lyrics': 'かえるのうた'})
+        await self.check(self.karaoke, '_karaoke_impl', 'karaoke', {'action': choice('score')},
+                         {'action': 'score', 'target_lyrics': None})
+        await self.check(self.karaoke, '_karaoke_impl', 'karaoke', {'action': choice('stop')},
+                         {'action': 'stop', 'target_lyrics': None})
 
     async def test_changer(self):
         c = self.changer
-        await self.check(c, '_changer_impl', 'changer', {'action': choice('start'), 'pitch': 3.0}, c.vc_start, 3.0)
-        await self.check(c, '_changer_impl', 'changer', {'action': choice('start')}, c.vc_start)
-        await self.check(c, '_changer_impl', 'changer', {'action': choice('status')}, c.vc_group)
-        await self.check(c, '_changer_impl', 'changer', {'action': choice('status'), 'pitch': -2.0}, c.vc_pitch, -2.0)
-        values = await self.check(c, '_changer_impl', 'changer', {'action': choice('status'), 'buffer_ms': 40.0, 'max_ms': 80.0},
-                                  c.vc_buffer, 40.0, 80.0)
-        self.assertEqual(values, {'action': 'status', 'pitch': None, 'buffer_ms': 40.0, 'max_ms': 80.0})
-        await self.check(c, '_changer_impl', 'changer', {'action': choice('stop')}, c.vc_stop)
+        none = {'pitch': None, 'buffer_ms': None, 'max_ms': None}
+        await self.check(c, '_changer_impl', 'changer', {'action': choice('start'), 'pitch': 3.0},
+                         {**none, 'action': 'start', 'pitch': 3.0})
+        await self.check(c, '_changer_impl', 'changer', {'action': choice('start')}, {**none, 'action': 'start'})
+        await self.check(c, '_changer_impl', 'changer', {'action': choice('status')}, {**none, 'action': 'status'})
+        await self.check(c, '_changer_impl', 'changer', {'action': choice('status'), 'buffer_ms': 40.0, 'max_ms': 80.0},
+                         {'action': 'status', 'pitch': None, 'buffer_ms': 40.0, 'max_ms': 80.0})
+        await self.check(c, '_changer_impl', 'changer', {'action': choice('stop')}, {**none, 'action': 'stop'})
 
     async def test_match(self):
-        await self.check(self.saito, '_match_impl', 'match', {'action': choice('start')}, self.saito.saito)
-        await self.check(self.saito, '_match_impl', 'match', {'action': choice('stop')}, self.saito.saito_stop)
+        await self.check(self.saito, '_match_impl', 'match', {'action': choice('start')}, {'action': 'start'})
+        await self.check(self.saito, '_match_impl', 'match', {'action': choice('stop')}, {'action': 'stop'})
 
     async def test_global(self):
-        values = await self.check(self.gvc, '_global_impl', 'global', {'action': choice('join'), 'room': 'lobby', 'password': 'pw'},
-                                  self.gvc.gvc_join, 'lobby', 'pw')
-        self.assertEqual(values, {'action': 'join', 'room_name': 'lobby', 'password': 'pw'})
-        await self.check(self.gvc, '_global_impl', 'global', {'action': choice('leave')}, self.gvc.gvc_leave)
+        await self.check(self.gvc, '_global_impl', 'global', {'action': choice('join'), 'room': 'lobby', 'password': 'pw'},
+                         {'action': 'join', 'room_name': 'lobby', 'password': 'pw'})
+        await self.check(self.gvc, '_global_impl', 'global', {'action': choice('leave')},
+                         {'action': 'leave', 'room_name': None, 'password': None})
 
     def test_ten_subcommands(self):
         names = sorted(c.name for c in self.hub.voice_group.commands)
         self.assertEqual(names, sorted(['join', 'leave', 'status', 'record', 'echo', 'transcribe', 'karaoke',
                                         'changer', 'match', 'global']))
 
-    async def test_legacy_notice_once_per_day(self):
-        with patch.object(sio_rec.RecordingCog, '_record_impl', AsyncMock()):
-            ctx = self.ctx()
-            await self.rec.rec_status.callback(self.rec, ctx)
-            await self.rec.rec_status.callback(self.rec, ctx)
-        notices = [c for c, _ in ctx.sent if c and '/voice record action:状態' in c]
-        self.assertEqual(len(notices), 1)
+
+class LegacyRemovedTest(Base):
+    """旧コマンド（!rec・!echo・!stt・!karaoke・!vc・!saito・!gvc join/leave）は残っていない。"""
+
+    def test_old_prefix_commands_are_gone(self):
+        from discord.ext import commands
+        for cog in (self.rec, self.stt, self.karaoke, self.changer, self.saito, self.music):
+            names = {c.qualified_name for c in cog.walk_commands()}
+            with self.subTest(cog=type(cog).__name__):
+                self.assertEqual(names & {'rec', 'echo', 'stt', 'karaoke', 'vc', 'saito', 'saito_stop'}, set())
+        gvc = {c.qualified_name for c in self.gvc.walk_commands() if isinstance(c, commands.Command)}
+        self.assertNotIn('gvc join', gvc)
+        self.assertNotIn('gvc leave', gvc)
+        self.assertTrue({'gvc create', 'gvc list', 'gvc info', 'gvc delete', 'gvc chat'} <= gvc)
+
+    def test_old_slash_join_leave_are_gone(self):
+        names = {c.name for c in self.music.get_app_commands()}
+        self.assertNotIn('join', names)
+        self.assertNotIn('leave', names)
+
+    def test_old_methods_are_gone(self):
+        for cog, attrs in ((self.rec, ('rec_group', 'rec_start', 'rec_pitch', 'echo_group', 'echo_start')),
+                           (self.stt, ('stt_group', 'stt_start')), (self.karaoke, ('karaoke_group',)),
+                           (self.changer, ('vc_group', 'vc_start')), (self.saito, ('saito', 'saito_stop')),
+                           (self.gvc, ('gvc_join', 'gvc_leave')), (self.music, ('join_cmd', 'leave_cmd'))):
+            for attr in attrs:
+                with self.subTest(attr=attr):
+                    self.assertFalse(hasattr(cog, attr))
 
 
 class StatusTest(Base):
@@ -212,11 +222,8 @@ class ModelMissingTest(Base):
     async def test_transcribe_refuses_without_model(self):
         with patch.object(sio_transcription, 'MODEL_PATH', self.missing):
             interaction = await self.voice('transcribe', action=choice('start'))
-            ctx = self.ctx()
-            await self.stt.stt_start.callback(self.stt, ctx)
         self.assertIn('音声認識モデルが入っていません', interaction.texts())
         self.assertTrue(interaction.sent[-1][1]['ephemeral'])
-        self.assertIn('音声認識モデルが入っていません', ctx.texts())
         self.assert_not_touched()
 
     async def test_karaoke_refuses_without_model(self):
@@ -264,9 +271,8 @@ class RecordingTest(Base):
         pcm = np.column_stack((mono, mono)).flatten().tobytes()
         sink = self.rec.sessions[self.w.guild.id]['sink']
         with patch.object(sink, 'snapshot', return_value={'alice': pcm}):
-            ctx = self.ctx()
-            await self.rec.rec_pitch.callback(self.rec, ctx)  # 以前は NameError（detected_notes）
-        embed = next(kwargs['embed'] for _, kwargs in ctx.sent if kwargs.get('embed') is not None
+            interaction = await self.voice('record', action=choice('pitch'))  # 以前は NameError（detected_notes）
+        embed = next(kwargs['embed'] for _, kwargs in interaction.sent if kwargs.get('embed') is not None
                      and kwargs['embed'].title and '音階' in kwargs['embed'].title)
         self.assertEqual(embed.fields[0].name, '🎙️ alice')
         self.assertIn('A4', embed.fields[0].value)
