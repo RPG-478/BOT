@@ -7,7 +7,7 @@ import discord
 
 from game_fakes import (FakeBot, FakeChannel, FakeGuild, FakeInteraction, FakeMember, FakeMessage, choose, fast_time,
                         press, real_sleep)
-from cogs import doubt, game, jinrou, ngword, uno, wordwolf
+from cogs import doubt, game, jinrou, ngword, shiritori, uno, wordwolf
 from core import game_guides as guides
 from core.game_guides import GAME_GUIDES, GAME_ORDER
 
@@ -46,6 +46,7 @@ class GameHubTest(unittest.IsolatedAsyncioTestCase):
         self.uno = self.bot.add(uno.Uno(self.bot))
         self.doubt = self.bot.add(doubt.Doubt(self.bot))
         self.ngword = self.bot.add(ngword.NGWord(self.bot))
+        self.shiritori = self.bot.add(shiritori.OdaiShiritori(self.bot))
 
     async def open_hub(self):
         inter = FakeInteraction(self.host, self.channel)
