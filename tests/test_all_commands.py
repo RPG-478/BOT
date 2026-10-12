@@ -46,14 +46,11 @@ OPTIONAL_COGS = {'judgement': 'needle'}
 
 SLASH_ARGUMENTS = {
     'giveaway': {'prize': 'テスト賞品', 'winners': 1, 'minutes': 5},
-    'send_panel': {'channel': 'CHANNEL', 'role': 'ROLE'},
     'setup': {},
-    'sync_category_perms': {'category': 'CATEGORY', 'role': 'ROLE'},
     'clear': {'amount': 1},
     'dungeon': {},
     'flash': {'count': 2, 'interval': 0.01, 'digits': 2},
     'game': {},
-    'chat': {},
     'guess': {'bet': 10, 'choice': 1},
     'jinrou': {},
     'kill': {},
