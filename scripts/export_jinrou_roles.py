@@ -3,7 +3,8 @@
 使い方: python scripts/export_jinrou_roles.py        # 書き出す
         python scripts/export_jinrou_roles.py --check # 差分があれば終了コード 1
 
-役職 ID は、役職データに英語の `id` があればそれを、なければ日本語の役職名を使う。
+役職 ID は、core/jinrou_guide.py の ROLE_URL_USE_SLUG が True で役職データに英語の `id` があればそれを、
+それ以外は日本語の役職名を使う。
 Bot を import せず ast で読むので、discord.py などが入っていなくても動く。
 """
 from __future__ import annotations
@@ -47,7 +48,18 @@ def load_help_roles(path: Path = COG) -> list:
     raise RuntimeError("HELP_ROLES が見つかりません")
 
 
-def normalize(entry) -> dict:
+def load_use_slug(path: Path = ROOT / "core" / "jinrou_guide.py") -> bool:
+    """core/jinrou_guide.py の ROLE_URL_USE_SLUG（Bot のリンクとサイトの URL を同じ切り替えでそろえる）。"""
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "ROLE_URL_USE_SLUG" for t in node.targets):
+            return bool(ast.literal_eval(node.value))
+    return True
+
+
+USE_SLUG = load_use_slug()
+
+
+def normalize(entry, use_slug: bool = True) -> dict:
     """タプル (名前, 陣営, 説明, 画像[, id]) でも dict でも受け付ける。"""
     if isinstance(entry, dict):
         name, faction = entry["name"], entry.get("faction") or entry.get("team")
@@ -58,7 +70,7 @@ def normalize(entry) -> dict:
         rid = entry[4] if len(entry) > 4 else None
     team = TEAMS[faction]
     return {
-        "id": rid or name,
+        "id": (rid if use_slug else None) or name,
         "name": name,
         "team": team,
         "teamLabel": faction,
@@ -71,7 +83,7 @@ def normalize(entry) -> dict:
 def build_roles(path: Path = COG) -> list[dict]:
     roles = []
     for e in load_help_roles(path):
-        r = normalize(e)
+        r = normalize(e, use_slug=USE_SLUG)
         src = ASSETS / r.pop("asset") if r["asset"] else None
         r["image"] = f"/img/jinrou/{src.stem.lower()}.png" if src and src.exists() else None
         r["_src"] = src
