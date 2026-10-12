@@ -50,9 +50,7 @@ SLASH_ARGUMENTS = {
     'setup': {},
     'sync_category_perms': {'category': 'CATEGORY', 'role': 'ROLE'},
     'clear': {'amount': 1},
-    'd1ping': {},
     'dungeon': {},
-    'dungeon_reset': {},
     'flash': {'count': 2, 'interval': 0.01, 'digits': 2},
     'game': {},
     'chat': {},
@@ -79,7 +77,6 @@ SLASH_ARGUMENTS = {
     'voice join': {}, 'voice leave': {}, 'voice status': {}, 'voice record': {'action': 'status'},
     'voice echo': {'action': 'stop'}, 'voice transcribe': {'action': 'stop'}, 'voice karaoke': {'action': 'score'},
     'voice changer': {'action': 'status'}, 'voice match': {'action': 'stop'}, 'voice global': {'action': 'leave'},
-    'check_api': {},
     'uno_end': {},
     'uno_start': {},
     'wallet': {},
@@ -94,7 +91,7 @@ SLASH_ARGUMENTS = {
 }
 
 PREFIX_ARGUMENTS = {
-    'all_stats': {}, 'mood': {}, 'doubt': {}, 'terminal': {}, 'guild': {},
+    'all_stats': {}, 'mood': {}, 'doubt': {}, 'terminal': {}, 'guild': {}, 'd1ping': {}, 'check_api': {}, 'dungeon_reset': {},
     'ggrks': {'keyword': 'discord'},
     'mimic': {'prompt': 'こんにちは'}, 'mimic_toggle': {},
     'coin': {'amount': 1},
@@ -111,6 +108,9 @@ KNOWN_ISSUES: dict[str, str] = {}
 # 条件を満たさないときは、あえて何も返さないコマンド（返信がなくても合格にする）。
 SILENT_BY_DESIGN = {
     '!terminal': '許可されたユーザー以外には反応しない（存在を知らせないため）',
+    '!d1ping': '許可されたユーザー以外には反応しない（tests/test_admin_prefix.py）',
+    '!check_api': '許可されたユーザー以外には反応しない（tests/test_admin_prefix.py）',
+    '!dungeon_reset': '許可されたユーザー以外には反応しない（tests/test_admin_prefix.py）',
     '!guild': '許可されたユーザー以外には反応しない（tests/test_guild_list.py で両方を確認）',
 }
 
