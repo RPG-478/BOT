@@ -192,6 +192,14 @@ def calculate_elo_change(winner_rating, loser_rating, winner_is_wolf: bool):
     
     return rating_change, -rating_change
 
+def can_end_game(game, user) -> bool:
+    """人狼を途中で終了できるか：参加者・ホスト・サーバー管理者（administrator / manage_guild）。"""
+    perms = getattr(user, "guild_permissions", None)
+    if perms and (perms.administrator or perms.manage_guild):
+        return True
+    return user.id == game.host_id or any(p.id == user.id for p in game.players)
+
+
 async def get_player_rating(player_id: int) -> float:
     """Supabaseからプレイヤーのレートを取得"""
     try:
@@ -537,10 +545,13 @@ class JinrouCog(commands.Cog):
     #  コマンド
     # ======================================================
     async def force_end(self, interaction: discord.Interaction):
-        """/game の人狼画面の「ゲームを終了」から呼ぶ（旧 /kill と同じ処理・同じ権限）。"""
+        """/game の人狼画面の「ゲームを終了」から呼ぶ。参加者・ホスト・管理者のみ（UNO の終了ボタンと同じ）。"""
         game = self.get_game(interaction.channel_id)
         if not game.is_running:
             embed = discord.Embed(description="このチャンネルで実行中のゲームはありません。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+        if not can_end_game(game, interaction.user):
+            embed = discord.Embed(description="人狼を終了できるのは参加者・ホスト・管理者だけです。", color=0xFFFFFF)
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         game.is_running = False
@@ -550,7 +561,7 @@ class JinrouCog(commands.Cog):
             game.chairman_skip_event.set()
         if game.chairman_vote_event:
             game.chairman_vote_event.set()
-        embed = discord.Embed(description="管理者によりゲームが強制終了されました。", color=0xFFFFFF)
+        embed = discord.Embed(description=f"<@{interaction.user.id}> さんがゲームを強制終了しました。", color=0xFFFFFF)
         await interaction.response.send_message(embed=embed)
 
     async def start_recruit(self, interaction: discord.Interaction, mode: str = "local"):

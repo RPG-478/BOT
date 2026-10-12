@@ -145,6 +145,38 @@ class GameHubTest(unittest.IsolatedAsyncioTestCase):
         await press(message.view, 'end_game', inter)
         self.assertFalse(g.is_running)
 
+    async def start_jinrou_for_end(self):
+        message = await self.open_detail('jinrou')
+        await press(message.view, 'recruit', FakeInteraction(self.host, self.channel))
+        g = self.jinrou.games[self.channel.id]
+        return message, g
+
+    def plain_member(self, user_id):
+        member = FakeMember(user_id, self.guild)
+        member.guild_permissions = discord.Permissions.none()
+        return member
+
+    async def test_jinrou_end_by_participant_and_admin(self):
+        for kind in ('participant', 'admin'):
+            with self.subTest(kind=kind):
+                message, g = await self.start_jinrou_for_end()
+                user = self.plain_member(50)
+                if kind == 'participant':
+                    g.players.append(user)
+                else:
+                    user.guild_permissions = discord.Permissions(manage_guild=True)
+                await press(message.view, 'end_game', FakeInteraction(user, self.channel))
+                self.assertFalse(g.is_running)
+                g.is_running = False
+                self.jinrou.games.pop(self.channel.id, None)
+
+    async def test_jinrou_end_refused_for_outsider(self):
+        message, g = await self.start_jinrou_for_end()
+        inter = FakeInteraction(self.plain_member(77), self.channel)
+        await press(message.view, 'end_game', inter)
+        self.assertTrue(g.is_running)
+        self.assertIn('参加者・ホスト・管理者だけ', inter.response.sent[0].embed.description)
+
     async def test_uno_end_button_needs_member(self):
         message = await self.open_detail('uno')
         await press(message.view, 'end_game', FakeInteraction(self.host, self.channel))  # ゲームなし
