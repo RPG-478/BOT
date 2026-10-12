@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import discord
+from core import game_panels
 from discord.ext import commands
 
 from core import party_ranking
@@ -119,7 +120,7 @@ class CustomWordWolf(commands.Cog):
             f"**【ルール】メンションで判定（全体で残り {self.remaining_challenges} 回まで）**",
             title="ゲーム開始！"
         )
-        await interaction.channel.send(embed=embed, view=check_view)
+        await game_panels.replace(interaction.channel, "party", embed=embed, view=check_view)
 
         self.game_running = True
         self.bot.loop.create_task(self.game_timer(interaction.channel))
@@ -150,7 +151,7 @@ class CustomWordWolf(commands.Cog):
             f"**【ルール】メンションで判定（全体で残り {self.remaining_challenges} 回まで）**",
             title="ゲーム開始！"
         )
-        await channel.send(embed=embed, view=check_view)
+        await game_panels.replace(channel, "party", embed=embed, view=check_view)
 
         self.game_running = True
         self.bot.loop.create_task(self.game_timer(channel))

@@ -12,6 +12,7 @@ import asyncio
 import random
 
 import discord
+from core import game_panels
 from discord.ext import commands
 
 from core import autoplay, party_ranking
@@ -174,7 +175,7 @@ class Shinkei(commands.Cog):
             embed=discord.Embed(description=f"神経衰弱の募集を開始しました（{RECRUIT_SECONDS}秒）。", color=COLOR),
             ephemeral=True)
         try:
-            await channel.send(embed=discord.Embed(
+            await game_panels.replace(channel, "party", embed=discord.Embed(
                 title="神経衰弱 参加者募集",
                 description=(f"{interaction.user.mention} さんが募集中です。\n"
                              f"{RECRUIT_SECONDS}秒以内に「参加」を押してください（{MIN_PLAYERS}〜{MAX_PLAYERS}人。"
@@ -202,7 +203,7 @@ class Shinkei(commands.Cog):
     async def run_game(self, channel, g: ShinkeiGame):
         g.phase = "playing"
         order = " → ".join(m.display_name for m in g.players.values())
-        g.message = await channel.send(embed=self.board_embed(g, f"順番: {order}"), view=BoardView(self, g))
+        g.message = await game_panels.replace(channel, "party", embed=self.board_embed(g, f"順番: {order}"), view=BoardView(self, g))
         idle_streak = 0
         while not g.finished:
             result = await self.play_turn(channel, g)

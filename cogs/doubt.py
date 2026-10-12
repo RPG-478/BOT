@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import discord
+from core import game_panels
 from discord.ext import commands
 
 from core import party_ranking
@@ -207,7 +208,7 @@ class Doubt(commands.Cog):
         
         view = GameControlView(game, self)
         content = f"次の方、カードを選んでください: <@{game.current_player_id}>"
-        game.last_panel_msg = await channel.send(content=content, embed=embed, view=view)
+        game.last_panel_msg = await game_panels.replace(channel, "party", content=content, embed=embed, view=view)
 
     async def declare_winner(self, channel, game, winner_id):
         win_embed = discord.Embed(title="Game Set!", description=f"勝者: <@{winner_id}>", color=0xFFFFFF)
@@ -256,7 +257,7 @@ class Doubt(commands.Cog):
         )
         self.recruiting.add(channel.id)
         try:
-            view.message = await channel.send(embed=embed, view=view)
+            view.message = await game_panels.replace(channel, "party", embed=embed, view=view)
             await self.start_from_hub(channel, view.players, join_view=view)
         finally:
             self.recruiting.discard(channel.id)

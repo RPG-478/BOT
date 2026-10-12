@@ -15,6 +15,7 @@ import random
 from pathlib import Path
 
 import discord
+from core import game_panels
 from discord.ext import commands
 
 from core import party_ranking
@@ -164,7 +165,7 @@ class Wordle(commands.Cog):
         await interaction.response.send_message(
             embed=discord.Embed(description="Wordle を始めました。", color=COLOR), ephemeral=True)
         try:
-            g.message = await channel.send(embed=g.board_embed(), view=BoardView(self, g))
+            g.message = await game_panels.replace(channel, "party", embed=g.board_embed(), view=BoardView(self, g))
             try:
                 await asyncio.wait_for(g.finished.wait(), GAME_SECONDS)
             except asyncio.TimeoutError:
