@@ -312,8 +312,10 @@ class JinrouCog(commands.Cog):
         if message.author.bot:
             return
 
+        # 元のサーバーのチャンネルには、以前のローカル用のゲーム（止まっているもの）が残っていることがある。
+        # それが動いていないときは、このチャンネルが入っているグローバルゲームを探す
         game = self.games.get(message.channel.id)
-        if not game:
+        if not game or not game.is_running:
             for g in self.games.values():
                 if g.is_running and getattr(g, "is_global", False) and message.channel.id in [c.id for c in g.channels]:
                     game = g

@@ -68,5 +68,23 @@ class GlobalJoinTest(unittest.TestCase):
         self.assertIn("終わりました", self.press(10, self.other)[0])
 
 
+class GlobalRelayLookupTest(unittest.TestCase):
+    def test_origin_channel_with_stale_local_game_finds_global(self):
+        cog = J.JinrouCog.__new__(J.JinrouCog)
+        origin = Chan(1)
+        stale = J.JinrouGame()  # 止まっているローカル用のゲーム
+        g = J.JinrouGame()
+        g.is_global, g.is_running, g.channels = True, True, [origin, Chan(2)]
+        cog.games = {1: stale, "global": g}
+        g.is_dead_player = lambda uid: True  # 見つかったら削除まで進むので、それで判定する
+        deleted = []
+
+        async def delete():
+            deleted.append(1)
+        msg = types.SimpleNamespace(author=types.SimpleNamespace(bot=False, id=5), channel=origin, delete=delete)
+        asyncio.run(J.JinrouCog.on_message(cog, msg))
+        self.assertEqual(deleted, [1])
+
+
 if __name__ == "__main__":
     unittest.main()
