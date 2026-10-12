@@ -210,5 +210,5 @@ screener_data.db
 # cog が実行時に作るローカルDB
 mimic_memory.db
 
-# ミュートの期限・管理ロール（cogs/muted.py が実行時に作る）
-muted_state.json
+# Supabase が使えないときの保存先・控え（core/storage.py が実行時に作る）
+bot_kv.json
