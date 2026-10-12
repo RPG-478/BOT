@@ -212,3 +212,6 @@ mimic_memory.db
 
 # Supabase が使えないときの保存先・控え（core/storage.py が実行時に作る）
 bot_kv.json
+
+# web/ の Next.js ライブラリは除外しない
+!web/lib/
