@@ -1,4 +1,4 @@
-"""/guess の残高チェックと /clear の権限・件数制限のテスト。Discord・Supabase には接続しない。
+"""数字当て（/game）の残高チェックと /clear の権限・件数制限のテスト。Discord・Supabase には接続しない。
 
 偽の Discord と偽の Supabase は tests/test_all_commands.py のものを使う。
 """
@@ -65,7 +65,7 @@ class GuessTest(unittest.TestCase):
     def play(self, bet, choice=1, answer=1):
         interaction, _ = make_interaction(self.bot)
         with patch.object(guess_module.random, 'randint', return_value=answer) as randint:
-            run(self.cog.guess.callback(self.cog, interaction, bet, choice))
+            run(self.cog.play(interaction, bet, choice))
         return interaction._sent, randint.called
 
     def test_zero_balance_cannot_bet_even_if_it_would_win(self):

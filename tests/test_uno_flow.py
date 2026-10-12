@@ -112,25 +112,25 @@ class UnoFlowTest(unittest.IsolatedAsyncioTestCase):
         await self.cog.send_game_panel(self.channel, game)
         stranger = FakeMember(99, self.guild)
         inter = FakeInteraction(stranger, self.channel)
-        await self.cog.uno_end.callback(self.cog, inter)
+        await self.cog.force_end(inter)
         self.assertIn('参加者・ホスト・管理者', inter.texts()[0])
         self.assertIn(self.channel.id, self.cog.games)
 
         inter = FakeInteraction(self.players[2], self.channel)
-        await self.cog.uno_end.callback(self.cog, inter)
+        await self.cog.force_end(inter)
         self.assertNotIn(self.channel.id, self.cog.games)
         self.assertIsNone(game.active_view)
         self.assertIn('<@3> さんがUNOゲームを終了', self.channel.sent[-1].text())
 
         inter = FakeInteraction(self.players[0], self.channel)
-        await self.cog.uno_end.callback(self.cog, inter)
+        await self.cog.force_end(inter)
         self.assertIn('ありません', inter.texts()[0])
 
     async def test_uno_end_by_admin(self):
         self.new_game([['赤の1'], ['赤の3'], ['青の1']])
         admin = FakeMember(98, self.guild)
         admin.guild_permissions = discord.Permissions(administrator=True)
-        await self.cog.uno_end.callback(self.cog, FakeInteraction(admin, self.channel))
+        await self.cog.force_end(FakeInteraction(admin, self.channel))
         self.assertNotIn(self.channel.id, self.cog.games)
 
     async def test_cancelled_recruit_does_not_start(self):

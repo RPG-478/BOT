@@ -192,6 +192,14 @@ def calculate_elo_change(winner_rating, loser_rating, winner_is_wolf: bool):
     
     return rating_change, -rating_change
 
+def can_end_game(game, user) -> bool:
+    """人狼を途中で終了できるか：参加者・ホスト・サーバー管理者（administrator / manage_guild）。"""
+    perms = getattr(user, "guild_permissions", None)
+    if perms and (perms.administrator or perms.manage_guild):
+        return True
+    return user.id == game.host_id or any(p.id == user.id for p in game.players)
+
+
 async def get_player_rating(player_id: int) -> float:
     """Supabaseからプレイヤーのレートを取得"""
     try:
@@ -536,11 +544,14 @@ class JinrouCog(commands.Cog):
     # ======================================================
     #  コマンド
     # ======================================================
-    @app_commands.command(name="kill", description="このチャンネルで進行中の人狼ゲームを強制終了します")
-    async def kill(self, interaction: discord.Interaction):
+    async def force_end(self, interaction: discord.Interaction):
+        """/game の人狼画面の「ゲームを終了」から呼ぶ。参加者・ホスト・管理者のみ（UNO の終了ボタンと同じ）。"""
         game = self.get_game(interaction.channel_id)
         if not game.is_running:
             embed = discord.Embed(description="このチャンネルで実行中のゲームはありません。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+        if not can_end_game(game, interaction.user):
+            embed = discord.Embed(description="人狼を終了できるのは参加者・ホスト・管理者だけです。", color=0xFFFFFF)
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         game.is_running = False
@@ -550,20 +561,12 @@ class JinrouCog(commands.Cog):
             game.chairman_skip_event.set()
         if game.chairman_vote_event:
             game.chairman_vote_event.set()
-        embed = discord.Embed(description="管理者によりゲームが強制終了されました。", color=0xFFFFFF)
+        embed = discord.Embed(description=f"<@{interaction.user.id}> さんがゲームを強制終了しました。", color=0xFFFFFF)
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="jinrou", description="人狼ゲームを開始します")
-    @app_commands.choices(mode=[
-        app_commands.Choice(name="ローカルモード", value="local"),
-        app_commands.Choice(name="グローバルモード", value="global")
-    ])
-    async def jinrou(self, interaction: discord.Interaction, mode: str = "local"):
-        await self.open_setup(interaction, mode)
-
-    async def start_recruit(self, interaction: discord.Interaction):
-        """/game のハブから呼ぶ。このチャンネルでローカルモードの設定パネルを出す（グローバルモードは扱わない）。"""
-        await self.open_setup(interaction, "local")
+    async def start_recruit(self, interaction: discord.Interaction, mode: str = "local"):
+        """/game のハブから呼ぶ。このチャンネルで設定パネルを出す（mode は local / global）。"""
+        await self.open_setup(interaction, mode if mode in ("local", "global") else "local")
 
     async def open_setup(self, interaction: discord.Interaction, mode: str = "local"):
         # 追加
@@ -610,42 +613,25 @@ class JinrouCog(commands.Cog):
             ephemeral=True
         )
 
-    @app_commands.command(name="jinrou_rating", description="あなたの人狼レーティングを確認します")
-    async def jinrou_rating(self, interaction: discord.Interaction):
-        rating = await get_player_rating(interaction.user.id)
-        embed = discord.Embed(
-            title="人狼レーティング",
-            description=f"**{interaction.user.display_name}** さんのレート\n\n🏆 {rating:.0f} pts",
-            color=0xFFFFFF
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="jinrou_ranking", description="人狼ゲームのレーティングランキングを表示します")
-    async def jinrou_ranking(self, interaction: discord.Interaction):
+    async def rating_embed(self, user) -> discord.Embed:
+        """/game の人狼画面の「レート」から呼ぶ。自分のレートと、レート上位10人。"""
+        rating = await get_player_rating(user.id)
         rankings = await get_top_ratings(10)
-        if not rankings:
-            embed = discord.Embed(description="ランキングデータがまだありません。", color=0xFFFFFF)
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
-        
         lines = []
-        for i, entry in enumerate(rankings, 1):
+        for i, entry in enumerate(rankings or [], 1):
             player_id = entry["player_id"]
-            rating = entry["rating"]
             try:
-                user = await self.bot.fetch_user(player_id)
-                name = user.display_name if user else f"ID: {player_id}"
-            except:
+                fetched = await self.bot.fetch_user(player_id)
+                name = fetched.display_name if fetched else f"ID: {player_id}"
+            except Exception:
                 name = f"ID: {player_id}"
-            
-            medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"{i}."
-            lines.append(f"{medal} **{name}**: {rating:.0f} pts")
-        
-        embed = discord.Embed(
-            title="人狼ゲーム レーティングランキング TOP 10",
-            description="\n".join(lines),
-            color=0xFFFFFF
+            lines.append(f"{i}. **{name}**: {entry['rating']:.0f} pts")
+        ranking_text = "\n".join(lines) if lines else "ランキングデータがまだありません。"
+        return discord.Embed(
+            title="人狼レーティング",
+            description=f"**{user.display_name}** さんのレート: {rating:.0f} pts\n\n**レート上位10人**\n{ranking_text}",
+            color=0xFFFFFF,
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def run_from_hub(self, game: JinrouGame, channel, host_id: int = None):
         """play.py から create_task で呼ぶ。60秒待機してゲームループを開始する。"""
@@ -1751,46 +1737,6 @@ class GlobalJoinView(discord.ui.View):
             except discord.HTTPException:
                 pass
 
-
-class HelpView(discord.ui.View):
-    """ページめくり型ヘルプ"""
-    def __init__(self):
-        super().__init__(timeout=120)
-        self.page = 0
-
-    def make_embed_and_file(self):
-        role_name, faction, desc, img_filename = HELP_ROLES[self.page][:4]
-        embed = discord.Embed(
-            title=f"【{faction}】 {role_name}",
-            description=desc,
-            color=0xFFFFFF
-        )
-        embed.set_footer(text=f"{self.page + 1} / {len(HELP_ROLES)}")
-        file = None
-        if img_filename:
-            path = f"Assets/{img_filename}"
-            if os.path.exists(path):
-                file = discord.File(path, filename="role_img.png")
-                embed.set_image(url="attachment://role_img.png")
-        return embed, file
-
-    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
-    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.page = (self.page - 1) % len(HELP_ROLES)
-        embed, file = self.make_embed_and_file()
-        if file:
-            await interaction.response.edit_message(embed=embed, view=self, attachments=[file])
-        else:
-            await interaction.response.edit_message(embed=embed, view=self, attachments=[])
-
-    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
-    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.page = (self.page + 1) % len(HELP_ROLES)
-        embed, file = self.make_embed_and_file()
-        if file:
-            await interaction.response.edit_message(embed=embed, view=self, attachments=[file])
-        else:
-            await interaction.response.edit_message(embed=embed, view=self, attachments=[])
 
 class RoleCheckView(discord.ui.View):
     def __init__(self, game, cog):

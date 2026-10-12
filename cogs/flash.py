@@ -1,8 +1,27 @@
 import asyncio
 import random
 import discord
-from discord import app_commands
 from discord.ext import commands
+
+
+class FlashModal(discord.ui.Modal, title="フラッシュ暗算"):
+  count = discord.ui.TextInput(label="数字の個数（1〜20）", default="5", max_length=2)
+  interval = discord.ui.TextInput(label="表示の間隔（秒、1.0以上）", default="1.0", max_length=5)
+  digits = discord.ui.TextInput(label="桁数（1〜6）", default="1", max_length=1)
+
+  def __init__(self, cog):
+    super().__init__()
+    self.cog = cog
+
+  async def on_submit(self, interaction: discord.Interaction):
+    try:
+      count = int(str(self.count.value).strip())
+      interval = float(str(self.interval.value).strip())
+      digits = int(str(self.digits.value).strip())
+    except ValueError:
+      await interaction.response.send_message("半角の数字で入力してください。", ephemeral=True)
+      return
+    await self.cog.play(interaction, count, interval, digits)
 
 
 class FlashMentalArithmetic(commands.Cog):
@@ -10,15 +29,11 @@ class FlashMentalArithmetic(commands.Cog):
   def __init__(self, bot: commands.Bot):
     self.bot = bot
 
-  @app_commands.command(
-      name="flash", description="フラッシュ暗算を行います。"
-  )
-  @app_commands.describe(
-      count="出題する数字の個数",
-      interval="数字を表示する間隔（秒：最短1.0秒推奨）",
-      digits="数字の桁数（1: 1-9, 2: 10-99など）",
-  )
-  async def flash(
+  async def start_recruit(self, interaction: discord.Interaction):
+    """/game のハブから呼ぶ。個数・間隔・桁数を入れるフォームを出す。"""
+    await interaction.response.send_modal(FlashModal(self))
+
+  async def play(
       self, interaction: discord.Interaction, count: int, interval: float, digits: int
   ):
     # Discordのレートリミット（同一チャンネルのメッセージ編集/送信頻度）を考慮し、
@@ -26,9 +41,9 @@ class FlashMentalArithmetic(commands.Cog):
     if interval < 1.0:
       interval = 1.0
 
-    if count < 1 or digits < 1 or count > 20:
+    if count < 1 or digits < 1 or count > 20 or digits > 6:
       await interaction.response.send_message(
-          "引数の値が不正です。countは1〜20、digitsは1以上を指定してください。",
+          "引数の値が不正です。個数は1〜20、桁数は1〜6で指定してください。",
           ephemeral=True,
       )
       return

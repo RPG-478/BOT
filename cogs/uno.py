@@ -615,8 +615,8 @@ class Uno(commands.Cog):
                 except discord.NotFound:
                     pass
 
-    @app_commands.command(name="uno_end", description="このチャンネルのUNO（募集中・進行中）を終了します。参加者・ホスト・管理者のみ。")
-    async def uno_end(self, interaction: discord.Interaction):
+    async def force_end(self, interaction: discord.Interaction):
+        """/game の UNO 画面の「ゲームを終了」から呼ぶ。参加者・ホスト・管理者のみ（旧 /uno_end と同じ）。"""
         game = self.games.get(interaction.channel_id)
         if game is None:
             return await interaction.response.send_message("[!] このチャンネルで進行中のUNOゲームはありません。", ephemeral=True)
@@ -709,7 +709,7 @@ class Uno(commands.Cog):
             order_list.append(f"{marker}<@{p_id}>: 手札 {hand_count}枚")
             
         embed.add_field(name="プレイヤー順", value="\n".join(order_list), inline=False)
-        embed.set_footer(text=f"手番プレイヤーは下のセレクトメニューからカードを選択してください（{int(TURN_TIMEOUT // 60)}分以内。過ぎると自動で1枚引いてパス）。/uno_end で終了できます。")
+        embed.set_footer(text=f"手番プレイヤーは下のセレクトメニューからカードを選択してください（{int(TURN_TIMEOUT // 60)}分以内。過ぎると自動で1枚引いてパス）。/game の UNO 画面の「ゲームを終了」で終了できます。")
 
         if game.active_view is not None:
             game.active_view.stop()

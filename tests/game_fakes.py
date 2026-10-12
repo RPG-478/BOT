@@ -181,6 +181,10 @@ class FakeResponse:
     async def defer(self, *args, **kwargs):
         self._mark()
 
+    async def send_modal(self, modal):
+        self._mark()
+        self.modal = modal
+
     def is_done(self):
         return self._done
 
