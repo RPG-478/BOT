@@ -6,6 +6,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from core import jinrou_review
+
 from core import party_ranking
 
 party_ranking.register("jinrou")
@@ -131,6 +133,8 @@ class JinrouGame:
         self.is_global = False
         self.channels = []
         self._original_channel = None
+        self.review = []          # 振り返り表の記録（core/jinrou_review.py）
+        self.review_divines = {}  # その夜の占い結果 {占い師: (対象, 白/黒)}
         self.started = False  # 役職を配ってゲームループが動いている間 True（募集中は False）
 
     # 新しいゲームでも引き継ぐ項目（チャンネルの紐付け）。それ以外はすべて初期値に戻す。
@@ -692,11 +696,14 @@ class JinrouCog(commands.Cog):
                 await self.run_discussion(game, seconds=150, title="昼のディスカッション")
                 if not game.is_running: break
 
+                before_vote = {p.id for p in game.alive_players}
                 if game.chairman_forced_vote:
                     game.chairman_forced_vote = False
                     await self.run_chairman_vote_phase(game)
                 else:
                     await self.run_voting_phase(game)
+                jinrou_review.record_day(game, game.day_count,
+                                         [p.id for p in game.players if p.id in before_vote and p.id not in {a.id for a in game.alive_players}])
 
                 if not game.is_running or await self.check_victory(game): break
 
@@ -710,6 +717,9 @@ class JinrouCog(commands.Cog):
             if game.roles:
                 try: await self._announce_final_roles(game)
                 except Exception: pass
+                if game.review:
+                    try: await game.game_channel.send(embed=jinrou_review.build_embed(game))
+                    except Exception: pass
             game.is_running = False
 
     async def run_discussion(self, game, seconds, title):
@@ -786,6 +796,9 @@ class JinrouCog(commands.Cog):
             else:
                 await game.game_channel.send(message)
 
+        alive_before = [p.id for p in game.alive_players]
+        actions_snapshot = dict(game.night_actions)
+        attack_results = {}  # 振り返り表用 {人狼: (対象, 結果)}
         dead_ids = set()
         wolf_attacks   = {}
         knight_targets = set()
@@ -893,17 +906,22 @@ class JinrouCog(commands.Cog):
         # 人狼の襲撃処理
         for wolf_id, target_id in wolf_attacks.items():
             if wolf_id in dead_ids:
+                attack_results[wolf_id] = (target_id, "attacker_dead")
                 continue
             if target_id in trap_targets:
                 dead_ids.add(wolf_id)
+                attack_results[wolf_id] = (target_id, "trapped")
                 await send_log("罠師の罠が発動！ 狼が罠にかかりました。")
                 continue
             if target_id in knight_targets or target_id in musician_protected:
+                attack_results[wolf_id] = (target_id, "guarded" if target_id in knight_targets else "party")
                 continue
             if game.roles.get(target_id) == "マサイ族" and game.masai_evasion.get(target_id):
                 if random.random() < 0.5:
+                    attack_results[wolf_id] = (target_id, "evaded")
                     await send_log("<:MASAI:1490254590757572758>マサイ族は襲撃を回避しました。")
                     continue
+            attack_results[wolf_id] = (target_id, "success")
             dead_ids.add(target_id)
 
         # 貴族・奴隷・リア充等の死亡連動処理（既存コードを維持）
@@ -948,6 +966,10 @@ class JinrouCog(commands.Cog):
                     await self._check_mokumoku_reveal(game, d_id)
         else:
             await send_log("<:KISHI:1490254592800456794>夜の結果: 昨晩の犠牲者はいないようです。")
+
+        alive_after = {p.id for p in game.alive_players}
+        jinrou_review.record_night(game, game.day_count, actions_snapshot, cancelled_ids, attack_results,
+                                   [uid for uid in alive_before if uid not in alive_after])
 
         # もくもくの経過ターンカウントをインクリメント
         if any(game.roles.get(p.id) == "もくもく" for p in game.alive_players):
@@ -1822,6 +1844,7 @@ class ActionSelectView(discord.ui.View):
             if any(self.game.roles.get(p.id) == "ビー玉ブレイカー" for p in self.game.alive_players):
                 if random.random() < 0.3:
                     res = "白" if res == "黒" else "黒"
+            jinrou_review.note_divine(self.game, p_id, t_id, res)
             embed = discord.Embed(description=f"<:URANAI:1490255412837093568>占い結果: 【{res}】", color=0xFFFFFF)
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
