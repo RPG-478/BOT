@@ -9,6 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from core import party_ranking
 from core.game_guides import GAME_GUIDES, GAME_ORDER, guide_for_discord
 
 HUB_COLOR = 0xFFFFFF
@@ -21,6 +22,9 @@ GAME_COGS = {
     "doubt": "Doubt",
     "ngword": "NGWord",
 }
+
+# 勝利数を記録しているゲーム（ここだけ「ランキング」ボタンを出す）
+RANKED_GAMES = {"ngword"}
 
 WORDWOLF_LISTS = [("standard", "標準"), ("starail", "崩壊：スターレイル"), ("genshin", "原神")]
 
@@ -56,6 +60,21 @@ def rules_embed(game_id: str) -> discord.Embed:
     embed.add_field(name="人数の目安", value=guide["players"], inline=True)
     embed.add_field(name="所要時間", value=guide["duration"], inline=True)
     embed.add_field(name="個別コマンド", value=" / ".join(f"`{c}`" for c in guide["commands"]), inline=False)
+    return embed
+
+
+async def ranking_embed(guild_id, game_id: str) -> discord.Embed:
+    """このサーバーの勝利数ランキング（上位10人）。"""
+    guide = GAME_GUIDES[game_id]
+    rows = await party_ranking.shared().top(guild_id, game_id, limit=10) if guild_id else []
+    if rows:
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        lines = [f"{medals.get(i, f'{i}.')} <@{uid}> — {wins}勝" for i, (uid, wins) in enumerate(rows, 1)]
+        text = "\n".join(lines)
+    else:
+        text = "まだ記録がありません。"
+    embed = discord.Embed(title=f"{guide['name']} のサーバーランキング", description=text, color=HUB_COLOR)
+    embed.set_footer(text="勝利数の上位10人です。")
     return embed
 
 
@@ -108,6 +127,8 @@ class GameDetailView(discord.ui.View):
         self.add_item(GameSelect(selected=game_id))
         if game_id == "wordwolf":
             self.add_item(WordlistSelect(self.wordlist))
+        if game_id not in RANKED_GAMES:
+            self.remove_item(self.ranking)
 
     @discord.ui.button(label="ルール", style=discord.ButtonStyle.secondary, row=2)
     async def rules(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -116,6 +137,11 @@ class GameDetailView(discord.ui.View):
     @discord.ui.button(label="募集する", style=discord.ButtonStyle.success, row=2)
     async def recruit(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.start_game(interaction, self.game_id, wordlist=self.wordlist)
+
+    @discord.ui.button(label="ランキング", style=discord.ButtonStyle.primary, row=2)
+    async def ranking(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=await ranking_embed(interaction.guild_id, self.game_id),
+                                                ephemeral=True)
 
     @discord.ui.button(label="戻る", style=discord.ButtonStyle.secondary, row=2)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
