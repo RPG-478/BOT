@@ -35,9 +35,22 @@ class RoleIdTest(unittest.TestCase):
             self.assertRegex(slug, SLUG)
             self.assertTrue(slug.isascii())
 
-    def test_url_uses_slug_and_single_base(self):
-        self.assertEqual(guide.role_url("ハゲ"), f"{guide.ROLE_GUIDE_BASE_URL}/hage")
-        self.assertEqual(guide.role_url("人狼"), "https://bot-deshihito.vercel.app/jinrou/roles/werewolf")
+    def test_url_follows_switch(self):
+        from unittest.mock import patch
+        self.assertFalse(guide.ROLE_URL_USE_SLUG)
+        # サイト（#72）は encodeURIComponent(日本語の役職名)
+        self.assertEqual(guide.role_url("人狼"), "https://bot-deshihito.vercel.app/jinrou/roles/%E4%BA%BA%E7%8B%BC")
+        with patch.object(guide, "ROLE_URL_USE_SLUG", True):
+            self.assertEqual(guide.role_url("ハゲ"), f"{guide.ROLE_GUIDE_BASE_URL}/hage")
+            self.assertEqual(guide.role_url("人狼"), "https://bot-deshihito.vercel.app/jinrou/roles/werewolf")
+
+    def test_links_match_site_ids(self):
+        import json, re
+        from urllib.parse import unquote
+        text = (ROOT / "web" / "lib" / "jinrou-roles.ts").read_text(encoding="utf-8")
+        site_ids = {r["id"] for r in json.loads(re.search(r"JINROU_ROLES: JinrouRole\[\] = (\[.*\]);", text, re.S).group(1))}
+        for name, *_ in jinrou.HELP_ROLES:
+            self.assertIn(unquote(guide.role_id(name)), site_ids, name)
         self.assertEqual(guide.role_url(None), guide.ROLE_GUIDE_BASE_URL)
         self.assertTrue(guide.role_url("未知の役職").startswith(guide.ROLE_GUIDE_BASE_URL + "/%E6"))
 
@@ -58,7 +71,8 @@ class GuideTextTest(unittest.TestCase):
         guide.register_roles([("新しい役職", "人狼陣営", "テスト", "X.PNG", "new-role")])
         try:
             self.assertEqual(dict(guide.guide_fields("新しい役職"))["能力"], "テスト")
-            self.assertTrue(guide.role_url("新しい役職").endswith("/new-role"))
+            self.assertTrue(guide.role_url("新しい役職").endswith("/%E6%96%B0%E3%81%97%E3%81%84%E5%BD%B9%E8%81%B7"))
+            self.assertEqual(guide.role_id("新しい役職", use_slug=True), "new-role")
         finally:
             guide._roles.pop("新しい役職", None)
             guide.ROLE_IDS.pop("新しい役職", None)
@@ -90,6 +104,7 @@ class RoleNoticeTest(unittest.IsolatedAsyncioTestCase):
         names = [f.name for f in kwargs["embed"].fields]
         self.assertIn("🔰 今夜やること", names)
         self.assertIn(guide.role_url("占い師"), [f.value for f in kwargs["embed"].fields])
+        self.assertIn("%E5%8D%A0", guide.role_url("占い師"))
 
     async def test_hidden_role_is_not_leaked(self):
         game = self.game({1: "入狼"})
@@ -101,7 +116,7 @@ class RoleNoticeTest(unittest.IsolatedAsyncioTestCase):
         text = (embed.description or "") + "".join(f.value for f in embed.fields)
         self.assertNotIn("入狼", text)
         self.assertNotIn("nyurou", text)
-        self.assertIn("villager", text)
+        self.assertIn(guide.role_url("一般通過あごむに"), text)
 
 
 class PhaseButtonTest(unittest.IsolatedAsyncioTestCase):

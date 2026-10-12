@@ -13,6 +13,11 @@ import discord
 # 役職ガイドのページ（TYPETA が作成中）。URL はここだけで管理する。
 ROLE_GUIDE_BASE_URL = "https://bot-deshihito.vercel.app/jinrou/roles"
 
+# 役職ページの URL に ASCII の id を使うか。False の間は、サイト（#72）と同じく
+# 日本語の役職名を URL エンコードしたもの（encodeURIComponent 相当）を使う。
+# scripts/export_jinrou_roles.py もこの値を読んで、サイトの役職 ID をそろえる。
+ROLE_URL_USE_SLUG = False
+
 # 役職 ID（スラッグ）は cogs/jinrou.py の HELP_ROLES の 5 番目の値で管理し、register_roles で読み込む。
 
 # 勝敗の判定・人数比べ・レートで人狼側として数える役職（cogs/jinrou.py もここを使う）
@@ -71,8 +76,12 @@ def register_roles(help_roles: Iterable[tuple]) -> None:
             ROLE_IDS[row[0]] = row[4]
 
 
-def role_id(role: str) -> str:
-    return ROLE_IDS.get(role) or quote(role, safe="")
+def role_id(role: str, use_slug: Optional[bool] = None) -> str:
+    """URL に使う役職 ID。use_slug を省くと ROLE_URL_USE_SLUG に従う。"""
+    if ROLE_URL_USE_SLUG if use_slug is None else use_slug:
+        if ROLE_IDS.get(role):
+            return ROLE_IDS[role]
+    return quote(role, safe="")
 
 
 def role_url(role: Optional[str]) -> str:

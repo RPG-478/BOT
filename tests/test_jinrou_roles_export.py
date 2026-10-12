@@ -22,7 +22,7 @@ class JinrouRolesExportTest(unittest.TestCase):
         data = json.loads(re.search(r"JINROU_ROLES: JinrouRole\[\] = (\[.*\]);", text, re.S).group(1))
         self.assertEqual(len(data), len(jinrou.HELP_ROLES))
         for row, entry in zip(data, jinrou.HELP_ROLES):
-            r = exporter.normalize(entry)
+            r = exporter.normalize(entry, use_slug=exporter.USE_SLUG)
             self.assertEqual(row["id"], r["id"])
             self.assertEqual(row["name"], r["name"])
             self.assertEqual(row["teamLabel"], r["teamLabel"])
