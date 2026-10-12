@@ -11,6 +11,7 @@ import discord.opus
 from discord.ext import commands
 from discord.ext import voice_recv
 
+from core.legacy import Responder, legacy
 from core.voice_session import VoiceBusy, get_manager
 
 logger = logging.getLogger(__name__)
@@ -368,113 +369,162 @@ class VoiceChangerCog(commands.Cog):
         self.vc_sessions: dict[int, dict] = {}
         self.voice_sessions = get_manager(bot)
 
-    @commands.group(name="vc", invoke_without_command=True)
-    @commands.guild_only()
-    async def vc_group(self, ctx: commands.Context):
-        session = self.vc_sessions.get(ctx.guild.id)
-        if session:
-            sink: VoiceChangerSink = session["sink"]
-            src = sink.audio_source
+    # --------------------------------------------------
+    # 実装（/voice changer と旧 !vc の共通）
+    # --------------------------------------------------
+    async def _changer_impl(self, r: Responder, action: str, pitch: float | None = None,
+                            buffer_ms: float | None = None, max_ms: float | None = None):
+        """action: start / status / stop
 
-            proc_ms = sink.last_proc_time_ms
-            avg_ms = sink.avg_proc_time_ms
-            buf_ms = src.buffered_ms
-            total_est_delay = avg_ms + src.target_buffer_ms + 20.0
+        pitch・buffer_ms・max_ms を付けると、動作中ならその設定を変える（start でも status でも）。
+        """
+        guild_id = r.guild.id
+        session = self.vc_sessions.get(guild_id)
+        has_options = pitch is not None or buffer_ms is not None or max_ms is not None
 
-            await ctx.send(embed=we(
-                f"🎙️ **ボイスチェンジャー動作中 (20ms低遅延・無音待機再同期モード)**\n"
-                f"🎵 設定ピッチ: `{sink.semitones:+.1f}` 半音\n\n"
-                f"📊 **遅延ステータス (数値)**\n"
-                f"├ ⚡ 変換処理時間: `{proc_ms:.2f} ms` (平均: `{avg_ms:.2f} ms`)\n"
-                f"├ 📦 バッファ滞留量: `{buf_ms:.1f} ms`\n"
-                f"├ 🎯 目標プリバッファ: `{src.target_buffer_ms:.0f} ms` / 上限: `{src.max_buffer_ms:.0f} ms`\n"
-                f"├ ⚠️ アンダーラン(待機発生)回数: `{src.underrun_count}` 回\n"
-                f"├ 🩹 パケットロス補完(PLC): `{sink.concealed_count}` 回 (ロスト検出: `{sink.lost_packet_count}` 回)\n"
-                f"└ ⏱️ **推定トータル遅延**: `~{total_est_delay:.1f} ms`\n\n"
-                f"・ピッチ変更: `{ctx.prefix}vc pitch <半音数>`\n"
-                f"・バッファ調整: `{ctx.prefix}vc buffer <目標ms> [上限ms]`\n"
-                f"・停止: `{ctx.prefix}vc stop`"
-            ))
-        else:
-            await ctx.send(embed=we(f"⏸️ ボイスチェンジャー停止中 (`{ctx.prefix}vc start` で開始)"))
+        if action == "stop":
+            if session is None:
+                return await r.send(embed=we("⚠️ ボイスチェンジャーは実行されていません。"), ephemeral=True)
+            if not await self.voice_sessions.release(guild_id, "changer", reason="stop"):
+                self._cleanup(guild_id)("stop")
+            return await r.send(embed=we("🛑 ボイスチェンジャーを停止しました。"))
 
-    @vc_group.command(name="start")
-    @commands.guild_only()
-    async def vc_start(self, ctx: commands.Context, pitch: float = 0.0):
-        if not ctx.author.voice or not ctx.author.voice.channel:
-            return await ctx.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"))
+        if action == "start" and session is None:
+            return await self._start(r, pitch, buffer_ms, max_ms)
 
-        guild_id = ctx.guild.id
-        if guild_id in self.vc_sessions:
-            return await ctx.send(embed=we("⚠️ 既にボイスチェンジャーが実行中です。"))
+        if has_options:
+            if session is None:
+                return await r.send(embed=we("⚠️ ボイスチェンジャーが開始されていません。"), ephemeral=True)
+            return await self._apply(r, session, pitch, buffer_ms, max_ms)
 
-        target_channel = ctx.author.voice.channel
+        if action == "start":
+            return await r.send(embed=we(
+                "⚠️ 既にボイスチェンジャーが実行中です。設定を変えるときは `pitch` や `buffer_ms` を付けてください。"
+            ), ephemeral=True)
+        await self._send_status(r, session)
+
+    @staticmethod
+    def _resolve_buffer(current_target: float, buffer_ms: float | None, max_ms: float | None):
+        """(目標ms, 上限ms, エラー文) を返す。"""
+        target = current_target if buffer_ms is None else buffer_ms
+        if target < 20:
+            return None, None, "⚠️ 目標バッファは20ms以上を指定してください。"
+        resolved_max = max_ms if max_ms is not None else target * 2
+        if resolved_max < target:
+            return None, None, "⚠️ 上限バッファは目標バッファ以上にしてください。"
+        return target, resolved_max, None
+
+    async def _apply(self, r: Responder, session: dict, pitch, buffer_ms, max_ms):
+        sink: VoiceChangerSink = session["sink"]
+        lines = []
+        if buffer_ms is not None or max_ms is not None:
+            target, resolved_max, error = self._resolve_buffer(sink.audio_source.target_buffer_ms, buffer_ms, max_ms)
+            if error:
+                return await r.send(embed=we(error), ephemeral=True)
+            sink.audio_source.update_settings(target_buffer_ms=target, max_buffer_ms=resolved_max)
+            lines.append(f"📦 バッファ: 目標 `{target:.0f} ms` / 上限 `{resolved_max:.0f} ms`")
+        if pitch is not None:
+            sink.set_semitones(pitch)
+            lines.append(f"🎵 ピッチ: `{pitch:+.1f}` 半音")
+        await r.send(embed=we("🔧 ボイスチェンジャーの設定を変更しました。\n" + "\n".join(lines)))
+
+    async def _send_status(self, r: Responder, session: dict | None):
+        if session is None:
+            return await r.send(embed=we("⏸️ ボイスチェンジャー停止中 (`/voice changer action:開始` で開始)"))
+        sink: VoiceChangerSink = session["sink"]
+        src = sink.audio_source
+
+        proc_ms = sink.last_proc_time_ms
+        avg_ms = sink.avg_proc_time_ms
+        buf_ms = src.buffered_ms
+        total_est_delay = avg_ms + src.target_buffer_ms + 20.0
+
+        await r.send(embed=we(
+            f"🎙️ **ボイスチェンジャー動作中 (20ms低遅延・無音待機再同期モード)**\n"
+            f"🎵 設定ピッチ: `{sink.semitones:+.1f}` 半音\n\n"
+            f"📊 **遅延ステータス (数値)**\n"
+            f"├ ⚡ 変換処理時間: `{proc_ms:.2f} ms` (平均: `{avg_ms:.2f} ms`)\n"
+            f"├ 📦 バッファ滞留量: `{buf_ms:.1f} ms`\n"
+            f"├ 🎯 目標プリバッファ: `{src.target_buffer_ms:.0f} ms` / 上限: `{src.max_buffer_ms:.0f} ms`\n"
+            f"├ ⚠️ アンダーラン(待機発生)回数: `{src.underrun_count}` 回\n"
+            f"├ 🩹 パケットロス補完(PLC): `{sink.concealed_count}` 回 (ロスト検出: `{sink.lost_packet_count}` 回)\n"
+            f"└ ⏱️ **推定トータル遅延**: `~{total_est_delay:.1f} ms`\n\n"
+            f"・設定変更: `/voice changer action:状態 pitch:<半音数> buffer_ms:<目標ms> max_ms:<上限ms>`\n"
+            f"・停止: `/voice changer action:停止`"
+        ))
+
+    async def _start(self, r: Responder, pitch, buffer_ms, max_ms):
+        voice = getattr(r.user, "voice", None)
+        if not voice or not voice.channel:
+            return await r.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"), ephemeral=True)
+        pitch = 0.0 if pitch is None else pitch
+        buffer = None
+        if buffer_ms is not None or max_ms is not None:
+            target, resolved_max, error = self._resolve_buffer(DEFAULT_TARGET_BUFFER_MS, buffer_ms, max_ms)
+            if error:
+                return await r.send(embed=we(error), ephemeral=True)
+            buffer = (target, resolved_max)
+
+        guild_id = r.guild.id
+        target_channel = voice.channel
+        await r.defer()
 
         # 別の機能が VC を使っているときは追い出さずに断る。
         try:
             vc = await self.voice_sessions.acquire(
-                ctx.guild, target_channel, "changer", ctx.author,
-                cleanup=self._cleanup(guild_id), text_channel=ctx.channel, force=True, timeout=30.0,
+                r.guild, target_channel, "changer", r.user,
+                cleanup=self._cleanup(guild_id), text_channel=r.channel, force=True, timeout=30.0,
             )
         except VoiceBusy as busy:
-            return await ctx.send(embed=we(str(busy)))
+            return await r.send(embed=we(str(busy)), ephemeral=True)
         except Exception as e:
-            return await ctx.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
+            return await r.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
 
         sink = VoiceChangerSink(bot=self.bot, vc=vc, semitones=pitch)
+        if buffer is not None:
+            sink.audio_source.update_settings(target_buffer_ms=buffer[0], max_buffer_ms=buffer[1])
         vc.listen(sink)
 
         self.vc_sessions[guild_id] = {"sink": sink, "vc": vc}
-        await ctx.send(embed=we(
+        await r.send(embed=we(
             f"🎙️ **{target_channel.name}** でボイスチェンジャーを開始しました！\n"
             f"🎵 ピッチ: `{pitch:+.1f}` 半音\n"
-            f"📦 プリバッファ: `{DEFAULT_TARGET_BUFFER_MS:.0f} ms` (超低遅延モード)\n"
-            f"📊 `!vc` で遅延数値を確認できます。"
+            f"📦 プリバッファ: `{(buffer[0] if buffer else DEFAULT_TARGET_BUFFER_MS):.0f} ms` (超低遅延モード)\n"
+            f"📊 `/voice changer action:状態` で遅延数値を確認できます。"
         ))
+
+    # --------------------------------------------------
+    # 旧コマンド: !vc（/voice changer に移行）
+    # --------------------------------------------------
+    @commands.group(name="vc", invoke_without_command=True)
+    @commands.guild_only()
+    @legacy("/voice changer action:状態", "!vc")
+    async def vc_group(self, ctx: commands.Context):
+        await self._changer_impl(Responder(ctx), "status")
+
+    @vc_group.command(name="start")
+    @commands.guild_only()
+    @legacy("/voice changer action:開始", "!vc start")
+    async def vc_start(self, ctx: commands.Context, pitch: float = None):
+        await self._changer_impl(Responder(ctx), "start", pitch=pitch)
 
     @vc_group.command(name="pitch")
     @commands.guild_only()
+    @legacy("/voice changer action:状態 pitch:<半音数>", "!vc pitch")
     async def vc_pitch(self, ctx: commands.Context, semitones: float):
-        session = self.vc_sessions.get(ctx.guild.id)
-        if not session:
-            return await ctx.send(embed=we("⚠️ ボイスチェンジャーが開始されていません。"))
-
-        sink: VoiceChangerSink = session["sink"]
-        sink.set_semitones(semitones)
-        await ctx.send(embed=we(f"🎵 ピッチを `{semitones:+.1f}` 半音に変更しました。"))
+        await self._changer_impl(Responder(ctx), "status", pitch=semitones)
 
     @vc_group.command(name="buffer")
     @commands.guild_only()
+    @legacy("/voice changer action:状態 buffer_ms:<目標ms>", "!vc buffer")
     async def vc_buffer(self, ctx: commands.Context, target_ms: float, max_ms: float = None):
-        session = self.vc_sessions.get(ctx.guild.id)
-        if not session:
-            return await ctx.send(embed=we("⚠️ ボイスチェンジャーが開始されていません。"))
-
-        if target_ms < 20:
-            return await ctx.send(embed=we("⚠️ 目標バッファは20ms以上を指定してください。"))
-
-        resolved_max_ms = max_ms if max_ms is not None else target_ms * 2
-        if resolved_max_ms < target_ms:
-            return await ctx.send(embed=we("⚠️ 上限バッファは目標バッファ以上にしてください。"))
-
-        sink: VoiceChangerSink = session["sink"]
-        sink.audio_source.update_settings(target_buffer_ms=target_ms, max_buffer_ms=resolved_max_ms)
-        await ctx.send(embed=we(
-            f"📦 バッファ設定を変更しました。\n"
-            f"├ 目標プリバッファ: `{target_ms:.0f} ms`\n"
-            f"└ 上限バッファ: `{resolved_max_ms:.0f} ms`"
-        ))
+        await self._changer_impl(Responder(ctx), "status", buffer_ms=target_ms, max_ms=max_ms)
 
     @vc_group.command(name="stop")
     @commands.guild_only()
+    @legacy("/voice changer action:停止", "!vc stop")
     async def vc_stop(self, ctx: commands.Context):
-        if ctx.guild.id not in self.vc_sessions:
-            return await ctx.send(embed=we("⚠️ ボイスチェンジャーは実行されていません。"))
-
-        if not await self.voice_sessions.release(ctx.guild.id, "changer", reason="stop"):
-            self._cleanup(ctx.guild.id)("stop")
-
-        await ctx.send(embed=we("🛑 ボイスチェンジャーを停止しました。"))
+        await self._changer_impl(Responder(ctx), "stop")
 
     def _cleanup(self, guild_id: int):
         """VC を手放すときの後片付け（切断は VoiceSessionManager が行う）。"""

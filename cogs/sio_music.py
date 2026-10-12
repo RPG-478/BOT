@@ -1586,59 +1586,68 @@ class VoiceCog(commands.Cog):
         await queue.put(track)
         return True
 
-    @app_commands.command(name="join", description="ボイスチャンネルに参加します")
-    async def join_cmd(self, interaction: discord.Interaction):
-        if not interaction.user.voice:
-            await interaction.response.send_message("先にボイスチャンネルに入ってください。", ephemeral=True)
-            return
+    # --------------------------------------------------
+    # 実装（/voice join・/voice leave と旧 /join・/leave の共通）
+    # --------------------------------------------------
+    async def _join_impl(self, r: Responder):
+        voice = getattr(r.user, "voice", None)
+        if not voice or not voice.channel:
+            return await r.send("先にボイスチャンネルに入ってください。", ephemeral=True)
 
         # 接続処理が長引く可能性があるため defer（応答保留）を実行
-        await interaction.response.defer()
-
-        channel = interaction.user.voice.channel
-        
-        # ⏱️ タイムアウト秒数の設定 (10秒)
+        await r.defer()
+        channel = voice.channel
         TIMEOUT_SECONDS = 45.0
 
         try:
             # 別の機能（録音など）が使用中なら追い出さずに断る。移動・新規接続ともにタイムアウトで保護する。
             await asyncio.wait_for(
-                self._acquire_music(interaction.guild, channel, interaction.user, interaction.channel),
+                self._acquire_music(r.guild, channel, r.user, r.channel),
                 timeout=TIMEOUT_SECONDS,
             )
-            await interaction.followup.send(f"🔊 **{channel.name}** に参加しました。")
-
+            await r.send(f"🔊 **{channel.name}** に参加しました。")
         except VoiceBusy as busy:
-            await interaction.followup.send(str(busy), ephemeral=True)
+            await r.send(str(busy), ephemeral=True)
         except asyncio.TimeoutError:
-            await interaction.followup.send("⏱️ タイムアウト: ボイスチャンネルへの接続応答時間が超過しました。Botの権限やネットワーク状態をご確認ください。")
+            await r.send("⏱️ タイムアウト: ボイスチャンネルへの接続応答時間が超過しました。Botの権限やネットワーク状態をご確認ください。")
         except Exception as e:
-            await interaction.followup.send(f"❌ 接続失敗: {e}")
-            
-    @app_commands.command(name="leave", description="ボイスチャンネルから退出します")
-    async def leave_cmd(self, interaction: discord.Interaction):
-        session = self.voice_sessions.get(interaction.guild_id)
-        voice_client = interaction.guild.voice_client
+            await r.send(f"❌ 接続失敗: {e}")
+
+    async def _leave_impl(self, r: Responder):
+        guild_id = r.guild_id
+        session = self.voice_sessions.get(guild_id)
+        voice_client = r.voice_client
         if session is not None:
             # 音楽は今までどおり誰でも止められる。録音などは開始した人・管理者（または開始した人が不在）のみ。
-            if not self.voice_sessions.can_leave(session, interaction.user):
-                return await interaction.response.send_message(
+            if not self.voice_sessions.can_leave(session, r.user):
+                return await r.send(
                     f"⚠️ いまは **{session.label}**（{session.user_name} さんが開始）で使用中です。"
                     f"止められるのは開始した人か管理者だけです（`{self._stop_hint(session.feature)}`）。",
                     ephemeral=True,
                 )
-            await interaction.response.defer()
+            await r.defer()
             await self.voice_sessions.release(
-                interaction.guild_id, reason='stop' if session.feature == 'music' else 'leave', by=interaction.user,
+                guild_id, reason='stop' if session.feature == 'music' else 'leave', by=r.user,
             )
-            await interaction.followup.send("👋 退出しました。")
+            await r.send("👋 退出しました。")
         elif voice_client:
             # 持ち主の記録がない古い接続
-            self._reset_playback(interaction.guild_id)
+            self._reset_playback(guild_id)
             await voice_client.disconnect(force=True)
-            await interaction.response.send_message("👋 退出しました。")
+            await r.send("👋 退出しました。")
         else:
-            await interaction.response.send_message("ボットはボイスチャンネルに参加していません。", ephemeral=True)
+            await r.send("ボットはボイスチャンネルに参加していません。", ephemeral=True)
+
+    # 旧コマンド（/voice join・/voice leave に移行）
+    @app_commands.command(name="join", description="ボイスチャンネルに参加します（/voice join に移行）")
+    @legacy("/voice join", "/join")
+    async def join_cmd(self, interaction: discord.Interaction):
+        await self._join_impl(Responder(interaction))
+
+    @app_commands.command(name="leave", description="ボイスチャンネルから退出します（/voice leave に移行）")
+    @legacy("/voice leave", "/leave")
+    async def leave_cmd(self, interaction: discord.Interaction):
+        await self._leave_impl(Responder(interaction))
 
     @staticmethod
     def _stop_hint(feature: str) -> str:

@@ -18,6 +18,8 @@ import discord.opus
 from discord.ext import commands
 from discord.ext import voice_recv
 
+from core.legacy import Responder, legacy
+from core.vosk_model import ensure_model
 from core.voice_session import VoiceBusy, get_manager
 
 try:
@@ -301,41 +303,57 @@ class KaraokeCog(commands.Cog):
                 return wh
         return await channel.create_webhook(name="Karaoke-Lyrics")
 
-    @commands.group(name="karaoke", invoke_without_command=True)
-    @commands.guild_only()
-    async def karaoke_group(self, ctx: commands.Context):
-        await ctx.send(embed=we(
+    # --------------------------------------------------
+    # 実装（/voice karaoke と旧 !karaoke の共通）
+    # --------------------------------------------------
+    async def _karaoke_impl(self, r: Responder, action: str, target_lyrics: str | None = None):
+        """action: start / score / stop / help"""
+        if action == "start":
+            return await self._start(r, target_lyrics)
+        if action == "score":
+            return await self._score(r)
+        if action == "stop":
+            if r.guild.id not in self.sessions:
+                return await r.send(embed=we("⚠️ 現在カラオケは実行されていません。"), ephemeral=True)
+            if not await self.voice_sessions.release(r.guild.id, "karaoke", reason="stop"):
+                self._cleanup(r.guild.id)("stop")
+            return await r.send(embed=we("🛑 カラオケモードを終了しました！"))
+        await r.send(embed=we(
             "🎤 **カラオケ機能の使い方**\n"
-            f"1. `{ctx.prefix}karaoke start <お題の歌詞>` : 歌詞をセットして採点＆字幕開始\n"
-            f"2. `{ctx.prefix}karaoke score` : 現在の歌唱スコアを表示\n"
-            f"3. `{ctx.prefix}karaoke stop` : カラオケを終了"
+            "1. `/voice karaoke action:開始 lyrics:<お題の歌詞>` : 歌詞をセットして採点＆字幕開始\n"
+            "2. `/voice karaoke action:採点` : 現在の歌唱スコアを表示\n"
+            "3. `/voice karaoke action:終了` : カラオケを終了"
         ))
 
-    @karaoke_group.command(name="start")
-    @commands.guild_only()
-    async def karaoke_start(self, ctx: commands.Context, *, target_lyrics: str):
-        if self.vosk_model is None:
-            return await ctx.send(embed=we("❌ カラオケ機能は現在利用できません。`vosk` と日本語モデルを設定してください。"))
-        if not ctx.author.voice or not ctx.author.voice.channel:
-            return await ctx.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"))
+    async def _start(self, r: Responder, target_lyrics: str | None):
+        if not target_lyrics or not target_lyrics.strip():
+            return await r.send(embed=we("⚠️ お題の歌詞を `lyrics` に入れてください。"), ephemeral=True)
+        # モデルが無いときは VC に入る前に断る。
+        problem = await ensure_model(self, Model, MODEL_PATH)
+        if problem:
+            return await r.send(embed=we(problem), ephemeral=True)
+        voice = getattr(r.user, "voice", None)
+        if not voice or not voice.channel:
+            return await r.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"), ephemeral=True)
 
-        guild_id = ctx.guild.id
+        guild_id = r.guild.id
         if guild_id in self.sessions:
-            return await ctx.send(embed=we("⚠️ 既にカラオケ機能が実行中です。"))
+            return await r.send(embed=we("⚠️ 既にカラオケ機能が実行中です。"), ephemeral=True)
 
-        vc_channel = ctx.author.voice.channel
-        webhook = await self._get_or_create_webhook(ctx.channel)
+        vc_channel = voice.channel
+        await r.defer()
+        webhook = await self._get_or_create_webhook(r.channel)
 
         # 別の機能が VC を使っているときは追い出さずに断る。
         try:
             vc = await self.voice_sessions.acquire(
-                ctx.guild, vc_channel, "karaoke", ctx.author,
-                cleanup=self._cleanup(guild_id), text_channel=ctx.channel, force=True, timeout=30.0,
+                r.guild, vc_channel, "karaoke", r.user,
+                cleanup=self._cleanup(guild_id), text_channel=r.channel, force=True, timeout=30.0,
             )
         except VoiceBusy as busy:
-            return await ctx.send(embed=we(str(busy)))
+            return await r.send(embed=we(str(busy)))
         except Exception as e:
-            return await ctx.send(embed=we(f"❌ VC接続に失敗しました: `{e}`"))
+            return await r.send(embed=we(f"❌ VC接続に失敗しました: `{e}`"))
 
         async def send_lyrics_subtitle(display_name: str, avatar_url: str | None, text: str):
             async with aiohttp.ClientSession() as session:
@@ -355,24 +373,22 @@ class KaraokeCog(commands.Cog):
             "start_time": time.time()
         }
 
-        await ctx.send(embed=we(
+        await r.send(embed=we(
             f"🎤 **{vc_channel.name}** でカラオケを開始しました！\n\n"
             f"📜 **お題の歌詞:**\n```\n{target_lyrics}\n```\n"
-            f"歌った声がリアルタイムで字幕表示されます。終わったら `{ctx.prefix}karaoke score` で採点！"
+            "歌った声がリアルタイムで字幕表示されます。終わったら `/voice karaoke action:採点` で採点！"
         ))
 
-    @karaoke_group.command(name="score")
-    @commands.guild_only()
-    async def karaoke_score(self, ctx: commands.Context):
-        session = self.sessions.get(ctx.guild.id)
+    async def _score(self, r: Responder):
+        session = self.sessions.get(r.guild.id)
         if not session:
-            return await ctx.send(embed=we("⚠️ 現在カラオケは実行されていません。"))
+            return await r.send(embed=we("⚠️ 現在カラオケは実行されていません。"), ephemeral=True)
 
         sink: KaraokeSink = session["sink"]
         target = clean_text(session["target_lyrics"])
 
         if not target:
-            return await ctx.send(embed=we("❌ お題の歌詞が登録されていません。"))
+            return await r.send(embed=we("❌ お題の歌詞が登録されていません。"), ephemeral=True)
 
         embed = discord.Embed(title="🏆 カラオケ採点結果", color=0xFFD700)
 
@@ -398,18 +414,34 @@ class KaraokeCog(commands.Cog):
         if not embed.fields:
             embed.description = "まだ歌声が検知されていません！"
 
-        await ctx.send(embed=embed)
+        await r.send(embed=embed)
+
+    # --------------------------------------------------
+    # 旧コマンド: !karaoke（/voice karaoke に移行）
+    # --------------------------------------------------
+    @commands.group(name="karaoke", invoke_without_command=True)
+    @commands.guild_only()
+    @legacy("/voice karaoke", "!karaoke")
+    async def karaoke_group(self, ctx: commands.Context):
+        await self._karaoke_impl(Responder(ctx), "help")
+
+    @karaoke_group.command(name="start")
+    @commands.guild_only()
+    @legacy("/voice karaoke action:開始", "!karaoke start")
+    async def karaoke_start(self, ctx: commands.Context, *, target_lyrics: str):
+        await self._karaoke_impl(Responder(ctx), "start", target_lyrics)
+
+    @karaoke_group.command(name="score")
+    @commands.guild_only()
+    @legacy("/voice karaoke action:採点", "!karaoke score")
+    async def karaoke_score(self, ctx: commands.Context):
+        await self._karaoke_impl(Responder(ctx), "score")
 
     @karaoke_group.command(name="stop")
     @commands.guild_only()
+    @legacy("/voice karaoke action:終了", "!karaoke stop")
     async def karaoke_stop(self, ctx: commands.Context):
-        if ctx.guild.id not in self.sessions:
-            return await ctx.send(embed=we("⚠️ 現在カラオケは実行されていません。"))
-
-        if not await self.voice_sessions.release(ctx.guild.id, "karaoke", reason="stop"):
-            self._cleanup(ctx.guild.id)("stop")
-
-        await ctx.send(embed=we("🛑 カラオケモードを終了しました！"))
+        await self._karaoke_impl(Responder(ctx), "stop")
 
     def _cleanup(self, guild_id: int):
         """VC を手放すときの後片付け（切断は VoiceSessionManager が行う）。"""

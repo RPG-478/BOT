@@ -75,6 +75,9 @@ SLASH_ARGUMENTS = {
     'music volume': {'value': 0.5}, 'music speed': {'value': 1.0}, 'music eq': {}, 'music spatial': {},
     'music panel': {}, 'music search': {'keyword': 'test'}, 'music playlist': {'action': 'list'},
     'music files': {},
+    'voice join': {}, 'voice leave': {}, 'voice status': {}, 'voice record': {'action': 'status'},
+    'voice echo': {'action': 'stop'}, 'voice transcribe': {'action': 'stop'}, 'voice karaoke': {'action': 'score'},
+    'voice changer': {'action': 'status'}, 'voice match': {'action': 'stop'}, 'voice global': {'action': 'leave'},
     'spotify_link': {}, 'spotify_unlink': {}, 'spotify_playlists': {},
     'play': {'query': 'test'},
     'seek': {'seconds': 10},
@@ -126,7 +129,6 @@ KNOWN_ISSUES: dict[str, str] = {}
 SILENT_BY_DESIGN = {
     '!terminal': '許可されたユーザー以外には反応しない（存在を知らせないため）',
     '!stop_all': 'VC に接続していないときは何もしない',
-    '!saito_stop': 'VC に接続していないときは何もしない',
 }
 
 # discord.py 標準のヘルプコマンドは対象外（cog のコマンドではない）。

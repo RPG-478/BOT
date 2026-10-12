@@ -245,7 +245,7 @@ class CommandCatalogTest(unittest.TestCase):
         for choice in everything:
             self.assertLessEqual(len(choice.name), 100)
             self.assertLessEqual(len(choice.value), 100)
-        self.assertIn('!gvc join', [c.value for c in self.run_async(complete(interaction, '!gvc j'))])
+        self.assertIn('!gvc create', [c.value for c in self.run_async(complete(interaction, '!gvc cr'))])
         self.assertIn('/pay', [c.value for c in self.run_async(complete(interaction, '送金'))])
         self.assertEqual(self.run_async(complete(interaction, 'terminal')), [])
 
@@ -260,8 +260,8 @@ class CommandCatalogTest(unittest.TestCase):
 
         self.run_async(callback(self.cog, interaction, command='/wallet'))
         self.assertEqual(interaction.response.calls[-1][2]['embed'].title, '/wallet')
-        self.run_async(callback(self.cog, interaction, command='gvc join'))
-        self.assertEqual(interaction.response.calls[-1][2]['embed'].title, '!gvc join')
+        self.run_async(callback(self.cog, interaction, command='gvc create'))
+        self.assertEqual(interaction.response.calls[-1][2]['embed'].title, '!gvc create')
         self.run_async(callback(self.cog, interaction, command='存在しない'))
         self.assertIn('見つかりませんでした', interaction.response.calls[-1][1])
         self.run_async(callback(self.cog, interaction, command='!terminal'))

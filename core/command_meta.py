@@ -58,14 +58,17 @@ CATEGORIES = [
     {
         "id": "voice",
         "label": "ボイス・音楽",
-        "description": "ボイスチャンネルでの音楽再生、読み上げ、録音、文字起こし、ボイスチェンジャー、他サーバーとの通話などです。",
+        "description": "ボイスチャンネルでの音楽再生（`/music`）と、録音・文字起こし・ボイスチェンジャー・他サーバーとの通話など（`/voice`）です。",
         "guide": (
             "## はじめに\n"
             "先に自分がボイスチャンネルに入ってから実行してください。音楽は `/music play` に URL・検索語・音声ファイルを渡すと"
-            "Bot が VC に入って再生します。`/music panel` の操作パネルからまとめて操作できます。\n\n"
+            "Bot が VC に入って再生します。`/music panel` の操作パネルからまとめて操作できます。"
+            "録音・やまびこ・文字起こし・カラオケ・ボイスチェンジャー・ランダム通話・グローバルVC は `/voice` の各サブコマンドで、"
+            "`action` で開始・停止などを選びます。\n\n"
             "## 注意\n"
-            "音楽・録音（`!rec`）・文字起こし（`!stt`）・ボイスチェンジャー（`!vc`）・カラオケ（`!karaoke`）・グローバルVC（`!gvc join`）は、"
-            "どれも Bot の接続を 1 つ使います。ほかの機能が使用中のときは、終わってから（または `/leave` してから）実行してください。"
+            "音楽と `/voice` の機能は、どれも Bot の接続を 1 つ使います。ほかの機能が使用中のときは断られるので、"
+            "`/voice status` で何が使っているかを確かめ、終わってから（または `/voice leave` してから）実行してください。"
+            "録音を始めると、チャンネルに「録音を開始しました」と表示されます。"
             "誰もいない状態が 3 分続くと Bot は自動で退出します。"
         ),
     },
@@ -117,12 +120,12 @@ COMMAND_META: dict[str, dict] = {
                     "options": "--max 最大サーバー数 / --private 非公開 / --password 合言葉 / --desc 説明"},
         "guild_only": True,
     },
-    "!gvc join": {
+    "!gvc join": {"hidden": True, 
         "category": "support",
         "summary": "今いるボイスチャンネルをルームにつなぎます",
         "options": {"room_name": "参加するルーム名", "password": "非公開ルームの合言葉"},
     },
-    "!gvc leave": {"category": "support", "summary": "グローバルVCから切断します（ルームは残ります）"},
+    "!gvc leave": {"hidden": True, "category": "support", "summary": "グローバルVCから切断します（ルームは残ります）"},
     "!gvc list": {"category": "support", "summary": "ルームの一覧を表示します"},
     "!gvc info": {"category": "support", "summary": "ルームの詳細を表示します", "options": {"room_name": "ルーム名"}},
     "!gvc delete": {
@@ -160,8 +163,8 @@ COMMAND_META: dict[str, dict] = {
                "guide_key": "doubt"},
 
     # ---------------------------------------------------------------- ボイス・音楽
-    "/join": {"category": "voice"},
-    "/leave": {"category": "voice"},
+    "/join": {"hidden": True, "category": "voice"},
+    "/leave": {"hidden": True, "category": "voice"},
     "/music play": {"category": "voice", "usage": "/music play query:<URL・検索語・ID> [file:<音声ファイル>] [start_at:<秒>]"},
     "/music pause": {"category": "voice", "usage": "/music pause"},
     "/music skip": {"category": "voice", "usage": "/music skip"},
@@ -180,6 +183,19 @@ COMMAND_META: dict[str, dict] = {
     "/music playlist": {"category": "voice",
                         "usage": "/music playlist action:<保存 / 一覧 / 再生> [name:<名前>] [scope:<自分 / サーバー>] [file:<JSON>]"},
     "/music files": {"category": "voice", "usage": "/music files [limit:<1〜100>]"},
+    "/voice join": {"category": "voice", "usage": "/voice join"},
+    "/voice leave": {"category": "voice", "usage": "/voice leave"},
+    "/voice status": {"category": "voice", "usage": "/voice status"},
+    "/voice record": {"category": "voice", "usage": "/voice record action:<開始|停止|状態|音程解析>"},
+    "/voice echo": {"category": "voice", "usage": "/voice echo action:<開始|遅延変更|停止> [delay:<秒>]"},
+    "/voice transcribe": {"category": "voice", "usage": "/voice transcribe action:<開始|停止> [channel:<送り先>]"},
+    "/voice karaoke": {"category": "voice", "usage": "/voice karaoke action:<開始|採点|終了> [lyrics:<お題の歌詞>]"},
+    "/voice changer": {
+        "category": "voice",
+        "usage": "/voice changer action:<開始|停止|状態> [pitch:<半音>] [buffer_ms:<ms>] [max_ms:<ms>]",
+    },
+    "/voice match": {"category": "voice", "usage": "/voice match action:<開始|終了>"},
+    "/voice global": {"category": "voice", "usage": "/voice global action:<参加|退出> [room:<ルーム名>] [password:<合言葉>]"},
     # 旧コマンド（移行期間中は動くが一覧には出さない。PR-D で削除予定）
     "/play": {"category": "voice", "hidden": True},
     "/pause": {"category": "voice", "hidden": True},
@@ -211,34 +227,34 @@ COMMAND_META: dict[str, dict] = {
     "!rres": {"category": "voice", "summary": "リバーブの細かさ（4 か 8）を切り替えます",
               "options": {"res": "4 または 8"}, "hidden": True},
     "!ffversion": {"category": "voice", "hidden": True},
-    "!rec": {"category": "voice", "summary": "録音の状況を表示します"},
-    "!rec start": {"category": "voice", "summary": "ボイスチャンネルの録音を始めます"},
-    "!rec stop": {"category": "voice", "summary": "録音を止めて、音声ファイルを送ります"},
-    "!rec status": {"category": "voice", "summary": "録音の状況を表示します"},
-    "!rec pitch": {"category": "voice", "summary": "直近の声の音程（ピアノの音階）を解析します"},
-    "!echo": {"category": "voice", "summary": "やまびこ（エコー）の状態を表示します"},
-    "!echo start": {"category": "voice", "summary": "声が遅れて返ってくる、やまびこを始めます",
+    "!rec": {"hidden": True, "category": "voice", "summary": "録音の状況を表示します"},
+    "!rec start": {"hidden": True, "category": "voice", "summary": "ボイスチャンネルの録音を始めます"},
+    "!rec stop": {"hidden": True, "category": "voice", "summary": "録音を止めて、音声ファイルを送ります"},
+    "!rec status": {"hidden": True, "category": "voice", "summary": "録音の状況を表示します"},
+    "!rec pitch": {"hidden": True, "category": "voice", "summary": "直近の声の音程（ピアノの音階）を解析します"},
+    "!echo": {"hidden": True, "category": "voice", "summary": "やまびこ（エコー）の状態を表示します"},
+    "!echo start": {"hidden": True, "category": "voice", "summary": "声が遅れて返ってくる、やまびこを始めます",
                     "options": {"delay": "遅れる秒数"}},
-    "!echo delay": {"category": "voice", "summary": "やまびこの遅れる秒数を変えます", "options": {"delay": "秒数"}},
-    "!echo stop": {"category": "voice", "summary": "やまびこを止めます"},
-    "!stt": {"category": "voice", "summary": "文字起こしのコマンド一覧を表示します"},
-    "!stt start": {"category": "voice", "summary": "ボイスチャンネルの会話の文字起こしを始めます",
+    "!echo delay": {"hidden": True, "category": "voice", "summary": "やまびこの遅れる秒数を変えます", "options": {"delay": "秒数"}},
+    "!echo stop": {"hidden": True, "category": "voice", "summary": "やまびこを止めます"},
+    "!stt": {"hidden": True, "category": "voice", "summary": "文字起こしのコマンド一覧を表示します"},
+    "!stt start": {"hidden": True, "category": "voice", "summary": "ボイスチャンネルの会話の文字起こしを始めます",
                    "options": {"target_channel": "文字起こしを書き込むチャンネル（省略するとこのチャンネル）"}},
-    "!stt stop": {"category": "voice", "summary": "文字起こしを止めます"},
-    "!karaoke": {"category": "voice", "summary": "カラオケ採点のコマンド一覧を表示します"},
-    "!karaoke start": {"category": "voice", "summary": "歌詞を指定してカラオケ採点を始めます",
+    "!stt stop": {"hidden": True, "category": "voice", "summary": "文字起こしを止めます"},
+    "!karaoke": {"hidden": True, "category": "voice", "summary": "カラオケ採点のコマンド一覧を表示します"},
+    "!karaoke start": {"hidden": True, "category": "voice", "summary": "歌詞を指定してカラオケ採点を始めます",
                        "options": {"target_lyrics": "歌う歌詞"}},
-    "!karaoke score": {"category": "voice", "summary": "今の採点結果を表示します"},
-    "!karaoke stop": {"category": "voice", "summary": "カラオケ採点を終わります"},
-    "!vc": {"category": "voice", "summary": "ボイスチェンジャーのコマンド一覧を表示します"},
-    "!vc start": {"category": "voice", "summary": "ボイスチェンジャーを始めます", "options": {"pitch": "音の高さ（半音単位）"}},
-    "!vc pitch": {"category": "voice", "summary": "ボイスチェンジャーの音の高さを変えます",
+    "!karaoke score": {"hidden": True, "category": "voice", "summary": "今の採点結果を表示します"},
+    "!karaoke stop": {"hidden": True, "category": "voice", "summary": "カラオケ採点を終わります"},
+    "!vc": {"hidden": True, "category": "voice", "summary": "ボイスチェンジャーのコマンド一覧を表示します"},
+    "!vc start": {"hidden": True, "category": "voice", "summary": "ボイスチェンジャーを始めます", "options": {"pitch": "音の高さ（半音単位）"}},
+    "!vc pitch": {"hidden": True, "category": "voice", "summary": "ボイスチェンジャーの音の高さを変えます",
                   "options": {"semitones": "半音単位の高さ（例: 3、-2）"}},
-    "!vc buffer": {"category": "voice", "summary": "ボイスチェンジャーの遅延（バッファ）を調整します",
+    "!vc buffer": {"hidden": True, "category": "voice", "summary": "ボイスチェンジャーの遅延（バッファ）を調整します",
                    "options": {"target_ms": "目標の遅延（ミリ秒）", "max_ms": "最大の遅延（ミリ秒）"}},
-    "!vc stop": {"category": "voice", "summary": "ボイスチェンジャーを止めます"},
-    "!saito": {"category": "voice", "summary": "別のサーバーのボイスチャンネルとランダムにつないで通話します"},
-    "!saito_stop": {"category": "voice", "summary": "!saito の通話を終了します"},
+    "!vc stop": {"hidden": True, "category": "voice", "summary": "ボイスチェンジャーを止めます"},
+    "!saito": {"hidden": True, "category": "voice", "summary": "別のサーバーのボイスチャンネルとランダムにつないで通話します"},
+    "!saito_stop": {"hidden": True, "category": "voice", "summary": "!saito の通話を終了します"},
 
     # ---------------------------------------------------------------- おたのしみ・AI
     "/zetamodoki": {"category": "fun"},

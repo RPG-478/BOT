@@ -33,6 +33,7 @@ import discord.opus
 from discord.ext import commands
 from discord.ext import voice_recv
 
+from core.legacy import Responder, legacy
 from core.voice_session import VoiceBusy, get_manager
 
 logger = logging.getLogger(__name__)
@@ -225,6 +226,11 @@ def analyze_pitch_layers(pcm_bytes: bytes, top_k: int = 4) -> list[tuple[str, st
             seen_midi.add(res[2])
             results.append(res)
     return results
+
+def format_notes(detected: list[tuple[str, str, int]]) -> list[str]:
+    """analyze_pitch_layers の結果を「C♯4/D♭4」のような表記にする（同じなら片方だけ）。"""
+    return [sharp if sharp == flat else f"{sharp}/{flat}" for sharp, flat, _midi in detected]
+
 
 def synthesize_piano_chord(midi_list: list[int], duration_sec: float = 0.25) -> bytes:
     """検出MIDIからピアノ波形(PCM 16bit stereo 48kHz)を生成"""
@@ -573,119 +579,100 @@ class RecordingCog(commands.Cog):
             await self.voice_sessions.release(guild_id, "echo", reason="stop")
 
     # --------------------------------------------------
-    # コマンドグループ: !rec [start|stop|status]
+    # 実装（/voice record・/voice echo と旧 !rec・!echo の共通）
     # --------------------------------------------------
-    @commands.group(name="rec", invoke_without_command=True)
-    @commands.guild_only()
-    async def rec_group(self, ctx: commands.Context):
-        """!rec 単体で実行された場合はステータスを表示"""
-        await self.status_command(ctx)
+    async def _record_impl(self, r: Responder, action: str):
+        """action: start / stop / status / pitch"""
+        if action == "start":
+            return await self.start_command(r)
+        if action == "stop":
+            return await self.stop_command(r)
+        if action == "pitch":
+            return await self.pitch_command(r)
+        return await self.status_command(r)
 
-    @rec_group.command(name="start")
-    @commands.guild_only()
-    async def rec_start(self, ctx: commands.Context):
-        """!rec start : 録音を開始"""
-        await self.start_command(ctx)
-
-    @rec_group.command(name="stop")
-    @commands.guild_only()
-    async def rec_stop(self, ctx: commands.Context):
-        """!rec stop : 録音を停止してファイルを送信"""
-        await self.stop_command(ctx)
-
-    @rec_group.command(name="status")
-    @commands.guild_only()
-    async def rec_status(self, ctx: commands.Context):
-        """!rec status : 録音状況を表示"""
-        await self.status_command(ctx)
-
-    @rec_group.command(name="pitch")
-    @commands.guild_only()
-    async def rec_pitch(self, ctx: commands.Context):
-        """!rec pitch : 直近の音声からリアルタイムでピアノ音階（単音/和音/声の倍音層）を解析"""
-        guild_id = ctx.guild.id
-        session = self.sessions.get(guild_id)
-
+    async def pitch_command(self, r: Responder):
+        """直近の音声からピアノ音階（単音/和音/声の倍音層）を解析する。"""
+        session = self.sessions.get(r.guild.id)
         if not session:
-            return await ctx.send(embed=we("⚠️ 現在録音中ではありません。`!rec start` で開始してください。"))
+            return await r.send(embed=we("⚠️ 現在録音中ではありません。`/voice record action:開始` で開始してください。"), ephemeral=True)
 
         sink: RecordingSink = session["sink"]
         audio_snapshot = sink.snapshot()
-
         if not audio_snapshot:
-            return await ctx.send(embed=we("🎵 音声データがまだ蓄積されていません。話してから実行してください。"))
+            return await r.send(embed=we("🎵 音声データがまだ蓄積されていません。話してから実行してください。"), ephemeral=True)
 
         embed = discord.Embed(title="🎹 リアルタイム音階解析 (Pitch Detection)", color=0x3498DB)
-
         found_any = False
-        for speaker_label, pcm in audio_snapshot.items():
+        for speaker_label, pcm in list(audio_snapshot.items())[:25]:
             # 直近 0.5 秒分のデータ（192000 * 0.5 = 96000 bytes）を取り出して解析
             recent_pcm = pcm[-96000:] if len(pcm) > 96000 else pcm
-            
-            # 周波数解析を行って音階群を取得
             detected = analyze_pitch_layers(recent_pcm, top_k=4)
-
-            if detected_notes:
+            if detected:
                 found_any = True
-                notes_str = " / ".join([f"`{n}`" for n in detected_notes])
-                embed.add_field(
-                    name=f"🎙️ {speaker_label}",
-                    value=f"検出音階（層）: {notes_str}",
-                    inline=False
-                )
+                notes_str = " / ".join(f"`{n}`" for n in format_notes(detected))
+                embed.add_field(name=f"🎙️ {speaker_label}"[:256], value=f"検出音階（層）: {notes_str}"[:1024], inline=False)
 
         if not found_any:
             embed.description = "現在明確なピッチ（音階）は検出されませんでした。"
+        await r.send(embed=embed)
 
-        await ctx.send(embed=embed)
-
-    
-    # --------------------------------------------------
-    # やまびこコマンドグループ: !echo
-    # --------------------------------------------------
-    @commands.group(name="echo", invoke_without_command=True)
-    @commands.guild_only()
-    async def echo_group(self, ctx: commands.Context):
-        """!echo 単体で実行された場合の状態表示"""
-        session = self.echo_sessions.get(ctx.guild.id)
+    async def _echo_impl(self, r: Responder, action: str, delay: float | None = None):
+        """action: start / delay / stop / status"""
+        guild_id = r.guild.id
+        if action == "start":
+            return await self._echo_start(r, 2.0 if delay is None else delay)
+        if action == "delay":
+            session = self.echo_sessions.get(guild_id)
+            if not session:
+                return await r.send(embed=we("⚠️ 現在やまびこは実行されていません。"), ephemeral=True)
+            if delay is None or delay <= 0:
+                return await r.send(embed=we("⚠️ 遅延時間は 0 秒より大きく設定してください。"), ephemeral=True)
+            session["sink"].set_echo_delay(delay)
+            return await r.send(embed=we(f"⏱️ やまびこの遅延時間を `{delay}` 秒に変更しました。"))
+        if action == "stop":
+            if guild_id not in self.echo_sessions:
+                return await r.send(embed=we("⚠️ 現在やまびこは実行されていません。"), ephemeral=True)
+            if not await self.voice_sessions.release(guild_id, "echo", reason="stop"):
+                self._echo_cleanup(guild_id)("stop")
+            return await r.send(embed=we("🛑 やまびこを停止しました。"))
+        session = self.echo_sessions.get(guild_id)
         if session:
-            sink: RecordingSink = session["sink"]
-            await ctx.send(embed=we(
+            await r.send(embed=we(
                 f"🗣️ **やまびこ動作中**\n"
-                f"⏱️ 遅延時間: `{sink.echo_delay}`秒\n"
-                f"遅延変更: `{ctx.prefix}echo delay <秒数>`\n"
-                f"停止: `{ctx.prefix}echo stop`"
+                f"⏱️ 遅延時間: `{session['sink'].echo_delay}`秒\n"
+                f"遅延変更: `/voice echo action:遅延変更 delay:<秒数>`\n"
+                f"停止: `/voice echo action:停止`"
             ))
         else:
-            await ctx.send(embed=we(f"⏸️ やまびこ停止中 (`{ctx.prefix}echo start` で開始)"))
+            await r.send(embed=we("⏸️ やまびこ停止中 (`/voice echo action:開始` で開始)"))
 
-    @echo_group.command(name="start")
-    @commands.guild_only()
-    async def echo_start(self, ctx: commands.Context, delay: float = 2.0):
-        """!echo start [秒数] : やまびこを開始"""
-        if not ctx.author.voice or not ctx.author.voice.channel:
-            return await ctx.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"))
+    async def _echo_start(self, r: Responder, delay: float):
+        voice = getattr(r.user, "voice", None)
+        if not voice or not voice.channel:
+            return await r.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"), ephemeral=True)
 
-        guild_id = ctx.guild.id
+        guild_id = r.guild.id
         if guild_id in self.echo_sessions:
-            return await ctx.send(embed=we("⚠️ 既にやまびこが実行中です。"))
+            return await r.send(embed=we("⚠️ 既にやまびこが実行中です。"), ephemeral=True)
         if delay <= 0:
-            return await ctx.send(embed=we("⚠️ 遅延時間は 0 秒より大きく設定してください。"))
+            return await r.send(embed=we("⚠️ 遅延時間は 0 秒より大きく設定してください。"), ephemeral=True)
 
-        target_channel = ctx.author.voice.channel
+        target_channel = voice.channel
+        await r.defer()
 
         # 別の機能（録音・音楽など）が VC を使っているときは追い出さずに断る。
         try:
             vc = await self.voice_sessions.acquire(
-                ctx.guild, target_channel, "echo", ctx.author,
-                cleanup=self._echo_cleanup(guild_id), text_channel=ctx.channel, force=True,
+                r.guild, target_channel, "echo", r.user,
+                cleanup=self._echo_cleanup(guild_id), text_channel=r.channel, force=True,
                 timeout=30.0,      # DAVE暗号化応答待ちのためタイムアウトを延長
             )
         except VoiceBusy as busy:
-            return await ctx.send(embed=we(str(busy)))
+            return await r.send(embed=we(str(busy)), ephemeral=True)
         except Exception as e:
             logger.error(f"VC Connection Error: {e}", exc_info=True)
-            return await ctx.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
+            return await r.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
 
         # 統合 RecordingSink を is_echo=True でインスタンス化
         sink = RecordingSink(bot=self.bot, vc=vc, is_echo=True, echo_delay=delay)
@@ -694,39 +681,77 @@ class RecordingCog(commands.Cog):
         self.echo_sessions[guild_id] = {
             "sink": sink, "vc": vc, "start": time.time()
         }
-        await ctx.send(embed=we(
+        await r.send(embed=we(
             f"🗣️ **{target_channel.name}** でやまびこを開始しました！\n"
             f"⏱️ 遅延時間: `{delay}`秒\n"
-            f"遅延変更: `{ctx.prefix}echo delay 3.0` | 停止: `{ctx.prefix}echo stop`"
+            f"遅延変更: `/voice echo action:遅延変更 delay:3.0` | 停止: `/voice echo action:停止`"
         ))
+
+    # --------------------------------------------------
+    # 旧コマンド: !rec / !echo（/voice record・/voice echo に移行）
+    # --------------------------------------------------
+    @commands.group(name="rec", invoke_without_command=True)
+    @commands.guild_only()
+    @legacy("/voice record action:状態", "!rec")
+    async def rec_group(self, ctx: commands.Context):
+        """!rec 単体で実行された場合はステータスを表示"""
+        await self._record_impl(Responder(ctx), "status")
+
+    @rec_group.command(name="start")
+    @commands.guild_only()
+    @legacy("/voice record action:開始", "!rec start")
+    async def rec_start(self, ctx: commands.Context):
+        """!rec start : 録音を開始"""
+        await self._record_impl(Responder(ctx), "start")
+
+    @rec_group.command(name="stop")
+    @commands.guild_only()
+    @legacy("/voice record action:停止", "!rec stop")
+    async def rec_stop(self, ctx: commands.Context):
+        """!rec stop : 録音を停止してファイルを送信"""
+        await self._record_impl(Responder(ctx), "stop")
+
+    @rec_group.command(name="status")
+    @commands.guild_only()
+    @legacy("/voice record action:状態", "!rec status")
+    async def rec_status(self, ctx: commands.Context):
+        """!rec status : 録音状況を表示"""
+        await self._record_impl(Responder(ctx), "status")
+
+    @rec_group.command(name="pitch")
+    @commands.guild_only()
+    @legacy("/voice record action:音程解析", "!rec pitch")
+    async def rec_pitch(self, ctx: commands.Context):
+        """!rec pitch : 直近の音声からリアルタイムでピアノ音階（単音/和音/声の倍音層）を解析"""
+        await self._record_impl(Responder(ctx), "pitch")
+
+    @commands.group(name="echo", invoke_without_command=True)
+    @commands.guild_only()
+    @legacy("/voice status", "!echo")
+    async def echo_group(self, ctx: commands.Context):
+        """!echo 単体で実行された場合の状態表示"""
+        await self._echo_impl(Responder(ctx), "status")
+
+    @echo_group.command(name="start")
+    @commands.guild_only()
+    @legacy("/voice echo action:開始", "!echo start")
+    async def echo_start(self, ctx: commands.Context, delay: float = None):
+        """!echo start [秒数] : やまびこを開始"""
+        await self._echo_impl(Responder(ctx), "start", delay)
 
     @echo_group.command(name="delay")
     @commands.guild_only()
+    @legacy("/voice echo action:遅延変更", "!echo delay")
     async def echo_delay(self, ctx: commands.Context, delay: float):
         """!echo delay <秒数> : 動作中にリアルタイムで遅延時間を変更"""
-        session = self.echo_sessions.get(ctx.guild.id)
-        if not session:
-            return await ctx.send(embed=we("⚠️ 現在やまびこは実行されていません。"))
-
-        if delay <= 0:
-            return await ctx.send(embed=we("⚠️ 遅延時間は 0 秒より大きく設定してください。"))
-
-        sink: RecordingSink = session["sink"]
-        sink.set_echo_delay(delay)
-
-        await ctx.send(embed=we(f"⏱️ やまびこの遅延時間を `{delay}` 秒に変更しました。"))
+        await self._echo_impl(Responder(ctx), "delay", delay)
 
     @echo_group.command(name="stop")
     @commands.guild_only()
+    @legacy("/voice echo action:停止", "!echo stop")
     async def echo_stop(self, ctx: commands.Context):
         """!echo stop : やまびこを停止"""
-        if ctx.guild.id not in self.echo_sessions:
-            return await ctx.send(embed=we("⚠️ 現在やまびこは実行されていません。"))
-
-        if not await self.voice_sessions.release(ctx.guild.id, "echo", reason="stop"):
-            self._echo_cleanup(ctx.guild.id)("stop")
-
-        await ctx.send(embed=we("🛑 やまびこを停止しました。"))
+        await self._echo_impl(Responder(ctx), "stop")
 
     def _echo_cleanup(self, guild_id: int):
         """VC を手放すとき（停止・切り替え・自動退出・外部切断）に呼ばれる後片付け。"""
@@ -748,35 +773,37 @@ class RecordingCog(commands.Cog):
     # --------------------------------------------------
     # コマンド処理の実装
     # --------------------------------------------------
-    async def start_command(self, ctx: commands.Context):
-        if not ctx.author.voice or not ctx.author.voice.channel:
-            return await ctx.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"))
+    async def start_command(self, r: Responder):
+        voice = getattr(r.user, "voice", None)
+        if not voice or not voice.channel:
+            return await r.send(embed=we("⚠️ ボイスチャンネルに参加してから実行してください。"), ephemeral=True)
 
-        guild_id = ctx.guild.id
+        guild_id = r.guild.id
         if guild_id in self.sessions:
-            return await ctx.send(embed=we(
-                f"⚠️ 既にこのサーバーで録音中です。`{ctx.prefix}rec stop` で停止してください。"
-            ))
+            return await r.send(embed=we(
+                "⚠️ 既にこのサーバーで録音中です。`/voice record action:停止` で停止してください。"
+            ), ephemeral=True)
 
         if not discord.opus.is_loaded():
-            return await ctx.send(embed=we(
+            return await r.send(embed=we(
                 "❌ Opus ライブラリがロードされていません。サーバーに libopus をインストールしてください。"
             ))
 
-        target_channel = ctx.author.voice.channel
+        target_channel = voice.channel
+        await r.defer()
 
         # 別の機能（音楽・やまびこなど）が VC を使っているときは追い出さずに断る。
         try:
             vc = await self.voice_sessions.acquire(
-                ctx.guild, target_channel, "record", ctx.author,
-                cleanup=self._record_cleanup(guild_id), text_channel=ctx.channel, force=True,
+                r.guild, target_channel, "record", r.user,
+                cleanup=self._record_cleanup(guild_id), text_channel=r.channel, force=True,
                 timeout=30.0,      # DAVE暗号化応答待ちのためタイムアウトを延長
             )
         except VoiceBusy as busy:
-            return await ctx.send(embed=we(str(busy)))
+            return await r.send(embed=we(str(busy)))
         except Exception as e:
             logger.error(f"VC Connection Error: {e}", exc_info=True)
-            return await ctx.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
+            return await r.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
 
         try:
             if vc.is_listening():
@@ -795,15 +822,16 @@ class RecordingCog(commands.Cog):
         else:
             dave_text = "無効"
 
-        status_msg = await ctx.send(embed=we(
+        status_msg = await r.send(embed=we(
             f"🎙️ **{target_channel.name}** で録音を開始しました。\n"
             f"🔐 暗号化: `{negotiated_mode}` / DAVE(E2EE): `{dave_text}`\n"
             f"📦 受信パケット数: `0` 個\n"
             f"⏱️ 録音は最長 {RECORD_LIMIT_SECONDS // 60} 分です。超えると自動で停止してファイルを送ります。\n"
-            f"停止するには `{ctx.prefix}rec stop` を実行してください。"
-        ))
+            f"停止するには `/voice record action:停止` を実行してください。"
+        ), want_message=True)
 
-        prefix = ctx.prefix
+        # 録音していることを、テキストチャンネルの全員に見える形で知らせる（Discord のポリシー）。
+        await self._announce_recording(r, target_channel)
 
         # --------------------------------------------------
         # rec_start 内の on_packet_update (コールバック) を差し替え
@@ -815,7 +843,7 @@ class RecordingCog(commands.Cog):
                     f"🔴 **リアルタイム音階演奏中...**\n"
                     f"🎙️ チャンネル: **{target_channel.name}**\n"
                     f"🎹 リアルタイム検出音階: {notes_str}\n"
-                    f"📦 パケット数: `{count}` | 停止: `{prefix}rec stop`"
+                    f"📦 パケット数: `{count}` | 停止: `/voice record action:停止`"
                 ))
             except Exception:
                 pass
@@ -826,7 +854,7 @@ class RecordingCog(commands.Cog):
             vc.listen(sink)
         except Exception as e:
             await self.voice_sessions.release(guild_id, "record", reason="stop")
-            return await ctx.send(embed=we(f"❌ 録音の開始に失敗しました: `{e}`"))
+            return await r.send(embed=we(f"❌ 録音の開始に失敗しました: `{e}`"))
 
         self.sessions[guild_id] = {
             "sink": sink,
@@ -834,8 +862,8 @@ class RecordingCog(commands.Cog):
             "start": time.time(),
             "channel_name": target_channel.name,
             "status_msg": status_msg,
-            "text_channel": ctx.channel,
-            "guild": ctx.guild,
+            "text_channel": r.channel,
+            "guild": r.guild,
             "limit_task": asyncio.create_task(self._stop_at_limit(guild_id)),
         }
 
@@ -877,21 +905,39 @@ class RecordingCog(commands.Cog):
             self._deliveries[guild_id] = asyncio.create_task(self._deliver(session, audio, reason))
         return cleanup
 
-    async def stop_command(self, ctx: commands.Context):
-        if ctx.guild.id not in self.sessions:
-            return await ctx.send(embed=we("⚠️ 現在録音は行われていません。"))
+    async def _announce_recording(self, r: Responder, voice_channel) -> None:
+        """録音開始を、テキストチャンネルに（ephemeral ではなく）全員に見えるメッセージで知らせる。"""
+        user = r.user
+        mention = getattr(user, "mention", None) or getattr(user, "display_name", "だれか")
+        try:
+            await r.channel.send(
+                f"🔴 **録音を開始しました**（開始: {mention}）\n"
+                f"ボイスチャンネル **{voice_channel.name}** の音声が録音されます（最長 {RECORD_LIMIT_SECONDS // 60} 分）。"
+                "録音されたくない人は退出してください。",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception:
+            logger.warning("[REC] 録音開始のお知らせを送れませんでした", exc_info=True)
 
-        if not await self.voice_sessions.release(ctx.guild.id, "record", reason="stop"):
-            await self._record_cleanup(ctx.guild.id)("stop")
-        task = self._deliveries.get(ctx.guild.id)
+    async def stop_command(self, r: Responder):
+        guild_id = r.guild.id
+        if guild_id not in self.sessions:
+            return await r.send(embed=we("⚠️ 現在録音は行われていません。"), ephemeral=True)
+
+        await r.defer()
+        if not await self.voice_sessions.release(guild_id, "record", reason="stop"):
+            await self._record_cleanup(guild_id)("stop")
+        task = self._deliveries.get(guild_id)
         if task is not None:
             await task
+        if r.is_interaction:
+            await r.send(embed=we("🛑 録音を停止しました。ファイルはこのチャンネルに送りました。"))
 
     STOP_REASONS = {
         "stop": "💾 録音を停止しました",
         "time_limit": f"⏱️ 録音が上限の {RECORD_LIMIT_SECONDS // 60} 分に達したため自動で停止しました",
         "takeover": "💾 別の機能に切り替わったため録音を停止しました",
-        "leave": "💾 /leave で退出したため録音を停止しました",
+        "leave": "💾 /voice leave で退出したため録音を停止しました",
         "idle": "💾 ボイスチャンネルに誰もいなくなったため録音を停止しました",
         "disconnected": "💾 ボイスチャンネルから切断されたため録音を停止しました",
     }
@@ -951,8 +997,8 @@ class RecordingCog(commands.Cog):
                 )
             ))
 
-    async def status_command(self, ctx: commands.Context):
-        session = self.sessions.get(ctx.guild.id)
+    async def status_command(self, r: Responder):
+        session = self.sessions.get(r.guild.id)
 
         if session:
             sink: RecordingSink = session["sink"]
@@ -972,12 +1018,12 @@ class RecordingCog(commands.Cog):
                 title="⏸️ 待機中",
                 description=(
                     "現在このサーバーで録音は行われていません。\n"
-                    f"`{ctx.prefix}rec start` で開始できます。"
+                    "`/voice record action:開始` で開始できます。"
                 ),
                 color=0x95A5A6,
             )
 
-        await ctx.send(embed=embed)
+        await r.send(embed=embed)
 
 
 
