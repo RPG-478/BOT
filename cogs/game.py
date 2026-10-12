@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""/game: パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード）の入口。
+"""/game: パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり）の入口。
 
 ゲームを選ぶと、人数の目安・所要時間と「ルール」「募集する」ボタンが出る。
 募集は各ゲームの cog の ``start_recruit(interaction)`` をそのまま呼ぶので、個別のコマンド
@@ -20,6 +20,7 @@ GAME_COGS = {
     "uno": "Uno",
     "doubt": "Doubt",
     "ngword": "NGWord",
+    "shiritori": "OdaiShiritori",
 }
 
 WORDWOLF_LISTS = [("standard", "標準"), ("starail", "崩壊：スターレイル"), ("genshin", "原神")]
@@ -126,7 +127,7 @@ class GameHub(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="game", description="パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード）のルール確認と募集")
+    @app_commands.command(name="game", description="パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり）のルール確認と募集")
     async def game(self, interaction: discord.Interaction):
         await interaction.response.send_message(embed=hub_embed(), view=GameHubView(self), ephemeral=True)
 
