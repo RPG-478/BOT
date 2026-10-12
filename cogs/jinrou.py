@@ -3,6 +3,7 @@ import random
 from collections import Counter
 import os
 import discord
+from core import jinrou_guide
 from discord import app_commands
 from discord.ext import commands
 
@@ -56,40 +57,62 @@ URA_YAKUSHOKU = {
 AHO_FAKE_CANDIDATES = ["メンヘラ", "ハゲ", "狂人"]
 
 # ======================================================
-#  ヘルプ用役職リスト（役職名, 陣営, 説明, 画像ファイル名）
+#  ヘルプ用役職リスト（役職名, 陣営, 説明, 画像ファイル名, id）
+#  id はサイトの URL などに使う ASCII のスラッグ（小文字・英数字とハイフンのみ・重複不可）
 # ======================================================
 HELP_ROLES = [
-    ("一般通過あごむに", "村人陣営", "空気。", "NOMAL.PNG"),
-    ("タフむに", "村人陣営", "殺された時に最後の一撃で相手を道連れにする根性の一般通過。", "TAHUMUNI.PNG"),
-    ("占い師", "村人陣営", "毎晩1人を占える。安物のビー玉を使って白か黒かを見抜く。", "URANAI.PNG"),
-    ("霊媒師", "村人陣営", "昨日追放された者が白か黒か分かる。占い師とは商売敵なので中が悪い。", "REIBAI.PNG"),
-    ("大霊媒師", "村人陣営", "霊媒師の上位職。追放者の白黒を自動通知に加え、夜に死者ならば誰でも調べられ役職まで判明する。", "DAIREIBAI.PNG"),
-    ("騎士", "村人陣営", "毎晩1人をつまようじで守る。自分は守れない不器用なやつ。", "KISHI.PNG"),
-    ("罠師", "村人陣営", "騎士の上位職。対象を守るだけでなく、狼が守った対象を襲撃した場合にその狼を返り討ちにする。", "WANASI.PNG"),
-    ("入狼", "村人陣営", "人狼のような名前の村人。占われると黒判定が出る不幸なやつ。", "NYUROU.PNG"),
-    ("パン屋", "村人陣営", "生きていれば朝にパンを配る。飯を食え。", "PANYA.PNG"),
-    ("マサイ族", "村人陣営", "夜に1人を観察する。もし対象が人狼なら襲撃を50%で回避する準備を整える。真偽は誰にもわからない。", "MASAI.PNG"),
-    ("議長", "村人陣営", "会議中に『スキップ』で議論を即終了→通常投票へ。ゲーム中一回だけ『強制投票』と発言すると議長専用の投票箱が設置され、議長が直接追放対象を選べる。", "GITYO.PNG"),
-    ("ビー玉ブレイカー", "村人陣営", "占い師の判定が30%の確率でひっくり返る。", "BI-BURE.PNG"),
-    ("リア充", "村人陣営", "2人1組で存在し、お互いが誰かを知っている。片方が死ぬともう片方も道連れになる。実は片方が不倫しているが見た目が同じにしか見えないのでどちらかかは分からない", "RIAJUU.PNG"),
-    ("貴族", "村人陣営", "奴隷とセットで発生。死亡判定を自動的に奴隷に肩代わりさせることができる（奴隷が存在する場合）。奴隷が誰か分かる。", "KIZOKU.PNG"),
-    ("奴隷", "村人陣営", "貴族とセットで発生。貴族が死ぬと代わりに死ぬ。貴族が誰か分かる。", "DOREI.PNG"),
-    ("陽キャ", "村人陣営", "毎晩1人をℳ𝓎𝒽ℴ𝓂ℯに連れ込む。相手が人狼/デカ狼なら陽キャが死ぬ。相手がメンヘラなら2人ともリア充に変化。それ以外は酔い潰してそのプレイヤーの夜のアクションをキャンセルする。", "765f556c89af682d.png"),
-    ("ミュージシャン", "村人陣営", "陽キャの発展職。ゲーム中1度だけ夜にパーティを開催してランダムに4人を招待できる。招待者は殺されなくなり夜のアクションもキャンセル。ただし人狼/デカ狼が混じっていた場合30%で招待者の中の非狼陣営が1人死亡。", "246d72bdb68e5372.png"),
-    ("人狼", "人狼陣営", "村人を食べる。仲間同士は誰が人狼か知っている。", "JINROU.PNG"),
-    ("デカ狼", "人狼陣営", "占い師を賄賂で黙らせる人狼。占い師に白判定を出させる。霊媒師には黒と出る。", "DEKAROU.PNG"),
-    ("狂人", "人狼陣営", "人狼の味方をする人間。人狼が誰かは知らないが、とにかく場を乱す。", "KYOJIN.PNG"),
-    ("狂信者", "人狼陣営", "人狼とデカ狼が誰かを知っている熱狂的なファン。人狼陣営の参謀。", "KYOUSINSYA.PNG"),
-    ("ハゲ", "第三者陣営", "追放されたら勝利。髪の毛が観測できないバグのせいで目立ちすぎる。", "HAGE.PNG"),
-    ("コウモリむに", "第三者陣営", "ハゲの上位職。ただし最後まで生き残れば追加勝利できる。", "KOUMORI.PNG"),
-    ("メンヘラ", "第三者陣営", "自分に関与した（占う、守る、食べる）者を物理的に消去する。占うと黒判定が出る。", "MENHERA.PNG"),
-    ("あごむに破道砲", "第三者陣営", "自爆して対象を道連れにする。さらにもう1人も誤発で巻き込む。（※3日目の夜以降に使用可能）", "AGOMUNIHADOHOU.PNG"),
-    ("ワンころ", "第三者陣営", "最初に飼い主を決める。飼い主が死ぬかいない場合は野良化して人狼になる。占うと黒判定が出る。", "WANKORO.PNG"),
-    ("もくもく", "第三者陣営", "ビー玉ブレイカーの発展職。3フェーズ全員の役職構成が非公開になる。死ぬと即時に役職構成が公開される。夜の行動ログももくもくになる", "cd60d2fa8afdb21f.png"),
-    ("ヤンデレ", "人狼陣営", "メンヘラの発展職、人狼1人をランダムに選びその人狼に夜干渉した人間を殺す。", "YANDERE.PNG"),
-    ("ネット民", "村人陣営", "一般の役職と違い夜に発言でき昼に発言できない。", "af863387bd48b0f5.png"),
-    ("アホ", "村人陣営", "役職効果はなく村人陣営。占うと白判定となる。表示上はメンヘラ、ハゲ、狂人のいずれかに偽装されている。", "NOMAL.PNG"),
+    ("一般通過あごむに", "村人陣営", "空気。", "NOMAL.PNG", "villager"),
+    ("タフむに", "村人陣営", "殺された時に最後の一撃で相手を道連れにする根性の一般通過。", "TAHUMUNI.PNG", "tough-muni"),
+    ("占い師", "村人陣営", "毎晩1人を占える。安物のビー玉を使って白か黒かを見抜く。", "URANAI.PNG", "seer"),
+    ("霊媒師", "村人陣営", "昨日追放された者が白か黒か分かる。占い師とは商売敵なので中が悪い。", "REIBAI.PNG", "medium"),
+    ("大霊媒師", "村人陣営", "霊媒師の上位職。追放者の白黒を自動通知に加え、夜に死者ならば誰でも調べられ役職まで判明する。", "DAIREIBAI.PNG", "great-medium"),
+    ("騎士", "村人陣営", "毎晩1人をつまようじで守る。自分は守れない不器用なやつ。", "KISHI.PNG", "knight"),
+    ("罠師", "村人陣営", "騎士の上位職。対象を守るだけでなく、狼が守った対象を襲撃した場合にその狼を返り討ちにする。", "WANASI.PNG", "trapper"),
+    ("入狼", "村人陣営", "人狼のような名前の村人。占われると黒判定が出る不幸なやつ。", "NYUROU.PNG", "nyurou"),
+    ("パン屋", "村人陣営", "生きていれば朝にパンを配る。飯を食え。", "PANYA.PNG", "baker"),
+    ("マサイ族", "村人陣営", "夜に1人を観察する。もし対象が人狼なら襲撃を50%で回避する準備を整える。真偽は誰にもわからない。", "MASAI.PNG", "maasai"),
+    ("議長", "村人陣営", "会議中に『スキップ』で議論を即終了→通常投票へ。ゲーム中一回だけ『強制投票』と発言すると議長専用の投票箱が設置され、議長が直接追放対象を選べる。", "GITYO.PNG", "chairman"),
+    ("ビー玉ブレイカー", "村人陣営", "占い師の判定が30%の確率でひっくり返る。", "BI-BURE.PNG", "marble-breaker"),
+    ("リア充", "村人陣営", "2人1組で存在し、お互いが誰かを知っている。片方が死ぬともう片方も道連れになる。実は片方が不倫しているが見た目が同じにしか見えないのでどちらかかは分からない", "RIAJUU.PNG", "lovers"),
+    ("貴族", "村人陣営", "奴隷とセットで発生。死亡判定を自動的に奴隷に肩代わりさせることができる（奴隷が存在する場合）。奴隷が誰か分かる。", "KIZOKU.PNG", "noble"),
+    ("奴隷", "村人陣営", "貴族とセットで発生。貴族が死ぬと代わりに死ぬ。貴族が誰か分かる。", "DOREI.PNG", "slave"),
+    ("陽キャ", "村人陣営", "毎晩1人をℳ𝓎𝒽ℴ𝓂ℯに連れ込む。相手が人狼/デカ狼なら陽キャが死ぬ。相手がメンヘラなら2人ともリア充に変化。それ以外は酔い潰してそのプレイヤーの夜のアクションをキャンセルする。", "765f556c89af682d.png", "party-person"),
+    ("ミュージシャン", "村人陣営", "陽キャの発展職。ゲーム中1度だけ夜にパーティを開催してランダムに4人を招待できる。招待者は殺されなくなり夜のアクションもキャンセル。ただし人狼/デカ狼が混じっていた場合30%で招待者の中の非狼陣営が1人死亡。", "246d72bdb68e5372.png", "musician"),
+    ("人狼", "人狼陣営", "村人を食べる。仲間同士は誰が人狼か知っている。", "JINROU.PNG", "werewolf"),
+    ("デカ狼", "人狼陣営", "占い師を賄賂で黙らせる人狼。占い師に白判定を出させる。霊媒師には黒と出る。", "DEKAROU.PNG", "big-wolf"),
+    ("狂人", "人狼陣営", "人狼の味方をする人間。人狼が誰かは知らないが、とにかく場を乱す。", "KYOJIN.PNG", "madman"),
+    ("狂信者", "人狼陣営", "人狼とデカ狼が誰かを知っている熱狂的なファン。人狼陣営の参謀。", "KYOUSINSYA.PNG", "fanatic"),
+    ("ハゲ", "第三者陣営", "追放されたら勝利。髪の毛が観測できないバグのせいで目立ちすぎる。", "HAGE.PNG", "hage"),
+    ("コウモリむに", "第三者陣営", "ハゲの上位職。ただし最後まで生き残れば追加勝利できる。", "KOUMORI.PNG", "bat-muni"),
+    ("メンヘラ", "第三者陣営", "自分に関与した（占う、守る、食べる）者を物理的に消去する。占うと黒判定が出る。", "MENHERA.PNG", "menhera"),
+    ("あごむに破道砲", "第三者陣営", "自爆して対象を道連れにする。さらにもう1人も誤発で巻き込む。（※3日目の夜以降に使用可能）", "AGOMUNIHADOHOU.PNG", "agomuni-cannon"),
+    ("ワンころ", "第三者陣営", "最初に飼い主を決める。飼い主が死ぬかいない場合は野良化して人狼になる。占うと黒判定が出る。", "WANKORO.PNG", "wankoro"),
+    ("もくもく", "第三者陣営", "ビー玉ブレイカーの発展職。3フェーズ全員の役職構成が非公開になる。死ぬと即時に役職構成が公開される。夜の行動ログももくもくになる", "cd60d2fa8afdb21f.png", "mokumoku"),
+    ("ヤンデレ", "人狼陣営", "メンヘラの発展職、人狼1人をランダムに選びその人狼に夜干渉した人間を殺す。", "YANDERE.PNG", "yandere"),
+    ("ネット民", "村人陣営", "一般の役職と違い夜に発言でき昼に発言できない。", "af863387bd48b0f5.png", "netizen"),
+    ("アホ", "村人陣営", "役職効果はなく村人陣営。占うと白判定となる。表示上はメンヘラ、ハゲ、狂人のいずれかに偽装されている。", "NOMAL.PNG", "aho"),
 ]
+
+jinrou_guide.register_roles(HELP_ROLES)
+
+
+def _is_wolf_side(game, p_id) -> bool:
+    """勝敗・人数比べで人狼側として数えるか（陣営の定義は core/jinrou_guide.WOLF_SIDE の 1 か所）。
+
+    ワンころは、飼い主がいないか死んでいれば人狼側。
+    """
+    r = game.roles.get(p_id)
+    if r in jinrou_guide.WOLF_SIDE:
+        return True
+    if r == "ワンころ":
+        owner_id = game.wan_owner.get(p_id)
+        return owner_id is None or owner_id not in {p.id for p in game.alive_players}
+    return False
+
+
+def _guide_role_lookup(game):
+    """「？」ボタン用: 押した人の表示用役職（裏役職は偽装したまま）。参加していなければ None。"""
+    return lambda uid: _get_display_role(game, uid, reveal_hidden=False) if game.roles.get(uid) else None
 
 # ======================================================
 #  ゲーム状態
@@ -720,7 +743,8 @@ class JinrouCog(commands.Cog):
         game.silenced_players.clear()
         
         minutes_str = f"{seconds // 60}分{seconds % 60}秒" if seconds % 60 else f"{seconds // 60}分"
-        await game.game_channel.send(f"ーー {title}（{minutes_str}） ーー")
+        await game.game_channel.send(f"ーー {title}（{minutes_str}） ーー",
+                                     view=jinrou_guide.PhaseHelpView("day", _guide_role_lookup(game), timeout=seconds + 30))
         if any(game.roles.get(p.id) == "パン屋" for p in game.alive_players):
             await game.game_channel.send("<:PANYA:1490254577558093944>パン屋がパンを焼きました")
 
@@ -745,6 +769,7 @@ class JinrouCog(commands.Cog):
 
         game.night_actions = {}
         view = NightActionView(game)
+        view.add_item(jinrou_guide.PhaseHelpButton("night", _guide_role_lookup(game)))
         msg = await game.game_channel.send("アクションを選択してください", view=view)
 
         req_roles_single = ["占い師", "騎士", "罠師", "あごむに破道砲", "マサイ族", "陽キャ"]
@@ -973,13 +998,7 @@ class JinrouCog(commands.Cog):
             return True
 
         def is_wolf_side(p_id):
-            r = game.roles.get(p_id)
-            if r in ["人狼", "デカ狼", "狂人", "狂信者"]: return True
-            if r == "ワンころ":
-                owner_id = game.wan_owner.get(p_id)
-                if owner_id is None: return True
-                if owner_id not in {p.id for p in game.alive_players}: return True
-            return False
+            return _is_wolf_side(game, p_id)
 
         wolves    = [p for p in game.alive_players if is_wolf_side(p.id)]
         non_wolves = [p for p in game.alive_players if not is_wolf_side(p.id)]
@@ -996,7 +1015,7 @@ class JinrouCog(commands.Cog):
 
     # ランキング（core/party_ranking.py）
     # - 村人・人狼の勝ち: 勝った陣営の参加者全員（死んだ人も含む）に 1 勝。陣営の分け方は Elo と同じ
-    #   （人狼・デカ狼・狂人・狂信者・野良のワンころが人狼側、それ以外が村人側）
+    #   （人狼・デカ狼・狂人・狂信者・ヤンデレ・野良のワンころが人狼側、それ以外が村人側）
     # - ハゲ・コウモリむには勝ち方が別なので陣営の勝ちには入れない。ハゲは追放されたとき、
     #   コウモリむには陣営の勝負がついたときに生き残っていれば、その人だけ 1 勝
     async def _record_wins(self, game, user_ids):
@@ -1010,12 +1029,7 @@ class JinrouCog(commands.Cog):
         alive_ids = {p.id for p in game.alive_players}
 
         def is_wolf_side(p_id):
-            r = game.roles.get(p_id)
-            if r in ["人狼", "デカ狼", "狂人", "狂信者"]: return True
-            if r == "ワンころ":
-                owner_id = game.wan_owner.get(p_id)
-                if owner_id is None or owner_id not in alive_ids: return True
-            return False
+            return _is_wolf_side(game, p_id)
 
         winners = []
         for p in game.players:
@@ -1044,13 +1058,7 @@ class JinrouCog(commands.Cog):
     async def _process_elo_ratings(self, game, winner_is_wolf: bool):
         """ゲーム結果をもとにEloレーティングを更新"""
         def is_wolf_side(p_id):
-            r = game.roles.get(p_id)
-            if r in ["人狼", "デカ狼", "狂人", "狂信者"]: return True
-            if r == "ワンころ":
-                owner_id = game.wan_owner.get(p_id)
-                if owner_id is None: return True
-                if owner_id not in {p.id for p in game.alive_players}: return True
-            return False
+            return _is_wolf_side(game, p_id)
 
         for p in game.players:
             p_id = p.id
@@ -1197,6 +1205,7 @@ class JinrouCog(commands.Cog):
         opts.append(discord.SelectOption(label="スキップ", value="skip"))
         game.voted_count = {}
         view = PublicVoteView(game, opts)
+        view.add_item(jinrou_guide.PhaseHelpButton("vote", _guide_role_lookup(game), row=1))
         msg = await game.game_channel.send("生存者は投票してください", view=view)
         for _ in range(40):
             await asyncio.sleep(1)
@@ -1287,6 +1296,7 @@ class JinrouCog(commands.Cog):
                 game.silenced_players.add(p.id)
 
         view = ChairmanVoteView(game, opts)
+        view.add_item(jinrou_guide.PhaseHelpButton("vote", _guide_role_lookup(game), row=1))
         msg = await game.game_channel.send(
             "ーー 強制投票（60秒） ーー\n**議長のみ**が投票できます。追放する対象を選んでください。",
             view=view
@@ -1597,7 +1607,7 @@ class HelpView(discord.ui.View):
         self.page = 0
 
     def make_embed_and_file(self):
-        role_name, faction, desc, img_filename = HELP_ROLES[self.page]
+        role_name, faction, desc, img_filename = HELP_ROLES[self.page][:4]
         embed = discord.Embed(
             title=f"【{faction}】 {role_name}",
             description=desc,
@@ -1725,9 +1735,11 @@ class RoleCheckView(discord.ui.View):
 
         embed = discord.Embed(
             title=f"あなたの役職は 【{display_role}】 です",
-            description=descs.get(real_role, "詳細なし"),
+            description=descs.get(display_role, "詳細なし"),
             color=0xFFFFFF
         )
+        # 初心者ガイド（陣営・能力・勝利条件・今夜やること）。裏役職は表示用の役職で案内する
+        jinrou_guide.add_guide(embed, display_role)
 
         # 表示用役職に対応した画像ファイルを取得
         filename = role_image_map.get(display_role)
