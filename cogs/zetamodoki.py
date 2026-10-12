@@ -8,7 +8,7 @@ import os
 from google import genai
 from google.genai import types
 import config
-from .gemini_compat import generate_content
+from core.gemini_compat import generate_content
 
 
 # --- キャラクター＆シチュエーション構造定義 ---
