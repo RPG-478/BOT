@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 
-from core import party_ranking
+from core import autoplay, party_ranking
 
 party_ranking.register("uno")
 from discord import app_commands
@@ -431,6 +431,8 @@ class GameControlView(discord.ui.View):
         if game.timeout_streak >= max(2, len(game.players)):
             await self.cog.end_game(game, reason="[!] 操作のない状態が続いたため、UNOゲームを終了しました。")
             return
+        if await self.cog.autoplay_turn(channel, game, self.player_id):
+            return
         if game.pending_draw_count > 0:
             count = game.pending_draw_count
             game.draw_card(self.player_id, count)
@@ -492,6 +494,53 @@ class Uno(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.games = {} # {channel_id: UnoGame}
+
+    async def autoplay_turn(self, channel, game: UnoGame, player_id: int) -> bool:
+        """時間切れの手番を core/autoplay で代わりに進める。代打ちがオフなら False（元の「引いてパス」に任せる）。
+
+        選べるのはワイルド以外の出せるカードと「引く」。d1 が使えないときは「引く」（元と同じ動き）。
+        """
+        playable = [c for c in dict.fromkeys(game.get_playable_cards(player_id)) if c not in ("Wild", "Wild+4")]
+        legal = playable + ["DRAW"]
+        member = channel.guild.get_member(player_id) if channel is not None and getattr(channel, "guild", None) else None
+        name = member.display_name if member else f"<@{player_id}>"
+        pending = game.pending_draw_count
+
+        def describe(action):
+            if action == "DRAW":
+                return f"山札から {pending} 枚引いてパス" if pending > 0 else "山札から1枚引いてパス"
+            return f"[{action}] を出"
+
+        result = await autoplay.take_idle_turn(
+            None, guild_id=getattr(getattr(channel, "guild", None), "id", None), player_name=name, game=game,
+            state={"game": "uno", "hand": list(game.hands.get(player_id, [])),
+                   "top": game.discard_pile[-1] if game.discard_pile else None,
+                   "color": game.current_color, "pending_draw": pending,
+                   "hand_counts": {str(p): len(game.hands.get(p, [])) for p in game.players}},
+            legal_actions=legal,
+            instructions="UNO の手番です。出すカードか、DRAW（山札から引いてパス）を 1 つ選んでください。",
+            describe=describe, fallback="DRAW")
+        if result is None:
+            return False
+        # d1 に聞いている間に誰かが操作していたら何もしない
+        if self.games.get(game.channel_id) is not game or game.players[game.current_player_idx] != player_id:
+            return True
+        card = result.action
+        if card != "DRAW" and card in game.get_playable_cards(player_id):
+            game.hands[player_id].remove(card)
+            game.discard_pile.append(card)
+            game.current_color = None
+            await CardSelect(game, [card], self).process_card_effect(card, result.notice)
+            return True
+        if pending > 0:
+            game.draw_card(player_id, pending)
+            game.pending_draw_count = 0
+            game.active_plus_type = None
+        else:
+            game.draw_card(player_id, 1)
+        game.advance_turn()
+        await self.send_game_panel(channel, game, info_msg=result.notice)
+        return True
 
     async def uno_declaration_timer(self, channel, game: UnoGame, player_id: int):
         view = UnoDeclareView(game, player_id)
