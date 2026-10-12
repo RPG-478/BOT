@@ -22,7 +22,7 @@ export default function Home() {
         </div>
       </section>
       <SampleNotice show={catalog.isSample} />
-      <h2>はじめかた</h2>
+      <h2><img src="/img/ticket.png" alt="" width={40} height={32} style={{ verticalAlign: "middle", marginRight: 8 }} />はじめかた</h2>
       <div className="steps">
         <div className="card"><span className="num">1</span><strong>招待する</strong><div className="muted">AGOBOT をサーバーに招待します。</div></div>
         <div className="card"><span className="num">2</span><strong><code>/setup</code></strong><div className="muted">管理者が使うチャンネルや機能を設定します。</div></div>
