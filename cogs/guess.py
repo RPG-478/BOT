@@ -1,18 +1,17 @@
 import asyncio
-import os
+import math
 import random
 
 import discord
 from discord import app_commands
 from discord.ext import commands
-from supabase import Client, create_client
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+import config
 
 WIN_MULTIPLIER = 2.8
 LOSS_MULTIPLIER = 1.5
+# 残高を書き換えるときに、ほかの処理と同時に更新されて食い違った場合の再試行回数
+UPDATE_ATTEMPTS = 3
 
 
 def resolve_guess(bet: int, selected: int, answer: int) -> tuple[bool, int]:
@@ -22,6 +21,23 @@ def resolve_guess(bet: int, selected: int, answer: int) -> tuple[bool, int]:
     if selected not in (1, 2, 3) or answer not in (1, 2, 3):
         raise ValueError("choice must be between 1 and 3")
     return selected == answer, int(bet * (WIN_MULTIPLIER if selected == answer else -LOSS_MULTIPLIER))
+
+
+def max_loss(bet: int) -> int:
+    """負けたときに引かれる額（resolve_guess の負けと同じ計算）。"""
+    return int(bet * LOSS_MULTIPLIER)
+
+
+def max_bet(balance: int) -> int:
+    """負けても残高がマイナスにならない、最大の賭け額。"""
+    if balance <= 0:
+        return 0
+    bet = math.floor(balance / LOSS_MULTIPLIER)
+    while max_loss(bet + 1) <= balance:
+        bet += 1
+    while bet > 0 and max_loss(bet) > balance:
+        bet -= 1
+    return bet
 
 
 class Guess(commands.Cog):
@@ -40,26 +56,45 @@ class Guess(commands.Cog):
         if bet <= 0:
             await interaction.response.send_message("賭け額は1以上で指定してください。", ephemeral=True)
             return
+        if choice not in (1, 2, 3):
+            await interaction.response.send_message("数字は1・2・3から選んでください。", ephemeral=True)
+            return
 
         try:
             profile = await self._get_profile(user_id)
             balance = int(profile.get("balance") or 0)
-            answer = random.randint(1, 3)
-            won, delta = resolve_guess(bet, choice, answer)
-            if not won and balance < -delta:
-                await interaction.response.send_message(
-                    f"残高が不足しています。現在 {balance:,} ago、必要な損失上限は {-delta:,} ago です。",
-                    ephemeral=True,
-                )
-                return
-            new_balance = balance + delta
-            updated = await self._update_balance(user_id, balance, new_balance, won)
-            if not updated:
-                await interaction.response.send_message("残高が更新されました。少し待ってから再度お試しください。", ephemeral=True)
-                return
         except Exception:
-            await interaction.response.send_message("ゲーム処理に失敗しました。時間を置いて再度お試しください。", ephemeral=True)
+            await interaction.response.send_message("残高を読み込めませんでした。時間を置いて再度お試しください。", ephemeral=True)
             return
+
+        # ゲームを始める前に、負けても残高が足りるかを確かめる（負けると賭け額の1.5倍が引かれる）。
+        if balance <= 0:
+            await interaction.response.send_message(
+                f"残高が {balance:,} ago のため、賭けられません。", ephemeral=True)
+            return
+        if bet > balance or max_loss(bet) > balance:
+            await interaction.response.send_message(
+                f"残高が足りません。負けると賭け額の{LOSS_MULTIPLIER}倍が引かれるため、"
+                f"現在の残高 {balance:,} ago で賭けられるのは {max_bet(balance):,} ago までです。",
+                ephemeral=True,
+            )
+            return
+
+        answer = random.randint(1, 3)
+        won, delta = resolve_guess(bet, choice, answer)
+
+        try:
+            applied = await self._apply_delta(user_id, delta, won)
+        except Exception:
+            applied = None
+        if applied is None:
+            # 結果は残高に反映していないので、このゲームはなかったことになる（正解も表示しない）。
+            await interaction.response.send_message(
+                "残高を更新できなかったため、このゲームは無効になりました。時間を置いて再度お試しください。",
+                ephemeral=True,
+            )
+            return
+        actual_delta, new_balance = applied
 
         embed = discord.Embed(
             title="数字当て | 結果",
@@ -70,19 +105,19 @@ class Guess(commands.Cog):
             ),
             color=0xFFFFFF,
         )
-        embed.add_field(name="結果", value=f"{'勝ち' if won else '負け'} | 変動 **{delta:+,} ago**", inline=True)
+        embed.add_field(name="結果", value=f"{'勝ち' if won else '負け'} | 変動 **{actual_delta:+,} ago**", inline=True)
         embed.add_field(name="残高", value=f"**{new_balance:,} ago**", inline=True)
         embed.set_footer(text=f"勝利時は賭け額の{WIN_MULTIPLIER}倍、敗北時は{LOSS_MULTIPLIER}倍を反映")
         await interaction.response.send_message(embed=embed)
 
     async def _get_profile(self, user_id: str) -> dict:
         result = await asyncio.to_thread(
-            lambda: supabase.table("users").select("balance").eq("user_id", user_id).execute()
+            lambda: config.supabase.table("users").select("balance").eq("user_id", user_id).execute()
         )
         if result.data:
             return result.data[0]
         inserted = await asyncio.to_thread(
-            lambda: supabase.table("users").insert({
+            lambda: config.supabase.table("users").insert({
                 "user_id": user_id,
                 "balance": 0,
                 "max_box_slots": 20,
@@ -90,25 +125,44 @@ class Guess(commands.Cog):
         )
         return inserted.data[0]
 
-    async def _update_balance(self, user_id: str, old_balance: int, new_balance: int, won: bool) -> bool:
-        result = await asyncio.to_thread(
-            lambda: supabase.table("users")
-            .update({"balance": new_balance})
-            .eq("user_id", user_id)
-            .eq("balance", old_balance)
-            .execute()
-        )
-        if not result.data:
-            return False
-        await asyncio.to_thread(
-            lambda: supabase.table("transaction_history").insert({
-                "sender_id": user_id if not won else "SYSTEM_GUESS",
-                "receiver_id": "SYSTEM_GUESS" if not won else user_id,
-                "amount": abs(new_balance - old_balance),
-                "reason": "guess_win" if won else "guess_loss",
-            }).execute()
-        )
-        return True
+    async def _apply_delta(self, user_id: str, delta: int, won: bool) -> tuple[int, int] | None:
+        """更新の直前に残高を読み直して delta を反映する。残高はマイナスにしない。
+
+        ほかの処理と同時に書き換えられたときは読み直してやり直す。反映できたら
+        (実際の増減, 新しい残高) を、できなかったら None を返す。
+        """
+        for _ in range(UPDATE_ATTEMPTS):
+            current = await asyncio.to_thread(
+                lambda: config.supabase.table("users").select("balance").eq("user_id", user_id).execute()
+            )
+            if not current.data:
+                return None
+            old_balance = int(current.data[0].get("balance") or 0)
+            new_balance = max(0, old_balance + delta)
+            result = await asyncio.to_thread(
+                lambda: config.supabase.table("users")
+                .update({"balance": new_balance})
+                .eq("user_id", user_id)
+                .eq("balance", old_balance)
+                .execute()
+            )
+            if not result.data:
+                continue
+            actual_delta = new_balance - old_balance
+            try:
+                await asyncio.to_thread(
+                    lambda: config.supabase.table("transaction_history").insert({
+                        "sender_id": user_id if not won else "SYSTEM_GUESS",
+                        "receiver_id": "SYSTEM_GUESS" if not won else user_id,
+                        "amount": abs(actual_delta),
+                        "reason": "guess_win" if won else "guess_loss",
+                    }).execute()
+                )
+            except Exception:
+                # 残高はすでに反映済み。履歴だけ残せなかった場合も結果は有効にする。
+                pass
+            return actual_delta, new_balance
+        return None
 
 
 async def setup(bot: commands.Bot):

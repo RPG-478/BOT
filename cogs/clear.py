@@ -3,26 +3,63 @@ from discord import app_commands
 from discord.ext import commands
 from typing import Optional
 
+MAX_CLEAR = 100
+
+
 class ClearCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="clear", description="指定した個数のメッセージを削除します")
-    @app_commands.describe(amount="削除するメッセージ数", member="対象のユーザー（省略可能）")
-    async def clear(self, interaction: discord.Interaction, amount: int, member: Optional[discord.Member] = None):
-        await interaction.response.defer(ephemeral=True)
-
-        if not isinstance(interaction.channel, (discord.TextChannel, discord.VoiceChannel, discord.Thread)):
-            await interaction.followup.send("このチャンネルでは実行できません。", ephemeral=True)
+    @app_commands.command(name="clear", description="指定した個数のメッセージを削除します（メッセージの管理権限が必要）")
+    @app_commands.describe(amount=f"削除するメッセージ数（1〜{MAX_CLEAR}）", member="対象のユーザー（省略可能）")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_messages=True)
+    async def clear(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, MAX_CLEAR],
+                    member: Optional[discord.Member] = None):
+        # default_permissions はサーバー側の設定で変えられるので、実行時にも必ず確かめる。
+        if interaction.guild is None:
+            await interaction.response.send_message("このコマンドはサーバー内でのみ使えます。", ephemeral=True)
             return
+        if not interaction.permissions.manage_messages:
+            await interaction.response.send_message(
+                "このコマンドを使うには「メッセージの管理」権限が必要です。", ephemeral=True)
+            return
+        if not isinstance(amount, int) or not 1 <= amount <= MAX_CLEAR:
+            await interaction.response.send_message(
+                f"削除する数は 1〜{MAX_CLEAR} の範囲で指定してください。", ephemeral=True)
+            return
+        if not isinstance(interaction.channel, (discord.TextChannel, discord.VoiceChannel, discord.Thread)):
+            await interaction.response.send_message("このチャンネルでは実行できません。", ephemeral=True)
+            return
+        bot_permissions = interaction.app_permissions
+        if not (bot_permissions.manage_messages and bot_permissions.read_message_history):
+            await interaction.response.send_message(
+                "Bot にこのチャンネルの「メッセージの管理」と「メッセージ履歴を読む」権限がないため、削除できません。",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
 
         def check(message: discord.Message) -> bool:
             if member is None:
                 return True
             return message.author.id == member.id
 
-        deleted = await interaction.channel.purge(limit=amount, check=check)
-        await interaction.followup.send(f"{len(deleted)}件のメッセージを削除しました。", ephemeral=True)
+        try:
+            deleted = await interaction.channel.purge(limit=amount, check=check)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "Bot に必要な権限がないため、メッセージを削除できませんでした。", ephemeral=True)
+            return
+        except discord.HTTPException:
+            await interaction.followup.send(
+                "メッセージの削除中にエラーが発生しました。時間を置いて再度お試しください。", ephemeral=True)
+            return
+
+        target = f"{member.display_name} さんの" if member else ""
+        await interaction.followup.send(f"{target}メッセージを {len(deleted)} 件削除しました。", ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ClearCog(bot))
