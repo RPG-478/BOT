@@ -312,8 +312,10 @@ class JinrouCog(commands.Cog):
         if message.author.bot:
             return
 
+        # 元のサーバーのチャンネルには、以前のローカル用のゲーム（止まっているもの）が残っていることがある。
+        # それが動いていないときは、このチャンネルが入っているグローバルゲームを探す
         game = self.games.get(message.channel.id)
-        if not game:
+        if not game or not game.is_running:
             for g in self.games.values():
                 if g.is_running and getattr(g, "is_global", False) and message.channel.id in [c.id for c in g.channels]:
                     game = g
@@ -575,14 +577,14 @@ class JinrouCog(commands.Cog):
         if mode == "global":
             game = self.games.get("global")
             if game and game.is_running:
-                if interaction.channel not in game.channels:
+                if all(c.id != interaction.channel.id for c in game.channels):
                     game.channels.append(interaction.channel)
                 embed = discord.Embed(
                     title="グローバル人狼ゲーム（合流）",
                     description="既に他サーバーで起動中のグローバル人狼ゲームがあります。\n参加ボタンを押して合流してください。",
                     color=0xFFFFFF
                 )
-                await interaction.response.send_message(embed=embed, view=GlobalJoinView(game, game.channels))
+                await interaction.response.send_message(embed=embed, view=GlobalJoinView(self, game))
                 return
             else:
                 game = JinrouGame()
@@ -1608,29 +1610,34 @@ class GlobalChannelProxy:
         else:
             return await self.game._original_channel.send(*args, **kwargs)
 class GlobalJoinView(discord.ui.View):
-    def __init__(self, cog, channels):
+    """グローバル人狼の合流パネル。別サーバーで募集中のゲームに、このチャンネルから参加する。"""
+    def __init__(self, cog, game):
         super().__init__(timeout=None)
         self.cog = cog
-        self.channels = channels
+        self.game = game
 
     @discord.ui.button(label="参加", style=discord.ButtonStyle.success)
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
-        for g in self.cog.games.values():
-            if getattr(g, "is_global", False) and interaction.channel.id in [c.id for c in g.channels]:
-                if g.is_running:
-                    await interaction.response.send_message("ゲームが既に進行中のため、途中参加できません。", ephemeral=True)
-                    return
-
-        p_id = interaction.user.id
-        for g in self.cog.games.values():
-            if getattr(g, "is_global", False) and interaction.channel.id in [c.id for c in g.channels]:
-                if any(p.id == p_id for p in g.players):
-                    await interaction.response.send_message("既にゲームに参加しています。", ephemeral=True)
-                    return
-                g.players.append(interaction.user)
-                g.alive_players.append(interaction.user)
-
+        game = self.game
+        # 合流したあとに新しいグローバルゲームへ入れ替わっていたら、そちらは別のパネルから参加してもらう
+        if self.cog.games.get("global") is not game or not game.is_running:
+            return await interaction.response.send_message("このグローバル人狼の募集は終わりました。", ephemeral=True)
+        if game.started:
+            return await interaction.response.send_message("ゲームが既に進行中のため、途中参加できません。", ephemeral=True)
+        if any(p.id == interaction.user.id for p in game.players):
+            return await interaction.response.send_message("既にゲームに参加しています。", ephemeral=True)
+        if interaction.channel is not None and all(c.id != interaction.channel.id for c in game.channels):
+            game.channels.append(interaction.channel)
+        game.players.append(interaction.user)
+        # 参加の知らせは、元のサーバーを含む全チャンネルに届ける
         await interaction.response.send_message(f"{interaction.user.display_name} さんが参加しました。")
+        for chan in [c for c in game.channels if interaction.channel is None or c.id != interaction.channel.id]:
+            try:
+                await chan.send(f"<a:AGOMUNIMUNI:1490255555632037909>{interaction.user.display_name} さんが別のサーバーから参加しました。",
+                                allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException:
+                pass
+
 
 class HelpView(discord.ui.View):
     """ページめくり型ヘルプ"""
