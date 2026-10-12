@@ -8,10 +8,30 @@ def we(description: str = None, title: str = None) -> discord.Embed:
     """白色embedを生成するヘルパー"""
     return discord.Embed(title=title, description=description, color=0xFFFFFF)
 
+SUIT_ORDER = {"S": 0, "H": 1, "D": 2, "C": 3, "JK": 4}
+SELECT_LIMIT = 25  # Discord のセレクトメニューに入れられる選択肢の上限
+
+
+def card_sort_key(card: str):
+    """"[S-10]" のようなカードを数字順（同じ数字ならスート順）に並べるためのキー。ジョーカーは最後。"""
+    suit, _, rank = card.strip("[]").partition("-")
+    try:
+        rank_num = int(rank)
+    except ValueError:
+        rank_num = 0
+    if suit == "JK":
+        return (99, SUIT_ORDER["JK"], rank_num)
+    return (rank_num, SUIT_ORDER.get(suit, 9), 0)
+
+
+def sort_hand(hand):
+    hand.sort(key=card_sort_key)
+    return hand
+
 class DoubtEngine:
     def __init__(self, player_ids):
-        self.players = player_ids
-        self.hands = {p_id: [] for p_id in player_ids}
+        self.players = list(player_ids)  # 開始時点の参加者で固定する（募集リストとは共有しない）
+        self.hands = {p_id: [] for p_id in self.players}
         self.field = []
         self.current_turn_idx = 0
         self.last_claimed_num = None
@@ -33,7 +53,7 @@ class DoubtEngine:
         for i, p_id in enumerate(self.players):
             start = i * per_player
             end = (i + 1) * per_player if i != len(self.players) - 1 else len(deck)
-            self.hands[p_id] = sorted(deck[start:end])
+            self.hands[p_id] = sort_hand(deck[start:end])
 
     @property
     def current_player_id(self):
@@ -43,9 +63,12 @@ class DoubtEngine:
         self.current_turn_idx = (self.current_turn_idx + 1) % len(self.players)
 
 class CardSelect(discord.ui.Select):
-    def __init__(self, hand, game_engine, cog):
-        options = [discord.SelectOption(label=card, value=card) for card in hand[:25]]
-        super().__init__(placeholder="出すカードを1枚選んでください", options=options)
+    def __init__(self, cards, game_engine, cog, page=1, pages=1):
+        options = [discord.SelectOption(label=card, value=card) for card in cards]
+        placeholder = "出すカードを1枚選んでください"
+        if pages > 1:
+            placeholder += f"（{page}/{pages}）"
+        super().__init__(placeholder=placeholder, options=options)
         self.game_engine = game_engine
         self.cog = cog
 
@@ -56,6 +79,8 @@ class CardSelect(discord.ui.Select):
         
         if user_id != game.current_player_id:
             return await interaction.response.send_message(embed=we("あなたのターンではありません"), ephemeral=True)
+        if game.is_accepting_doubt:
+            return await interaction.response.send_message(embed=we("ダウト受付中です。受付が終わってから出してください。"), ephemeral=True)
         
         claimed_num = game.next_required_num
         
@@ -78,7 +103,21 @@ class CardSelect(discord.ui.Select):
             
             if game.is_accepting_doubt:
                 game.is_accepting_doubt = False
+                # ダウトされずに最後の1枚を出し切ったら、その時点で勝ち
+                if not game.hands[user_id]:
+                    return await self.cog.declare_winner(interaction.channel, game, user_id)
                 await self.cog.send_main_screen(interaction.channel, game)
+        else:
+            await interaction.response.send_message(embed=we("そのカードはもう手札にありません。"), ephemeral=True)
+
+
+class CardSelectView(discord.ui.View):
+    """手札を25枚ずつのセレクトメニューに分けて、全部のカードを選べるようにする"""
+    def __init__(self, hand, game_engine, cog):
+        super().__init__(timeout=180)
+        chunks = [hand[i:i + SELECT_LIMIT] for i in range(0, len(hand), SELECT_LIMIT)]
+        for page, chunk in enumerate(chunks[:5], start=1):  # 1つのメッセージに置けるのは5行まで（125枚）
+            self.add_item(CardSelect(chunk, game_engine, cog, page=page, pages=len(chunks)))
 
 class GameControlView(discord.ui.View):
     def __init__(self, game_engine, cog):
@@ -103,19 +142,39 @@ class GameControlView(discord.ui.View):
             
         if interaction.user.id != self.game_engine.current_player_id:
             return await interaction.response.send_message(embed=we("あなたのターンではありません"), ephemeral=True)
+        if self.game_engine.is_accepting_doubt:
+            return await interaction.response.send_message(embed=we("ダウト受付中です。受付が終わってから出してください。"), ephemeral=True)
+        hand = self.game_engine.hands[interaction.user.id]
+        if not hand:
+            return await interaction.response.send_message(embed=we("手札がありません。"), ephemeral=True)
         
-        view = discord.ui.View()
-        view.add_item(CardSelect(self.game_engine.hands[interaction.user.id], self.game_engine, self.cog))
+        view = CardSelectView(hand, self.game_engine, self.cog)
         await interaction.response.send_message(embed=we(f"どのカードを「{self.game_engine.next_required_num}」として出しますか？"), view=view, ephemeral=True)
 
 class DoubtJoinView(discord.ui.View):
     def __init__(self, host_id):
         super().__init__(timeout=65) 
         self.players = [host_id]
+        self.closed = False
+        self.message = None
+
+    async def close(self):
+        """募集を締め切る。以降の参加ボタンは受け付けず、ボタンも押せなくする。"""
+        self.closed = True
+        for child in self.children:
+            child.disabled = True
+        self.stop()
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
 
     @discord.ui.button(label="参加", style=discord.ButtonStyle.green)
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id not in self.players:
+        if self.closed:
+            await interaction.response.send_message(embed=we("募集は締め切られました。"), ephemeral=True)
+        elif interaction.user.id not in self.players:
             self.players.append(interaction.user.id)
             await interaction.response.send_message(embed=we(f"参加しました (現在: {len(self.players)}名)"), ephemeral=True)
         else:
@@ -145,8 +204,17 @@ class Doubt(commands.Cog):
         content = f"次の方、カードを選んでください: <@{game.current_player_id}>"
         game.last_panel_msg = await channel.send(content=content, embed=embed, view=view)
 
-    async def start_from_hub(self, channel, player_ids):
+    async def declare_winner(self, channel, game, winner_id):
+        win_embed = discord.Embed(title="Game Set!", description=f"勝者: <@{winner_id}>", color=0xFFFFFF)
+        await channel.send(embed=win_embed)
+        if self.games.get(channel.id) is game:
+            del self.games[channel.id]
+
+    async def start_from_hub(self, channel, player_ids, join_view=None):
         await asyncio.sleep(60)
+        if join_view is not None:
+            await join_view.close()
+        player_ids = list(player_ids)  # 開始時点の参加者で固定
         
         if len(player_ids) < 3:
             return await channel.send(embed=we("人数不足（3名以上必要）のため、ダウトを開始できませんでした。"))
@@ -158,14 +226,16 @@ class Doubt(commands.Cog):
 
     @commands.command(name="doubt")
     async def start_game(self, ctx):
+        if ctx.channel.id in self.games:
+            return await ctx.send(embed=we("このチャンネルでは既にダウトが進行中です。"))
         view = DoubtJoinView(ctx.author.id)
         embed = discord.Embed(
             title="ダウト参加者募集", 
             description="ボタンを押して参加してください\n**3名以上で開始します**（募集時間: 60秒）", 
             color=0xFFFFFF
         )
-        await ctx.send(embed=embed, view=view)
-        await self.start_from_hub(ctx.channel, view.players)
+        view.message = await ctx.send(embed=embed, view=view)
+        await self.start_from_hub(ctx.channel, view.players, join_view=view)
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -173,7 +243,7 @@ class Doubt(commands.Cog):
         game = self.games.get(message.channel.id)
         if not game: return
 
-        if message.author.id == game.current_player_id and message.content == "パス":
+        if message.author.id == game.current_player_id and message.content == "パス" and not game.is_accepting_doubt:
             game.pass_count += 1
             if game.pass_count >= len(game.players):
                 game.next_required_num = 1
@@ -213,18 +283,14 @@ class Doubt(commands.Cog):
             
             for _, c in game.field:
                 game.hands[penalty_user].append(c)
-            game.hands[penalty_user].sort()
+            sort_hand(game.hands[penalty_user])
             game.field.clear()
             
             await message.channel.send(embed=embed)
             
             for p_id in game.players:
                 if len(game.hands.get(p_id, [])) == 0:
-                    win_embed = discord.Embed(title="Game Set!", description=f"勝者: <@{p_id}>", color=0xFFFFFF)
-                    await message.channel.send(embed=win_embed)
-                    if message.channel.id in self.games:
-                        del self.games[message.channel.id]
-                    return
+                    return await self.declare_winner(message.channel, game, p_id)
 
             await self.send_main_screen(message.channel, game)
 
