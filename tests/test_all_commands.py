@@ -240,7 +240,30 @@ class FakeSupabase:
     from_ = table
 
     def rpc(self, name, params=None, **kwargs):
+        if name == 'nation_found':
+            return types.SimpleNamespace(execute=lambda: self._nation_found(params['p_guild_id'], params['p_user_id']))
         return types.SimpleNamespace(execute=lambda: FakeResponse(None))
+
+    def _nation_found(self, gid, uid):
+        """docs/sql/nation_found.sql と同じ手順の再現（1 回の呼び出しで全部作るか、何も作らない）。"""
+        from cogs.nation import SEARCH_RADIUS, spiral_coords
+        t = self.tables
+        if any(g.get('guild_id') == gid for g in t.get('nation_guilds', [])):
+            raise RuntimeError('NATION_EXISTS: guild already has a nation')
+        if any(p.get('user_id') == uid and p.get('guild_id') for p in t.get('nation_players', [])):
+            raise RuntimeError('ALREADY_IN_NATION: user already belongs to a nation')
+        used = {(r.get('x'), r.get('y')) for r in t.get('nation_tiles', [])}
+        spot = next((c for c in spiral_coords(SEARCH_RADIUS) if c not in used), None)
+        if spot is None:
+            raise RuntimeError('NO_FREE_TILE: no free tile')
+        x, y = spot
+        t.setdefault('nation_tiles', []).append(
+            {'x': x, 'y': y, 'owner_guild_id': gid, 'tile_type': 'capital', 'connected': True})
+        t.setdefault('nation_guilds', []).append({'guild_id': gid, 'capital_x': x, 'capital_y': y})
+        players = t.setdefault('nation_players', [])
+        players[:] = [p for p in players if p.get('user_id') != uid]
+        players.append({'user_id': uid, 'guild_id': gid, 'role': 'king', 'hunger': 100})
+        return FakeResponse([{'capital_x': x, 'capital_y': y}])
 
 
 # ---------------------------------------------------------------- 偽の Discord
