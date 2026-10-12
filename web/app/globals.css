@@ -1,18 +1,36 @@
-:root { --bg:#0e1117; --panel:#161b22; --line:#2a313c; --text:#e6edf3; --muted:#9aa4b2; --accent:#7c5cff; }
+:root { --bg:#ffffff; --soft:#f7f7f5; --line:#e6e4df; --text:#2b2b2b; --muted:#6f6f6f; --accent:#4f9aa8; --accent-soft:#e8f3f5; }
 * { box-sizing: border-box; }
-body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif; line-height:1.7; }
+body { margin:0; background:var(--bg); color:var(--text); font-family: "Hiragino Maru Gothic ProN", "M PLUS Rounded 1c", system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif; line-height:1.8; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
-header { border-bottom:1px solid var(--line); }
-header nav { max-width:960px; margin:0 auto; padding:14px 20px; display:flex; gap:20px; align-items:center; }
-header .brand { font-weight:700; color:var(--text); margin-right:auto; }
+h1, h2 { font-weight:700; letter-spacing:.02em; }
+h2 { margin-top:36px; font-size:20px; }
+header { background:var(--bg); border-bottom:1px solid var(--line); position:sticky; top:0; z-index:10; }
+header nav { max-width:960px; margin:0 auto; padding:10px 20px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+header .brand { display:flex; align-items:center; gap:8px; font-weight:800; font-size:18px; color:var(--text); margin-right:auto; }
+header .brand img { width:36px; height:36px; }
+header nav a:not(.brand) { color:var(--text); padding:4px 12px; border-radius:999px; }
+header nav a:not(.brand):hover { background:var(--accent-soft); text-decoration:none; }
 main { max-width:960px; margin:0 auto; padding:28px 20px 60px; }
-.card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin:12px 0; }
-.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:12px; }
+footer { text-align:center; color:var(--muted); font-size:13px; padding:24px; border-top:1px solid var(--line); }
+.card { display:block; background:var(--bg); border:1px solid var(--line); border-radius:16px; padding:16px 18px; margin:12px 0; color:var(--text); transition:box-shadow .15s, transform .15s; }
+a.card:hover { text-decoration:none; box-shadow:0 4px 14px rgba(0,0,0,.06); transform:translateY(-1px); }
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:12px; }
 .muted { color:var(--muted); }
-.badge { display:inline-block; font-size:12px; border:1px solid var(--line); border-radius:999px; padding:0 8px; margin-right:6px; color:var(--muted); }
-.notice { border-color:#a3792a; background:#2a2112; }
-code { background:#0b0e13; border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
-input[type=search] { width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--line); background:var(--panel); color:var(--text); }
+.badge { display:inline-block; font-size:12px; border:1px solid var(--line); border-radius:999px; padding:0 8px; margin-right:6px; color:var(--muted); background:var(--soft); }
+.notice { border-color:#e8d9a8; background:#fffaf0; }
+code { background:var(--soft); border:1px solid var(--line); border-radius:6px; padding:1px 6px; }
+input[type=search] { width:100%; padding:10px 14px; border-radius:999px; border:1px solid var(--line); background:var(--bg); color:var(--text); }
 table { width:100%; border-collapse:collapse; }
 th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+.hero { display:flex; gap:24px; align-items:center; background:var(--soft); border-radius:20px; padding:28px; }
+.hero img { width:140px; height:140px; flex-shrink:0; }
+.hero h1 { margin:0 0 4px; font-size:32px; }
+.steps { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; counter-reset:step; }
+.steps .card { margin:0; }
+.steps .num { display:inline-flex; width:26px; height:26px; border-radius:50%; background:var(--accent); color:#fff; align-items:center; justify-content:center; font-size:14px; margin-right:8px; }
+.game-card { display:flex; gap:14px; align-items:center; }
+.game-card img { width:64px; height:64px; flex-shrink:0; }
+.cast { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+.cast img { width:56px; height:56px; background:var(--soft); border-radius:12px; }
+@media (max-width:600px) { .hero { flex-direction:column; text-align:center; } }
