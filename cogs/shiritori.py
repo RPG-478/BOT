@@ -3,8 +3,8 @@
 
 - スラッシュコマンドは増やさず、/game の「お題しりとり」から募集する（GameHub が start_recruit を呼ぶ）。
 - 状態はチャンネルごとに ``self.games[channel_id]`` に持ち、終わったら必ず消す。
-- 勝利数はまだ Supabase に保存しない。サーバーごとの勝利数をメモリに数えるだけで、
-  Bot を再起動すると消える（NGワードと同じ。ランキングは後の PR）。
+- 勝利数は core/party_ranking.py 経由で Supabase の party_game_record_win に送る
+  （関数が無いときはメモリだけで数える）。
 
 判定のしくみ（純粋関数は Discord に依存しないので単体テストできる）:
 - 答えはひらがな・カタカナだけ（漢字は読みが決められないため受け付けない）。
@@ -22,6 +22,8 @@ import unicodedata
 
 import discord
 from discord.ext import commands
+
+from core import party_ranking
 
 COLOR = 0xFFFFFF
 RECRUIT_SECONDS = 60
@@ -317,6 +319,7 @@ class OdaiShiritori(commands.Cog):
         board = self.wins.setdefault(g.guild_id, {})
         for uid in winners:
             board[uid] = board.get(uid, 0) + 1
+            await party_ranking.shared().record_win(g.guild_id, uid, "shiritori")
         chain = " → ".join(w for _, w in g.history) or "（なし）"
         win_text = "、".join(g.players[uid].mention for uid in winners) or "なし"
         embed = discord.Embed(title="お題しりとり 終了", description=f"🏆 勝者: {win_text}", color=COLOR)

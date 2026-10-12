@@ -25,7 +25,7 @@ GAME_COGS = {
 }
 
 # 勝利数を記録しているゲーム（ここだけ「ランキング」ボタンを出す）
-RANKED_GAMES = {"ngword"}
+RANKED_GAMES = {"ngword", "shiritori"}
 
 WORDWOLF_LISTS = [("standard", "標準"), ("starail", "崩壊：スターレイル"), ("genshin", "原神")]
 
