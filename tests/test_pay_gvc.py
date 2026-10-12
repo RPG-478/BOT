@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import os
 import sys
 import threading
 import time
@@ -66,7 +67,8 @@ def make_interaction(bot, user_id=USER_ID):
     def capture(original):
         async def call(*args, **kwargs):
             sent.append({'content': kwargs.get('content', args[0] if args else None),
-                         'embed': kwargs.get('embed'), 'ephemeral': kwargs.get('ephemeral', False)})
+                         'embed': kwargs.get('embed'), 'ephemeral': kwargs.get('ephemeral', False),
+                         'file': kwargs.get('file')})
             return await original(*args, **kwargs)
         return call
 
@@ -109,6 +111,33 @@ class PayTest(unittest.TestCase):
         self.assertEqual(self.db.tables['transaction_history'][-1]['amount'], 30)
         self.assertIsNotNone(sent[-1]['embed'])
         self.assertFalse(sent[-1]['ephemeral'])
+
+    def test_pay_replies_are_coin_embeds(self):
+        self.set_balance(SENDER, 100)
+        sent = asyncio.run(self.pay(user(RECEIVER), 30))
+        private, public = sent[-2], sent[-1]
+        self.assertTrue(private['ephemeral'])
+        self.assertEqual(private['embed'].fields[0].value, '70 AGO')
+        self.assertIn('30 AGO', public['embed'].description)
+        for message in (private, public):
+            self.assertEqual(message['embed'].thumbnail.url, 'attachment://coin.png')
+            self.assertEqual(message['file'].filename, 'coin.png')
+
+    def test_wallet_reply_is_coin_embed(self):
+        self.set_balance(SENDER, 1234)
+        interaction = make_interaction(self.bot, SENDER)
+        asyncio.run(self.cog.wallet.callback(self.cog, interaction))
+        message = interaction._sent[-1]
+        self.assertEqual(message['embed'].fields[0].value, '1,234 AGO')
+        self.assertEqual(message['embed'].thumbnail.url, 'attachment://coin.png')
+        self.assertEqual(message['file'].filename, 'coin.png')
+
+    def test_coin_image_is_in_assets(self):
+        self.assertTrue(os.path.exists(wallet_module.COIN_PATH))
+        with patch.object(wallet_module, 'COIN_PATH', '/nonexistent/coin.png'):
+            embed, extra = wallet_module.coin_embed('t')
+        self.assertEqual(extra, {})
+        self.assertIsNone(embed.thumbnail.url)
 
     def test_new_receiver_gets_starting_balance_plus_amount(self):
         self.set_balance(SENDER, 100)
