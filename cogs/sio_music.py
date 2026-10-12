@@ -26,6 +26,7 @@ import aiohttp
 import wave
 import discord.opus
 from core.voice_session import VoiceBusy, get_manager
+from core.legacy import Responder, legacy
 
 logger = logging.getLogger(__name__)
  
@@ -60,6 +61,20 @@ SPOTIFY_PLAYLIST_RE = re.compile(
     re.IGNORECASE,
 )
 MAX_TTS_CHARS = 300
+LOOP_CHOICES = [
+    app_commands.Choice(name="OFF", value="off"),
+    app_commands.Choice(name="1曲を繰り返す", value="track"),
+    app_commands.Choice(name="キュー全体を繰り返す", value="queue"),
+]
+PLAYLIST_ACTION_CHOICES = [
+    app_commands.Choice(name="保存", value="save"),
+    app_commands.Choice(name="一覧", value="list"),
+    app_commands.Choice(name="再生", value="play"),
+]
+PLAYLIST_SCOPE_CHOICES = [
+    app_commands.Choice(name="自分", value="me"),
+    app_commands.Choice(name="サーバー", value="server"),
+]
 MIN_PLAYBACK_SPEED = 0.5
 MAX_PLAYBACK_SPEED = 64.0
 PANEL_TIMEOUT_SECONDS = 900
@@ -1154,7 +1169,7 @@ class VoiceControlView(discord.ui.View):
     @discord.ui.button(label="📚 ライブラリ", style=discord.ButtonStyle.secondary, row=4)
     async def library_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
-            "個人プレイリストは `/playlist` から再生できます。Spotifyの公開プレイリストURLは `/play` または検索欄に貼り付けて再生できます。",
+            "個人プレイリストは `/music playlist` から再生できます。Spotifyの公開プレイリストURLは `/music play` または検索欄に貼り付けて再生できます。",
             ephemeral=True,
         )
 
@@ -1506,14 +1521,16 @@ class VoiceCog(commands.Cog):
             state['playlist_load_task'] = None
 
     async def start_playlist_load(self, ctx, tracks, label: str):
+        """ctx / interaction のどちらからでも呼べる。"""
+        r = Responder(ctx)
         if not tracks:
-            return await ctx.send("有効な曲が見つかりませんでした。")
-        state = self.get_state(ctx.guild.id)
+            return await r.send("有効な曲が見つかりませんでした。")
+        state = self.get_state(r.guild.id)
         state['current_ctx'] = ctx
         task = state.get('playlist_load_task')
         if task and not task.done():
             task.cancel()
-        status_message = await ctx.send(f"プレイリスト `{label}` の読込を開始します（全 {len(tracks)} 件）。")
+        status_message = await r.send(f"プレイリスト `{label}` の読込を開始します（全 {len(tracks)} 件）。", want_message=True)
         state['playlist_load_task'] = asyncio.create_task(
             self._load_playlist_in_background(ctx, tracks, label, status_message)
         )
@@ -1655,41 +1672,20 @@ class VoiceCog(commands.Cog):
 
     
     @commands.command()
+    @legacy("/music spatial", "!rval")
     async def rval(self, ctx, feedback: float, wet: float = None):
         """リバーブ値（減衰・ウェット量）を調整するコマンド
         例: !rval 0.4 0.5  (フィードバック0.4, ウェット量0.5)
         """
-        if not 0.0 <= feedback <= 0.95:
-            return await ctx.send(embed=we("フィードバック値（残響の長さ）は 0.0 〜 0.95 の間で指定してください。"))
-        
-        state = self.get_state(ctx.guild.id)
-        state['fdn_feedback'] = feedback
-        
-        msg = f"⏳ リバーブのフィードバック（長さ）を `{feedback}` に設定しました。"
-        if wet is not None:
-            if not 0.0 <= wet <= 1.0:
-                return await ctx.send(embed=we("ウェット量（残響の音量）は 0.0 〜 1.0 の間で指定してください。"))
-            state['fdn_wet'] = wet
-            msg += f"\n💧 残響のミックス（ウェット量）を `{wet}` に設定しました。"
-            
-        await ctx.send(embed=we(msg))
-        # コントロールパネルの表示を更新
-        await self.update_panel(ctx.guild.id)
+        await self._spatial_impl(Responder(ctx), feedback=feedback, wet=wet)
 
     @commands.command()
+    @legacy("/music spatial", "!rres")
     async def rres(self, ctx, res: int):
         """FDNリバーブの空間解像度（ディレイラインの密度）を切り替えるコマンド
         例: !rres 8  (高解像度8次元マトリックスモード)
         """
-        if res not in (4, 8):
-            return await ctx.send(embed=we("解像度は `4` (通常) または `8` (高解像度・滑らか) のどちらかを指定してください。"))
-        
-        state = self.get_state(ctx.guild.id)
-        state['fdn_resolution'] = res
-        
-        mode_str = "8次元ハウスホルダー（高密度・シルキー）" if res == 8 else "4次元ハウスホルダー（軽量・クリア）"
-        await ctx.send(embed=we(f"⚙️ リバーブ解像度を `{res}` に切り替えました。\n現在のモード: **{mode_str}**"))
-        await self.update_panel(ctx.guild.id)
+        await self._spatial_impl(Responder(ctx), resolution=res)
 
     async def update_panel(self, guild_id: int):
         """現在の内部ステータスを読み取り、コントロールパネルをリアルタイム更新する"""
@@ -1775,9 +1771,7 @@ class VoiceCog(commands.Cog):
         else:
             await self.update_panel(guild.id)
 
-    @app_commands.command(name="eq", description="イコライザ（EQ）や音響エフェクトを設定します")
-    @app_commands.describe(mode="プリセット選択、または直接 FFmpeg フィルター文字列を入力")
-    async def eq(self, interaction: discord.Interaction, mode: str = "flat"):
+    async def _eq_impl(self, interaction: discord.Interaction, mode: str = "flat"):
         state = self.get_state(interaction.guild_id)
         
         if mode in EQ_SETTINGS:
@@ -1793,45 +1787,60 @@ class VoiceCog(commands.Cog):
         # 曲を止めずにパネルだけ更新
         await self.update_panel(interaction.guild_id)
 
-    # --------------------------------------------------
-    # mode引数の入力時に EQ_SETTINGS の全プリセット候補を自動補完表示
-    # --------------------------------------------------
+    @staticmethod
+    def _eq_choices(current: str) -> list[app_commands.Choice[str]]:
+        """EQ_SETTINGS の全プリセットを候補にし、入力途中の文字で絞り込む（最大25件）。"""
+        choices = [
+            app_commands.Choice(name=f"プリセット: {key}", value=key)
+            for key in EQ_SETTINGS.keys()
+        ]
+        return [
+            choice for choice in choices 
+            if current.lower() in choice.name.lower() or current.lower() in choice.value.lower()
+        ][:25]
+
+    @app_commands.command(name="eq", description="イコライザ（EQ）や音響エフェクトを設定します（/music eq に移行）")
+    @app_commands.describe(mode="プリセット選択、または直接 FFmpeg フィルター文字列を入力")
+    @legacy("/music eq", "/eq")
+    async def eq(self, interaction: discord.Interaction, mode: str = "flat"):
+        await self._eq_impl(interaction, mode)
+
     @eq.autocomplete("mode")
     async def eq_autocomplete(
         self,
         interaction: discord.Interaction,
         current: str
     ) -> list[app_commands.Choice[str]]:
-        # EQ_SETTINGS に登録されているすべてのキーを候補として作成
-        choices = [
-            app_commands.Choice(name=f"プリセット: {key}", value=key)
-            for key in EQ_SETTINGS.keys()
-        ]
-        # ユーザーが入力途中のテキストでフィルタリングして返却（最大25件）
-        return [
-            choice for choice in choices 
-            if current.lower() in choice.name.lower() or current.lower() in choice.value.lower()
-        ][:25]
-        
-    @commands.command()
-    async def volume(self, ctx, vol: float):
-        """音量を調整します"""
-        if not 0.1 <= vol <= 2.0: return await ctx.send(embed=we("音量は 0.1 から 2.0 の間で指定してください。"))
-        state = self.get_state(ctx.guild.id)
-        state['volume'] = vol
-        await ctx.send(embed=we(f"🔊 音量を `{vol}` に設定しました。"))
-        await self.apply_immediate_setting(ctx)
+        return self._eq_choices(current)
+
+    async def _volume_impl(self, r: Responder, value: float):
+        if not 0.1 <= value <= 2.0:
+            return await r.send(embed=we("音量は 0.1 から 2.0 の間で指定してください。"), ephemeral=True)
+        state = self.get_state(r.guild.id)
+        state['volume'] = value
+        await r.send(embed=we(f"🔊 音量を `{value}` に設定しました。"))
+        await self.apply_immediate_setting(r.source)
+
+    async def _speed_impl(self, r: Responder, value: float):
+        if not MIN_PLAYBACK_SPEED <= value <= MAX_PLAYBACK_SPEED:
+            return await r.send(embed=we(f"速度は {MIN_PLAYBACK_SPEED} から {MAX_PLAYBACK_SPEED:g} の間で指定してください。"), ephemeral=True)
+        state = self.get_state(r.guild.id)
+        previous_speed = state.get('speed', 1.0)
+        state['speed'] = value
+        await r.send(embed=we(f"⚡ 再生速度を `{value}` 倍に設定しました（現在位置から反映）。"))
+        await self.apply_immediate_setting(r.source, elapsed_speed=previous_speed)
 
     @commands.command()
+    @legacy("/music volume", "!volume")
+    async def volume(self, ctx, vol: float):
+        """音量を調整します"""
+        await self._volume_impl(Responder(ctx), vol)
+
+    @commands.command()
+    @legacy("/music speed", "!speed")
     async def speed(self, ctx, speed: float):
         """再生速度を変更します"""
-        if not MIN_PLAYBACK_SPEED <= speed <= MAX_PLAYBACK_SPEED:
-            return await ctx.send(embed=we(f"速度は {MIN_PLAYBACK_SPEED} から {MAX_PLAYBACK_SPEED:g} の間で指定してください。"))
-        state = self.get_state(ctx.guild.id)
-        previous_speed = state.get('speed', 1.0)
-        state['speed'] = speed
-        await ctx.send(embed=we(f"⚡ 再生速度を `{speed}` 倍に設定しました（現在位置から反映）。"))
-        await self.apply_immediate_setting(ctx, elapsed_speed=previous_speed)
+        await self._speed_impl(Responder(ctx), speed)
 
     async def get_yt_info(self, url_or_search):
         loop = asyncio.get_running_loop()
@@ -2036,7 +2045,8 @@ class VoiceCog(commands.Cog):
             self.add_item(self.select_menu)
 
         async def select_callback(self, interaction: discord.Interaction):
-            if interaction.user.id != self.ctx.author.id: return await interaction.response.send_message("❌ この検索結果は他のユーザーのものです。", ephemeral=True)
+            owner = Responder(self.ctx).user
+            if interaction.user.id != getattr(owner, 'id', None): return await interaction.response.send_message("❌ この検索結果は他のユーザーのものです。", ephemeral=True)
             idx = int(self.select_menu.values[0])
             selected_track = self.tracks[idx]
             state = self.cog.get_state(self.guild_id)
@@ -2047,7 +2057,8 @@ class VoiceCog(commands.Cog):
                     ephemeral=True,
                 )
 
-            if not self.ctx.voice_client.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
+            vc = Responder(self.ctx).voice_client
+            if vc and not vc.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
                 await self.cog.check_queue(self.guild_id)
                 await interaction.response.send_message(f"🎵 **{selected_track['title']}** を再生します！")
             else:
@@ -2063,26 +2074,27 @@ class VoiceCog(commands.Cog):
                 except Exception: pass
             self.stop()
 
-    @commands.command()
-    async def search(self, ctx, *, keyword: str = None):
-        """Youtubeから検索した結果を10件表示します"""
-        if not ctx.voice_client: return await ctx.send("先に `/join` してください。")
-        if busy := self._busy_message(ctx.guild): return await ctx.send(busy)
-        if not keyword: return await ctx.send("検索キーワードを入力してください。")
+    async def _search_impl(self, r: Responder, keyword: str | None):
+        """YouTube の上位10件を表示し、選んだ曲を再生・キューに追加する。"""
+        if not keyword:
+            return await r.send("検索キーワードを入力してください。", ephemeral=True)
+        await r.defer()
+        if error := await self._ensure_music_connection(r):
+            return await r.send(error, ephemeral=True)
         if self._spotify_playlist_id(keyword.strip()):
             try:
                 title, tracks = await self.get_spotify_playlist_entries(keyword.strip())
-                return await self.start_playlist_load(ctx, tracks, title)
+                return await self.start_playlist_load(r.source, tracks, title)
             except Exception as exc:
-                return await ctx.send(f"Spotifyプレイリストの取得に失敗しました: {exc}")
-        await ctx.send(f"🔎 YouTubeで「{keyword}」の上位10件を検索中...")
+                return await r.send(f"Spotifyプレイリストの取得に失敗しました: {exc}")
+        await r.send(f"🔎 YouTubeで「{keyword}」の上位10件を検索中...")
         search_options = YTDL_OPTIONS.copy()
         search_options['default_search'] = 'ytsearch10'
         loop = asyncio.get_event_loop()
         try:
             with yt_dlp.YoutubeDL(search_options) as ydl:
                 data = await loop.run_in_executor(None, lambda: ydl.extract_info(keyword, download=False))
-                if 'entries' not in data or not data['entries']: return await ctx.send("❌ 検索結果が見つかりませんでした。")
+                if 'entries' not in data or not data['entries']: return await r.send("❌ 検索結果が見つかりませんでした。")
                 tracks, description_lines = [], []
                 for idx, entry in enumerate(data['entries'][:10]):
                     title = entry.get('title', '不明なタイトル')
@@ -2093,24 +2105,35 @@ class VoiceCog(commands.Cog):
                     tracks.append({'title': title, 'url': url})
                     description_lines.append(f"**{idx + 1}.** {title} `[{duration_str}]`")
                 embed = we(title=f"「{keyword}」の検索結果 (上位10件)", description="\n".join(description_lines) + "\n\n下のメニューから曲を選択してください。")
-                view = self.SearchView(self, ctx.guild.id, ctx, tracks)
-                view.message = await ctx.send(embed=embed, view=view)
+                view = self.SearchView(self, r.guild.id, r.source, tracks)
+                view.message = await r.send(embed=embed, view=view, want_message=True)
         except Exception as e:
             logging.error(f"Search command error: {e}")
-            await ctx.send(f"❌ 検索中にエラーが発生しました: {e}")
+            await r.send(f"❌ 検索中にエラーが発生しました: {e}")
+
+    async def _panel_impl(self, r: Responder):
+        """操作パネルを出す。Bot が VC にいなければ、実行した人の VC に入る。"""
+        await r.defer()
+        if error := await self._ensure_music_connection(r):
+            return await r.send(embed=we(error), ephemeral=True)
+        state = self.get_state(r.guild.id)
+        state['current_ctx'] = r.source
+        embed = discord.Embed(title="🎵 ボイスコントロールパネル", description="ステータスを同期中...", color=0xFFFFFF)
+        view = VoiceControlView(self, r.guild.id)
+        state['panel_message'] = await r.send(embed=embed, view=view, want_message=True)
+        await self.update_panel(r.guild.id)
 
     @commands.command()
+    @legacy("/music search", "!search")
+    async def search(self, ctx, *, keyword: str = None):
+        """Youtubeから検索した結果を10件表示します"""
+        await self._search_impl(Responder(ctx), keyword)
+
+    @commands.command()
+    @legacy("/music panel", "!panel")
     async def panel(self, ctx):
         """ボイスコントロールパネルを表示します"""
-        if not ctx.voice_client: return await ctx.send(embed=we("先に `/join` で接続してください（`/music` なら接続とパネル表示を一度にできます）。"))
-        if busy := self._busy_message(ctx.guild): return await ctx.send(busy)
-        state = self.get_state(ctx.guild.id)
-        state['current_ctx'] = ctx
-        embed = discord.Embed(title="🎵 ボイスコントロールパネル", description="ステータスを同期中...", color=0xFFFFFF)
-        view = VoiceControlView(self, ctx.guild.id)
-        msg = await ctx.send(embed=embed, view=view)
-        state['panel_message'] = msg
-        await self.update_panel(ctx.guild.id)
+        await self._panel_impl(Responder(ctx))
 
     async def check_queue(self, guild_id: int):
         state = self.get_state(guild_id)
@@ -2343,27 +2366,6 @@ class VoiceCog(commands.Cog):
         state['retry_count'] = 0
         asyncio.run_coroutine_threadsafe(self.check_queue(guild_id), loop)
             
-    @app_commands.command(name="music", description="音楽操作パネルを開きます（参加、再生制御、設定、キュー、ライブラリ）")
-    async def music_panel(self, interaction: discord.Interaction):
-        if not interaction.user.voice:
-            return await interaction.response.send_message("先にボイスチャンネルへ参加してください。", ephemeral=True)
-        try:
-            await self._acquire_music(interaction.guild, interaction.user.voice.channel, interaction.user, interaction.channel)
-        except VoiceBusy as busy:
-            return await interaction.response.send_message(str(busy), ephemeral=True)
-        except Exception as exc:
-            logger.exception("Failed to connect from /music")
-            return await interaction.response.send_message(f"ボイスチャンネルへ接続できませんでした: {exc}", ephemeral=True)
-
-        state = self.get_state(interaction.guild_id)
-        state['current_ctx'] = interaction
-        await interaction.response.send_message(
-            embed=we(title="音楽コントロール", description="検索・再生操作・音量・速度・EQ・キュー・ライブラリをこのパネルから操作できます。"),
-            view=VoiceControlView(self, interaction.guild_id),
-        )
-        state['panel_message'] = await interaction.original_response()
-        await self.update_panel(interaction.guild_id)
-
     @app_commands.command(name="spotify_link", description="Spotify連携は不要です（互換用コマンド）")
     async def spotify_link(self, interaction: discord.Interaction):
         """旧コマンドを残し、認証不要の新しい利用方法へ案内する。"""
@@ -2389,27 +2391,48 @@ class VoiceCog(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="play", description="添付ファイル、Spotify/YouTube URL、検索キーワードで音楽を再生します")
-    @app_commands.describe(
-        query="Spotify/YouTube URL / 検索キーワード / ユニバーサルID",
-        file="音声/動画ファイルの添付（ファイル再生時）",
-        start_at="開始位置（秒）。キューが空で再生を開始する場合のみ指定できます。"
-    )
-    async def play(
-        self, 
-        interaction: discord.Interaction, 
-        query: str = None, 
+    async def _ensure_music_connection(self, r: Responder) -> str | None:
+        """音楽を流せる状態にする。だめなときは理由（そのまま返信できる文）を返す。
+
+        - 別の機能（録音など）が VC を使っているときは断る
+        - Bot が VC にいなければ、実行した人の VC に「音楽」として入る（VoiceSessionManager 経由）
+        """
+        guild = r.guild
+        if guild is None:
+            return "サーバーの中で実行してください。"
+        if busy := self._busy_message(guild):
+            return busy
+        vc = guild.voice_client
+        if vc is not None and vc.is_connected():
+            return None
+        voice = getattr(r.user, 'voice', None)
+        channel = getattr(voice, 'channel', None)
+        if channel is None:
+            return "先にボイスチャンネルに参加してください。"
+        try:
+            await asyncio.wait_for(self._acquire_music(guild, channel, r.user, r.channel), timeout=45.0)
+        except VoiceBusy as busy:
+            return str(busy)
+        except asyncio.TimeoutError:
+            return "⏱️ タイムアウト: ボイスチャンネルへの接続応答時間が超過しました。Botの権限やネットワーク状態をご確認ください。"
+        except Exception as exc:
+            logger.exception("Failed to connect for music")
+            return f"ボイスチャンネルへ接続できませんでした: {exc}"
+        return None
+
+    async def _play_impl(
+        self,
+        interaction: discord.Interaction,
+        query: str = None,
         file: discord.Attachment = None,
         start_at: float | None = None,
     ):
         # 💡 1. 処理に時間がかかる可能性があるので、一番最初に defer() を実行
         await interaction.response.defer()
 
-        # 💡 2. ボイスチャンネル接続チェック (defer済みなので followup で返す)
-        if not interaction.guild or not interaction.guild.voice_client: 
-            return await interaction.followup.send("先に `/join` してください。", ephemeral=True)
-        if busy := self._busy_message(interaction.guild):
-            return await interaction.followup.send(busy, ephemeral=True)
+        # 💡 2. ボイスチャンネル接続（入っていなければ自動で参加。別機能が使用中なら断る）
+        if error := await self._ensure_music_connection(Responder(interaction)):
+            return await interaction.followup.send(error, ephemeral=True)
 
         state = self.get_state(interaction.guild_id)
         state['current_interaction'] = interaction
@@ -2417,7 +2440,7 @@ class VoiceCog(commands.Cog):
             return await interaction.followup.send("開始位置は0秒以上で指定してください。", ephemeral=True)
         can_apply_start_at = not state.get('current_track') and state['queue'].empty() and not state.get('is_processing_queue')
         if start_at is not None and not can_apply_start_at:
-            return await interaction.followup.send("開始位置の指定は、再生中の曲と待機キューがない場合のみ使えます。再生中の曲は `/seek` を使ってください。", ephemeral=True)
+            return await interaction.followup.send("開始位置の指定は、再生中の曲と待機キューがない場合のみ使えます。再生中の曲は `/music seek` を使ってください。", ephemeral=True)
 
         is_yt = False
         url, filename, final_id = None, None, None
@@ -2534,24 +2557,22 @@ class VoiceCog(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"❌ 再生開始処理でエラーが発生しました: `{e}`")
             
-    @commands.command()
-    async def stop_all(self, ctx):
-        """今流れている音楽をすべて停止しキューをクリアします"""
-        vc = ctx.voice_client
-        state = self.get_state(ctx.guild.id)
-        if vc:
-            state['current_track'] = None
-            state['elapsed_offset'] = 0
-            state['is_paused'] = False
-            while not state['queue'].empty(): 
-                state['queue'].get_nowait()
-            vc.stop()
-            await ctx.send(embed=we("完全に停止し、キューをクリアしました。"))
-            await self.update_panel(ctx.guild.id)
+    async def _stop_impl(self, r: Responder):
+        """今流れている音楽をすべて停止しキューをクリアする（VC には残る）。"""
+        vc = r.voice_client
+        if not vc:
+            return await r.send(embed=we("ボットがボイスチャンネルに入っていません。"), ephemeral=True)
+        state = self.get_state(r.guild.id)
+        state['current_track'] = None
+        state['elapsed_offset'] = 0
+        state['is_paused'] = False
+        while not state['queue'].empty(): 
+            state['queue'].get_nowait()
+        vc.stop()
+        await r.send(embed=we("完全に停止し、キューをクリアしました。"))
+        await self.update_panel(r.guild.id)
 
-    @app_commands.command(name="seek", description="現在の曲を指定した秒数へ移動します")
-    @app_commands.describe(seconds="移動先の位置（秒）")
-    async def seek_cmd(self, interaction: discord.Interaction, seconds: float):
+    async def _seek_impl(self, interaction: discord.Interaction, seconds: float):
         if seconds < 0:
             return await interaction.response.send_message("移動先は0秒以上で指定してください。", ephemeral=True)
         state = self.get_state(interaction.guild_id)
@@ -2572,8 +2593,7 @@ class VoiceCog(commands.Cog):
         await self.check_queue(interaction.guild_id)
         await interaction.response.send_message(f"再生位置を `{int(seconds)}秒` に移動しました。", ephemeral=True)
 
-    @app_commands.command(name="pause", description="音楽の再生／一時停止を切り替えます（トグル）")
-    async def pause(self, interaction: discord.Interaction):
+    async def _pause_impl(self, interaction: discord.Interaction):
         vc = interaction.guild.voice_client
         state = self.get_state(interaction.guild_id)
 
@@ -2588,7 +2608,7 @@ class VoiceCog(commands.Cog):
             vc.stop()
             
             await interaction.response.send_message(
-                embed=we(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)\nもう一度 `/pause` で再開できます。")
+                embed=we(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)\nもう一度 `/music pause` で再開できます。")
             )
             await self.update_panel(interaction.guild_id)
 
@@ -2603,8 +2623,7 @@ class VoiceCog(commands.Cog):
             await interaction.response.send_message(embed=we("現在再生中・一時停止中のトラックがありません。"), ephemeral=True)
 
 
-    @app_commands.command(name="skip", description="今流れている音楽をスキップしてキューにある次の音楽を再生します")
-    async def skip(self, interaction: discord.Interaction):
+    async def _skip_impl(self, interaction: discord.Interaction):
         vc = interaction.guild.voice_client
         state = self.get_state(interaction.guild_id)
 
@@ -2617,116 +2636,101 @@ class VoiceCog(commands.Cog):
         else:
             await interaction.response.send_message(embed=we("現在再生中の楽曲がありません。"))
 
-    @app_commands.command(name="loop", description="再生ループを切り替えます")
-    @app_commands.choices(mode=[
-        app_commands.Choice(name="OFF", value="off"),
-        app_commands.Choice(name="1曲を繰り返す", value="track"),
-        app_commands.Choice(name="キュー全体を繰り返す", value="queue"),
-    ])
-    async def loop_cmd(self, interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    async def _loop_impl(self, interaction: discord.Interaction, mode: str):
         state = self.get_state(interaction.guild_id)
-        state['loop_mode'] = mode.value
+        state['loop_mode'] = mode
         labels = {'off': 'OFF', 'track': '1曲ループ', 'queue': 'キューループ'}
-        await interaction.response.send_message(embed=we(f"ループ設定を **{labels[mode.value]}** に変更しました。"))
+        await interaction.response.send_message(embed=we(f"ループ設定を **{labels[mode]}** に変更しました。"))
         await self.update_panel(interaction.guild_id)
 
-    @app_commands.command(name="shuffle", description="キューのシャッフル再生を切り替えます")
-    async def shuffle_cmd(self, interaction: discord.Interaction):
+    async def _shuffle_impl(self, interaction: discord.Interaction):
         state = self.get_state(interaction.guild_id)
         state['shuffle_enabled'] = not state.get('shuffle_enabled', False)
         label = 'ON' if state['shuffle_enabled'] else 'OFF'
         await interaction.response.send_message(embed=we(f"シャッフル再生を **{label}** に変更しました。"))
         await self.update_panel(interaction.guild_id)
 
+    @app_commands.command(name="play", description="音楽を再生します（/music play に移行）")
+    @app_commands.describe(
+        query="Spotify/YouTube URL / 検索キーワード / ユニバーサルID",
+        file="音声/動画ファイルの添付（ファイル再生時）",
+        start_at="開始位置（秒）。キューが空で再生を開始する場合のみ指定できます。"
+    )
+    @legacy("/music play", "/play")
+    async def play(
+        self, 
+        interaction: discord.Interaction, 
+        query: str = None, 
+        file: discord.Attachment = None,
+        start_at: float | None = None,
+    ):
+        await self._play_impl(interaction, query, file, start_at)
+
     @commands.command()
+    @legacy("/music stop", "!stop_all")
+    async def stop_all(self, ctx):
+        """今流れている音楽をすべて停止しキューをクリアします"""
+        await self._stop_impl(Responder(ctx))
+
+    @app_commands.command(name="seek", description="現在の曲を指定した秒数へ移動します（/music seek に移行）")
+    @app_commands.describe(seconds="移動先の位置（秒）")
+    @legacy("/music seek", "/seek")
+    async def seek_cmd(self, interaction: discord.Interaction, seconds: float):
+        await self._seek_impl(interaction, seconds)
+
+    @app_commands.command(name="pause", description="再生／一時停止を切り替えます（/music pause に移行）")
+    @legacy("/music pause", "/pause")
+    async def pause(self, interaction: discord.Interaction):
+        await self._pause_impl(interaction)
+
+    @app_commands.command(name="skip", description="次の曲へスキップします（/music skip に移行）")
+    @legacy("/music skip", "/skip")
+    async def skip(self, interaction: discord.Interaction):
+        await self._skip_impl(interaction)
+
+    @app_commands.command(name="loop", description="再生ループを切り替えます（/music loop に移行）")
+    @app_commands.choices(mode=LOOP_CHOICES)
+    @legacy("/music loop", "/loop")
+    async def loop_cmd(self, interaction: discord.Interaction, mode: app_commands.Choice[str]):
+        await self._loop_impl(interaction, mode.value)
+
+    @app_commands.command(name="shuffle", description="シャッフル再生を切り替えます（/music shuffle に移行）")
+    @legacy("/music shuffle", "/shuffle")
+    async def shuffle_cmd(self, interaction: discord.Interaction):
+        await self._shuffle_impl(interaction)
+
+    async def _files_impl(self, r: Responder, limit: int = 20):
+        """このチャンネルにアップロードされた音声の ID を表示する。"""
+        limit = max(1, min(int(limit or 20), 100))
+        await r.defer()
+        embed = we(title="チャンネル内音声リスト")
+        lines = []
+        async for msg in r.channel.history(limit=limit):
+            if msg.attachments:
+                b62 = encode_full_id(r.guild.id, r.channel.id, msg.id)
+                lines.append(f"`{b62}` : **{msg.attachments[0].filename}**")
+        desc = "このサーバー内で再生可能な音声ID（`/music play` に渡せます）\n" + "─" * 20 + "\n"
+        desc += "\n".join(lines) if lines else "音声ファイルは見つかりませんでした。"
+        embed.description = desc[:4000]
+        await r.send(embed=embed)
+
+    @commands.command()
+    @legacy("/music files", "!list")
     async def list(self, ctx, limit: int = 20):
         """このチャンネル内にアップロードされた音声のIDを20件表示します。"""
-        embed = we(title="チャンネル内音声リスト")
-        desc = "このサーバー内で再生可能な音声ID\n" + "─" * 20 + "\n"
-        async for msg in ctx.channel.history(limit=limit):
-            if msg.attachments:
-                b62 = encode_full_id(ctx.guild.id, ctx.channel.id, msg.id)
-                desc += f"`{b62}` : **{msg.attachments[0].filename}**\n"
-        embed.description = desc
-        await ctx.send(embed=embed)
+        await self._files_impl(Responder(ctx), limit)
 
     @commands.command()
+    @legacy("/music playlist", "!plist")
     async def plist(self, ctx, *, input_data: str = None):
         """JSONで作ったプレイリストを再生することができます。"""
-        if not ctx.voice_client: 
-            return await ctx.send("先に `/join` してください。")
-        if busy := self._busy_message(ctx.guild):
-            return await ctx.send(busy)
-
-        state = self.get_state(ctx.guild.id)
-        state['current_ctx'] = ctx
-        tokens = []
-        playlist_key = None
-
-        if ctx.message.attachments:
-            attachment = ctx.message.attachments[0]
-            try:
-                content = await attachment.read()
-                tokens = json.loads(content.decode('utf-8'))
-                if not isinstance(tokens, list):
-                    tokens = [str(tokens)]
-            except Exception as e:
-                return await ctx.send(f"JSON解析エラー: {e}")
-
-        elif input_data:
-            if self.bot.supabase:
-                try:
-                    playlist_key = f"{ctx.guild.id}:{input_data}"
-                    res = self.bot.supabase.table("playlists").select("ids").eq("name", playlist_key).execute()
-                    if res.data:
-                        tokens = res.data[0]["ids"]
-                    else:
-                        tokens = input_data.replace(',', ' ').split()
-                except Exception:
-                    tokens = input_data.replace(',', ' ').split()
-            else:
-                tokens = input_data.replace(',', ' ').split()
-        
-        else:
-            return await ctx.send("プレイリスト名、ID、またはJSONファイルを指定してください。")
-
-        tracks = []
-        for token in tokens:
-            if isinstance(token, dict):
-                tracks.append(token)
-            elif isinstance(token, str) and token:
-                tracks.append({'input': token, 'attachment_id': token, 'is_youtube': False})
-        await self.start_playlist_load(ctx, tracks, input_data or 'JSONプレイリスト')
-            
+        await self._playlist_impl(Responder(ctx), 'play', input_data, 'server')
 
     @commands.command()
+    @legacy("/music playlist", "!save_current")
     async def save_current(self, ctx, name: str):
         """今のキューをJSONとして保存します。"""
-        if not self.bot.supabase: return await ctx.send("DB未設定です。")
-        
-        state = self.get_state(ctx.guild.id)
-        ids = []
-        if state['current_track'] and state['current_track'][3]:
-            ids.append(state['current_track'][3])
-        
-        temp = []
-        while not state['queue'].empty():
-            item = await state['queue'].get()
-            temp.append(item)
-            if item[2]:
-                ids.append(item[2])
-        for item in temp: 
-            await state['queue'].put(item)
-
-        if not ids: return await ctx.send("キューが空です。")
-
-        try:
-            playlist_key = f"{ctx.guild.id}:{name}"
-            self.bot.supabase.table("playlists").upsert({"name": playlist_key, "ids": ids}).execute()
-            await ctx.send(f"✅ このサーバー内のキューを `{name}` として保存しました。")
-        except Exception as e:
-            await ctx.send(f"エラー: {e}")
-            
+        await self._playlist_impl(Responder(ctx), 'save', name, 'server')
 
     def _serialize_personal_playlist(self, guild_id: int):
         """現在曲と待機キューを、再解析可能な入力だけで保存する。"""
@@ -2752,139 +2756,198 @@ class VoiceCog(commands.Cog):
             })
         return tracks
 
-    @commands.command(name="plsave")
-    async def personal_playlist_save(self, ctx, *, name: str):
-        """現在の曲とキューを自分専用プレイリストへ保存します。"""
-        if not self.bot.supabase:
-            return await ctx.send("個人プレイリストを使うにはSupabaseを設定してください。")
-        tracks = self._serialize_personal_playlist(ctx.guild.id)
-        if not tracks:
-            return await ctx.send("保存できる曲がありません。")
-        try:
-            self.bot.supabase.table('user_music_playlists').upsert(
-                {
-                    'guild_id': ctx.guild.id,
-                    'owner_user_id': ctx.author.id,
-                    'name': name.strip(),
-                    'tracks': tracks,
-                },
-                on_conflict='guild_id,owner_user_id,name',
-            ).execute()
-            await ctx.send(f"個人プレイリスト `{name.strip()}` に {len(tracks)} 曲を保存しました。")
-        except Exception:
-            logger.exception("Failed to save personal playlist")
-            await ctx.send("個人プレイリストの保存に失敗しました。SQLを適用済みか確認してください。")
+    @staticmethod
+    def _server_playlist_key(guild_id: int, name: str) -> str:
+        return f"{guild_id}:{name}"
 
-    @commands.command(name="pllist")
-    async def personal_playlist_list(self, ctx):
-        """自分の個人プレイリストを一覧表示します。"""
-        if not self.bot.supabase:
-            return await ctx.send("個人プレイリストを使うにはSupabaseを設定してください。")
-        try:
-            result = self.bot.supabase.table('user_music_playlists').select(
-                'name,tracks,updated_at'
-            ).eq('guild_id', ctx.guild.id).eq('owner_user_id', ctx.author.id).order(
-                'updated_at', desc=True
-            ).execute()
-            rows = result.data or []
-            if not rows:
-                return await ctx.send("個人プレイリストはまだありません。`!plsave 名前` で保存できます。")
-            lines = [
-                f"• **{row['name']}** — {len(row.get('tracks') or [])} 曲"
-                for row in rows[:25]
-            ]
-            await ctx.send(embed=we(title='あなたの個人プレイリスト', description='\n'.join(lines)))
-        except Exception:
-            logger.exception("Failed to list personal playlists")
-            await ctx.send("個人プレイリストの取得に失敗しました。SQLを適用済みか確認してください。")
+    def _server_playlist_ids(self, guild_id: int):
+        """サーバー共有プレイリスト（旧 !save_current）用に、現在曲とキューのユニバーサルIDを集める。"""
+        state = self.get_state(guild_id)
+        ids = []
+        if state['current_track'] and state['current_track'][3]:
+            ids.append(state['current_track'][3])
+        for item in list(state['queue']._queue):
+            if item[2]:
+                ids.append(item[2])
+        return ids
 
-    @app_commands.command(name="playlist", description="個人プレイリストを保存・一覧・再生します")
-    @app_commands.choices(action=[
-        app_commands.Choice(name="保存", value="save"),
-        app_commands.Choice(name="一覧", value="list"),
-        app_commands.Choice(name="再生", value="play"),
-    ])
-    @app_commands.describe(action="実行する操作", name="保存または再生するプレイリスト名（一覧では不要）")
-    async def playlist_cmd(self, interaction: discord.Interaction, action: app_commands.Choice[str], name: str | None = None):
-        if not self.bot.supabase:
-            return await interaction.response.send_message("個人プレイリストを使うにはSupabaseを設定してください。", ephemeral=True)
-        if action.value == 'save':
-            tracks = self._serialize_personal_playlist(interaction.guild_id)
-            if not tracks or not name or not name.strip():
-                return await interaction.response.send_message("保存する曲とプレイリスト名を指定してください。", ephemeral=True)
+    async def _playlist_impl(self, r: Responder, action: str, name: str | None = None, scope: str = 'me',
+                             file: discord.Attachment | None = None):
+        """プレイリストの保存・一覧・再生。
+
+        scope='me'     : 自分専用（テーブル user_music_playlists。旧 /playlist・!plsave・!pllist・!plplay）
+        scope='server' : サーバー共有（テーブル playlists。旧 !save_current・!plist。再生では ID の並びや JSON も受け付ける）
+        """
+        name = (name or '').strip()
+        db = self.bot.supabase
+        if action == 'play':
+            await r.defer()
+            if error := await self._ensure_music_connection(r):
+                return await r.send(error, ephemeral=True)
+            if scope == 'server':
+                return await self._play_server_playlist(r, name, file)
+            if not db:
+                return await r.send("個人プレイリストを使うにはSupabaseを設定してください。", ephemeral=True)
+            if not name:
+                return await r.send("再生するプレイリスト名を指定してください。", ephemeral=True)
             try:
-                self.bot.supabase.table('user_music_playlists').upsert(
-                    {'guild_id': interaction.guild_id, 'owner_user_id': interaction.user.id, 'name': name.strip(), 'tracks': tracks},
+                result = db.table('user_music_playlists').select('tracks').eq('guild_id', r.guild.id).eq(
+                    'owner_user_id', r.user.id
+                ).eq('name', name).limit(1).execute()
+                rows = result.data or []
+                if not rows:
+                    return await r.send(f"個人プレイリスト `{name}` が見つかりません。", ephemeral=True)
+                await self.start_playlist_load(r.source, rows[0].get('tracks') or [], name)
+            except Exception:
+                logger.exception("Failed to play personal playlist")
+                await r.send("個人プレイリストの読込に失敗しました。", ephemeral=True)
+            return
+
+        if not db:
+            return await r.send("プレイリストを使うにはSupabaseを設定してください。", ephemeral=True)
+
+        if action == 'save':
+            if not name:
+                return await r.send("保存するプレイリスト名を指定してください。", ephemeral=True)
+            if scope == 'server':
+                ids = self._server_playlist_ids(r.guild.id)
+                if not ids:
+                    return await r.send("保存できる曲がありません（サーバー共有に保存できるのは、アップロードした音声だけです）。", ephemeral=True)
+                try:
+                    db.table("playlists").upsert({"name": self._server_playlist_key(r.guild.id, name), "ids": ids}).execute()
+                    return await r.send(f"✅ このサーバー内のキューを `{name}` として保存しました（{len(ids)} 曲・サーバー共有）。")
+                except Exception as exc:
+                    logger.exception("Failed to save server playlist")
+                    return await r.send(f"保存に失敗しました。({type(exc).__name__})", ephemeral=True)
+            tracks = self._serialize_personal_playlist(r.guild.id)
+            if not tracks:
+                return await r.send("保存できる曲がありません。", ephemeral=True)
+            try:
+                db.table('user_music_playlists').upsert(
+                    {'guild_id': r.guild.id, 'owner_user_id': r.user.id, 'name': name, 'tracks': tracks},
                     on_conflict='guild_id,owner_user_id,name',
                 ).execute()
-                return await interaction.response.send_message(f"個人プレイリスト `{name.strip()}` に {len(tracks)} 曲を保存しました。", ephemeral=True)
+                return await r.send(f"個人プレイリスト `{name}` に {len(tracks)} 曲を保存しました。", ephemeral=True)
             except Exception as exc:
-                logger.exception("Failed to save personal playlist from slash command")
+                logger.exception("Failed to save personal playlist")
                 detail = str(exc).lower()
                 if 'row-level security' in detail or 'permission denied' in detail or '42501' in detail:
                     message = '保存権限がありません。SupabaseのRLSポリシーと、Botに設定したSUPABASE_KEY（公開キー）の権限を確認してください。'
                 else:
                     message = f'保存に失敗しました。Botログを確認してください。({type(exc).__name__})'
-                return await interaction.response.send_message(message, ephemeral=True)
-        if action.value == 'list':
-            try:
-                result = self.bot.supabase.table('user_music_playlists').select('name,tracks,updated_at').eq(
-                    'guild_id', interaction.guild_id
-                ).eq('owner_user_id', interaction.user.id).order('updated_at', desc=True).execute()
-                rows = result.data or []
-                description = '\n'.join(f"• **{row['name']}** — {len(row.get('tracks') or [])} 曲" for row in rows[:25]) or '登録されていません。'
-                return await interaction.response.send_message(embed=we(title='あなたの個人プレイリスト', description=description), ephemeral=True)
-            except Exception:
-                logger.exception("Failed to list personal playlists from slash command")
-                return await interaction.response.send_message("一覧取得に失敗しました。", ephemeral=True)
-        if not name or not name.strip() or not interaction.guild.voice_client:
-            return await interaction.response.send_message("再生するにはボイスチャンネル参加後にプレイリスト名を指定してください。", ephemeral=True)
-        if busy := self._busy_message(interaction.guild):
-            return await interaction.response.send_message(busy, ephemeral=True)
-        await interaction.response.defer(ephemeral=True)
+                return await r.send(message, ephemeral=True)
+
+        # 一覧
         try:
-            result = self.bot.supabase.table('user_music_playlists').select('tracks').eq('guild_id', interaction.guild_id).eq(
-                'owner_user_id', interaction.user.id
-            ).eq('name', name.strip()).limit(1).execute()
+            if scope == 'server':
+                prefix = f"{r.guild.id}:"
+                result = db.table("playlists").select("name,ids").like("name", f"{prefix}%").execute()
+                rows = [row for row in (result.data or []) if str(row.get('name', '')).startswith(prefix)]
+                description = '\n'.join(
+                    f"• **{row['name'][len(prefix):]}** — {len(row.get('ids') or [])} 曲" for row in rows[:25]
+                ) or '登録されていません。'
+                return await r.send(embed=we(title='このサーバーの共有プレイリスト', description=description), ephemeral=True)
+            result = db.table('user_music_playlists').select('name,tracks,updated_at').eq(
+                'guild_id', r.guild.id
+            ).eq('owner_user_id', r.user.id).order('updated_at', desc=True).execute()
             rows = result.data or []
-            if not rows:
-                return await interaction.followup.send(f"個人プレイリスト `{name.strip()}` が見つかりません。", ephemeral=True)
-            tracks = rows[0].get('tracks') or []
-            status_message = await interaction.followup.send(f"プレイリスト `{name.strip()}` の読込を開始します（全 {len(tracks)} 件）。", wait=True)
-            state = self.get_state(interaction.guild_id)
-            state['current_ctx'] = interaction
-            task = state.get('playlist_load_task')
-            if task and not task.done():
-                task.cancel()
-            state['playlist_load_task'] = asyncio.create_task(self._load_playlist_in_background(interaction, tracks, name.strip(), status_message))
+            description = '\n'.join(f"• **{row['name']}** — {len(row.get('tracks') or [])} 曲" for row in rows[:25]) or '登録されていません。'
+            return await r.send(embed=we(title='あなたの個人プレイリスト', description=description), ephemeral=True)
         except Exception:
-            logger.exception("Failed to play personal playlist from slash command")
-            await interaction.followup.send("再生準備に失敗しました。", ephemeral=True)
+            logger.exception("Failed to list playlists")
+            return await r.send("一覧取得に失敗しました。", ephemeral=True)
+
+    async def _play_server_playlist(self, r: Responder, name: str, file: discord.Attachment | None):
+        """サーバー共有プレイリスト名、ID の並び（空白・カンマ区切り）、または JSON ファイルを再生する。"""
+        state = self.get_state(r.guild.id)
+        state['current_ctx'] = r.source
+        tokens = []
+        attachment = file or (r.attachments[0] if r.attachments else None)
+        if attachment is not None:
+            try:
+                content = await attachment.read()
+                tokens = json.loads(content.decode('utf-8'))
+                if not isinstance(tokens, list):
+                    tokens = [str(tokens)]
+            except Exception as e:
+                return await r.send(f"JSON解析エラー: {e}")
+        elif name:
+            tokens = name.replace(',', ' ').split()
+            if self.bot.supabase:
+                try:
+                    res = self.bot.supabase.table("playlists").select("ids").eq(
+                        "name", self._server_playlist_key(r.guild.id, name)).execute()
+                    if res.data:
+                        tokens = res.data[0]["ids"]
+                except Exception:
+                    pass
+        else:
+            return await r.send("プレイリスト名、ID、またはJSONファイルを指定してください。", ephemeral=True)
+
+        tracks = []
+        for token in tokens:
+            if isinstance(token, dict):
+                tracks.append(token)
+            elif isinstance(token, str) and token:
+                tracks.append({'input': token, 'attachment_id': token, 'is_youtube': False})
+        await self.start_playlist_load(r.source, tracks, name or 'JSONプレイリスト')
+
+    @commands.command(name="plsave")
+    @legacy("/music playlist", "!plsave")
+    async def personal_playlist_save(self, ctx, *, name: str):
+        """現在の曲とキューを自分専用プレイリストへ保存します。"""
+        await self._playlist_impl(Responder(ctx), 'save', name, 'me')
+
+    @commands.command(name="pllist")
+    @legacy("/music playlist", "!pllist")
+    async def personal_playlist_list(self, ctx):
+        """自分の個人プレイリストを一覧表示します。"""
+        await self._playlist_impl(Responder(ctx), 'list', None, 'me')
+
+    @app_commands.command(name="playlist", description="個人プレイリストを保存・一覧・再生します（/music playlist に移行）")
+    @app_commands.choices(action=PLAYLIST_ACTION_CHOICES)
+    @app_commands.describe(action="実行する操作", name="保存または再生するプレイリスト名（一覧では不要）")
+    @legacy("/music playlist", "/playlist")
+    async def playlist_cmd(self, interaction: discord.Interaction, action: app_commands.Choice[str], name: str | None = None):
+        await self._playlist_impl(Responder(interaction), action.value, name, 'me')
 
     @commands.command(name="plplay")
+    @legacy("/music playlist", "!plplay")
     async def personal_playlist_play(self, ctx, *, name: str):
         """自分の個人プレイリストをバックグラウンドでキューへ追加します。"""
-        if not ctx.voice_client:
-            return await ctx.send("先に `/join` してください。")
-        if busy := self._busy_message(ctx.guild):
-            return await ctx.send(busy)
-        if not self.bot.supabase:
-            return await ctx.send("個人プレイリストを使うにはSupabaseを設定してください。")
-        try:
-            result = self.bot.supabase.table('user_music_playlists').select('tracks').eq(
-                'guild_id', ctx.guild.id
-            ).eq('owner_user_id', ctx.author.id).eq('name', name.strip()).limit(1).execute()
-            rows = result.data or []
-            if not rows:
-                return await ctx.send(f"個人プレイリスト `{name.strip()}` が見つかりません。")
-            await self.start_playlist_load(ctx, rows[0].get('tracks') or [], name.strip())
-        except Exception:
-            logger.exception("Failed to play personal playlist")
-            await ctx.send("個人プレイリストの読込に失敗しました。SQLを適用済みか確認してください。")
+        await self._playlist_impl(Responder(ctx), 'play', name, 'me')
 
-    @app_commands.command(name="spatial", description="立体音響（リアルHRTF / FDN空間音響）の設定パネルを呼び出します")
-    async def spatial_cmd(self, interaction: discord.Interaction):
-        state = self.get_state(interaction.guild_id)
+    async def _spatial_impl(self, r: Responder, *, feedback: float | None = None, wet: float | None = None,
+                            resolution: int | None = None):
+        """オプションなしなら立体音響パネルを出し、指定があればリバーブの値を変える（旧 !rval / !rres）。"""
+        guild_id = r.guild.id
+        if feedback is None and wet is None and resolution is None:
+            return await self._spatial_panel(r, guild_id)
+        if feedback is not None and not 0.0 <= feedback <= 0.95:
+            return await r.send(embed=we("フィードバック値（残響の長さ）は 0.0 〜 0.95 の間で指定してください。"), ephemeral=True)
+        if wet is not None and not 0.0 <= wet <= 1.0:
+            return await r.send(embed=we("ウェット量（残響の音量）は 0.0 〜 1.0 の間で指定してください。"), ephemeral=True)
+        if resolution is not None and resolution not in (4, 8):
+            return await r.send(embed=we("解像度は `4` (通常) または `8` (高解像度・滑らか) のどちらかを指定してください。"), ephemeral=True)
+
+        state = self.get_state(guild_id)
+        lines = []
+        if feedback is not None:
+            state['fdn_feedback'] = feedback
+            lines.append(f"⏳ リバーブのフィードバック（長さ）を `{feedback}` に設定しました。")
+        if wet is not None:
+            state['fdn_wet'] = wet
+            lines.append(f"💧 残響のミックス（ウェット量）を `{wet}` に設定しました。")
+        if resolution is not None:
+            state['fdn_resolution'] = resolution
+            mode_str = "8次元ハウスホルダー（高密度・シルキー）" if resolution == 8 else "4次元ハウスホルダー（軽量・クリア）"
+            lines.append(f"⚙️ リバーブ解像度を `{resolution}` に切り替えました。\n現在のモード: **{mode_str}**")
+        await r.send(embed=we("\n".join(lines)))
+        # コントロールパネルの表示を更新
+        await self.update_panel(guild_id)
+
+    async def _spatial_panel(self, r: Responder, guild_id: int):
+        state = self.get_state(guild_id)
         current_eq = state.get('eq', 'flat')
         dist = state.get('spatial_distance', 2.0)
         room = state.get('spatial_room_size', 0.3)
@@ -2920,10 +2983,14 @@ class VoiceCog(commands.Cog):
             ),
             color=0x3498DB
         )
-        view = SpatialControlView(self, interaction.guild_id)
-        await interaction.response.send_message(embed=embed, view=view)
+        view = SpatialControlView(self, guild_id)
+        await r.send(embed=embed, view=view)
 
-    
+    @app_commands.command(name="spatial", description="立体音響の設定パネルを呼び出します（/music spatial に移行）")
+    @legacy("/music spatial", "/spatial")
+    async def spatial_cmd(self, interaction: discord.Interaction):
+        await self._spatial_impl(Responder(interaction))
+
     def build_queue_embed(self, guild_id: int):
         state = self.get_state(guild_id)
         current_track = state.get('current_track')
@@ -2943,11 +3010,14 @@ class VoiceCog(commands.Cog):
             embed.add_field(name="待機中", value="キューは空です", inline=False)
         return embed
 
-    @app_commands.command(name="queue", description="現在の再生キューを表示します")
-    async def queue_cmd(self, interaction: discord.Interaction):
+    async def _queue_impl(self, interaction: discord.Interaction):
         await interaction.response.send_message(embed=self.build_queue_embed(interaction.guild_id), ephemeral=True)
 
-    
+    @app_commands.command(name="queue", description="現在の再生キューを表示します（/music queue に移行）")
+    @legacy("/music queue", "/queue")
+    async def queue_cmd(self, interaction: discord.Interaction):
+        await self._queue_impl(interaction)
+
     async def generate_voicevox_wav(self, text: str, speaker: int = 1) -> bytes | None:
         """軽量化パラメータを適用してVOICEVOXでWAVを作成"""
         async with aiohttp.ClientSession() as session:
@@ -3000,6 +3070,115 @@ class VoiceCog(commands.Cog):
     async def speak_cmd(self, interaction: discord.Interaction, text: str, speaker: int = 1):
         # ラズパイには VOICEVOX が入っていない（重すぎる）ため、VC には触れずに案内だけ返す。
         await interaction.response.send_message("読み上げはこの Bot では使えません", ephemeral=True)
+
+    # ==================================================================
+    # /music グループ（新しい入口）。旧コマンドと同じ実装関数（_xxx_impl）を呼ぶ。
+    # ==================================================================
+    music_group = app_commands.Group(name="music", description="音楽の再生と操作", guild_only=True)
+
+    @music_group.command(name="play", description="URL・検索語・音声ファイル・IDで再生します（VC に自動で参加）")
+    @app_commands.describe(
+        query="Spotify/YouTube URL / 検索キーワード / ユニバーサルID",
+        file="音声/動画ファイルの添付（ファイル再生時）",
+        start_at="開始位置（秒）。キューが空で再生を開始する場合のみ指定できます。"
+    )
+    async def music_play(self, interaction: discord.Interaction, query: str | None = None,
+                         file: discord.Attachment | None = None, start_at: float | None = None):
+        await self._play_impl(interaction, query, file, start_at)
+
+    @music_group.command(name="pause", description="一時停止と再開を切り替えます")
+    async def music_pause(self, interaction: discord.Interaction):
+        await self._pause_impl(interaction)
+
+    @music_group.command(name="skip", description="次の曲へスキップします")
+    async def music_skip(self, interaction: discord.Interaction):
+        await self._skip_impl(interaction)
+
+    @music_group.command(name="stop", description="再生を止めてキューを空にします（VC には残ります）")
+    async def music_stop(self, interaction: discord.Interaction):
+        await self._stop_impl(Responder(interaction))
+
+    @music_group.command(name="seek", description="今の曲を指定した秒数へ移動します")
+    @app_commands.describe(seconds="移動先の位置（秒）")
+    async def music_seek(self, interaction: discord.Interaction, seconds: app_commands.Range[float, 0.0]):
+        await self._seek_impl(interaction, seconds)
+
+    @music_group.command(name="queue", description="再生キューを表示します")
+    async def music_queue(self, interaction: discord.Interaction):
+        await self._queue_impl(interaction)
+
+    @music_group.command(name="loop", description="ループ再生を切り替えます")
+    @app_commands.choices(mode=LOOP_CHOICES)
+    @app_commands.describe(mode="ループの種類")
+    async def music_loop(self, interaction: discord.Interaction, mode: app_commands.Choice[str]):
+        await self._loop_impl(interaction, mode.value)
+
+    @music_group.command(name="shuffle", description="シャッフル再生のオン・オフを切り替えます")
+    async def music_shuffle(self, interaction: discord.Interaction):
+        await self._shuffle_impl(interaction)
+
+    @music_group.command(name="volume", description="音量を変えます（1.0 で 100%）")
+    @app_commands.describe(value="音量（0.1〜2.0）")
+    async def music_volume(self, interaction: discord.Interaction, value: app_commands.Range[float, 0.1, 2.0]):
+        await self._volume_impl(Responder(interaction), value)
+
+    @music_group.command(name="speed", description="再生速度を変えます（1.0 で等速）")
+    @app_commands.describe(value=f"再生速度（{MIN_PLAYBACK_SPEED}〜{MAX_PLAYBACK_SPEED:g}）")
+    async def music_speed(self, interaction: discord.Interaction,
+                          value: app_commands.Range[float, MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED]):
+        await self._speed_impl(Responder(interaction), value)
+
+    @music_group.command(name="eq", description="イコライザ（EQ）や音響エフェクトを設定します")
+    @app_commands.describe(mode="プリセット選択、または直接 FFmpeg フィルター文字列を入力")
+    async def music_eq(self, interaction: discord.Interaction, mode: str = "flat"):
+        await self._eq_impl(interaction, mode)
+
+    @music_eq.autocomplete("mode")
+    async def music_eq_autocomplete(self, interaction: discord.Interaction, current: str):
+        return self._eq_choices(current)
+
+    @music_group.command(name="spatial", description="立体音響パネルを開きます。オプションを付けるとリバーブの値を変えます")
+    @app_commands.describe(
+        feedback="残響の長さ（0.0〜0.95）",
+        wet="残響の量（0.0〜1.0）",
+        resolution="リバーブの細かさ",
+    )
+    @app_commands.choices(resolution=[
+        app_commands.Choice(name="4（軽量・クリア）", value=4),
+        app_commands.Choice(name="8（高密度・なめらか）", value=8),
+    ])
+    async def music_spatial(self, interaction: discord.Interaction,
+                            feedback: app_commands.Range[float, 0.0, 0.95] | None = None,
+                            wet: app_commands.Range[float, 0.0, 1.0] | None = None,
+                            resolution: int | None = None):
+        await self._spatial_impl(Responder(interaction), feedback=feedback, wet=wet, resolution=resolution)
+
+    @music_group.command(name="panel", description="音楽の操作パネルを開きます（VC に自動で参加）")
+    async def music_panel(self, interaction: discord.Interaction):
+        await self._panel_impl(Responder(interaction))
+
+    @music_group.command(name="search", description="YouTube を検索して上位10件から選んで再生します")
+    @app_commands.describe(keyword="検索する言葉（Spotify のプレイリスト URL も可）")
+    async def music_search(self, interaction: discord.Interaction, keyword: str):
+        await self._search_impl(Responder(interaction), keyword)
+
+    @music_group.command(name="playlist", description="プレイリストを保存・一覧・再生します（自分用 / サーバー共有）")
+    @app_commands.choices(action=PLAYLIST_ACTION_CHOICES, scope=PLAYLIST_SCOPE_CHOICES)
+    @app_commands.describe(
+        action="実行する操作",
+        name="プレイリスト名（一覧では不要）。サーバー共有の再生では ID の並びも指定できます",
+        scope="自分用（既定）か、サーバーのみんなで共有するか",
+        file="サーバー共有の再生で使う JSON ファイル（ID の配列）",
+    )
+    async def music_playlist(self, interaction: discord.Interaction, action: app_commands.Choice[str],
+                             name: str | None = None, scope: app_commands.Choice[str] | None = None,
+                             file: discord.Attachment | None = None):
+        await self._playlist_impl(Responder(interaction), action.value, name, scope.value if scope else 'me', file)
+
+    @music_group.command(name="files", description="このチャンネルにアップロードされた音声の ID を表示します")
+    @app_commands.describe(limit="さかのぼるメッセージ数（1〜100）")
+    async def music_files(self, interaction: discord.Interaction, limit: app_commands.Range[int, 1, 100] = 20):
+        await self._files_impl(Responder(interaction), limit)
 
 
 #↓落ちた原因これね
