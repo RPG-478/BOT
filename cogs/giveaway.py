@@ -42,7 +42,7 @@ def draw(entrants: list[int], count: int, exclude: tuple[int, ...] = (), rng: ra
 
 def build_embed(g: dict[str, Any]) -> tuple[discord.Embed, dict]:
     status = g["status"]
-    title = {RUNNING: "🎁 抽選", ENDED: "🎉 抽選結果", CANCELLED: "🚫 抽選（中止）"}[status]
+    title = {RUNNING: "<:PREMIUM_AGO_TICKET:1559334882809872474> 抽選", ENDED: "🎉 抽選結果", CANCELLED: "🚫 抽選（中止）"}[status]
     embed, extra = coin_embed(f"{title}: {g['prize']}")
     embed.add_field(name="当選人数", value=f"{g['winners']} 人", inline=True)
     embed.add_field(name="参加者", value=f"{len(g['entrants'])} 人", inline=True)
@@ -64,7 +64,7 @@ def build_embed(g: dict[str, Any]) -> tuple[discord.Embed, dict]:
 def build_view(message_id: int, g: dict[str, Any]) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     if g["status"] == RUNNING:
-        view.add_item(discord.ui.Button(label="参加する / 取り消す", emoji="🎁", style=discord.ButtonStyle.success,
+        view.add_item(discord.ui.Button(label="参加する / 取り消す", emoji="<:PREMIUM_AGO_TICKET:1559334882809872474>", style=discord.ButtonStyle.success,
                                         custom_id=f"{JOIN_PREFIX}{message_id}"))
     if g["status"] != CANCELLED:
         view.add_item(discord.ui.Button(label="管理", style=discord.ButtonStyle.secondary,
