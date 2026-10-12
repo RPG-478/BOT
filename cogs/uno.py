@@ -577,12 +577,8 @@ class Uno(commands.Cog):
             game.waiting_for_uno = False
             game.uno_declared = False
 
-    @app_commands.command(name="uno_start", description="UNOゲームを開始し、参加者を募集します。")
-    async def uno_start(self, interaction: discord.Interaction):
-        await self.start_recruit(interaction)
-
     async def start_recruit(self, interaction: discord.Interaction):
-        """募集を始める（/uno_start と /game のハブから呼ぶ）。interaction にはまだ応答していないこと。"""
+        """募集を始める（/game のハブから呼ぶ）。interaction にはまだ応答していないこと。"""
         channel_id = interaction.channel_id
         
         if channel_id in self.games:

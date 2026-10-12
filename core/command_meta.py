@@ -189,12 +189,9 @@ COMMAND_META: dict[str, dict] = {
     # ---------------------------------------------------------------- パーティーゲーム
     "/game": {"category": "game"},
     "/jinrou": {"category": "game", "guide_key": "jinrou"},
-    "/jinrou_help": {"category": "game"},
     "/jinrou_rating": {"category": "game"},
     "/jinrou_ranking": {"category": "game"},
     "/kill": {"category": "game"},
-    "/wordwolf": {"category": "game", "guide_key": "wordwolf"},
-    "/uno_start": {"category": "game", "guide_key": "uno"},
     "/uno_end": {"category": "game"},
     "!doubt": {"category": "game", "summary": "ダウトの参加者を募集して始めます（3人以上）", "guild_only": True,
                "guide_key": "doubt"},

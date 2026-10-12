@@ -553,15 +553,6 @@ class JinrouCog(commands.Cog):
         embed = discord.Embed(description="管理者によりゲームが強制終了されました。", color=0xFFFFFF)
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="jinrou_help", description="各役職の詳細な説明を表示します")
-    async def jinrou_help(self, interaction: discord.Interaction):
-        view = HelpView()
-        embed, file = view.make_embed_and_file()
-        if file:
-            await interaction.response.send_message(embed=embed, file=file, view=view)
-        else:
-            await interaction.response.send_message(embed=embed, view=view)
-
     @app_commands.command(name="jinrou", description="人狼ゲームを開始します")
     @app_commands.choices(mode=[
         app_commands.Choice(name="ローカルモード", value="local"),

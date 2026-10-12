@@ -74,17 +74,8 @@ class CustomWordWolf(commands.Cog):
     def _white_embed(self, description: str = None, title: str = None) -> discord.Embed:
         return discord.Embed(title=title, description=description, color=0xFFFFFF)
         
-    @app_commands.command(name="wordwolf", description="ワードウルフを開始します")
-    @app_commands.choices(wordlist=[
-        app_commands.Choice(name="標準", value="standard"),
-        app_commands.Choice(name="崩壊：スターレイル", value="starail"),
-        app_commands.Choice(name="原神", value="genshin")
-    ])
-    async def wordwolf(self, interaction: discord.Interaction, wordlist: str = "standard"):
-        await self.start_recruit(interaction, wordlist)
-
     async def start_recruit(self, interaction: discord.Interaction, wordlist: str = "standard"):
-        """募集を始める（/wordwolf と /game のハブから呼ぶ）。interaction にはまだ応答していないこと。"""
+        """募集を始める（/game のハブから呼ぶ）。interaction にはまだ応答していないこと。"""
         if self.game_running:
             await interaction.response.send_message(embed=self._white_embed("既にゲームが進行中です。"), ephemeral=True)
             return
