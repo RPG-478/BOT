@@ -72,6 +72,19 @@ async def _disconnect_and_cleanup(vc: voice_recv.VoiceRecvClient) -> None:
         logger.debug("disconnect 失敗 (無視)", exc_info=True)
 
 
+def _can_delete_room(room: RoomConfig, user, guild: Optional[discord.Guild]) -> bool:
+    """ルームを消せるのは作成者本人か、ルームを作ったサーバーでサーバー管理権限を持つ人だけ。
+
+    別のサーバーで管理権限を持っていても、そのサーバーのルームではないので消せない。
+    """
+    if user.id == room.owner_id:
+        return True
+    if guild is None or guild.id != room.owner_guild_id:
+        return False
+    permissions = getattr(user, "guild_permissions", None)
+    return bool(permissions and permissions.manage_guild)
+
+
 # ============================================================
 # グロチャ (テキストチャット連携) 管理
 # ============================================================
@@ -347,7 +360,7 @@ class GlobalVCCog(commands.Cog):
             f"`{ctx.prefix}gvc join <ルーム名> [パスワード]` : 指定したルームに参加 (要ボイスチャンネル在室)\n"
             f"`{ctx.prefix}gvc list` : ルーム一覧を表示\n"
             f"`{ctx.prefix}gvc info <ルーム名>` : ルームの詳細設定を表示\n"
-            f"`{ctx.prefix}gvc delete <ルーム名>` : ルームを削除 (作成者のみ)\n"
+            f"`{ctx.prefix}gvc delete <ルーム名>` : ルームを削除 (作成者か、作成したサーバーの管理者のみ)\n"
             f"`{ctx.prefix}gvc leave` : グローバルVCから離脱 (ルーム自体は残ります)\n"
             f"`{ctx.prefix}gvc chat connect <ルーム名> [パスワード]` : このチャンネルをグロチャに接続\n"
             f"`{ctx.prefix}gvc chat disconnect` : このチャンネルのグロチャ接続を解除\n\n"
@@ -359,6 +372,8 @@ class GlobalVCCog(commands.Cog):
     async def gvc_create(self, ctx: commands.Context, room_name: str, *, options: RoomOptions = None):
         # フラグが一切指定されなかった場合、discord.py は空文字列を RoomOptions に変換して
         # 各フラグのデフォルト値を持つインスタンスを渡してくる。念のため None の場合の保険も入れる。
+        if ctx.guild is None:
+            return await ctx.send("⚠️ ルームはサーバー内で作成してください。")
         if room_name in ROOMS:
             return await ctx.send(f"⚠️ ルーム **{room_name}** はすでに存在します。")
 
@@ -503,10 +518,11 @@ class GlobalVCCog(commands.Cog):
         if room is None:
             return await ctx.send(f"❌ ルーム **{room_name}** は存在しません。")
 
-        is_owner = ctx.author.id == room.owner_id
-        has_perm = ctx.author.guild_permissions.manage_guild if ctx.guild else False
-        if not (is_owner or has_perm):
-            return await ctx.send("⚠️ このルームを削除できるのは作成者、またはサーバー管理権限を持つユーザーのみです。")
+        if not _can_delete_room(room, ctx.author, ctx.guild):
+            return await ctx.send(
+                "⚠️ このルームを削除できるのは、作成者か、ルームを作ったサーバーで"
+                "「サーバー管理」権限を持つ人だけです。"
+            )
 
         for vc in list(GLOBAL_ROOMS.get(room_name, [])):
             await _disconnect_and_cleanup(vc)
