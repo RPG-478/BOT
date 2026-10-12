@@ -61,6 +61,7 @@ SLASH_ARGUMENTS = {
     'jinrou_rating': {},
     'jinrou_ranking': {},
     'muted': {},
+    'help': {},
     'fujo panic set': {'days': 3, 'message': 'テスト'},
     'fujo panic disable': {},
     'fujo register': {},
