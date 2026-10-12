@@ -128,6 +128,23 @@ class JinrouGame:
         self.is_global = False
         self.channels = []
         self._original_channel = None
+        self.started = False  # 役職を配ってゲームループが動いている間 True（募集中は False）
+
+    # 新しいゲームでも引き継ぐ項目（チャンネルの紐付け）。それ以外はすべて初期値に戻す。
+    _KEEP_ON_RESET = ("is_global", "channels", "_original_channel", "game_channel")
+
+    def reset_for_new_game(self):
+        """前のゲームの状態（メンヘラの対象・もくもくのターン数など）を残さないよう、全項目を初期化する"""
+        kept = {name: getattr(self, name) for name in self._KEEP_ON_RESET}
+        self.__init__()
+        for name, value in kept.items():
+            setattr(self, name, value)
+
+    def is_dead_player(self, user_id) -> bool:
+        """ゲームに参加していて、既に死亡・追放された人か"""
+        if not self.started:
+            return False
+        return any(p.id == user_id for p in self.players) and not any(p.id == user_id for p in self.alive_players)
 
 # ======================================================
 #  Eloレート計算関数
@@ -264,6 +281,12 @@ class JinrouCog(commands.Cog):
                     break
 
         if not game or not game.is_running:
+            return
+
+        # 死亡・追放された参加者は、昼・夜・投票中を問わず発言できない
+        if game.is_dead_player(message.author.id):
+            try: await message.delete()
+            except: pass
             return
 
         player_role = game.roles.get(message.author.id)
@@ -530,29 +553,10 @@ class JinrouCog(commands.Cog):
             game._original_channel = interaction.channel
             game.game_channel = interaction.channel
 
+        # 前のゲームの状態（yandere_targets・mokumoku_turns なども含む）をすべて初期化する
+        game.reset_for_new_game()
         game.is_running = True
         game.host_id = interaction.user.id
-        game.players = []
-        game.roles = {}
-        game.display_roles = {}
-        game.ura_reveal_triggers = {}
-        game.aho_fake_role = {}
-        game.day_count = 0
-        game.wan_owner = {}
-        game.used_hadouhou = False
-        game.last_executed = None
-        game.masai_evasion = {}
-        game.silenced_players = set()
-        game.chairman_ketsugu_used = False
-        game.chairman_ketsugu_target = None
-        game.chairman_forced_vote = False
-        game.chairman_vote_event = None
-        game.in_discussion = False
-        game.riacchu_pairs = []
-        game.kizoku_slave = {}
-        game.musician_party_used = False
-        game.required_roles = []
-        game.excluded_roles = []
 
         embed = discord.Embed(
             title="人狼ゲーム設定",
@@ -621,6 +625,7 @@ class JinrouCog(commands.Cog):
             return
 
         game.alive_players = game.players.copy()
+        game.started = True
         self.assign_roles(game)
 
         mentions = " ".join([p.mention for p in game.players])
@@ -688,8 +693,10 @@ class JinrouCog(commands.Cog):
         except Exception as e:
             print(f"Game Error: {e}")
         finally:
+            # 終了時は発言制限をすべて解除する（死亡者の制限も解く）
             game.silenced_players.clear()
             game.in_discussion = False
+            game.started = False
             if game.roles:
                 try: await self._announce_final_roles(game)
                 except Exception: pass
@@ -1456,15 +1463,22 @@ class ReplayView(discord.ui.View):
             embed = discord.Embed(description="再戦を開始できるのはゲームを起動した人のみです。", color=0xFFFFFF)
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
+        channel = interaction.channel
+        current = self.cog.games.get(channel.id)
+        if current is not None and current is not self.game and current.is_running:
+            embed = discord.Embed(description="このチャンネルでは既に別のゲームが進行中です。", color=0xFFFFFF)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
         old_required = self.game.required_roles[:]
         old_excluded = self.game.excluded_roles[:]
         host_id = self.game.host_id
-        channel = interaction.channel
 
         new_game = JinrouGame()
         new_game.is_running = True
         new_game.host_id = host_id
         new_game.game_channel = channel
+        new_game._original_channel = channel
+        new_game.game_mode = self.game.game_mode  # 前回と同じモードで再戦する
         new_game.required_roles = old_required
         new_game.excluded_roles = old_excluded
         self.cog.games[channel.id] = new_game
@@ -1473,7 +1487,7 @@ class ReplayView(discord.ui.View):
         req_str = "、".join(old_required) if old_required else "なし"
         exc_str = "、".join(old_excluded) if old_excluded else "なし"
         await interaction.response.send_message(
-            f"<a:POYOPOYO:1490724627805110392>再戦開始！ 必須: {req_str} / 除外: {exc_str}",
+            f"<a:POYOPOYO:1490724627805110392>再戦開始！ モード:【{new_game.game_mode}】 必須: {req_str} / 除外: {exc_str}",
             view=RecruitView(new_game, self.cog)
         )
 
