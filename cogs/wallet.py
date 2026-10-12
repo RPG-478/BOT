@@ -4,6 +4,7 @@ from discord import app_commands
 import asyncio
 import logging
 import config
+import os
 import traceback
 
 logger = logging.getLogger(__name__)
@@ -13,6 +14,23 @@ NEW_USER_BALANCE = 10  # まだ行がないユーザーに最初に渡す残高�
 # 残高を書き換えるときに、ほかの処理と同時に更新されて食い違った場合の再試行回数
 BALANCE_UPDATE_ATTEMPTS = 5
 INSUFFICIENT = object()  # 残高不足を表す目印
+
+# アゴのコイン（web/public/img/coin.png と同じ画像）。埋め込みのサムネイルに添付ファイルとして付ける。
+COIN_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Assets", "COIN.png")
+COIN_FILENAME = "coin.png"
+COIN_COLOR = 0xf1c40f
+
+
+def coin_embed(title: str, description: str | None = None) -> tuple[discord.Embed, dict]:
+    """コインのサムネイル付きの埋め込みと、send に渡す追加の引数（file）を返す。
+
+    画像が無い環境では、サムネイルなしの埋め込みだけを返す。
+    """
+    embed = discord.Embed(title=title, description=description, color=COIN_COLOR)
+    if not os.path.exists(COIN_PATH):
+        return embed, {}
+    embed.set_thumbnail(url=f"attachment://{COIN_FILENAME}")
+    return embed, {"file": discord.File(COIN_PATH, filename=COIN_FILENAME)}
 
 class WalletCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -67,15 +85,11 @@ class WalletCog(commands.Cog):
                 balance = data[0]["balance"]
                 debt = data[0].get("debt", 0)
 
-            embed = discord.Embed(
-                title="ウォレット残高確認",
-                description=f"{interaction.user.mention} さんの現在のステータスです。",
-                color=0xffffff
-            )
-            embed.add_field(name="保有コイン", value=f"{balance} AGO", inline=True)
-            embed.add_field(name="借金額", value=f"{debt} AGO", inline=True)
-            
-            await interaction.followup.send(embed=embed)
+            embed, extra = coin_embed("ウォレット残高確認", f"{interaction.user.mention} さんの現在のステータスです。")
+            embed.add_field(name="保有コイン", value=f"{int(balance or 0):,} AGO", inline=True)
+            embed.add_field(name="借金額", value=f"{int(debt or 0):,} AGO", inline=True)
+
+            await interaction.followup.send(embed=embed, **extra)
 
         except Exception as e:
             print("\n=== [WALLET COMMAND ERROR START] ===")
@@ -154,13 +168,12 @@ class WalletCog(commands.Cog):
             # 送金自体は終わっているので、履歴だけ残せなかったことを記録する。
             logger.exception("pay: 送金履歴の記録に失敗 sender=%s receiver=%s amount=%s", sender_id, receiver_id, amount)
 
-        await interaction.followup.send(f"送金しました。残高は {debit:,} AGO です。", ephemeral=True)
-        embed = discord.Embed(
-            title="送金完了",
-            description=f"{interaction.user.mention} さんが {receiver.mention} に {amount} AGO コインを送金しました。",
-            color=0xffffff
-        )
-        await interaction.followup.send(embed=embed)
+        mine, extra = coin_embed("送金しました", f"{receiver.mention} に **{amount:,} AGO** を送りました。")
+        mine.add_field(name="あなたの残高", value=f"{debit:,} AGO", inline=True)
+        await interaction.followup.send(embed=mine, ephemeral=True, **extra)
+        embed, extra = coin_embed(
+            "送金完了", f"{interaction.user.mention} さんが {receiver.mention} に **{amount:,} AGO** コインを送金しました。")
+        await interaction.followup.send(embed=embed, **extra)
 
     async def _change_balance(self, user_id: str, delta: int, *, require_funds: bool = False,
                               create_with: int | None = None):
