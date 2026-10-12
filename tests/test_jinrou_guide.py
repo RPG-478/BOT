@@ -37,10 +37,11 @@ class RoleIdTest(unittest.TestCase):
 
     def test_url_follows_switch(self):
         from unittest.mock import patch
-        self.assertFalse(guide.ROLE_URL_USE_SLUG)
-        # サイト（#72）は encodeURIComponent(日本語の役職名)
-        self.assertEqual(guide.role_url("人狼"), "https://bot-deshihito.vercel.app/jinrou/roles/%E4%BA%BA%E7%8B%BC")
-        with patch.object(guide, "ROLE_URL_USE_SLUG", True):
+        self.assertTrue(guide.ROLE_URL_USE_SLUG)
+        with patch.object(guide, "ROLE_URL_USE_SLUG", False):
+            # False のときは encodeURIComponent(日本語の役職名)
+            self.assertEqual(guide.role_url("人狼"), "https://bot-deshihito.vercel.app/jinrou/roles/%E4%BA%BA%E7%8B%BC")
+        if True:
             self.assertEqual(guide.role_url("ハゲ"), f"{guide.ROLE_GUIDE_BASE_URL}/hage")
             self.assertEqual(guide.role_url("人狼"), "https://bot-deshihito.vercel.app/jinrou/roles/werewolf")
 
@@ -71,7 +72,8 @@ class GuideTextTest(unittest.TestCase):
         guide.register_roles([("新しい役職", "人狼陣営", "テスト", "X.PNG", "new-role")])
         try:
             self.assertEqual(dict(guide.guide_fields("新しい役職"))["能力"], "テスト")
-            self.assertTrue(guide.role_url("新しい役職").endswith("/%E6%96%B0%E3%81%97%E3%81%84%E5%BD%B9%E8%81%B7"))
+            self.assertTrue(guide.role_url("新しい役職").endswith("/new-role"))
+            self.assertEqual(guide.role_id("新しい役職", use_slug=False), "%E6%96%B0%E3%81%97%E3%81%84%E5%BD%B9%E8%81%B7")
             self.assertEqual(guide.role_id("新しい役職", use_slug=True), "new-role")
         finally:
             guide._roles.pop("新しい役職", None)
@@ -104,7 +106,7 @@ class RoleNoticeTest(unittest.IsolatedAsyncioTestCase):
         names = [f.name for f in kwargs["embed"].fields]
         self.assertIn("🔰 今夜やること", names)
         self.assertIn(guide.role_url("占い師"), [f.value for f in kwargs["embed"].fields])
-        self.assertIn("%E5%8D%A0", guide.role_url("占い師"))
+        self.assertTrue(guide.role_url("占い師").endswith("/seer"))
 
     async def test_hidden_role_is_not_leaked(self):
         game = self.game({1: "入狼"})

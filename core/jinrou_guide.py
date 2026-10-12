@@ -13,10 +13,10 @@ import discord
 # 役職ガイドのページ（TYPETA が作成中）。URL はここだけで管理する。
 ROLE_GUIDE_BASE_URL = "https://bot-deshihito.vercel.app/jinrou/roles"
 
-# 役職ページの URL に ASCII の id を使うか。False の間は、サイト（#72）と同じく
+# 役職ページの URL に ASCII の id を使うか（True: /jinrou/roles/werewolf など）。False にすると
 # 日本語の役職名を URL エンコードしたもの（encodeURIComponent 相当）を使う。
 # scripts/export_jinrou_roles.py もこの値を読んで、サイトの役職 ID をそろえる。
-ROLE_URL_USE_SLUG = False
+ROLE_URL_USE_SLUG = True
 
 # 役職 ID（スラッグ）は cogs/jinrou.py の HELP_ROLES の 5 番目の値で管理し、register_roles で読み込む。
 

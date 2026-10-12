@@ -5,7 +5,8 @@
 
 役職 ID は、core/jinrou_guide.py の ROLE_URL_USE_SLUG が True で役職データに英語の `id` があればそれを、
 それ以外は日本語の役職名を使う。
-Bot を import せず ast で読むので、discord.py などが入っていなくても動く。
+役職一覧は ast で読み、勝ち方の文は core/jinrou_guide.py の win_condition() を使う
+（Bot の「？」ボタンと同じ文になる）。discord.py が要るので venv で実行する。
 """
 from __future__ import annotations
 
@@ -15,6 +16,9 @@ import shutil
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from core import jinrou_guide  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 COG = ROOT / "cogs" / "jinrou.py"
 ASSETS = ROOT / "Assets"
@@ -22,17 +26,6 @@ OUT_TS = ROOT / "web" / "lib" / "jinrou-roles.ts"
 IMG_DIR = ROOT / "web" / "public" / "img" / "jinrou"
 
 TEAMS = {"村人陣営": "village", "人狼陣営": "wolf", "第三者陣営": "third"}
-TEAM_WIN = {
-    "village": "人狼陣営をすべて追放・撃破すれば、村人陣営の勝ち。",
-    "wolf": "生きている人狼が村人陣営と同じ数以上になれば、人狼陣営の勝ち。",
-    "third": "村人・人狼どちらの勝ちとも別の、その役職だけの勝ち方を目指す。",
-}
-# 陣営の勝ち方と違う役職だけ上書きする（cogs/jinrou.py の勝敗判定に合わせる）
-WIN_OVERRIDES = {
-    "ハゲ": "昼の投票で追放されたら、その人だけ勝ち。",
-    "コウモリむに": "陣営の勝負がついたときに生き残っていれば、その人だけ追加で勝ち。",
-    "ワンころ": "飼い主が生きている間は飼い主の陣営として、野良化したあとは人狼陣営として勝ちを目指す。",
-}
 
 
 def load_help_roles(path: Path = COG) -> list:
@@ -75,14 +68,16 @@ def normalize(entry, use_slug: bool = True) -> dict:
         "team": team,
         "teamLabel": faction,
         "ability": desc,
-        "win": WIN_OVERRIDES.get(name, TEAM_WIN[team]),
+        "win": jinrou_guide.win_condition(name),
         "asset": img,
     }
 
 
 def build_roles(path: Path = COG) -> list[dict]:
+    help_roles = load_help_roles(path)
+    jinrou_guide.register_roles(help_roles)
     roles = []
-    for e in load_help_roles(path):
+    for e in help_roles:
         r = normalize(e, use_slug=USE_SLUG)
         src = ASSETS / r.pop("asset") if r["asset"] else None
         r["image"] = f"/img/jinrou/{src.stem.lower()}.png" if src and src.exists() else None
