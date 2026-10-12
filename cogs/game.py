@@ -128,7 +128,7 @@ class GameDetailView(discord.ui.View):
         self.add_item(GameSelect(selected=game_id))
         if game_id == "wordwolf":
             self.add_item(WordlistSelect(self.wordlist))
-        if game_id not in RANKED_GAMES:
+        if game_id not in RANKED_GAMES and not party_ranking.is_ranked(game_id):
             self.remove_item(self.ranking)
 
     @discord.ui.button(label="ルール", style=discord.ButtonStyle.secondary, row=2)

@@ -82,6 +82,19 @@ class PartyRanking:
         return sorted(board.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
 
 
+# ランキングを記録しているゲーム。各ゲームの cog が import 時に register する
+# （/game の「ランキング」ボタンを出すかどうかに使う。cogs/game.py の RANKED_GAMES と合わせて見る）
+REGISTERED_GAMES: set = set()
+
+
+def register(game: str) -> None:
+    REGISTERED_GAMES.add(game)
+
+
+def is_ranked(game: str) -> bool:
+    return game in REGISTERED_GAMES
+
+
 _shared = None
 
 

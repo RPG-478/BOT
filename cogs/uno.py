@@ -1,5 +1,9 @@
 import discord
 from discord.ext import commands
+
+from core import party_ranking
+
+party_ranking.register("uno")
 from discord import app_commands
 import random
 import asyncio
@@ -679,6 +683,10 @@ class Uno(commands.Cog):
 
     async def finish_game(self, channel_id: int, winner_id: int):
         channel = self.bot.get_channel(channel_id)
+        # サーバーごとのランキング（core/party_ranking.py）: 手札を出し切った 1 人が勝ち
+        guild = getattr(channel, "guild", None)
+        if channel_id in self.games and guild is not None:
+            await party_ranking.shared().record_win(guild.id, winner_id, "uno")
         
         embed = discord.Embed(
             title="[!] UNO ゲーム決着！",
