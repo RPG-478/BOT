@@ -16,6 +16,41 @@
 
 from __future__ import annotations
 
+# ---------------------------------------------------------------- 国づくりの初回ガイド
+# /nation を初めて使った人に出す 3 ステップのチュートリアル（cogs/nation_onboarding.py）。
+# 同じ文章を /help と Web サイトのガイド（NATION_GUIDE）でも使う。
+NATION_TUTORIAL = [
+    {
+        "title": "1. 国に入る・国をつくる",
+        "body": (
+            "国づくりは、サーバーごとに 1 つの国を育てる遊びです。\n"
+            "- このサーバーに国があれば `/nation join` で国民になれます（入れるのは 1 人 1 か国）。\n"
+            "- まだ国がなければ、サーバーの管理者かオーナーが `/nation found` で建国します。"
+            "建国した人が国王になり、首都が共有マップに置かれます。"
+        ),
+    },
+    {
+        "title": "2. 空腹度とコイン",
+        "body": (
+            "- **空腹度**: 参加したときは 100 です。これから時間とともに減っていくしくみが入る予定です。\n"
+            "- **コイン（AGO）**: 所持金は `/wallet` と共通です。ほかのゲームで稼いだコインも国づくりで使えます。\n"
+            "`/nation status` で、所属国・役職・所持金・空腹度をいつでも確認できます。"
+        ),
+    },
+    {
+        "title": "3. まずやること",
+        "body": (
+            "1. `/nation join`（または `/nation found`）で国に入る\n"
+            "2. `/nation status` で自分の状態を確認する\n"
+            "3. Web サイトの共有マップで、自分の国の場所と広さを見てみる\n"
+            "このガイドは `/help` の「/nation join」からもう一度読めます。"
+        ),
+    },
+]
+
+NATION_GUIDE = "\n\n".join(f"## {step['title']}\n{step['body']}" for step in NATION_TUTORIAL)
+
+
 CATEGORIES = [
     {
         "id": "support",
@@ -46,7 +81,7 @@ CATEGORIES = [
     {
         "id": "game",
         "label": "パーティーゲーム",
-        "description": "人狼・ワードウルフ・UNO・ダウトなど、チャンネルのみんなで遊べるゲームです。",
+        "description": "人狼・ワードウルフ・UNO・ダウト・NGワードなど、チャンネルのみんなで遊べるゲームです。",
         "guide": (
             "## 遊び方\n"
             "それぞれのゲームのコマンドを実行すると参加者の募集が始まり、ボタンで参加できます。"
@@ -144,9 +179,9 @@ COMMAND_META: dict[str, dict] = {
     "/pay": {"category": "economy"},
     "/leaderboard": {"category": "economy"},
     "/guess": {"category": "economy"},
-    "/nation join": {"category": "economy"},
-    "/nation found": {"category": "economy", "permissions": ["administrator"]},
-    "/nation status": {"category": "economy"},
+    "/nation join": {"category": "economy", "guide": NATION_GUIDE},
+    "/nation found": {"category": "economy", "guide": NATION_GUIDE, "permissions": ["administrator"]},
+    "/nation status": {"category": "economy", "guide": NATION_GUIDE},
     "!coin": {"category": "economy", "summary": "管理者が自分の残高を直接設定します", "permissions": ["bot_admin"],
               "hidden": True},
 

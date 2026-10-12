@@ -28,6 +28,14 @@ export default function Home() {
         <div className="card"><span className="num">2</span><strong><code>/setup</code></strong><div className="muted">管理者が使うチャンネルや機能を設定します。</div></div>
         <div className="card"><span className="num">3</span><strong><code>/help</code></strong><div className="muted">機能ごとの使い方と例が表示されます。</div></div>
       </div>
+      <h2>国づくり</h2>
+      <Link href="/nation" className="card game-card">
+        <img src="/img/coin.png" alt="アゴのコイン" />
+        <div>
+          <strong>サーバーどうしで国を育てよう</strong>
+          <div className="muted">1 つの共有マップで、サーバーごとに国をつくります。<code>/nation found</code> で建国、<code>/nation join</code> で参加。遊び方を見る →</div>
+        </div>
+      </Link>
       <h2>できること</h2>
       <div className="grid">
         {catalog.categories.map((category) => (
