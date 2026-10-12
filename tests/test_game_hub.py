@@ -9,6 +9,7 @@ from game_fakes import (FakeBot, FakeChannel, FakeGuild, FakeInteraction, FakeMe
                         press, real_sleep)
 from cogs import doubt, game, jinrou, ngword, shiritori, uno, wordwolf
 from core import game_guides as guides
+from core import party_ranking
 from core.game_guides import GAME_GUIDES, GAME_ORDER
 
 
@@ -93,7 +94,7 @@ class GameHubTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(message.embed.title, GAME_GUIDES[game_id]['name'])
                 self.assertIsInstance(message.view, game.GameDetailView)
                 labels = [c.label for c in message.view.children if isinstance(c, discord.ui.Button)]
-                self.assertEqual(labels, ['ルール', '募集する'] + (['ランキング'] if game_id in game.RANKED_GAMES else []) + ['戻る'])
+                self.assertEqual(labels, ['ルール', '募集する'] + (['ランキング'] if game_id in game.RANKED_GAMES or party_ranking.is_ranked(game_id) else []) + ['戻る'])
 
                 inter = FakeInteraction(self.host, self.channel)
                 await press(message.view, 'rules', inter)
