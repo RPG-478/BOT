@@ -11,6 +11,8 @@ import discord.opus
 from discord.ext import commands
 from discord.ext import voice_recv
 
+from core.voice_session import VoiceBusy, get_manager
+
 logger = logging.getLogger(__name__)
 
 # ============================================================
@@ -364,6 +366,7 @@ class VoiceChangerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.vc_sessions: dict[int, dict] = {}
+        self.voice_sessions = get_manager(bot)
 
     @commands.group(name="vc", invoke_without_command=True)
     @commands.guild_only()
@@ -407,17 +410,14 @@ class VoiceChangerCog(commands.Cog):
 
         target_channel = ctx.author.voice.channel
 
+        # 別の機能が VC を使っているときは追い出さずに断る。
         try:
-            if ctx.voice_client is not None:
-                await ctx.voice_client.disconnect(force=True)
-                await asyncio.sleep(1.0)
-
-            vc = await target_channel.connect(
-                cls=voice_recv.VoiceRecvClient,
-                timeout=30.0,
-                reconnect=True,
-                self_deaf=False
+            vc = await self.voice_sessions.acquire(
+                ctx.guild, target_channel, "changer", ctx.author,
+                cleanup=self._cleanup(guild_id), text_channel=ctx.channel, force=True, timeout=30.0,
             )
+        except VoiceBusy as busy:
+            return await ctx.send(embed=we(str(busy)))
         except Exception as e:
             return await ctx.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
 
@@ -468,19 +468,28 @@ class VoiceChangerCog(commands.Cog):
     @vc_group.command(name="stop")
     @commands.guild_only()
     async def vc_stop(self, ctx: commands.Context):
-        session = self.vc_sessions.pop(ctx.guild.id, None)
-        if not session:
+        if ctx.guild.id not in self.vc_sessions:
             return await ctx.send(embed=we("⚠️ ボイスチェンジャーは実行されていません。"))
 
-        vc: voice_recv.VoiceRecvClient = session["vc"]
-        try:
-            vc.stop_listening()
-            vc.stop()
-            await vc.disconnect(force=True)
-        except Exception:
-            pass
+        if not await self.voice_sessions.release(ctx.guild.id, "changer", reason="stop"):
+            self._cleanup(ctx.guild.id)("stop")
 
         await ctx.send(embed=we("🛑 ボイスチェンジャーを停止しました。"))
+
+    def _cleanup(self, guild_id: int):
+        """VC を手放すときの後片付け（切断は VoiceSessionManager が行う）。"""
+        def cleanup(reason: str) -> None:
+            session = self.vc_sessions.pop(guild_id, None)
+            if not session:
+                return
+            vc = session["vc"]
+            session["sink"].cleanup()
+            try:
+                vc.stop_listening()
+                vc.stop()
+            except Exception:
+                pass
+        return cleanup
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(VoiceChangerCog(bot))

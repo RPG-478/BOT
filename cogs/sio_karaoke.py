@@ -18,6 +18,8 @@ import discord.opus
 from discord.ext import commands
 from discord.ext import voice_recv
 
+from core.voice_session import VoiceBusy, get_manager
+
 try:
     from vosk import Model, KaldiRecognizer
 except ImportError:
@@ -282,6 +284,7 @@ class KaraokeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.sessions: dict[int, dict] = {}
+        self.voice_sessions = get_manager(bot)
 
         self.vosk_model = None
         if Model is None:
@@ -323,12 +326,14 @@ class KaraokeCog(commands.Cog):
         vc_channel = ctx.author.voice.channel
         webhook = await self._get_or_create_webhook(ctx.channel)
 
+        # 別の機能が VC を使っているときは追い出さずに断る。
         try:
-            if ctx.voice_client is not None:
-                await ctx.voice_client.disconnect(force=True)
-                await asyncio.sleep(0.5)
-
-            vc = await vc_channel.connect(cls=voice_recv.VoiceRecvClient, timeout=30.0, reconnect=True)
+            vc = await self.voice_sessions.acquire(
+                ctx.guild, vc_channel, "karaoke", ctx.author,
+                cleanup=self._cleanup(guild_id), text_channel=ctx.channel, force=True, timeout=30.0,
+            )
+        except VoiceBusy as busy:
+            return await ctx.send(embed=we(str(busy)))
         except Exception as e:
             return await ctx.send(embed=we(f"❌ VC接続に失敗しました: `{e}`"))
 
@@ -398,21 +403,26 @@ class KaraokeCog(commands.Cog):
     @karaoke_group.command(name="stop")
     @commands.guild_only()
     async def karaoke_stop(self, ctx: commands.Context):
-        session = self.sessions.pop(ctx.guild.id, None)
-        if not session:
+        if ctx.guild.id not in self.sessions:
             return await ctx.send(embed=we("⚠️ 現在カラオケは実行されていません。"))
 
-        sink: KaraokeSink = session["sink"]
-        vc: voice_recv.VoiceRecvClient = session["vc"]
-
-        sink.cleanup()
-        try:
-            vc.stop_listening()
-            await vc.disconnect(force=True)
-        except Exception:
-            pass
+        if not await self.voice_sessions.release(ctx.guild.id, "karaoke", reason="stop"):
+            self._cleanup(ctx.guild.id)("stop")
 
         await ctx.send(embed=we("🛑 カラオケモードを終了しました！"))
+
+    def _cleanup(self, guild_id: int):
+        """VC を手放すときの後片付け（切断は VoiceSessionManager が行う）。"""
+        def cleanup(reason: str) -> None:
+            session = self.sessions.pop(guild_id, None)
+            if not session:
+                return
+            session["sink"].cleanup()
+            try:
+                session["vc"].stop_listening()
+            except Exception:
+                pass
+        return cleanup
 
 
 async def setup(bot: commands.Bot):

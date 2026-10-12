@@ -15,6 +15,8 @@ import discord.opus
 from discord.ext import commands
 from discord.ext import voice_recv
 
+from core.voice_session import VoiceBusy, get_manager
+
 logger = logging.getLogger(__name__)
 
 DISCORD_SAMPLE_RATE = 48000
@@ -350,6 +352,30 @@ class RoomOptions(commands.FlagConverter, prefix="--", delimiter=" ", case_insen
 class GlobalVCCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.voice_sessions = get_manager(bot)
+
+    @staticmethod
+    def _cleanup(guild_id: int):
+        """VC を手放すとき（!gvc leave・ルーム削除・自動退出・外部切断）にルーム管理から外す。
+
+        外部から切断されたときもここが呼ばれるので、GLOBAL_ROOMS に古い接続が残らない。
+        """
+        def cleanup(reason: str) -> None:
+            for clients in list(GLOBAL_ROOMS.values()):
+                for vc in list(clients):
+                    if getattr(getattr(vc, "guild", None), "id", None) != guild_id:
+                        continue
+                    _remove_vc_from_rooms(vc)
+                    try:
+                        vc.stop_listening()
+                    except Exception:
+                        logger.debug("stop_listening 失敗 (無視)", exc_info=True)
+        return cleanup
+
+    async def _leave_room(self, vc, *, reason: str = "stop", notice=None) -> None:
+        guild = getattr(vc, "guild", None)
+        if guild is None or not await self.voice_sessions.release(guild.id, "global", reason=reason, notice=notice):
+            await _disconnect_and_cleanup(vc)
 
     @commands.group(name="gvc", invoke_without_command=True)
     async def gvc_group(self, ctx: commands.Context):
@@ -429,19 +455,23 @@ class GlobalVCCog(commands.Cog):
 
         vc_channel = ctx.author.voice.channel
 
-        if ctx.voice_client is not None:
-            # 既存の接続を正しくルーム管理から除去してから切断する
-            # (元のコードはここで disconnect のみ行い GLOBAL_ROOMS に古い参照が残るバグがあった)
-            await _disconnect_and_cleanup(ctx.voice_client)
-            await asyncio.sleep(0.5)
-
-        try:
-            vc = await vc_channel.connect(
-                cls=voice_recv.VoiceRecvClient,
-                timeout=30.0,
-                reconnect=True,
-                self_deaf=False,
+        session = self.voice_sessions.get(ctx.guild.id)
+        if session is not None and session.feature == "global":
+            joined = next((name for name, clients in GLOBAL_ROOMS.items()
+                           if any(c.guild and c.guild.id == ctx.guild.id for c in clients)), None)
+            return await ctx.send(
+                f"⚠️ このサーバーはすでにルーム **{joined or '不明'}** に参加しています。"
+                f"先に `{ctx.prefix}gvc leave` してください。"
             )
+
+        # 別の機能（音楽・録音など）が VC を使っているときは追い出さずに断る。
+        try:
+            vc = await self.voice_sessions.acquire(
+                ctx.guild, vc_channel, "global", ctx.author,
+                cleanup=self._cleanup(ctx.guild.id), text_channel=ctx.channel, force=True, timeout=30.0,
+            )
+        except VoiceBusy as busy:
+            return await ctx.send(str(busy))
         except Exception as e:
             return await ctx.send(f"❌ ボイス接続に失敗しました: `{e}`")
 
@@ -525,7 +555,9 @@ class GlobalVCCog(commands.Cog):
             )
 
         for vc in list(GLOBAL_ROOMS.get(room_name, [])):
-            await _disconnect_and_cleanup(vc)
+            own = ctx.guild is not None and getattr(vc.guild, "id", None) == ctx.guild.id
+            await self._leave_room(vc, reason="room_deleted", notice=None if own else
+                                   f"🗑️ ルーム **{room_name}** が削除されたため、グローバルVCから切断しました。")
 
         for link in list(ROOM_TEXT_LINKS.get(room_name, [])):
             await _remove_text_link(link.channel_id)
@@ -537,12 +569,18 @@ class GlobalVCCog(commands.Cog):
 
     @gvc_group.command(name="leave")
     async def gvc_leave(self, ctx: commands.Context):
+        if ctx.guild is not None and await self.voice_sessions.release(ctx.guild.id, "global", reason="stop"):
+            return await ctx.send("🌐 グローバルVCから切断しました。ルーム自体は残っています。")
+
         vc = ctx.voice_client
         if not vc:
             return await ctx.send("現在ボイスチャンネルに接続していません。")
-
-        await _disconnect_and_cleanup(vc)
-        await ctx.send("🌐 グローバルVCから切断しました。ルーム自体は残っています。")
+        if any(vc in clients for clients in GLOBAL_ROOMS.values()):
+            # 持ち主の記録がない古い接続
+            await _disconnect_and_cleanup(vc)
+            return await ctx.send("🌐 グローバルVCから切断しました。ルーム自体は残っています。")
+        # 音楽や録音など、グローバルVC 以外の機能は止めない（以前はここで何でも切断していた）
+        await ctx.send("このサーバーはグローバルVCに参加していません。")
 
     # ------------------------------------------------------------
     # グロチャ (テキストチャット連携)

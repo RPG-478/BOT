@@ -25,6 +25,7 @@ import re
 import aiohttp
 import wave
 import discord.opus
+from core.voice_session import VoiceBusy, get_manager
 
 logger = logging.getLogger(__name__)
  
@@ -61,7 +62,6 @@ SPOTIFY_PLAYLIST_RE = re.compile(
 MAX_TTS_CHARS = 300
 MIN_PLAYBACK_SPEED = 0.5
 MAX_PLAYBACK_SPEED = 64.0
-AUTO_LEAVE_SECONDS = 300
 PANEL_TIMEOUT_SECONDS = 900
 SAFE_CUSTOM_AUDIO_FILTERS = {
     'acompressor', 'aecho', 'alimiter', 'apulsator', 'bass', 'dynaudnorm',
@@ -1329,9 +1329,11 @@ class VoiceCog(commands.Cog):
         self.default_eq = "flat"
         self.vv_host = "http://localhost:50021"
         self.recorders = {}
+        # VC の持ち主管理と、誰もいないときの自動退出は core/voice_session.py に集約した。
+        self.voice_sessions = get_manager(bot)
     def cog_unload(self):
         for state in self.states.values():
-            for task_name in ('idle_disconnect_task', 'playlist_load_task', 'progress_task'):
+            for task_name in ('playlist_load_task', 'progress_task'):
                 task = state.get(task_name)
                 if task and not task.done():
                     task.cancel()
@@ -1364,53 +1366,44 @@ class VoiceCog(commands.Cog):
                 'current_yt_headers': {},
                 'loop_mode': 'off',
                 'shuffle_enabled': False,
-                'idle_disconnect_task': None,
                 'playlist_load_task': None,
                 'progress_task': None,
             }
         return self.states[guild_id]
 
-    def _has_human_listeners(self, voice_client) -> bool:
-        channel = getattr(voice_client, 'channel', None)
-        return bool(channel and any(not member.bot for member in channel.members))
-
-    def cancel_auto_leave(self, guild_id: int):
+    def _reset_playback(self, guild_id: int):
+        """キューと再生中の曲を空にし、裏で動いているタスクを止める（退出時の後片付け）。"""
         state = self.get_state(guild_id)
-        task = state.get('idle_disconnect_task')
-        if task and not task.done():
-            task.cancel()
-        state['idle_disconnect_task'] = None
+        for task_name in ('playlist_load_task', 'progress_task'):
+            task = state.get(task_name)
+            if task and not task.done():
+                task.cancel()
+        while not state['queue'].empty():
+            state['queue'].get_nowait()
+        state['current_track'] = None
+        state['current_yt_page_url'] = None
+        state['elapsed_offset'] = 0
+        state['is_paused'] = False
+        state['is_processing_queue'] = False
 
-    def schedule_auto_leave(self, guild_id: int):
-        self.cancel_auto_leave(guild_id)
-        state = self.get_state(guild_id)
-        state['idle_disconnect_task'] = asyncio.create_task(self._auto_leave_when_idle(guild_id))
+    def _music_cleanup(self, guild_id: int):
+        def cleanup(reason: str):
+            self._reset_playback(guild_id)
+        return cleanup
 
-    async def _auto_leave_when_idle(self, guild_id: int):
-        try:
-            await asyncio.sleep(AUTO_LEAVE_SECONDS)
-            guild = self.bot.get_guild(guild_id)
-            vc = guild.voice_client if guild else None
-            if not vc or not vc.is_connected() or self._has_human_listeners(vc):
-                return
-            state = self.get_state(guild_id)
-            state['current_track'] = None
-            state['elapsed_offset'] = 0
-            state['is_paused'] = False
-            state['is_processing_queue'] = False
-            while not state['queue'].empty():
-                state['queue'].get_nowait()
-            await vc.disconnect(force=True)
-            await self._send_message(
-                state.get('current_ctx'),
-                embed=we(f"誰もいない状態が{AUTO_LEAVE_SECONDS // 60}分続いたため、ボイスチャンネルから退出しました。")
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Auto-leave task failed for guild %s", guild_id)
-        finally:
-            self.get_state(guild_id)['idle_disconnect_task'] = None
+    def _busy_message(self, guild) -> str | None:
+        """音楽以外の機能が VC を使っているときの案内文。音楽が使える状態なら None。"""
+        session = self.voice_sessions.get(guild.id) if guild else None
+        if session is not None and session.feature != 'music':
+            return self.voice_sessions.busy_message(session)
+        return None
+
+    async def _acquire_music(self, guild, channel, user, text_channel):
+        """音楽として VC に入る（入っていれば移動）。別機能が使用中なら VoiceBusy。"""
+        return await self.voice_sessions.acquire(
+            guild, channel, 'music', user,
+            cleanup=self._music_cleanup(guild.id), text_channel=text_channel, force=True,
+        )
 
     def _start_progress_task(self, guild_id: int):
         state = self.get_state(guild_id)
@@ -1526,19 +1519,6 @@ class VoiceCog(commands.Cog):
         )
 
     @commands.Cog.listener()
-    async def on_voice_state_update(self, member, before, after):
-        if member.bot:
-            return
-        guild = member.guild
-        vc = guild.voice_client
-        if not vc or not vc.is_connected():
-            return
-        if self._has_human_listeners(vc):
-            self.cancel_auto_leave(guild.id)
-        else:
-            self.schedule_auto_leave(guild.id)
-
-    @commands.Cog.listener()
     async def on_command_error(self, ctx, error):
         logging.exception("Command error")
         await ctx.send(embed=we(f"エラー: {error}"))
@@ -1604,22 +1584,15 @@ class VoiceCog(commands.Cog):
         TIMEOUT_SECONDS = 45.0
 
         try:
-            if interaction.guild.voice_client:
-                # ⏱️ 移動処理のタイムアウト保護
-                await asyncio.wait_for(
-                    interaction.guild.voice_client.move_to(channel), 
-                    timeout=TIMEOUT_SECONDS
-                )
-            else:
-                # ⏱️ 新規接続処理のタイムアウト保護
-                await asyncio.wait_for(
-                    channel.connect(cls=voice_recv.VoiceRecvClient), 
-                    timeout=TIMEOUT_SECONDS
-                )
-
-            self.cancel_auto_leave(interaction.guild_id)
+            # 別の機能（録音など）が使用中なら追い出さずに断る。移動・新規接続ともにタイムアウトで保護する。
+            await asyncio.wait_for(
+                self._acquire_music(interaction.guild, channel, interaction.user, interaction.channel),
+                timeout=TIMEOUT_SECONDS,
+            )
             await interaction.followup.send(f"🔊 **{channel.name}** に参加しました。")
 
+        except VoiceBusy as busy:
+            await interaction.followup.send(str(busy), ephemeral=True)
         except asyncio.TimeoutError:
             await interaction.followup.send("⏱️ タイムアウト: ボイスチャンネルへの接続応答時間が超過しました。Botの権限やネットワーク状態をご確認ください。")
         except Exception as e:
@@ -1627,22 +1600,33 @@ class VoiceCog(commands.Cog):
             
     @app_commands.command(name="leave", description="ボイスチャンネルから退出します")
     async def leave_cmd(self, interaction: discord.Interaction):
+        session = self.voice_sessions.get(interaction.guild_id)
         voice_client = interaction.guild.voice_client
-        if voice_client:
-            self.cancel_auto_leave(interaction.guild_id)
-            state = self.get_state(interaction.guild_id)
-            for task_name in ('playlist_load_task', 'progress_task'):
-                task = state.get(task_name)
-                if task and not task.done():
-                    task.cancel()
-            await voice_client.disconnect()
-            while not state['queue'].empty():
-                state['queue'].get_nowait()
-            state['current_track'] = None
-            state['current_yt_page_url'] = None
+        if session is not None:
+            # 音楽は今までどおり誰でも止められる。録音などは開始した人・管理者（または開始した人が不在）のみ。
+            if not self.voice_sessions.can_leave(session, interaction.user):
+                return await interaction.response.send_message(
+                    f"⚠️ いまは **{session.label}**（{session.user_name} さんが開始）で使用中です。"
+                    f"止められるのは開始した人か管理者だけです（`{self._stop_hint(session.feature)}`）。",
+                    ephemeral=True,
+                )
+            await interaction.response.defer()
+            await self.voice_sessions.release(
+                interaction.guild_id, reason='stop' if session.feature == 'music' else 'leave', by=interaction.user,
+            )
+            await interaction.followup.send("👋 退出しました。")
+        elif voice_client:
+            # 持ち主の記録がない古い接続
+            self._reset_playback(interaction.guild_id)
+            await voice_client.disconnect(force=True)
             await interaction.response.send_message("👋 退出しました。")
         else:
             await interaction.response.send_message("ボットはボイスチャンネルに参加していません。", ephemeral=True)
+
+    @staticmethod
+    def _stop_hint(feature: str) -> str:
+        from core.voice_session import stop_hint
+        return stop_hint(feature)
 
 
     @commands.command()
@@ -2082,7 +2066,8 @@ class VoiceCog(commands.Cog):
     @commands.command()
     async def search(self, ctx, *, keyword: str = None):
         """Youtubeから検索した結果を10件表示します"""
-        if not ctx.voice_client: return await ctx.send("先に `!join` してください。")
+        if not ctx.voice_client: return await ctx.send("先に `/join` してください。")
+        if busy := self._busy_message(ctx.guild): return await ctx.send(busy)
         if not keyword: return await ctx.send("検索キーワードを入力してください。")
         if self._spotify_playlist_id(keyword.strip()):
             try:
@@ -2117,7 +2102,8 @@ class VoiceCog(commands.Cog):
     @commands.command()
     async def panel(self, ctx):
         """ボイスコントロールパネルを表示します"""
-        if not ctx.voice_client: return await ctx.send(embed=we("先に `!join` で接続してください。"))
+        if not ctx.voice_client: return await ctx.send(embed=we("先に `/join` で接続してください（`/music` なら接続とパネル表示を一度にできます）。"))
+        if busy := self._busy_message(ctx.guild): return await ctx.send(busy)
         state = self.get_state(ctx.guild.id)
         state['current_ctx'] = ctx
         embed = discord.Embed(title="🎵 ボイスコントロールパネル", description="ステータスを同期中...", color=0xFFFFFF)
@@ -2141,6 +2127,10 @@ class VoiceCog(commands.Cog):
 
         if vc is None or not vc.is_connected():
             state['is_processing_queue'] = False
+            return
+
+        # 録音など別の機能が VC を使っているときは、その音声を上書きしない。
+        if self._busy_message(guild):
             return
 
         # 同一ギルドで既に再生中・一時停止中なら、別経路からの二重開始を防ぐ。
@@ -2357,15 +2347,13 @@ class VoiceCog(commands.Cog):
     async def music_panel(self, interaction: discord.Interaction):
         if not interaction.user.voice:
             return await interaction.response.send_message("先にボイスチャンネルへ参加してください。", ephemeral=True)
-        vc = interaction.guild.voice_client
-        if vc is None:
-            try:
-                vc = await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
-            except Exception as exc:
-                logger.exception("Failed to connect from /music")
-                return await interaction.response.send_message(f"ボイスチャンネルへ接続できませんでした: {exc}", ephemeral=True)
-        elif vc.channel != interaction.user.voice.channel:
-            await vc.move_to(interaction.user.voice.channel)
+        try:
+            await self._acquire_music(interaction.guild, interaction.user.voice.channel, interaction.user, interaction.channel)
+        except VoiceBusy as busy:
+            return await interaction.response.send_message(str(busy), ephemeral=True)
+        except Exception as exc:
+            logger.exception("Failed to connect from /music")
+            return await interaction.response.send_message(f"ボイスチャンネルへ接続できませんでした: {exc}", ephemeral=True)
 
         state = self.get_state(interaction.guild_id)
         state['current_ctx'] = interaction
@@ -2420,6 +2408,8 @@ class VoiceCog(commands.Cog):
         # 💡 2. ボイスチャンネル接続チェック (defer済みなので followup で返す)
         if not interaction.guild or not interaction.guild.voice_client: 
             return await interaction.followup.send("先に `/join` してください。", ephemeral=True)
+        if busy := self._busy_message(interaction.guild):
+            return await interaction.followup.send(busy, ephemeral=True)
 
         state = self.get_state(interaction.guild_id)
         state['current_interaction'] = interaction
@@ -2664,7 +2654,9 @@ class VoiceCog(commands.Cog):
     async def plist(self, ctx, *, input_data: str = None):
         """JSONで作ったプレイリストを再生することができます。"""
         if not ctx.voice_client: 
-            return await ctx.send("先に !join してください。")
+            return await ctx.send("先に `/join` してください。")
+        if busy := self._busy_message(ctx.guild):
+            return await ctx.send(busy)
 
         state = self.get_state(ctx.guild.id)
         state['current_ctx'] = ctx
@@ -2847,6 +2839,8 @@ class VoiceCog(commands.Cog):
                 return await interaction.response.send_message("一覧取得に失敗しました。", ephemeral=True)
         if not name or not name.strip() or not interaction.guild.voice_client:
             return await interaction.response.send_message("再生するにはボイスチャンネル参加後にプレイリスト名を指定してください。", ephemeral=True)
+        if busy := self._busy_message(interaction.guild):
+            return await interaction.response.send_message(busy, ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         try:
             result = self.bot.supabase.table('user_music_playlists').select('tracks').eq('guild_id', interaction.guild_id).eq(
@@ -2871,7 +2865,9 @@ class VoiceCog(commands.Cog):
     async def personal_playlist_play(self, ctx, *, name: str):
         """自分の個人プレイリストをバックグラウンドでキューへ追加します。"""
         if not ctx.voice_client:
-            return await ctx.send("先に !join してください。")
+            return await ctx.send("先に `/join` してください。")
+        if busy := self._busy_message(ctx.guild):
+            return await ctx.send(busy)
         if not self.bot.supabase:
             return await ctx.send("個人プレイリストを使うにはSupabaseを設定してください。")
         try:
@@ -2999,68 +2995,11 @@ class VoiceCog(commands.Cog):
             state['is_paused'] = False
             asyncio.create_task(self.check_queue(guild_id))
 
-    @app_commands.command(name="speak", description="VOICEVOXで指定したテキストをボイスチャンネルで再生します")
-    @app_commands.describe(text="喋らせたいテキスト", speaker="話者ID（1:四国めたん, 3:ずんだもん 等）")
+    @app_commands.command(name="speak", description="読み上げ（VOICEVOX）はこの Bot では使えません")
+    @app_commands.describe(text="喋らせたいテキスト", speaker="話者ID（使えません）")
     async def speak_cmd(self, interaction: discord.Interaction, text: str, speaker: int = 1):
-        if len(text) > MAX_TTS_CHARS:
-            await interaction.response.send_message(
-                f"❌ 読み上げは{MAX_TTS_CHARS}文字以内にしてください。",
-                ephemeral=True,
-            )
-            return
-        await interaction.response.defer()
-
-        # VOICEVOXから音声データを取得
-        wav_bytes = await self.generate_voicevox_wav(text, speaker)
-        if not wav_bytes:
-            await interaction.followup.send("⚠️ VOICEVOXからの音声生成に失敗しました。Dockerコンテナが起動しているか確認してください。")
-            return
-
-        # ユーザーがVCに接続しているか確認
-        if not interaction.user.voice or not interaction.user.voice.channel:
-            # VCにいない場合は作成したWAVファイルを添付して送信
-            file = discord.File(io.BytesIO(wav_bytes), filename="voicevox.wav")
-            await interaction.followup.send(content="🔊 VCに入っていないため音声ファイルを出力しました：", file=file)
-            return
-
-        # VC接続・再生処理
-        vc = interaction.guild.voice_client
-        target_channel = interaction.user.voice.channel
-
-        if vc is None:
-            vc = await target_channel.connect(cls=voice_recv.VoiceRecvClient)
-        elif vc.channel != target_channel:
-            await vc.move_to(target_channel)
-
-        state = self.get_state(interaction.guild_id)
-        state['resume_music_after_tts'] = False
-        if vc.is_playing() and state.get('current_track'):
-            # 音楽を一時停止状態へ遷移させてから止める。musicのafter callbackは
-            # is_pausedを確認してキューを進めないため、TTSと競合しない。
-            actual_played = (time.time() - state['start_time']) * state.get('speed', 1.0)
-            state['elapsed_offset'] += actual_played
-            state['is_paused'] = True
-            state['resume_music_after_tts'] = True
-            vc.stop()
-            for _ in range(20):
-                if not vc.is_playing():
-                    break
-                await asyncio.sleep(0.05)
-            else:
-                state['is_paused'] = False
-                state['resume_music_after_tts'] = False
-                await interaction.followup.send("❌ 既存の音声を安全に停止できなかったため、TTSを開始しませんでした。")
-                return
-        elif vc.is_playing():
-            vc.stop()
-
-        # メモリ上のWAVデータをFFmpegで再生する。終了時には必要な音楽だけを再開する。
-        audio_stream = io.BytesIO(wav_bytes)
-        source = discord.FFmpegPCMAudio(audio_stream, pipe=True)
-        vc.play(source, after=lambda error: self.bot.loop.call_soon_threadsafe(
-            self.resume_music_after_tts, interaction.guild_id, error
-        ))
-        await interaction.followup.send(f"🗣️ **再生中:** `{text}` (話者ID: {speaker})")
+        # ラズパイには VOICEVOX が入っていない（重すぎる）ため、VC には触れずに案内だけ返す。
+        await interaction.response.send_message("読み上げはこの Bot では使えません", ephemeral=True)
 
 
 #↓落ちた原因これね
