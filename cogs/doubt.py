@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 import discord
 from discord.ext import commands
+
+from core import party_ranking
+
+party_ranking.register("doubt")
 import asyncio
 import random
 
@@ -210,6 +214,10 @@ class Doubt(commands.Cog):
         await channel.send(embed=win_embed)
         if self.games.get(channel.id) is game:
             del self.games[channel.id]
+            # サーバーごとのランキング（core/party_ranking.py）: 手札を出し切った 1 人が勝ち
+            guild = getattr(channel, "guild", None)
+            if guild is not None:
+                await party_ranking.shared().record_win(guild.id, winner_id, "doubt")
 
     async def start_from_hub(self, channel, player_ids, join_view=None):
         await asyncio.sleep(60)
