@@ -170,6 +170,25 @@ class WizardAuthTest(Base):
         sent_view = self.guild.general.send.await_args.kwargs["view"]
         self.assertEqual(sent_view.children[0].custom_id, auth.PANEL_SETTINGS_ID)
 
+    async def test_category_perms_needs_role_then_syncs(self):
+        view = self.wizard()
+        children = [MagicMock(edit=AsyncMock()), MagicMock(edit=AsyncMock())]
+        category = types.SimpleNamespace(id=777, name="会員", channels=children, edit=AsyncMock(),
+                                         guild=types.SimpleNamespace(default_role="EVERYONE"))
+        self.guild.get_channel = lambda cid, _orig=self.guild.get_channel: category if cid == 777 else _orig(cid)
+        select = types.SimpleNamespace(values=[types.SimpleNamespace(id=777)])
+        await view.on_category_perms(fake_interaction(self.guild), select)
+        category.edit.assert_not_awaited()
+        await view.set_auth(role_id=501)
+        interaction = fake_interaction(self.guild)
+        await view.on_category_perms(interaction, select)
+        overwrites = category.edit.await_args.kwargs["overwrites"]
+        self.assertFalse(overwrites["EVERYONE"].view_channel)
+        self.assertTrue(overwrites[self.guild.verified].view_channel)
+        for child in children:
+            child.edit.assert_awaited_with(sync_permissions=True)
+        self.assertIn("2 チャンネル", interaction.response.edit_message.await_args.kwargs["embed"].description)
+
     async def test_only_invoker_can_operate(self):
         view = self.wizard(user_id=42)
         other = fake_interaction(self.guild, user_id=99)

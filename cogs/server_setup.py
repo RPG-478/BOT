@@ -252,6 +252,7 @@ class SetupWizard(discord.ui.View):
             a = self.auth()
             embed = discord.Embed(title=f"🛠️ 初期設定 {number}: 認証", color=EMBED_COLOR, description=(
                 "新しく来た人がフォームに答えると、ロールを付けて自己紹介を投稿します。\n"
+                "いちばん下のメニューでカテゴリを選ぶと、そのカテゴリを付けるロールの人だけに見せます。\n"
                 "下のメニューで選ぶとすぐ保存されます。使わないときは「次へ」で飛ばせます。"
             ))
             embed.add_field(name="フォーム", value="有効" if a["enabled"] else "停止中")
@@ -336,6 +337,10 @@ class SetupWizard(discord.ui.View):
             self._button("フォームを停止する" if a["enabled"] else "フォームを有効にする",
                          discord.ButtonStyle.secondary, self.on_auth_toggle, row=2)
             self._button("このチャンネルに認証パネルを送る", discord.ButtonStyle.success, self.on_send_panel, row=2)
+            category_select = discord.ui.ChannelSelect(placeholder="認証ロールの人だけに見せるカテゴリを選ぶ", row=3,
+                                                       channel_types=[discord.ChannelType.category])
+            category_select.callback = lambda i: self.on_category_perms(i, category_select)
+            self.add_item(category_select)
         elif self.step == "global":
             cog = self.cog.globalchat_cog()
             if cog is not None:
@@ -432,6 +437,23 @@ class SetupWizard(discord.ui.View):
         except discord.HTTPException:
             return await self.refresh(interaction, "⚠️ このチャンネルに送れませんでした。Bot の権限を確認してください。")
         await self.refresh(interaction, "✅ このチャンネルに認証パネルを送りました。")
+
+    async def on_category_perms(self, interaction, select):
+        """もとの /sync_category_perms。カテゴリを認証ロールの人だけに見せ、中のチャンネルを同期する。"""
+        from cogs.auth import sync_category_perms
+        role = self.guild.get_role(self.auth()["role_id"]) if self.auth()["role_id"] else None
+        if role is None:
+            return await self.refresh(interaction, "先に認証で付けるロールを選んでください。")
+        category = select.values[0] if select.values else None
+        category = self.guild.get_channel(category.id) if category is not None else None
+        if category is None:
+            return await self.refresh(interaction, "カテゴリが見つかりませんでした。")
+        try:
+            count = await sync_category_perms(category, role)
+        except discord.HTTPException:
+            return await self.refresh(interaction, "権限を変更できませんでした。Bot に「チャンネルの管理」権限があるか確認してください。")
+        await self.refresh(interaction, f"カテゴリ「{category.name}」を {role.mention} の人だけに見えるようにし、"
+                                        f"中の {count} チャンネルの権限を同期しました。")
 
     async def on_global_toggle(self, interaction):
         cog = self.cog.globalchat_cog()

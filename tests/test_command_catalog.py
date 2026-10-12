@@ -129,6 +129,27 @@ class CommandCatalogTest(unittest.TestCase):
             with self.subTest(kept=key):
                 self.assertIn(key, registered)
 
+    def test_consolidated_support_commands_are_gone(self):
+        """/setup に入れたサポート系コマンドが、登録にも COMMAND_META にもサイトの一覧にも残っていない。"""
+        registered = set(registered_commands(self.bot))
+        site = self.site_command_keys()
+        for key in ('/send_panel', '/sync_category_perms', '/chat'):
+            with self.subTest(command=key):
+                self.assertNotIn(key, registered)
+                self.assertNotIn(key, command_meta.COMMAND_META)
+                self.assertNotIn(key, site)
+        self.assertIn('/setup', registered)
+
+    @staticmethod
+    def site_command_keys():
+        data = json.loads((ROOT / 'web' / 'data' / 'commands.sample.json').read_text(encoding='utf-8'))
+        return {command_key(c['kind'], c['name']) for c in data['commands']}
+
+    def test_site_sample_catalog_matches_code(self):
+        """サイト（web/lib/catalog.ts が読む web/data/commands.sample.json）に、コードに無いコマンドが載っていない。"""
+        stale = sorted(self.site_command_keys() - set(registered_commands(self.bot)))
+        self.assertEqual(stale, [], 'web/data/commands.sample.json に、もう存在しないコマンドがあります')
+
     def test_categories_are_valid(self):
         ids = [c['id'] for c in command_meta.CATEGORIES]
         self.assertEqual(ids, ['support', 'economy', 'game', 'voice', 'fun', 'admin'])
@@ -162,7 +183,7 @@ class CommandCatalogTest(unittest.TestCase):
             return command_catalog.find_command(self.catalog, key, include_hidden=True)
         self.assertIn('manage_messages', get('/clear')['permissions'])
         self.assertTrue(get('/clear')['guild_only'])
-        self.assertIn('administrator', get('/send_panel')['permissions'])
+        self.assertIn('manage_guild', get('/setup')['permissions'])
         self.assertIn('manage_channels', get('!mimic_toggle')['permissions'])
         self.assertTrue(get('/music play')['guild_only'])  # グループの guild_only がサブコマンドにも付く
         self.assertEqual(get('!all_stats')['aliases'], ['stats', 'spec'])

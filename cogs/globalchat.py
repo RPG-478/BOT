@@ -33,34 +33,6 @@ class GlobalChatCog(commands.Cog):
         except Exception as e:
             print(f"データの保存に失敗しました: {e}")
 
-    # /chat コマンド（オン・オフ切り替え）
-    @app_commands.command(name="chat", description="このチャンネルのグローバルチャット（オン/オフ）を切り替えます。")
-    async def toggle_chat(self, interaction: discord.Interaction):
-        # サーバー内での実行かチェック
-        if interaction.guild is None:
-            await interaction.response.send_message("このコマンドはサーバー内でのみ実行できます。", ephemeral=True)
-            return
-
-        # 権限チェック（「チャンネルの管理」権限を持つ人のみ変更可能にする）
-        if not interaction.user.guild_permissions.manage_channels:
-            await interaction.response.send_message("❌ このコマンドを実行するには「チャンネルの管理」権限が必要です。", ephemeral=True)
-            return
-
-        channel_id = interaction.channel_id
-
-        # オンオフの切り替え処理
-        if channel_id in self.active_channels:
-            self.active_channels.remove(channel_id)
-            status = "🔴 オフ"
-        else:
-            self.active_channels.add(channel_id)
-            status = "🟢 オン"
-
-        # ファイルに保存
-        self.save_channels()
-        
-        await interaction.response.send_message(f"このチャンネルのグローバルチャットを {status} にしました！", ephemeral=True)
-
     async def notify_sender(self, message: discord.Message, text: str):
         """送信者だけに知らせる（DM。送れなければ ❌ リアクションと、すぐ消える返信）。"""
         try:

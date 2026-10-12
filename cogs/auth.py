@@ -190,36 +190,23 @@ class VerificationCog(commands.Cog):
             return
         await interaction.response.send_modal(QuestionModal(role.id, settings["intro_channel_id"]))
 
-    @app_commands.command(name="send_panel", description="指定したチャンネルに認証パネルを送信します")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def send_panel(self, interaction: discord.Interaction, channel: discord.TextChannel, role: discord.Role):
-        embed = discord.Embed(
-            title="サーバー認証",
-            description="下のボタンを押して質問に回答してください。",
-            color=discord.Color.blue()
-        )
-        await channel.send(embed=embed, view=VerifyView(role.id))
-        await interaction.response.send_message("認証パネルを送信しました。", ephemeral=True)
+async def sync_category_perms(category, role) -> int:
+    """カテゴリを「@everyone には見えない・role には見える」にして、中のチャンネルを同期する。同期した数を返す。
 
-    @app_commands.command(name="sync_category_perms", description="指定カテゴリ内のチャンネル権限を一斉同期・設定します")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def sync_category_perms(self, interaction: discord.Interaction, category: discord.CategoryChannel, role: discord.Role):
-        await interaction.response.defer(ephemeral=True)
+    もとは /sync_category_perms。いまは /setup の認証ステップから使う。
+    """
+    everyone_role = category.guild.default_role
+    overwrites = {
+        everyone_role: discord.PermissionOverwrite(view_channel=False),
+        role: discord.PermissionOverwrite(view_channel=True),
+    }
+    await category.edit(overwrites=overwrites)
+    count = 0
+    for channel in category.channels:
+        await channel.edit(sync_permissions=True)
+        count += 1
+    return count
 
-        guild = interaction.guild
-        everyone_role = guild.default_role
-
-        overwrites = {
-            everyone_role: discord.PermissionOverwrite(view_channel=False),
-            role: discord.PermissionOverwrite(view_channel=True)
-        }
-
-        await category.edit(overwrites=overwrites)
-
-        for channel in category.channels:
-            await channel.edit(sync_permissions=True)
-
-        await interaction.followup.send(f"カテゴリ「{category.name}」配下の全チャンネルの権限を同期しました。")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(VerificationCog(bot))
