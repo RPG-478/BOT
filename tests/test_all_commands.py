@@ -93,7 +93,7 @@ SLASH_ARGUMENTS = {
 }
 
 PREFIX_ARGUMENTS = {
-    'all_stats': {}, 'mood': {}, 'doubt': {}, 'terminal': {},
+    'all_stats': {}, 'mood': {}, 'doubt': {}, 'terminal': {}, 'guild': {},
     'ggrks': {'keyword': 'discord'},
     'mimic': {'prompt': 'こんにちは'}, 'mimic_toggle': {},
     'coin': {'amount': 1},
@@ -110,6 +110,7 @@ KNOWN_ISSUES: dict[str, str] = {}
 # 条件を満たさないときは、あえて何も返さないコマンド（返信がなくても合格にする）。
 SILENT_BY_DESIGN = {
     '!terminal': '許可されたユーザー以外には反応しない（存在を知らせないため）',
+    '!guild': '許可されたユーザー以外には反応しない（tests/test_guild_list.py で両方を確認）',
 }
 
 # discord.py 標準のヘルプコマンドは対象外（cog のコマンドではない）。

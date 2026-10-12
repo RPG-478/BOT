@@ -272,6 +272,8 @@ COMMAND_META: dict[str, dict] = {
     "!all_stats": {"category": "admin", "summary": "Bot とサーバーの状態を表示します", "hidden": True},
     "!terminal": {"category": "admin", "summary": "持ち主専用の操作パネルを表示します", "permissions": ["bot_admin"],
                   "hidden": True},
+    "!guild": {"category": "admin", "summary": "Bot が入っているサーバーの一覧を表示します", "permissions": ["bot_admin"],
+               "hidden": True},
 }
 
 
