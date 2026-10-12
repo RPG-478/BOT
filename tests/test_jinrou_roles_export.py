@@ -18,6 +18,7 @@ class JinrouRolesExportTest(unittest.TestCase):
 
     def test_matches_bot_help_roles(self):
         from cogs import jinrou
+        from core import jinrou_guide
         text = exporter.OUT_TS.read_text(encoding="utf-8")
         data = json.loads(re.search(r"JINROU_ROLES: JinrouRole\[\] = (\[.*\]);", text, re.S).group(1))
         self.assertEqual(len(data), len(jinrou.HELP_ROLES))
@@ -27,6 +28,8 @@ class JinrouRolesExportTest(unittest.TestCase):
             self.assertEqual(row["name"], r["name"])
             self.assertEqual(row["teamLabel"], r["teamLabel"])
             self.assertEqual(row["ability"], r["ability"])
+            self.assertEqual(row["win"], jinrou_guide.win_condition(r["name"]))
+            self.assertEqual(row["id"], jinrou_guide.role_id(r["name"]))
 
     def test_ids_unique_and_images_exist(self):
         roles = exporter.build_roles()
