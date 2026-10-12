@@ -134,7 +134,7 @@ class Base(unittest.IsolatedAsyncioTestCase):
 
 class WizardAuthTest(Base):
     async def test_steps_without_optional_cogs(self):
-        self.assertEqual(self.wizard().steps, ["auth", "global", "summary"])
+        self.assertEqual(self.wizard().steps, ["auth", "global", "nation", "summary"])
 
     async def test_auth_selections_persist_and_show_on_rerun(self):
         view = self.wizard()
@@ -179,12 +179,12 @@ class WizardAuthTest(Base):
 
     async def test_navigation_skips(self):
         view = self.wizard()
-        for expected in ("global", "summary", "summary"):
+        for expected in ("global", "nation", "summary", "summary"):
             await view.on_next(fake_interaction(self.guild))
             self.assertEqual(view.step, expected)
         self.assertIn("完了", self.labels(view))
         await view.on_back(fake_interaction(self.guild))
-        self.assertEqual(view.step, "global")
+        self.assertEqual(view.step, "nation")
         self.assertEqual(self.reload(), {})  # 飛ばしただけでは何も保存しない
 
 
@@ -210,10 +210,60 @@ class WizardOtherStepsTest(Base):
         muted = types.SimpleNamespace(admin_roles={}, save=AsyncMock())
         self.cogs["Muted"] = muted
         view = self.wizard()
-        self.assertEqual(view.steps, ["auth", "global", "mute", "summary"])
+        self.assertEqual(view.steps, ["auth", "global", "mute", "nation", "summary"])
         await view.on_mute_role(fake_interaction(self.guild), types.SimpleNamespace(values=[self.guild.mod]))
         self.assertEqual(muted.admin_roles, {77: 502})
         muted.save.assert_awaited_once_with(77)
+
+
+class NationSetupTest(Base):
+    def nation_view(self):
+        view = self.wizard()
+        view.index = view.steps.index("nation")
+        view.build()
+        return view
+
+    async def test_defaults_without_settings(self):
+        self.assertEqual(guild_settings.nation_settings(77), {"enabled": True, "channel_id": None, "notify": "major"})
+        self.assertIsNone(guild_settings.nation_should_notify(77, major=True))
+        view = self.nation_view()
+        self.assertIn("参加をやめる", self.labels(view))
+        self.assertIn("通知: 大きな出来事だけ", self.labels(view))
+        self.assertIn("通知: 全部", self.labels(view))
+
+    async def test_settings_persist_and_helper_reads_them(self):
+        view = self.nation_view()
+        await view.on_nation_channel(fake_interaction(self.guild), types.SimpleNamespace(values=[self.guild.intro]))
+        self.assertEqual(guild_settings.nation_should_notify(77, major=True), 602)
+        self.assertIsNone(guild_settings.nation_should_notify(77, major=False))
+        await view.on_nation_notify(fake_interaction(self.guild), "all")
+        self.assertEqual(guild_settings.nation_should_notify(77, major=False), 602)
+        self.assertEqual(self.reload("nation"), {"channel_id": 602, "notify": "all"})
+        await view.on_nation_toggle(fake_interaction(self.guild))
+        self.assertFalse(guild_settings.nation_settings(77)["enabled"])
+        self.assertIsNone(guild_settings.nation_should_notify(77, major=True))
+        self.assertIn("参加する", self.labels(view))
+        # 読み直しても残っている
+        guild_settings.set_store(self.new_store())
+        await guild_settings.get_store().ensure_loaded()
+        self.assertEqual(guild_settings.nation_settings(77), {"enabled": False, "channel_id": 602, "notify": "all"})
+
+    async def test_bad_stored_values_fall_back_to_defaults(self):
+        await guild_settings.get_store().update(77, "nation", enabled="yes", channel_id="x", notify="loud")
+        self.assertEqual(guild_settings.nation_settings(77), {"enabled": True, "channel_id": None, "notify": "major"})
+
+    async def test_summary_and_permission_check(self):
+        await guild_settings.get_store().update(77, "nation", channel_id=602)
+        self.guild.intro.perms = server_setup.discord.Permissions(view_channel=True)
+        view = self.wizard()
+        view.index = len(view.steps) - 1
+        fields = {f.name: f.value for f in view.embed().fields}
+        self.assertIn("<#602>", fields["国づくり"])
+        self.assertIn("❌ **国づくり**", fields["Bot の権限チェック"])
+        await view.set_nation(enabled=False)
+        fields = {f.name: f.value for f in view.embed().fields}
+        self.assertEqual(fields["国づくり"], "参加しない")
+        self.assertIn("➖ **国づくり**", fields["Bot の権限チェック"])
 
 
 class SettingsStorageTest(Base):

@@ -4,7 +4,8 @@
   1. 認証: 付けるロール・自己紹介チャンネル・フォームの有効/無効（cogs/auth.py が使う）
   2. グローバルチャット: このチャンネルをつなぐ / 外す（cogs/globalchat.py の保存先をそのまま使う）
   3. ミュート管理ロール: muted.py が設定を保存できる場合だけ表示する
-  4. まとめ: 設定内容と、機能ごとに Bot に足りない権限
+  4. 国づくり: 参加する/しない・お知らせチャンネル・通知の量（core.guild_settings.nation_settings で読める）
+  5. まとめ: 設定内容と、機能ごとに Bot に足りない権限
 設定は core/guild_settings.py（Supabase の bot_kv。使えないときはローカルの JSON）に保存する。
 """
 from __future__ import annotations
@@ -17,7 +18,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.command_catalog import permission_label
-from core.guild_settings import get_store
+from core.guild_settings import NATION_SECTION, NOTIFY_ALL, NOTIFY_LEVELS, NOTIFY_MAJOR, get_store, nation_settings
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,8 @@ def _missing(perms, names) -> list[str]:
     return [name for name in names if not getattr(perms, name, False)]
 
 
-def check_permissions(guild, channel, *, auth: dict, global_channel_ids=(), mute_supported: bool = True) -> list[dict]:
+def check_permissions(guild, channel, *, auth: dict, global_channel_ids=(), mute_supported: bool = True,
+                      nation: Optional[dict] = None) -> list[dict]:
     """機能ごとに、Bot に足りない権限を調べる。
 
     戻り値: [{"label": 機能名, "missing": [権限名(日本語)], "notes": [補足], "skipped": 未設定で確認しなかったか}]
@@ -119,6 +121,16 @@ def check_permissions(guild, channel, *, auth: dict, global_channel_ids=(), mute
     if mute_supported:
         add("ミュート（/muted）", _missing(guild_perms, ["manage_roles", "manage_channels"]))
 
+    # 国づくり
+    if nation is not None:
+        target = guild.get_channel(nation["channel_id"]) if nation.get("channel_id") else None
+        if not nation.get("enabled", True):
+            add("国づくり", skipped=True, notes=["参加していません"])
+        elif target is None:
+            add("国づくり", skipped=True, notes=["お知らせチャンネルが未設定です"])
+        else:
+            add("国づくり", _missing(target.permissions_for(me), ["view_channel", "send_messages", "embed_links"]))
+
     # ボイス
     add("ボイス・音楽", _missing(guild_perms, ["connect", "speak"]))
     return results
@@ -145,7 +157,7 @@ class SetupWizard(discord.ui.View):
     def __init__(self, cog: "ServerSetup", guild, channel, user_id: int):
         super().__init__(timeout=600)
         self.cog, self.guild, self.channel, self.user_id = cog, guild, channel, user_id
-        self.steps = ["auth", "global"] + (["mute"] if cog.mute_cog() is not None else []) + ["summary"]
+        self.steps = ["auth", "global"] + (["mute"] if cog.mute_cog() is not None else []) + ["nation", "summary"]
         self.index = 0
         self.build()
 
@@ -168,7 +180,13 @@ class SetupWizard(discord.ui.View):
                 ids.append(cid)
         return ids
 
+    def nation(self) -> dict:
+        return nation_settings(self.guild.id)
+
     # ---- 変更（どれもすぐ保存する）
+    async def set_nation(self, **values) -> dict:
+        return await get_store().update(self.guild.id, NATION_SECTION, **values)
+
     async def set_auth(self, **values) -> dict:
         return await get_store().update(self.guild.id, "auth", **values)
 
@@ -233,6 +251,14 @@ class SetupWizard(discord.ui.View):
                 "`/muted` でメンバーをミュートできるロールです（サーバー管理者はいつでも使えます）。"
             ))
             embed.add_field(name="管理ロール", value=self._role_text(cog.admin_roles.get(self.guild.id) if cog else None))
+        elif self.step == "nation":
+            n = self.nation()
+            embed = discord.Embed(title=f"🛠️ 初期設定 {number}: 国づくり", color=EMBED_COLOR, description=(
+                "`/nation` の国づくりゲームに、このサーバーで参加するかと、お知らせの送り先を決めます。"
+            ))
+            embed.add_field(name="参加", value="する" if n["enabled"] else "しない")
+            embed.add_field(name="お知らせチャンネル", value=self._channel_text(n["channel_id"]))
+            embed.add_field(name="通知", value=NOTIFY_LEVELS[n["notify"]])
         else:
             a = self.auth()
             embed = discord.Embed(title=f"🛠️ 初期設定 {number}: まとめ", color=EMBED_COLOR)
@@ -245,6 +271,11 @@ class SetupWizard(discord.ui.View):
             mute = self.cog.mute_cog()
             if mute is not None:
                 embed.add_field(name="ミュート管理ロール", value=self._role_text(mute.admin_roles.get(self.guild.id)), inline=False)
+            n = self.nation()
+            embed.add_field(name="国づくり", value=(
+                f"参加: {'する' if n['enabled'] else 'しない'} / お知らせ: {self._channel_text(n['channel_id'])} / "
+                f"通知: {NOTIFY_LEVELS[n['notify']]}"
+            ) if n["enabled"] else "参加しない", inline=False)
             report = format_permission_report(self.permission_results())
             embed.add_field(name="Bot の権限チェック", value=report[:1024], inline=False)
             embed.set_footer(text="足りない権限は「サーバー設定 → ロール」で Bot のロールに付けてください。")
@@ -253,7 +284,8 @@ class SetupWizard(discord.ui.View):
     def permission_results(self) -> list[dict]:
         return check_permissions(self.guild, self.channel, auth=self.auth(),
                                  global_channel_ids=self.global_channel_ids(),
-                                 mute_supported=self.cog.mute_cog() is not None)
+                                 mute_supported=self.cog.mute_cog() is not None,
+                                 nation=self.nation())
 
     # ---- 部品
     def build(self) -> None:
@@ -288,6 +320,20 @@ class SetupWizard(discord.ui.View):
                                            default_values=[discord.Object(id=current.id, type=discord.Role)] if current else [])
             select.callback = lambda i: self.on_mute_role(i, select)
             self.add_item(select)
+        elif self.step == "nation":
+            n = self.nation()
+            self._button("参加をやめる" if n["enabled"] else "参加する",
+                         discord.ButtonStyle.danger if n["enabled"] else discord.ButtonStyle.success,
+                         self.on_nation_toggle, row=0)
+            current = self.guild.get_channel(n["channel_id"]) if n["channel_id"] else None
+            channel_select = discord.ui.ChannelSelect(placeholder="国づくりのお知らせチャンネルを選ぶ", row=1,
+                                                      channel_types=[discord.ChannelType.text],
+                                                      default_values=[discord.Object(id=current.id, type=discord.TextChannel)] if current else [])
+            channel_select.callback = lambda i: self.on_nation_channel(i, channel_select)
+            self.add_item(channel_select)
+            for level, label in NOTIFY_LEVELS.items():
+                self._button(f"通知: {label}", discord.ButtonStyle.primary if n["notify"] == level else discord.ButtonStyle.secondary,
+                             (lambda lv: lambda i: self.on_nation_notify(i, lv))(level), row=2)
 
         if self.index > 0:
             self._button("戻る", discord.ButtonStyle.secondary, self.on_back, row=4)
@@ -368,6 +414,22 @@ class SetupWizard(discord.ui.View):
         await self.set_mute_role(role)
         await self.refresh(interaction, f"✅ ミュート管理ロールを {role.mention if role else '未設定'} にしました。")
 
+    async def on_nation_toggle(self, interaction):
+        enabled = not self.nation()["enabled"]
+        await self.set_nation(enabled=enabled)
+        await self.refresh(interaction, "✅ 国づくりに参加します。" if enabled else "✅ 国づくりへの参加をやめました。")
+
+    async def on_nation_channel(self, interaction, select):
+        channel = select.values[0] if select.values else None
+        await self.set_nation(channel_id=channel.id if channel else None)
+        await self.refresh(interaction, f"✅ 国づくりのお知らせチャンネルを {channel.mention if channel else '未設定'} にしました。")
+
+    async def on_nation_notify(self, interaction, level):
+        if level not in NOTIFY_LEVELS:
+            level = NOTIFY_MAJOR
+        await self.set_nation(notify=level)
+        await self.refresh(interaction, f"✅ 国づくりの通知を「{NOTIFY_LEVELS[level]}」にしました。")
+
 
 class ServerSetup(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -393,7 +455,7 @@ class ServerSetup(commands.Cog):
         except discord.HTTPException:
             logger.warning("あいさつを送れませんでした: guild=%s", guild.id, exc_info=True)
 
-    @app_commands.command(name="setup", description="このサーバーでの Bot の初期設定（認証・グローバルチャット・権限の確認）")
+    @app_commands.command(name="setup", description="このサーバーでの Bot の初期設定（認証・グローバルチャット・国づくり・権限の確認）")
     @app_commands.guild_only()
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
