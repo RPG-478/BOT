@@ -3,7 +3,6 @@ import math
 import random
 
 import discord
-from discord import app_commands
 from discord.ext import commands
 
 import config
@@ -40,18 +39,32 @@ def max_bet(balance: int) -> int:
     return bet
 
 
+class GuessModal(discord.ui.Modal, title="数字当て"):
+    bet = discord.ui.TextInput(label="賭け額（1以上の整数）", max_length=12)
+    choice = discord.ui.TextInput(label="数字（1・2・3 のどれか）", max_length=1)
+
+    def __init__(self, cog):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            bet, choice = int(str(self.bet.value).strip()), int(str(self.choice.value).strip())
+        except ValueError:
+            await interaction.response.send_message("賭け額と数字は半角の整数で入力してください。", ephemeral=True)
+            return
+        await self.cog.play(interaction, bet, choice)
+
+
 class Guess(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="guess", description="1から3の数字を当ててagoを増減させます")
-    @app_commands.describe(bet="賭け額（正の整数）", choice="1・2・3から選ぶ数字")
-    @app_commands.choices(choice=[
-        app_commands.Choice(name="1", value=1),
-        app_commands.Choice(name="2", value=2),
-        app_commands.Choice(name="3", value=3),
-    ])
-    async def guess(self, interaction: discord.Interaction, bet: int, choice: int):
+    async def start_recruit(self, interaction: discord.Interaction):
+        """/game のハブから呼ぶ。賭け額と数字を入れるフォームを出す。"""
+        await interaction.response.send_modal(GuessModal(self))
+
+    async def play(self, interaction: discord.Interaction, bet: int, choice: int):
         user_id = str(interaction.user.id)
         if bet <= 0:
             await interaction.response.send_message("賭け額は1以上で指定してください。", ephemeral=True)

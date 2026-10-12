@@ -1,6 +1,6 @@
 """人狼（cogs/jinrou.py）のゲーム進行テスト。偽の Discord 部品（tests/game_fakes.py）で動かし、通信はしない。
 
-/kill・Supabase（レーティング）・グローバルモードはこのテストの対象外。
+ゲームを終了ボタン・Supabase（レーティング）・グローバルモードはこのテストの対象外。
 """
 
 import asyncio
@@ -109,7 +109,7 @@ class JinrouFlowTest(unittest.IsolatedAsyncioTestCase):
 
         host = self.players[1]
         inter = FakeInteraction(host, self.channel)
-        await self.cog.jinrou.callback(self.cog, inter, 'local')
+        await self.cog.start_recruit(inter, 'local')
         new = self.cog.games[self.channel.id]
         self.assertIs(new, game)
         fresh = jinrou.JinrouGame()

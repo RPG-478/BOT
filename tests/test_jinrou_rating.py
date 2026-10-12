@@ -135,11 +135,10 @@ class RatingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(top[0]["player_id"], 1)
         cog = self.cog()
         cog.bot = types.SimpleNamespace(fetch_user=AsyncMock(side_effect=lambda i: types.SimpleNamespace(display_name=f"u{i}")))
-        it = types.SimpleNamespace(response=types.SimpleNamespace(send_message=AsyncMock()))
-        await jinrou.JinrouCog.jinrou_ranking.callback(cog, it)
-        embed = it.response.send_message.await_args.kwargs["embed"]
+        embed = await cog.rating_embed(types.SimpleNamespace(id=1, display_name="me"))
         self.assertIn("u1", embed.description)
-        self.assertEqual(embed.description.count("pts"), 3)
+        self.assertIn("me", embed.description)
+        self.assertEqual(embed.description.count("pts"), 4)  # 自分のレート + 上位3人
 
 
 if __name__ == "__main__":

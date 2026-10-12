@@ -130,9 +130,10 @@ class CommandCatalogTest(unittest.TestCase):
                 self.assertIn(key, registered)
 
     def test_game_hub_duplicates_are_gone(self):
-        """/game で代わりになるので外した（/jinrou はグローバルモードの入口なので残す）ゲームの / コマンドが、登録・COMMAND_META・案内文・サイトのデータに残っていない。"""
+        """/game で代わりになるので外したゲームの / コマンドが、登録・COMMAND_META・案内文・サイトのデータに残っていない。"""
         from core.game_guides import GAME_GUIDES
-        removed = ['/jinrou_help', '/wordwolf', '/uno_start']
+        removed = ['/jinrou_help', '/wordwolf', '/uno_start', '/jinrou', '/uno_end', '/kill',
+                   '/jinrou_rating', '/jinrou_ranking', '/guess', '/flash']
         registered = set(registered_commands(self.bot))
         guides = json.dumps(GAME_GUIDES, ensure_ascii=False)
         for key in removed:
@@ -142,14 +143,14 @@ class CommandCatalogTest(unittest.TestCase):
                 self.assertIsNone(command_catalog.find_command(self.catalog, key, include_hidden=True))
                 self.assertNotIn(f'`{key}`', guides)
                 self.assertNotIn(f'"{key}"', guides)
-        for key in ('/game', '/jinrou', '/uno_end', '/kill', '/jinrou_rating', '/jinrou_ranking'):
+        for key in ('/game',):
             with self.subTest(kept=key):
                 self.assertIn(key, registered)
 
     def test_web_sample_catalog_has_no_removed_commands(self):
         """サイト（web/lib/catalog.ts が読む web/data）のコマンドに、外したコマンドが入っていない。"""
         data_dir = Path(__file__).resolve().parent.parent / 'web' / 'data'
-        removed = {'jinrou_help', 'wordwolf', 'uno_start'}
+        removed = {'jinrou_help', 'wordwolf', 'uno_start', 'jinrou', 'uno_end', 'kill', 'jinrou_rating', 'jinrou_ranking', 'guess', 'flash'}
         for file in sorted(data_dir.glob('commands*.json')):
             names = {c['name'] for c in json.loads(file.read_text(encoding='utf-8'))['commands'] if c['kind'] == 'slash'}
             with self.subTest(file=file.name):

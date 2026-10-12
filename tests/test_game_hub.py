@@ -7,7 +7,7 @@ import discord
 
 from game_fakes import (FakeBot, FakeChannel, FakeGuild, FakeInteraction, FakeMember, FakeMessage, choose, fast_time,
                         press, real_sleep)
-from cogs import babanuki, doubt, game, janken, jinrou, ngword, shiritori, shinkei, uno, wordle, wordwolf
+from cogs import babanuki, doubt, flash, game, guess, janken, jinrou, ngword, shiritori, shinkei, uno, wordle, wordwolf
 from core import game_guides as guides
 from core import party_ranking
 from core.game_guides import GAME_GUIDES, GAME_ORDER
@@ -52,6 +52,8 @@ class GameHubTest(unittest.IsolatedAsyncioTestCase):
         self.wordle = self.bot.add(wordle.Wordle(self.bot))
         self.shinkei = self.bot.add(shinkei.Shinkei(self.bot))
         self.babanuki = self.bot.add(babanuki.Babanuki(self.bot))
+        self.guess = self.bot.add(guess.Guess(self.bot))
+        self.flash = self.bot.add(flash.FlashMentalArithmetic(self.bot))
 
     async def open_hub(self):
         inter = FakeInteraction(self.host, self.channel)
@@ -98,7 +100,7 @@ class GameHubTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(message.embed.title, GAME_GUIDES[game_id]['name'])
                 self.assertIsInstance(message.view, game.GameDetailView)
                 labels = [c.label for c in message.view.children if isinstance(c, discord.ui.Button)]
-                self.assertEqual(labels, ['ルール', '募集する'] + (['ランキング'] if game_id in game.RANKED_GAMES or party_ranking.is_ranked(game_id) else []) + ['戻る'])
+                self.assertEqual(labels, ['ルール', '募集する'] + (['ランキング'] if game_id in game.RANKED_GAMES or party_ranking.is_ranked(game_id) else []) + (['レート'] if game_id == 'jinrou' else []) + (['ゲームを終了'] if game_id in ('jinrou', 'uno') else []) + ['戻る'])
 
                 inter = FakeInteraction(self.host, self.channel)
                 await press(message.view, 'rules', inter)
@@ -111,16 +113,50 @@ class GameHubTest(unittest.IsolatedAsyncioTestCase):
                 await press(message.view, 'back', FakeInteraction(self.host, self.channel, message=back))
                 self.assertIsInstance(back.view, game.GameHubView)
 
-    async def test_global_mode_is_not_exposed(self):
-        texts = []
-        hub_message = await self.open_hub()
-        texts.append(hub_message.text())
+    async def test_global_mode_only_on_jinrou(self):
         for game_id in GAME_ORDER:
             message = await self.open_detail(game_id)
-            texts.append(message.text())
-            texts += [o.label for c in message.view.children if isinstance(c, discord.ui.Select) for o in c.options]
-            texts.append(game.rules_embed(game_id).description)
-        self.assertFalse([t for t in texts if 'グローバル' in t or 'global' in t.lower()])
+            selects = [c for c in message.view.children if isinstance(c, game.JinrouModeSelect)]
+            self.assertEqual(bool(selects), game_id == 'jinrou', game_id)
+
+    async def test_recruit_jinrou_global_from_hub(self):
+        message = await self.open_detail('jinrou')
+        mode = next(c for c in message.view.children if isinstance(c, game.JinrouModeSelect))
+        await choose(mode, 'global', FakeInteraction(self.host, self.channel, message=message))
+        self.assertEqual(message.view.jinrou_mode, 'global')
+        inter = FakeInteraction(self.host, self.channel)
+        await press(message.view, 'recruit', inter)
+        self.assertIn('global', self.jinrou.games)
+        self.assertTrue(self.jinrou.games['global'].is_global)
+
+    async def test_end_and_rating_buttons_only_where_needed(self):
+        for game_id in GAME_ORDER:
+            message = await self.open_detail(game_id)
+            ids = {getattr(c, 'callback', None) and c.label for c in message.view.children if isinstance(c, discord.ui.Button)}
+            self.assertEqual('ゲームを終了' in ids, game_id in ('jinrou', 'uno'), game_id)
+            self.assertEqual('レート' in ids, game_id == 'jinrou', game_id)
+
+    async def test_jinrou_end_button_stops_game(self):
+        message = await self.open_detail('jinrou')
+        await press(message.view, 'recruit', FakeInteraction(self.host, self.channel))
+        g = self.jinrou.games[self.channel.id]
+        self.assertTrue(g.is_running)
+        inter = FakeInteraction(self.host, self.channel)
+        await press(message.view, 'end_game', inter)
+        self.assertFalse(g.is_running)
+
+    async def test_uno_end_button_needs_member(self):
+        message = await self.open_detail('uno')
+        await press(message.view, 'end_game', FakeInteraction(self.host, self.channel))  # ゲームなし
+        self.assertNotIn(self.channel.id, self.uno.games)
+
+    async def test_guess_and_flash_open_forms(self):
+        for game_id, modal_cls in (('guess', guess.GuessModal), ('flash', flash.FlashModal)):
+            with self.subTest(game=game_id):
+                message = await self.open_detail(game_id)
+                inter = FakeInteraction(self.host, self.channel)
+                await press(message.view, 'recruit', inter)
+                self.assertIsInstance(inter.response.modal, modal_cls)
 
     async def test_recruit_jinrou_opens_local_setup(self):
         message = await self.open_detail('jinrou')

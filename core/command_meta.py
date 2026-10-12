@@ -74,7 +74,7 @@ CATEGORIES = [
             "はじめて `/wallet` を使うと 10 AGO もらえます。`/pay` でほかの人に送金でき、"
             "`/leaderboard` で保有ランキングを見られます。\n\n"
             "## 数字当て\n"
-            "`/guess` は 1〜3 の数字を当てるゲームです。当たると賭け額の 2.8 倍がもらえ、外れると 1.5 倍が引かれます。"
+            "`/game` の「数字当て」は 1〜3 の数字を当てるゲームです。当たると賭け額の 2.8 倍がもらえ、外れると 1.5 倍が引かれます。"
             "負けても残高がマイナスにならない額までしか賭けられません。"
         ),
     },
@@ -179,7 +179,6 @@ COMMAND_META: dict[str, dict] = {
     "/wallet": {"category": "economy"},
     "/pay": {"category": "economy"},
     "/leaderboard": {"category": "economy"},
-    "/guess": {"category": "economy"},
     "/nation join": {"category": "economy", "guide": NATION_GUIDE},
     "/nation found": {"category": "economy", "guide": NATION_GUIDE, "permissions": ["administrator"]},
     "/nation status": {"category": "economy", "guide": NATION_GUIDE},
@@ -188,11 +187,6 @@ COMMAND_META: dict[str, dict] = {
 
     # ---------------------------------------------------------------- パーティーゲーム
     "/game": {"category": "game"},
-    "/jinrou": {"category": "game", "guide_key": "jinrou"},
-    "/jinrou_rating": {"category": "game"},
-    "/jinrou_ranking": {"category": "game"},
-    "/kill": {"category": "game"},
-    "/uno_end": {"category": "game"},
     "!doubt": {"category": "game", "summary": "ダウトの参加者を募集して始めます（3人以上）", "guild_only": True,
                "guide_key": "doubt"},
 
@@ -233,7 +227,6 @@ COMMAND_META: dict[str, dict] = {
     # ---------------------------------------------------------------- おたのしみ・AI
     "/zetamodoki": {"category": "fun"},
     "/zeta_reset": {"category": "fun"},
-    "/flash": {"category": "fun"},
     "/dungeon": {"category": "fun"},
     "/judge": {"category": "fun"},
     "!mimic": {"category": "fun", "summary": "過去の発言をもとに、特定のメンバーの口調で AI が返事をします",
