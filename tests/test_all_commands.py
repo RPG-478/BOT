@@ -48,15 +48,12 @@ SLASH_ARGUMENTS = {
     'giveaway': {'prize': 'テスト賞品', 'winners': 1, 'minutes': 5},
     'setup': {},
     'clear': {'amount': 1},
-    'd1ping': {},
     'dungeon': {},
-    'dungeon_reset': {},
     'flash': {'count': 2, 'interval': 0.01, 'digits': 2},
     'game': {},
     'guess': {'bet': 10, 'choice': 1},
-    'kill': {},
-    'jinrou_help': {},
     'jinrou': {},
+    'kill': {},
     'jinrou_rating': {},
     'jinrou_ranking': {},
     'muted': {},
@@ -76,22 +73,19 @@ SLASH_ARGUMENTS = {
     'voice join': {}, 'voice leave': {}, 'voice status': {}, 'voice record': {'action': 'status'},
     'voice echo': {'action': 'stop'}, 'voice transcribe': {'action': 'stop'}, 'voice karaoke': {'action': 'score'},
     'voice changer': {'action': 'status'}, 'voice match': {'action': 'stop'}, 'voice global': {'action': 'leave'},
-    'check_api': {},
     'uno_end': {},
-    'uno_start': {},
     'wallet': {},
     'pay': {'receiver': 'OTHER', 'amount': 1},
     'leaderboard': {},
     'nation join': {}, 'nation found': {}, 'nation status': {},
     'whisper': {},
-    'wordwolf': {},
     'zetamodoki': {},
     'zeta_reset': {},
     'judgement': None,  # needle3 が無い環境では読み込まれない（下で除外）
 }
 
 PREFIX_ARGUMENTS = {
-    'all_stats': {}, 'mood': {}, 'doubt': {}, 'terminal': {}, 'guild': {},
+    'all_stats': {}, 'mood': {}, 'doubt': {}, 'terminal': {}, 'guild': {}, 'd1ping': {}, 'check_api': {}, 'dungeon_reset': {},
     'ggrks': {'keyword': 'discord'},
     'mimic': {'prompt': 'こんにちは'}, 'mimic_toggle': {},
     'coin': {'amount': 1},
@@ -108,6 +102,9 @@ KNOWN_ISSUES: dict[str, str] = {}
 # 条件を満たさないときは、あえて何も返さないコマンド（返信がなくても合格にする）。
 SILENT_BY_DESIGN = {
     '!terminal': '許可されたユーザー以外には反応しない（存在を知らせないため）',
+    '!d1ping': '許可されたユーザー以外には反応しない（tests/test_admin_prefix.py）',
+    '!check_api': '許可されたユーザー以外には反応しない（tests/test_admin_prefix.py）',
+    '!dungeon_reset': '許可されたユーザー以外には反応しない（tests/test_admin_prefix.py）',
     '!guild': '許可されたユーザー以外には反応しない（tests/test_guild_list.py で両方を確認）',
 }
 

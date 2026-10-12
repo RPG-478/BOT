@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""/game: パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん）の入口。
+"""/game: パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle）の入口。
 
 ゲームを選ぶと、人数の目安・所要時間と「ルール」「募集する」ボタンが出る。
 募集は各ゲームの cog の ``start_recruit(interaction)`` をそのまま呼ぶので、個別のコマンド
-（/jinrou・/wordwolf・/uno_start・!doubt）と同じ流れになる。案内文は core/game_guides.py。
+（/jinrou・!doubt）と同じ流れになる。案内文は core/game_guides.py。
 """
 import discord
 from discord import app_commands
@@ -23,6 +23,7 @@ GAME_COGS = {
     "ngword": "NGWord",
     "shiritori": "OdaiShiritori",
     "janken": "Janken",
+    "wordle": "Wordle",
 }
 
 # 勝利数を記録しているゲーム（ここだけ「ランキング」ボタンを出す）
@@ -150,6 +151,23 @@ class NGModeSelect(discord.ui.Select):
         await interaction.response.edit_message(view=self.view)
 
 
+# Wordle のモード（cogs/wordle.py の MODES と同じ値）
+WORDLE_MODES = (("shared", "みんなで（チャンネルの全員で推理）"), ("solo", "ひとりで（始めた人だけ）"))
+
+
+class WordleModeSelect(discord.ui.Select):
+    def __init__(self, selected: str):
+        options = [discord.SelectOption(label=label, value=value, default=(value == selected))
+                   for value, label in WORDLE_MODES]
+        super().__init__(placeholder="モード", options=options, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.wordle_mode = self.values[0]
+        for option in self.options:
+            option.default = option.value == self.values[0]
+        await interaction.response.edit_message(view=self.view)
+
+
 class GameDetailView(discord.ui.View):
     """ゲームを選んだ後の画面（ルール・募集する・戻る）"""
     def __init__(self, cog, game_id: str):
@@ -158,6 +176,9 @@ class GameDetailView(discord.ui.View):
         self.game_id = game_id
         self.wordlist = "standard"
         self.ng_minutes, self.ng_mode = 3, "word"
+        self.wordle_mode = "shared"
+        if game_id == "wordle":
+            self.add_item(WordleModeSelect(self.wordle_mode))
         if game_id == "ngword":
             self.add_item(NGTimeSelect(self.ng_minutes))
             self.add_item(NGModeSelect(self.ng_mode))
@@ -174,7 +195,8 @@ class GameDetailView(discord.ui.View):
     @discord.ui.button(label="募集する", style=discord.ButtonStyle.success, row=2)
     async def recruit(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.start_game(interaction, self.game_id, wordlist=self.wordlist,
-                                  ng_minutes=self.ng_minutes, ng_mode=self.ng_mode)
+                                  ng_minutes=self.ng_minutes, ng_mode=self.ng_mode,
+                                  wordle_mode=self.wordle_mode)
 
     @discord.ui.button(label="ランキング", style=discord.ButtonStyle.primary, row=2)
     async def ranking(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -190,7 +212,7 @@ class GameHub(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="game", description="パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん）のルール確認と募集")
+    @app_commands.command(name="game", description="パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle）のルール確認と募集")
     async def game(self, interaction: discord.Interaction):
         await interaction.response.send_message(embed=hub_embed(), view=GameHubView(self), ephemeral=True)
 
@@ -204,6 +226,8 @@ class GameHub(commands.Cog):
         if game_id == "ngword":
             return await cog.start_recruit(interaction, minutes=options.get("ng_minutes") or 3,
                                            mode=options.get("ng_mode") or "word")
+        if game_id == "wordle":
+            return await cog.start_recruit(interaction, mode=options.get("wordle_mode") or "shared")
         if game_id == "wordwolf":
             return await cog.start_recruit(interaction, options.get("wordlist") or "standard")
         return await cog.start_recruit(interaction)

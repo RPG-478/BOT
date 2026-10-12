@@ -1,6 +1,8 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+from cogs.terminal import ALLOWED_USER_IDS
 import sys
 import importlib.metadata
 import io
@@ -9,9 +11,11 @@ class SystemInfoCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="check_api", description="インストールされているライブラリの一覧を確認します")
-    async def check_api(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+    @commands.command(name="check_api")
+    async def check_api(self, ctx: commands.Context):
+        """インストールされているライブラリの一覧（Bot の持ち主専用）。"""
+        if ctx.author.id not in ALLOWED_USER_IDS:
+            return
         
         python_version = sys.version.split()[0]
         try:
@@ -25,10 +29,10 @@ class SystemInfoCog(commands.Cog):
         package_list = "\n".join(distributions)
         
         if len(base_message) + len(package_list) < 1900:
-            await interaction.followup.send(f"```\n{base_message}{package_list}\n```")
+            await ctx.send(f"```\n{base_message}{package_list}\n```")
         else:
             file = discord.File(fp=io.StringIO(package_list), filename="packages.txt")
-            await interaction.followup.send(f"```\n{base_message}詳細なパッケージ一覧は添付ファイルを確認してください。\n```", file=file)
+            await ctx.send(f"```\n{base_message}詳細なパッケージ一覧は添付ファイルを確認してください。\n```", file=file)
 
 async def setup(bot):
     await bot.add_cog(SystemInfoCog(bot))

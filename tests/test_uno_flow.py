@@ -136,7 +136,7 @@ class UnoFlowTest(unittest.IsolatedAsyncioTestCase):
     async def test_cancelled_recruit_does_not_start(self):
         host = self.players[0]
         with fast_time():
-            old_task = asyncio.create_task(self.cog.uno_start.callback(self.cog, FakeInteraction(host, self.channel)))
+            old_task = asyncio.create_task(self.cog.start_recruit(FakeInteraction(host, self.channel)))
             await real_sleep(0.01)
             old_game = self.cog.games[self.channel.id]
             old_view = self.channel.sent[-1].view
@@ -144,7 +144,7 @@ class UnoFlowTest(unittest.IsolatedAsyncioTestCase):
             await press(old_view, 'cancel', FakeInteraction(host, self.channel, message=self.channel.sent[-1]))
             self.assertNotIn(self.channel.id, self.cog.games)
 
-            new_task = asyncio.create_task(self.cog.uno_start.callback(self.cog, FakeInteraction(host, self.channel)))
+            new_task = asyncio.create_task(self.cog.start_recruit(FakeInteraction(host, self.channel)))
             await real_sleep(0.02)
             new_game = self.cog.games[self.channel.id]
             await press(self.channel.sent[-1].view, 'join',

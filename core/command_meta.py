@@ -81,7 +81,7 @@ CATEGORIES = [
     {
         "id": "game",
         "label": "パーティーゲーム",
-        "description": "人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけんなど、チャンネルのみんなで遊べるゲームです。",
+        "description": "人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordleなど、チャンネルのみんなで遊べるゲームです。",
         "guide": (
             "## 遊び方\n"
             "それぞれのゲームのコマンドを実行すると参加者の募集が始まり、ボタンで参加できます。"
@@ -188,12 +188,9 @@ COMMAND_META: dict[str, dict] = {
     # ---------------------------------------------------------------- パーティーゲーム
     "/game": {"category": "game"},
     "/jinrou": {"category": "game", "guide_key": "jinrou"},
-    "/jinrou_help": {"category": "game"},
     "/jinrou_rating": {"category": "game"},
     "/jinrou_ranking": {"category": "game"},
     "/kill": {"category": "game"},
-    "/wordwolf": {"category": "game", "guide_key": "wordwolf"},
-    "/uno_start": {"category": "game", "guide_key": "uno"},
     "/uno_end": {"category": "game"},
     "!doubt": {"category": "game", "summary": "ダウトの参加者を募集して始めます（3人以上）", "guild_only": True,
                "guide_key": "doubt"},
@@ -264,10 +261,13 @@ COMMAND_META: dict[str, dict] = {
     },
     "/clear": {"category": "admin", "permissions": ["manage_messages"]},
     "/muted": {"category": "admin"},
-    "/dungeon_reset": {"category": "admin"},
+    "!dungeon_reset": {"category": "admin", "summary": "ダンジョンのマップを全サーバー分リセットします", "permissions": ["bot_admin"],
+                       "hidden": True},
     "!mimic_toggle": {"category": "admin", "summary": "このチャンネルでの !mimic の自動返信を切り替えます"},
-    "/check_api": {"category": "admin", "hidden": True},
-    "/d1ping": {"category": "admin", "hidden": True},
+    "!check_api": {"category": "admin", "summary": "入っているライブラリの一覧を表示します", "permissions": ["bot_admin"],
+                   "hidden": True},
+    "!d1ping": {"category": "admin", "summary": "d1 サーバーの応答を確かめ、止まっていれば起動します",
+                "permissions": ["bot_admin"], "hidden": True},
     "!all_stats": {"category": "admin", "summary": "Bot とサーバーの状態を表示します", "hidden": True},
     "!terminal": {"category": "admin", "summary": "持ち主専用の操作パネルを表示します", "permissions": ["bot_admin"],
                   "hidden": True},

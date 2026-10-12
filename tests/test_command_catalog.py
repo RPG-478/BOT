@@ -150,6 +150,32 @@ class CommandCatalogTest(unittest.TestCase):
         stale = sorted(self.site_command_keys() - set(registered_commands(self.bot)))
         self.assertEqual(stale, [], 'web/data/commands.sample.json に、もう存在しないコマンドがあります')
 
+    def test_game_hub_duplicates_are_gone(self):
+        """/game で代わりになるので外した（/jinrou はグローバルモードの入口なので残す）ゲームの / コマンドが、登録・COMMAND_META・案内文・サイトのデータに残っていない。"""
+        from core.game_guides import GAME_GUIDES
+        removed = ['/jinrou_help', '/wordwolf', '/uno_start']
+        registered = set(registered_commands(self.bot))
+        guides = json.dumps(GAME_GUIDES, ensure_ascii=False)
+        for key in removed:
+            with self.subTest(command=key):
+                self.assertNotIn(key, registered)
+                self.assertNotIn(key, command_meta.COMMAND_META)
+                self.assertIsNone(command_catalog.find_command(self.catalog, key, include_hidden=True))
+                self.assertNotIn(f'`{key}`', guides)
+                self.assertNotIn(f'"{key}"', guides)
+        for key in ('/game', '/jinrou', '/uno_end', '/kill', '/jinrou_rating', '/jinrou_ranking'):
+            with self.subTest(kept=key):
+                self.assertIn(key, registered)
+
+    def test_web_sample_catalog_has_no_removed_commands(self):
+        """サイト（web/lib/catalog.ts が読む web/data）のコマンドに、外したコマンドが入っていない。"""
+        data_dir = Path(__file__).resolve().parent.parent / 'web' / 'data'
+        removed = {'jinrou_help', 'wordwolf', 'uno_start'}
+        for file in sorted(data_dir.glob('commands*.json')):
+            names = {c['name'] for c in json.loads(file.read_text(encoding='utf-8'))['commands'] if c['kind'] == 'slash'}
+            with self.subTest(file=file.name):
+                self.assertFalse(names & removed)
+
     def test_categories_are_valid(self):
         ids = [c['id'] for c in command_meta.CATEGORIES]
         self.assertEqual(ids, ['support', 'economy', 'game', 'voice', 'fun', 'admin'])
@@ -172,7 +198,7 @@ class CommandCatalogTest(unittest.TestCase):
                 self.assertTrue(entry['usage'].startswith('/' if entry['kind'] == 'slash' else '!'))
 
     def test_debug_and_owner_commands_are_hidden(self):
-        for key in ('!terminal', '!guild', '!all_stats', '/d1ping', '/check_api', '!coin'):
+        for key in ('!terminal', '!guild', '!all_stats', '!d1ping', '!check_api', '!dungeon_reset', '!coin'):
             with self.subTest(command=key):
                 entry = command_catalog.find_command(self.catalog, key, include_hidden=True)
                 self.assertTrue(entry['hidden'])
