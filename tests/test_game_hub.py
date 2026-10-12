@@ -93,7 +93,7 @@ class GameHubTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(message.embed.title, GAME_GUIDES[game_id]['name'])
                 self.assertIsInstance(message.view, game.GameDetailView)
                 labels = [c.label for c in message.view.children if isinstance(c, discord.ui.Button)]
-                self.assertEqual(labels, ['ルール', '募集する', '戻る'])
+                self.assertEqual(labels, ['ルール', '募集する'] + (['ランキング'] if game_id in game.RANKED_GAMES else []) + ['戻る'])
 
                 inter = FakeInteraction(self.host, self.channel)
                 await press(message.view, 'rules', inter)

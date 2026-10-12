@@ -25,6 +25,11 @@ for _name, _value in {'SUPABASE_URL': 'https://example.supabase.co', 'SUPABASE_K
 
 import discord  # noqa: E402
 
+from core import party_ranking  # noqa: E402
+
+# テストでは Supabase に接続しない（勝利数はメモリだけ）
+party_ranking._shared = party_ranking.PartyRanking(client=None)
+
 real_sleep = asyncio.sleep
 _ids = itertools.count(10_000)
 
