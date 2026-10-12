@@ -79,6 +79,7 @@ SLASH_ARGUMENTS = {
     'spatial': {}, 'queue': {},
     'speak': {'text': 'こんにちは'},
     'check_api': {},
+    'uno_end': {},
     'uno_start': {},
     'wallet': {},
     'pay': {'receiver': 'OTHER', 'amount': 1},
