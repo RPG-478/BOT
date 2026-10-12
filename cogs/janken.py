@@ -13,6 +13,7 @@ import asyncio
 import random
 
 import discord
+from core import game_panels
 from discord.ext import commands
 
 from core import party_ranking
@@ -138,7 +139,7 @@ class Janken(commands.Cog):
             embed=discord.Embed(description=f"じゃんけんの募集を開始しました（{RECRUIT_SECONDS}秒）。", color=COLOR),
             ephemeral=True)
         try:
-            await channel.send(embed=discord.Embed(
+            await game_panels.replace(channel, "party", embed=discord.Embed(
                 title="じゃんけん 参加者募集",
                 description=(f"{interaction.user.mention} さんが募集中です。\n"
                              f"{RECRUIT_SECONDS}秒以内に「参加」を押してください（最大{MAX_PLAYERS}人）。\n"
@@ -171,7 +172,7 @@ class Janken(commands.Cog):
             g.choices[BOT_ID] = auto_hand(rng)
         g.phase = "choosing"
         humans = [uid for uid in g.alive if uid != BOT_ID]
-        await channel.send(embed=discord.Embed(
+        await game_panels.replace(channel, "party", embed=discord.Embed(
             title=f"第{g.round}回 じゃん けん…",
             description=(f"{'、'.join(g.name(u) for u in g.alive)}\n"
                          f"{HAND_SECONDS}秒以内に下のボタンで手を選んでください（ほかの人には見えません）。"),

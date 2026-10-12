@@ -10,6 +10,7 @@ import asyncio
 import random
 
 import discord
+from core import game_panels
 from discord.ext import commands
 
 from core import party_ranking
@@ -157,7 +158,7 @@ class NGWord(commands.Cog):
                 description=(f"{interaction.user.mention} さんが募集中です。（{MODES[g.mode]}・{g.minutes}分）\n"
                              f"{RECRUIT_SECONDS}秒以内に「参加」を押してください（{MIN_PLAYERS}〜{MAX_PLAYERS}人）。"),
                 color=COLOR)
-            await channel.send(embed=embed, view=JoinView(self, g))
+            await game_panels.replace(channel, "party", embed=embed, view=JoinView(self, g))
             await asyncio.sleep(RECRUIT_SECONDS)
             if len(g.players) < MIN_PLAYERS:
                 return await channel.send(embed=discord.Embed(
@@ -180,7 +181,7 @@ class NGWord(commands.Cog):
                          "ボタンで **自分以外の** NGワードを確認し、会話の中で相手に言わせましょう。\n"
                          f"自分のNGワードを発言したら脱落です。制限時間は{g.minutes}分、最後まで残った人の勝ち！"),
             color=COLOR)
-        await channel.send(embed=embed, view=PlayView(self, g))
+        await game_panels.replace(channel, "party", embed=embed, view=PlayView(self, g))
         elapsed = 0
         while elapsed < g.seconds and len(g.alive) > 1:
             await asyncio.sleep(1)

@@ -7,6 +7,7 @@ from collections import Counter
 logger = logging.getLogger(__name__)
 import os
 import discord
+from core import game_panels
 from core import jinrou_guide
 from discord import app_commands
 from discord.ext import commands
@@ -186,10 +187,10 @@ class JinrouGame:
 def calculate_elo_change(winner_rating, loser_rating, winner_is_wolf: bool):
     """Elo式レート計算。人狼陣営の勝利時はK値を大きくする"""
     K = ELO_WOLF_WIN_K if winner_is_wolf else ELO_BASE_K
-    
+
     expected_score = 1 / (1 + 10 ** ((loser_rating - winner_rating) / 400))
     rating_change = K * (1 - expected_score)
-    
+
     return rating_change, -rating_change
 
 def can_end_game(game, user) -> bool:
@@ -251,23 +252,23 @@ def _get_display_role(game, player_id: int, reveal_hidden: bool = False) -> str:
     real_role = game.roles.get(player_id)
     if not real_role:
         return "不明"
-    
+
     # 強制開示モード
     if reveal_hidden:
         return real_role
-    
+
     # 裏役職の判明判定
     if real_role in URA_YAKUSHOKU:
         trigger, fake = URA_YAKUSHOKU[real_role]
         revealed = game.ura_reveal_triggers.get(player_id, False)
-        
+
         if not revealed:
             # 未判明の場合、偽装役職を返す
             if real_role == "アホ":
                 return game.aho_fake_role.get(player_id, "一般通過あごむに")
             else:
                 return fake if fake else "一般通過あごむに"
-    
+
     return real_role
 
 # ======================================================
@@ -281,15 +282,15 @@ async def _check_and_reveal_ura_yakushoku(game, player_id: int, trigger_type: st
     real_role = game.roles.get(player_id)
     if not real_role or real_role not in URA_YAKUSHOKU:
         return
-    
+
     ura_trigger, _ = URA_YAKUSHOKU[real_role]
     should_reveal = False
-    
+
     if trigger_type == "death" and ura_trigger == "death_or_end":
         should_reveal = True
     elif trigger_type == "end":
         should_reveal = True
-    
+
     if should_reveal:
         game.ura_reveal_triggers[player_id] = True
 
@@ -495,7 +496,7 @@ class JinrouCog(commands.Cog):
             game.roles[p.id] = pool[i]
             game.display_roles[p.id] = pool[i]  # 最初は表示用も本当の役職
             game.ura_reveal_triggers[p.id] = False  # 裏役職は未判明
-            
+
             # アホの場合、偽装役職をランダムに選択
             if pool[i] == "アホ":
                 game.aho_fake_role[p.id] = random.choice(AHO_FAKE_CANDIDATES)
@@ -667,7 +668,7 @@ class JinrouCog(commands.Cog):
                 roles_for_display.append(display_r)
             roles_list = " / ".join(set(roles_for_display))
 
-        await channel.send(
+        await game_panels.replace(channel, "party",
             f"<:success:1490985168100659322>{mentions}\nゲーム開始。今回の役職内訳: {roles_list}\n下のボタンで自分の役職確認を行ってください。",
             view=RoleCheckView(game, self)
         )
@@ -739,11 +740,11 @@ class JinrouCog(commands.Cog):
         if not game.is_running: return
         game.chairman_skip_event = asyncio.Event()
         game.in_discussion = True
-        
+
         game.silenced_players.clear()
-        
+
         minutes_str = f"{seconds // 60}分{seconds % 60}秒" if seconds % 60 else f"{seconds // 60}分"
-        await game.game_channel.send(f"ーー {title}（{minutes_str}） ーー",
+        await game_panels.replace(game.game_channel, "party", f"ーー {title}（{minutes_str}） ーー",
                                      view=jinrou_guide.PhaseHelpView("day", _guide_role_lookup(game), timeout=seconds + 30))
         if any(game.roles.get(p.id) == "パン屋" for p in game.alive_players):
             await game.game_channel.send("<:PANYA:1490254577558093944>パン屋がパンを焼きました")
@@ -763,14 +764,14 @@ class JinrouCog(commands.Cog):
         if not game.is_running: return
         game.day_count += 1
         await game.game_channel.send(f"ーー 第{game.day_count}夜（1分） ーー")
-        
+
         game.silenced_players.clear()
         game.silenced_players.update(p.id for p in game.alive_players if game.roles.get(p.id) != "ネット民")
 
         game.night_actions = {}
         view = NightActionView(game)
         view.add_item(jinrou_guide.PhaseHelpButton("night", _guide_role_lookup(game)))
-        msg = await game.game_channel.send("アクションを選択してください", view=view)
+        msg = await game_panels.replace(game.game_channel, "party", "アクションを選択してください", view=view)
 
         req_roles_single = ["占い師", "騎士", "罠師", "あごむに破道砲", "マサイ族", "陽キャ"]
         if game.day_count == 1: req_roles_single.append("ワンころ")
@@ -918,10 +919,10 @@ class JinrouCog(commands.Cog):
 
     async def process_night_results(self, game):
         if not game.is_running: return
-        
+
         # もくもくの効果適用判定
         is_mokumoku_active = any(game.roles.get(p.id) == "もくもく" for p in game.alive_players) and game.mokumoku_turns < 3
-        
+
         # ログ送信用の内部関数（もくもく効果中ならコメントを差し替える）
         async def send_log(message: str):
             if is_mokumoku_active:
@@ -936,10 +937,10 @@ class JinrouCog(commands.Cog):
         wolf_attacks   = {}
         knight_targets = set()
         trap_targets   = {}
-        
+
         # メンヘラおよびヤンデレのIDを物理消去の判定用セットに格納
         psycho_killer_ids = {p.id for p in game.alive_players if game.roles.get(p.id) == "メンヘラ"}
-        
+
         # ヤンデレに紐づいている人狼が夜に関与された場合、関与したプレイヤーを返り討ちにする
         yandere_triggered_by = set()
         for yandere_id, wolf_id in game.yandere_targets.items():
@@ -1082,10 +1083,10 @@ class JinrouCog(commands.Cog):
                 m = game.game_channel.guild.get_member(d_id)
                 if m:
                     await send_log(f"夜の結果: {m.display_name} さんが犠牲になりました。")
-                    
+
                     # 裏役職の判明トリガーチェック（死亡時）
                     await _check_and_reveal_ura_yakushoku(game, d_id, "death")
-                    
+
                     if game.roles.get(d_id) == "タフむに":
                         killers = [pid for pid, tid in game.night_actions.items() if tid == d_id and pid not in final_dead and pid in {p.id for p in game.alive_players}]
                         if killers:
@@ -1219,11 +1220,11 @@ class JinrouCog(commands.Cog):
     async def _announce_final_roles(self, game):
         if not game.game_channel or not game.roles:
             return
-        
+
         # ゲーム終了時はすべての裏役職を判明させる
         for p_id in game.roles.keys():
             await _check_and_reveal_ura_yakushoku(game, p_id, "end")
-        
+
         lines = []
         alive_ids = {p.id for p in game.alive_players}
         for p in game.players:
@@ -1237,7 +1238,7 @@ class JinrouCog(commands.Cog):
             description="\n".join(lines),
             color=0xFFFFFF
         )
-        await game.game_channel.send(embed=embed, view=ReplayView(game, self))
+        await game_panels.replace(game.game_channel, "party", embed=embed, view=ReplayView(game, self))
 
     # ======================================================
     #  霊媒師への通知
@@ -1295,7 +1296,7 @@ class JinrouCog(commands.Cog):
         game.last_executed = actual_target_id
         game.silenced_players.add(actual_target_id)
         game.alive_players = [p for p in game.alive_players if p.id != actual_target_id]
-        
+
         # 裏役職の判明トリガーチェック（死亡時）
         await _check_and_reveal_ura_yakushoku(game, actual_target_id, "death")
 
@@ -1337,7 +1338,7 @@ class JinrouCog(commands.Cog):
         game.voted_count = {}
         view = PublicVoteView(game, opts)
         view.add_item(jinrou_guide.PhaseHelpButton("vote", _guide_role_lookup(game), row=1))
-        msg = await game.game_channel.send("生存者は投票してください", view=view)
+        msg = await game_panels.replace(game.game_channel, "party", "生存者は投票してください", view=view)
         for _ in range(40):
             await asyncio.sleep(1)
             if not game.is_running: break
@@ -1380,7 +1381,7 @@ class JinrouCog(commands.Cog):
         game.last_executed = actual_target_id
         game.silenced_players.add(actual_target_id)
         game.alive_players = [p for p in game.alive_players if p.id != actual_target_id]
-        
+
         # 裏役職の判明トリガーチェック（死亡時）
         await _check_and_reveal_ura_yakushoku(game, actual_target_id, "death")
 
@@ -1430,7 +1431,7 @@ class JinrouCog(commands.Cog):
 
         view = ChairmanVoteView(game, opts)
         view.add_item(jinrou_guide.PhaseHelpButton("vote", _guide_role_lookup(game), row=1))
-        msg = await game.game_channel.send(
+        msg = await game_panels.replace(game.game_channel, "party",
             "ーー 強制投票（60秒） ーー\n**議長のみ**が投票できます。追放する対象を選んでください。",
             view=view
         )
@@ -1473,7 +1474,7 @@ class SetupView(discord.ui.View):
         self.game = game
         self.cog = cog
         self.channel = channel
-        
+
         # モード選択セレクト
         mode_sel = discord.ui.Select(
             placeholder="ゲームモードを選択（デフォルト: プロ）",
@@ -1545,7 +1546,7 @@ class SetupView(discord.ui.View):
         )
         view = RecruitView(self.game, self.cog)
         req_str2 = f" 【必須: {req_str}】" if self.game.required_roles else ""
-        await self.channel.send(
+        await game_panels.replace(self.channel, "party",
             f"<a:POYOPOYO:1490724627805110392>人狼ゲーム募集開始！ モード:【{self.game.game_mode}】{req_str2}",
             view=view
         )
@@ -1598,7 +1599,7 @@ class AdvancedSetupView(discord.ui.View):
         )
         view = RecruitView(self.game, self.cog)
         req_str2 = f" 【必須: {req_str}】" if self.game.required_roles else ""
-        await self.channel.send(
+        await game_panels.replace(self.channel, "party",
             f"<a:POYOPOYO:1490724627805110392>人狼ゲーム募集開始！ モード:【{self.game.game_mode}】{req_str2}",
             view=view
         )

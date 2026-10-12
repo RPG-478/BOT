@@ -21,6 +21,7 @@ import random
 import unicodedata
 
 import discord
+from core import game_panels
 from discord.ext import commands
 
 from core import party_ranking
@@ -242,7 +243,7 @@ class OdaiShiritori(commands.Cog):
                 description=(f"{interaction.user.mention} さんが募集中です。\n"
                              f"{RECRUIT_SECONDS}秒以内に「参加」を押してください（{MIN_PLAYERS}〜{MAX_PLAYERS}人）。"),
                 color=COLOR)
-            await channel.send(embed=embed, view=JoinView(self, g))
+            await game_panels.replace(channel, "party", embed=embed, view=JoinView(self, g))
             await asyncio.sleep(RECRUIT_SECONDS)
             if len(g.players) < MIN_PLAYERS:
                 return await channel.send(embed=discord.Embed(
@@ -302,7 +303,7 @@ class OdaiShiritori(commands.Cog):
 
     async def topic_vote(self, channel, g: ShiritoriGame, uid: int, word: str) -> bool:
         view = VoteView(g, uid)
-        await channel.send(embed=discord.Embed(
+        await game_panels.replace(channel, "party", embed=discord.Embed(
             description=(f"「**{word}**」はお題「{g.topic}」に合っていますか？\n"
                          f"答えた人以外が{VOTE_SECONDS}秒以内に投票（NG が OK より多いと脱落。同数・無投票はセーフ）"),
             color=COLOR), view=view)

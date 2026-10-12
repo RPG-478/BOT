@@ -17,6 +17,7 @@ import asyncio
 import random
 
 import discord
+from core import game_panels
 from discord.ext import commands
 
 from core import autoplay, party_ranking
@@ -284,7 +285,7 @@ class Daifugo(commands.Cog):
             embed=discord.Embed(description=f"大富豪の募集を開始しました（{RECRUIT_SECONDS}秒）。", color=COLOR),
             ephemeral=True)
         try:
-            await channel.send(embed=discord.Embed(
+            await game_panels.replace(channel, "party", embed=discord.Embed(
                 title="大富豪 参加者募集",
                 description=(f"{interaction.user.mention} さんが募集中です。\n"
                              f"{RECRUIT_SECONDS}秒以内に「参加」を押してください（{MIN_PLAYERS}〜{MAX_PLAYERS}人）。\n"
@@ -319,12 +320,18 @@ class Daifugo(commands.Cog):
     async def play_turn(self, channel, g: DaifugoGame, rng=random):
         uid = g.turn
         g.acted = False
-        await channel.send(embed=discord.Embed(
+        plays = g.legal(uid)
+        # 場に対して出せるカードがなく、パスだけが合法な場合は
+        # 無操作のパネルを出さず、その場で自動的にパスする。
+        if g.table is not None and not plays:
+            await channel.send(embed=discord.Embed(
+                description=f"{g.name(uid)} さんは出せるカードがないため、自動でパスしました。", color=COLOR))
+            return await self.apply(channel, g, uid, PASS)
+        await game_panels.replace(channel, "party", embed=discord.Embed(
             description=(f"{g.name(uid)} さんの番です（{TURN_SECONDS}秒）。\n{table_text(g)}\n\n{self.counts_text(g)}"),
             color=COLOR), view=TurnView(self, g))
         if g.is_bot(uid):
             await asyncio.sleep(BOT_SECONDS)
-            plays = g.legal(uid)
             return await self.apply(channel, g, uid, plays[0] if plays else PASS)
         elapsed = 0
         while not g.acted and elapsed < TURN_SECONDS and g.phase == "playing":

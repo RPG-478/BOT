@@ -68,8 +68,55 @@ class FujoSurvival(commands.Cog):
         self.check_panic_alerts.cancel()
         self.check_duo_pester.cancel()
 
-    fujo_group = app_commands.Group(name="fujo", description="生存確認機能のコマンド一覧")
-    panic_group = app_commands.Group(name="panic", description="失踪警報・遺言設定のコマンド一覧", parent=fujo_group)
+    FUJO_ACTIONS = [
+        app_commands.Choice(name="追跡登録・解除", value="register"),
+        app_commands.Choice(name="生存ステータス", value="status"),
+        app_commands.Choice(name="アクティブ頻度", value="hindo"),
+        app_commands.Choice(name="ランキング", value="ranking"),
+        app_commands.Choice(name="ストリークフリーズ", value="freeze"),
+        app_commands.Choice(name="失踪警報を設定", value="panic_set"),
+        app_commands.Choice(name="失踪警報を解除", value="panic_disable"),
+    ]
+
+    @app_commands.command(name="fujo", description="生存確認・ステータス・ランキング・失踪警報をまとめて操作します")
+    @app_commands.choices(action=FUJO_ACTIONS)
+    @app_commands.describe(
+        action="実行する操作",
+        target="確認するユーザー（status / hindo で使用。省略すると自分）",
+        mode="ranking の並べ方",
+        days="panic_set の発報日数（1〜365）",
+        message="panic_set の発報メッセージ",
+    )
+    async def fujo(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+        target: discord.User | None = None,
+        mode: str = "active",
+        days: app_commands.Range[int, 1, 365] | None = None,
+        message: app_commands.Range[str, 1, 1000] | None = None,
+    ):
+        if action == "register":
+            return await self.register(interaction)
+        if action == "status":
+            return await self.status(interaction, target)
+        if action == "hindo":
+            return await self.hindo(interaction, target)
+        if action == "ranking":
+            return await self.ranking(interaction, mode)
+        if action == "freeze":
+            return await self.freeze(interaction)
+        if action == "panic_disable":
+            return await self.panic_disable(interaction)
+        if action == "panic_set":
+            if days is None or not message:
+                return await self._reply(
+                    interaction,
+                    self.create_simple_embed("入力不足", "失踪警報を設定するには days と message が必要です。", 0xe67e22),
+                    ephemeral=True,
+                )
+            return await self.panic_set(interaction, days, message)
+        await self._reply(interaction, self.create_simple_embed("操作不明", "指定された操作は利用できません。", 0xe67e22), ephemeral=True)
 
     # --- DB ヘルパー ---
 
@@ -252,7 +299,6 @@ class FujoSurvival(commands.Cog):
 
     # --- コマンド ---
 
-    @fujo_group.command(name="register", description="生存確認の追跡登録・解除を切り替えます")
     async def register(self, interaction: discord.Interaction):
         user_id = interaction.user.id
         await self._ensure_users()
@@ -274,8 +320,6 @@ class FujoSurvival(commands.Cog):
             await self.record_activity(user_id, "COMMAND", "online")
         await self._reply(interaction, embed, ephemeral=True)
 
-    @fujo_group.command(name="status", description="指定ユーザーの生存ステータスを確認します")
-    @app_commands.describe(target="確認するユーザー（省略すると自分）")
     async def status(self, interaction: discord.Interaction, target: discord.User | None = None):
         target = target or interaction.user
         if not await self._require_registered(interaction, target.id, target.id == interaction.user.id):
@@ -320,8 +364,6 @@ class FujoSurvival(commands.Cog):
         embed.set_footer(text=FOOTER)
         await self._reply(interaction, embed)
 
-    @fujo_group.command(name="hindo", description="指定ユーザーのアクティブ頻度を確認します")
-    @app_commands.describe(target="確認するユーザー（省略すると自分）")
     async def hindo(self, interaction: discord.Interaction, target: discord.User | None = None):
         target = target or interaction.user
         if not await self._require_registered(interaction, target.id, target.id == interaction.user.id):
@@ -347,12 +389,6 @@ class FujoSurvival(commands.Cog):
         embed.set_footer(text=f"{FOOTER}（検知は 5 分に 1 回まで数えます）")
         await self._reply(interaction, embed)
 
-    @fujo_group.command(name="ranking", description="サーバー内の生存者・化石ランキングを表示します")
-    @app_commands.describe(mode="並べ方")
-    @app_commands.choices(mode=[
-        app_commands.Choice(name="アクティブ順（過去 30 日の検知数）", value="active"),
-        app_commands.Choice(name="化石順（最後の検知が古い順）", value="fossil"),
-    ])
     async def ranking(self, interaction: discord.Interaction, mode: str = "active"):
         await interaction.response.defer()
         await self._ensure_users()
@@ -386,7 +422,6 @@ class FujoSurvival(commands.Cog):
         embed.set_footer(text=FOOTER)
         await self._reply(interaction, embed)
 
-    @fujo_group.command(name="freeze", description="修羅場・旅行用に1日分のストリーク保護を申請します")
     async def freeze(self, interaction: discord.Interaction):
         user_id = interaction.user.id
         if not await self._require_registered(interaction, user_id, True):
@@ -399,8 +434,6 @@ class FujoSurvival(commands.Cog):
         )
         await self._reply(interaction, embed, ephemeral=True)
 
-    @panic_group.command(name="set", description="生存反応が途絶えた際の自動警報・遺言を設定します")
-    @app_commands.describe(days="何日反応がなければ発報するか（1〜365）", message="発報時に流すメッセージ")
     async def panic_set(self, interaction: discord.Interaction, days: app_commands.Range[int, 1, 365], message: app_commands.Range[str, 1, 1000]):
         user_id = interaction.user.id
         if not await self._require_registered(interaction, user_id, True):
@@ -418,7 +451,6 @@ class FujoSurvival(commands.Cog):
         )
         await self._reply(interaction, embed, ephemeral=True)
 
-    @panic_group.command(name="disable", description="失踪警報の設定を解除します")
     async def panic_disable(self, interaction: discord.Interaction):
         user_id = interaction.user.id
         if not await self._require_registered(interaction, user_id, True):

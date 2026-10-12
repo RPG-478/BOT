@@ -15,6 +15,7 @@ import asyncio
 import random
 
 import discord
+from core import game_panels
 from discord.ext import commands
 
 from core import autoplay, party_ranking
@@ -211,7 +212,7 @@ class Babanuki(commands.Cog):
             embed=discord.Embed(description=f"ババ抜きの募集を開始しました（{RECRUIT_SECONDS}秒）。", color=COLOR),
             ephemeral=True)
         try:
-            await channel.send(embed=discord.Embed(
+            await game_panels.replace(channel, "party", embed=discord.Embed(
                 title="ババ抜き 参加者募集",
                 description=(f"{interaction.user.mention} さんが募集中です。\n"
                              f"{RECRUIT_SECONDS}秒以内に「参加」を押してください（{MIN_PLAYERS}〜{MAX_PLAYERS}人）。\n"
@@ -247,7 +248,7 @@ class Babanuki(commands.Cog):
         rng.shuffle(g.hands[target])
         g.drawn = None
         count = len(g.hands[target])
-        await channel.send(embed=discord.Embed(
+        await game_panels.replace(channel, "party", embed=discord.Embed(
             description=(f"{g.name(uid)} さんの番です。{g.name(target)} さんの手札（{count}枚）から"
                          f"1枚選んでください（{TURN_SECONDS}秒）。\n\n{self.counts_text(g)}"),
             color=COLOR), view=TurnView(self, g, count))
