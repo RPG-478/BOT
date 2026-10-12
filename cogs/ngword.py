@@ -16,7 +16,7 @@ from core import party_ranking
 
 COLOR = 0xFFFFFF
 RECRUIT_SECONDS = 60
-GAME_SECONDS = 180
+GAME_SECONDS = 180   # 既定（3分）。互換のため残す
 MIN_PLAYERS = 3
 MAX_PLAYERS = 8
 
@@ -28,13 +28,42 @@ NG_WORDS = [
 ]
 
 
+# 制限時間の選択肢（分）。/game の画面で選ぶ
+TIME_CHOICES = (3, 5, 10)
+DEFAULT_MINUTES = 3
+MODES = {"word": "ワードモード", "char": "一文字モード"}
+
+# 一文字モードの NG 文字。清音のひらがなから、
+# - 会話でほぼ毎回出てしまう文字（の・は・に・て・た・い・か・し・る・と）
+# - ほとんど出ない文字（ゐ・ゑ・を・ぬ・へ）と「ん」（単独で狙いにくく、文末で多すぎる）
+# を外して、「気をつければ避けられるが、うっかり言う」くらいの 32 文字にした。
+NG_CHARS = list("あうえおきくけこさすせそちつなねひふほまみむめもやゆよらりれろわ")
+
+_SMALL = str.maketrans("ぁぃぅぇぉっゃゅょゎゕゖ", "あいうえおつやゆよわかけ")
+
+
+def normalize_kana(text: str) -> str:
+    """カタカナ→ひらがな、小書き文字→大きい文字（ゃ→や、ッ→つ）。濁点は残す（「か」と「が」は別の文字）。"""
+    out = "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in (text or ""))
+    return out.translate(_SMALL)
+
+
+def contains_ng_char(text: str, char: str) -> bool:
+    """一文字モード: 正規化したメッセージに NG 文字が含まれるか。"""
+    return normalize_kana(char) in normalize_kana(text)
+
+
 def contains_ng(text: str, word: str) -> bool:
     """大文字小文字を区別せずに、メッセージに NG ワードが含まれるか。"""
     return word.lower() in (text or "").lower()
 
 
 class NGGame:
-    def __init__(self, channel_id: int, guild_id: int, host_id: int):
+    def __init__(self, channel_id: int, guild_id: int, host_id: int,
+                 minutes: int = DEFAULT_MINUTES, mode: str = "word"):
+        self.minutes = minutes if minutes in TIME_CHOICES else DEFAULT_MINUTES
+        self.seconds = self.minutes * 60
+        self.mode = mode if mode in MODES else "word"
         self.channel_id = channel_id
         self.guild_id = guild_id
         self.host_id = host_id
@@ -47,8 +76,13 @@ class NGGame:
     def alive(self):
         return [uid for uid in self.players if uid not in self.out]
 
+    def hits(self, uid, text) -> bool:
+        word = self.words[uid]
+        return contains_ng_char(text, word) if self.mode == "char" else contains_ng(text, word)
+
     def deal(self, rng=random):
-        picked = rng.sample(NG_WORDS, len(self.players))
+        pool = NG_CHARS if self.mode == "char" else NG_WORDS
+        picked = rng.sample(pool, len(self.players))
         self.words = dict(zip(self.players, picked))
 
 
@@ -80,7 +114,7 @@ class JoinView(discord.ui.View):
 
 class PlayView(discord.ui.View):
     def __init__(self, cog, game: NGGame):
-        super().__init__(timeout=GAME_SECONDS + 30)
+        super().__init__(timeout=game.seconds + 30)
         self.cog, self.game = cog, game
 
     @discord.ui.button(label="みんなのNGワードを見る", style=discord.ButtonStyle.primary)
@@ -106,12 +140,12 @@ class NGWord(commands.Cog):
         self.games: dict = {}   # channel_id -> NGGame
         self.wins: dict = {}    # guild_id -> {user_id: 勝利数}（メモリのみ）
 
-    async def start_recruit(self, interaction: discord.Interaction):
+    async def start_recruit(self, interaction: discord.Interaction, minutes: int = DEFAULT_MINUTES, mode: str = "word"):
         channel = interaction.channel
         if channel.id in self.games:
             return await interaction.response.send_message(
                 embed=discord.Embed(description="このチャンネルでは既にNGワードが進行中です。", color=COLOR), ephemeral=True)
-        g = NGGame(channel.id, interaction.guild_id, interaction.user.id)
+        g = NGGame(channel.id, interaction.guild_id, interaction.user.id, minutes=minutes, mode=mode)
         g.players[interaction.user.id] = interaction.user
         self.games[channel.id] = g
         await interaction.response.send_message(
@@ -120,7 +154,7 @@ class NGWord(commands.Cog):
         try:
             embed = discord.Embed(
                 title="NGワード 参加者募集",
-                description=(f"{interaction.user.mention} さんが募集中です。\n"
+                description=(f"{interaction.user.mention} さんが募集中です。（{MODES[g.mode]}・{g.minutes}分）\n"
                              f"{RECRUIT_SECONDS}秒以内に「参加」を押してください（{MIN_PLAYERS}〜{MAX_PLAYERS}人）。"),
                 color=COLOR)
             await channel.send(embed=embed, view=JoinView(self, g))
@@ -140,18 +174,20 @@ class NGWord(commands.Cog):
         embed = discord.Embed(
             title="NGワード スタート！",
             description=(f"参加者: {names}\n\n"
+                         + ("一文字モード: NGは **ひらがな1文字** です。カタカナ・小さい文字（ゃ・っ）も同じ文字として数えます。\n"
+                            if g.mode == "char" else "") +
                          "一人ひとりに、本人だけが知らないNGワードが付きました。\n"
                          "ボタンで **自分以外の** NGワードを確認し、会話の中で相手に言わせましょう。\n"
-                         f"自分のNGワードを発言したら脱落です。制限時間は{GAME_SECONDS // 60}分、最後まで残った人の勝ち！"),
+                         f"自分のNGワードを発言したら脱落です。制限時間は{g.minutes}分、最後まで残った人の勝ち！"),
             color=COLOR)
         await channel.send(embed=embed, view=PlayView(self, g))
         elapsed = 0
-        while elapsed < GAME_SECONDS and len(g.alive) > 1:
+        while elapsed < g.seconds and len(g.alive) > 1:
             await asyncio.sleep(1)
             elapsed += 1
-            if elapsed % 60 == 0 and elapsed < GAME_SECONDS and len(g.alive) > 1:
+            if elapsed % 60 == 0 and elapsed < g.seconds and len(g.alive) > 1:
                 await channel.send(embed=discord.Embed(
-                    description=f"残り{(GAME_SECONDS - elapsed) // 60}分（生存 {len(g.alive)}人）", color=COLOR))
+                    description=f"残り{(g.seconds - elapsed) // 60}分（生存 {len(g.alive)}人）", color=COLOR))
         await self.finish(channel, g)
 
     async def finish(self, channel, g: NGGame):
@@ -177,7 +213,7 @@ class NGWord(commands.Cog):
         if uid not in g.players or uid in g.out:
             return False
         word = g.words[uid]
-        if not contains_ng(message.content, word):
+        if not g.hits(uid, message.content):
             return False
         g.out.append(uid)
         await message.channel.send(embed=discord.Embed(

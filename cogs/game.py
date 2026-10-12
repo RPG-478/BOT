@@ -118,6 +118,37 @@ class WordlistSelect(discord.ui.Select):
         await interaction.response.edit_message(view=self.view)
 
 
+# NGワードの設定（cogs/ngword.py の TIME_CHOICES / MODES と同じ値）
+NG_TIME_CHOICES = (3, 5, 10)
+NG_MODES = (("word", "ワードモード（NGは言葉）"), ("char", "一文字モード（NGはひらがな1文字）"))
+
+
+class NGTimeSelect(discord.ui.Select):
+    def __init__(self, selected: int):
+        options = [discord.SelectOption(label=f"制限時間: {m}分", value=str(m), default=(m == selected))
+                   for m in NG_TIME_CHOICES]
+        super().__init__(placeholder="制限時間", options=options, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.ng_minutes = int(self.values[0])
+        for option in self.options:
+            option.default = option.value == self.values[0]
+        await interaction.response.edit_message(view=self.view)
+
+
+class NGModeSelect(discord.ui.Select):
+    def __init__(self, selected: str):
+        options = [discord.SelectOption(label=label, value=value, default=(value == selected))
+                   for value, label in NG_MODES]
+        super().__init__(placeholder="モード", options=options, row=3)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.ng_mode = self.values[0]
+        for option in self.options:
+            option.default = option.value == self.values[0]
+        await interaction.response.edit_message(view=self.view)
+
+
 class GameDetailView(discord.ui.View):
     """ゲームを選んだ後の画面（ルール・募集する・戻る）"""
     def __init__(self, cog, game_id: str):
@@ -125,6 +156,10 @@ class GameDetailView(discord.ui.View):
         self.cog = cog
         self.game_id = game_id
         self.wordlist = "standard"
+        self.ng_minutes, self.ng_mode = 3, "word"
+        if game_id == "ngword":
+            self.add_item(NGTimeSelect(self.ng_minutes))
+            self.add_item(NGModeSelect(self.ng_mode))
         self.add_item(GameSelect(selected=game_id))
         if game_id == "wordwolf":
             self.add_item(WordlistSelect(self.wordlist))
@@ -137,7 +172,8 @@ class GameDetailView(discord.ui.View):
 
     @discord.ui.button(label="募集する", style=discord.ButtonStyle.success, row=2)
     async def recruit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.cog.start_game(interaction, self.game_id, wordlist=self.wordlist)
+        await self.cog.start_game(interaction, self.game_id, wordlist=self.wordlist,
+                                  ng_minutes=self.ng_minutes, ng_mode=self.ng_mode)
 
     @discord.ui.button(label="ランキング", style=discord.ButtonStyle.primary, row=2)
     async def ranking(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -164,6 +200,9 @@ class GameHub(commands.Cog):
             name = GAME_GUIDES[game_id]["name"]
             return await interaction.response.send_message(
                 embed=discord.Embed(description=f"{name} は現在利用できません。", color=HUB_COLOR), ephemeral=True)
+        if game_id == "ngword":
+            return await cog.start_recruit(interaction, minutes=options.get("ng_minutes") or 3,
+                                           mode=options.get("ng_mode") or "word")
         if game_id == "wordwolf":
             return await cog.start_recruit(interaction, options.get("wordlist") or "standard")
         return await cog.start_recruit(interaction)
