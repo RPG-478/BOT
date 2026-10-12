@@ -47,7 +47,7 @@ def hub_embed() -> discord.Embed:
         guide = GAME_GUIDES[game_id]
         embed.add_field(
             name=guide["name"],
-            value=f"{guide['summary']}\n👥 {guide['players']}　⏱ {guide['duration']}",
+            value=f"{guide['summary']}\n <:AGOMUNI:1490254579336613898>{guide['players']}　⏱ {guide['duration']}",
             inline=False,
         )
     return embed
