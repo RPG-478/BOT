@@ -4,17 +4,21 @@
 
 - Supabase のクライアントは同期なので、呼び出しはすべて ``asyncio.to_thread`` で行う。
 - 1 サーバーにつき 1 国（``nation_guilds.guild_id`` が主キー）。1 人が入れる国は 1 つだけ。
-- 空腹度の自然減少はフェーズ 3 で実装する（ここでは参加時に 100 で作るだけ）。
+- 空腹度は、国民がサーバーで発言すると 5 分に 1 回だけ 1 減る（0 で止まる）。
+- /setup で国づくりをオフにしたサーバーでは、建国・参加・空腹の減少をしない。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+import time
 
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+from core.guild_settings import nation_settings
 
 try:  # テストでは supabase.create_client が差し替えられる
     import supabase as supabase_module
@@ -33,6 +37,10 @@ FOUND_ERRORS = {
     "ALREADY_IN_NATION": ("建国できません", "あなたはすでに別の国に所属しています。"),
     "NO_FREE_TILE": ("建国できません", "首都を置ける空き地が見つかりませんでした。"),
 }
+HUNGER_INTERVAL = 300  # 発言で空腹が減る間隔（秒）。1 人につきこの間隔で 1 回だけ
+HUNGER_PER_MESSAGE = 1
+COIN_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Assets", "COIN.png")
+DISABLED_TEXT = "このサーバーは国づくりに参加しない設定です。管理者が `/setup` で変えられます。"
 COLOR_OK, COLOR_INFO, COLOR_ERROR = 0x2ecc71, 0x3498db, 0xe74c3c
 
 
@@ -60,6 +68,7 @@ class NationCog(commands.Cog):
         if self.supabase is None and supabase_module is not None:
             from core.supabase_client import create_client_from_env
             self.supabase = create_client_from_env()
+        self._last_drain: dict[str, float] = {}  # user_id -> 最後に空腹を減らした time.monotonic()
 
     nation_group = app_commands.Group(name="nation", description="国づくり（共有マップの国家経営）のコマンド一覧",
                                       guild_only=True)
@@ -96,14 +105,53 @@ class NationCog(commands.Cog):
         return row["capital_x"], row["capital_y"]
 
     @staticmethod
+    def _enabled(guild) -> bool:
+        try:
+            return bool(nation_settings(guild.id)["enabled"])
+        except Exception:  # noqa: BLE001 - 設定が読めないときは既定（参加する）
+            log.exception("nation_settings failed")
+            return True
+
+    async def drain_hunger(self, user_id: str, amount: int = HUNGER_PER_MESSAGE) -> bool:
+        """空腹を amount 減らす（nation_adjust）。国民でない・すでに 0 のときは何もしない。減らしたら True。"""
+        if self.supabase is None:
+            return False
+        try:
+            await asyncio.to_thread(lambda: self.supabase.rpc(
+                "nation_adjust", {"p_user_id": user_id, "p_coins_delta": 0, "p_hunger_delta": -amount}).execute())
+            return True
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            if "player not found" in msg or "insufficient hunger" in msg:
+                return False
+            log.warning("hunger drain failed: %s", msg)
+            return False
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot or message.guild is None:
+            return
+        uid, now = str(message.author.id), time.monotonic()
+        last = self._last_drain.get(uid)
+        if last is not None and now - last < HUNGER_INTERVAL:
+            return
+        if not self._enabled(message.guild):
+            return
+        self._last_drain[uid] = now
+        await self.drain_hunger(uid)
+
+    @staticmethod
     def _embed(title, text, color=COLOR_INFO):
         return discord.Embed(title=title, description=text, color=color)
 
-    async def _reply(self, interaction, embed, ephemeral=False):
+    async def _reply(self, interaction, embed, ephemeral=False, file=None):
+        kwargs = {"embed": embed, "ephemeral": ephemeral}
+        if file is not None:
+            kwargs["file"] = file
         if interaction.response.is_done():
-            await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+            await interaction.followup.send(**kwargs)
         else:
-            await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+            await interaction.response.send_message(**kwargs)
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         log.exception("nation command failed", exc_info=error)
@@ -123,6 +171,9 @@ class NationCog(commands.Cog):
         if not ((perms is not None and perms.administrator) or getattr(guild, "owner_id", None) == user.id):
             await self._reply(interaction, self._embed("建国できません", "建国できるのはサーバーの管理者かオーナーだけです。", COLOR_ERROR), ephemeral=True)
             return
+        if not self._enabled(guild):
+            await self._reply(interaction, self._embed("建国できません", DISABLED_TEXT, COLOR_ERROR), ephemeral=True)
+            return
         gid, uid = str(guild.id), str(user.id)
         try:
             x, y = await self._found_rpc(gid, uid)
@@ -139,6 +190,9 @@ class NationCog(commands.Cog):
 
     @nation_group.command(name="join", description="このサーバーの国に国民として参加します")
     async def join(self, interaction: discord.Interaction):
+        if not self._enabled(interaction.guild):
+            await self._reply(interaction, self._embed("参加できません", DISABLED_TEXT, COLOR_ERROR), ephemeral=True)
+            return
         gid, uid = str(interaction.guild.id), str(interaction.user.id)
         if not await self._nation(gid):
             await self._reply(interaction, self._embed("国がありません", "このサーバーにはまだ国がありません。管理者が `/nation found` で建国できます。"), ephemeral=True)
@@ -170,7 +224,12 @@ class NationCog(commands.Cog):
         embed.add_field(name="役職", value=ROLE_NAMES.get(player.get("role"), player.get("role") or "-"), inline=True)
         embed.add_field(name="所持金", value=f"{COIN} {balance if balance is not None else 0:,} AGO", inline=True)
         embed.add_field(name="空腹度", value=f"{hunger_bar(hunger)} {hunger}/{MAX_HUNGER}", inline=False)
-        await self._reply(interaction, embed, ephemeral=True)
+        embed.set_footer(text="空腹度はサーバーで発言すると少しずつ減ります")
+        file = None
+        if os.path.exists(COIN_PATH):
+            file = discord.File(COIN_PATH, filename="COIN.png")
+            embed.set_thumbnail(url="attachment://COIN.png")
+        await self._reply(interaction, embed, ephemeral=True, file=file)
 
 
 async def setup(bot: commands.Bot):
