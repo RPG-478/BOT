@@ -179,5 +179,29 @@ class TerminalCog(commands.Cog):
         )
         await ctx.send(embed=embed, view=TerminalView())
 
+    @commands.command(name="guild")
+    async def guild_list(self, ctx):
+        """Bot が入っているサーバーの名前を全部表示する（ALLOWED_USER_IDS の人だけ）。"""
+        if ctx.author.id not in ALLOWED_USER_IDS:
+            return
+        for chunk in guild_list_messages(self.bot.guilds):
+            await ctx.send(chunk, allowed_mentions=discord.AllowedMentions.none())
+
+
+def guild_list_messages(guilds, limit: int = 1900) -> list[str]:
+    """サーバー一覧を、Discord の 1 メッセージの文字数制限に収まるように分けて返す。"""
+    guilds = sorted(guilds, key=lambda g: (-(g.member_count or 0), g.name))
+    lines = [f"{i}. {g.name}（{g.member_count or 0} 人 / ID {g.id}）" for i, g in enumerate(guilds, 1)]
+    chunks, cur = [], f"導入サーバー: {len(guilds)} 件"
+    for line in lines:
+        if len(cur) + 1 + len(line) > limit:
+            chunks.append(cur)
+            cur = line
+        else:
+            cur += "\n" + line
+    chunks.append(cur)
+    return chunks
+
+
 async def setup(bot):
     await bot.add_cog(TerminalCog(bot))
