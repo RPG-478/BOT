@@ -46,6 +46,7 @@ OPTIONAL_COGS = {'judgement': 'needle'}
 
 SLASH_ARGUMENTS = {
     'send_panel': {'channel': 'CHANNEL', 'role': 'ROLE'},
+    'setup': {},
     'sync_category_perms': {'category': 'CATEGORY', 'role': 'ROLE'},
     'clear': {'amount': 1},
     'd1ping': {},
