@@ -53,7 +53,6 @@ SLASH_ARGUMENTS = {
     'dungeon_reset': {},
     'flash': {'count': 2, 'interval': 0.01, 'digits': 2},
     'game': {},
-    'generate': {'prompt': 'cat'},
     'chat': {},
     'guess': {'bet': 10, 'choice': 1},
     'kill': {},

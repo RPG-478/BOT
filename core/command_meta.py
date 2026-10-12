@@ -222,7 +222,6 @@ COMMAND_META: dict[str, dict] = {
     "!saito_stop": {"category": "voice", "summary": "!saito の通話を終了します"},
 
     # ---------------------------------------------------------------- おたのしみ・AI
-    "/generate": {"category": "fun"},
     "/zetamodoki": {"category": "fun"},
     "/zeta_reset": {"category": "fun"},
     "/flash": {"category": "fun"},
