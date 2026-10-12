@@ -202,36 +202,31 @@ class WalletCog(commands.Cog):
     @app_commands.command(name="leaderboard", description="コイン保有数のランキングを表示します。")
     async def leaderboard(self, interaction: discord.Interaction):
         await interaction.response.defer()
-
         try:
-            response = config.supabase.table("users").select("user_id", "balance").order("balance", descending=True).limit(10).execute()
-            data = response.data
-
+            response = await asyncio.to_thread(
+                lambda: config.supabase.table("users").select("user_id, balance")
+                .order("balance", desc=True).limit(10).execute())
+            data = response.data or []
             if not data:
-                await interaction.followup.send("ランキングデータが存在しません。")
+                await interaction.followup.send("まだランキングに載っている人がいません。")
                 return
 
-            embed = discord.Embed(title="コイン保有ランキング (TOP 10)", color=0xffffff)
-            
+            embed = discord.Embed(title="コイン保有ランキング（TOP 10）", color=0xf1c40f)
+            lines = []
             for index, record in enumerate(data, start=1):
-                user_id = record["user_id"]
-                balance = record["balance"]
-                
-                user = self.bot.get_user(int(user_id))
-                user_name = user.name if user else f"User({user_id})"
-                
-                embed.add_field(
-                    name=f"{index}位: {user_name}",
-                    value=f"{balance} AGO",
-                    inline=False
-                )
-
+                user_id = int(record["user_id"])
+                user = self.bot.get_user(user_id)
+                if user is None:
+                    try:
+                        user = await self.bot.fetch_user(user_id)
+                    except discord.HTTPException:
+                        user = None
+                name = user.display_name if user else f"<@{user_id}>"
+                lines.append(f"**{index}位** {name}：{int(record.get('balance') or 0):,} AGO")
+            embed.description = "\n".join(lines)
             await interaction.followup.send(embed=embed)
-
-        except Exception as e:
-            print("\n=== [LEADERBOARD ERROR START] ===")
+        except Exception:
             traceback.print_exc()
-            print("=== [LEADERBOARD ERROR END] ===\n")
             await interaction.followup.send("ランキングの取得中にエラーが発生しました。", ephemeral=True)
 
 async def setup(bot: commands.Bot):

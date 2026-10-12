@@ -24,3 +24,6 @@ create index if not exists idx_fujo_activities_user_detected
   on public.fujo_activities (user_id, detected_at desc);
 create index if not exists fujo_activities_detected_idx
   on public.fujo_activities (detected_at);
+
+-- Bot は anon キーでつなぐので、検知ログの id を採番する権限が必要です。
+grant usage, select on sequence public.fujo_activities_id_seq to anon, authenticated;
