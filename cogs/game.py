@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""/game: パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle・神経衰弱・ババ抜き）の入口。
+"""/game: パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle・神経衰弱・ババ抜き・大富豪）の入口。
 
 ゲームを選ぶと、人数の目安・所要時間と「ルール」「募集する」ボタンが出る。
 募集は各ゲームの cog の ``start_recruit(interaction)`` をそのまま呼ぶので、個別のコマンド
@@ -26,6 +26,7 @@ GAME_COGS = {
     "wordle": "Wordle",
     "shinkei": "Shinkei",
     "babanuki": "Babanuki",
+    "daifugo": "Daifugo",
 }
 
 # 勝利数を記録しているゲーム（ここだけ「ランキング」ボタンを出す）
@@ -214,7 +215,7 @@ class GameHub(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="game", description="パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle・神経衰弱・ババ抜き）のルール確認と募集")
+    @app_commands.command(name="game", description="パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle・神経衰弱・ババ抜き・大富豪）のルール確認と募集")
     async def game(self, interaction: discord.Interaction):
         await interaction.response.send_message(embed=hub_embed(), view=GameHubView(self), ephemeral=True)
 

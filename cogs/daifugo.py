@@ -1,0 +1,432 @@
+# -*- coding: utf-8 -*-
+"""大富豪: 場のカードより強いカードを同じ枚数で出していき、早く手札をなくした人ほど上の身分になる。
+
+- スラッシュコマンドは増やさず、/game の「大富豪」から募集する（GameHub が start_recruit を呼ぶ）。
+- 3〜6 人。足りないときは Bot が入る。絵文字は使わず、カードは "S5"・"HK"・"JOKER" のような文字で表す
+  （S=スペード H=ハート D=ダイヤ C=クラブ）。
+- 基本ルールだけ: 1 枚・2 枚（ペア）・3 枚・4 枚を同じ数字でそろえて出す。場と同じ枚数で、より強い数字だけ出せる。
+  強さは 3 が最弱、2 が最強、ジョーカーはさらに強い（ジョーカーは 1 枚出しだけ）。
+  ほかの全員がパスしたら場を流し、最後に出した人から（上がっていれば次の人から）。
+- 4 枚出しで革命（数字の強さが逆になる。ジョーカーはいつでも最強）。もう一度 4 枚出しで戻る。
+- 出すカードは「手札から出す」で本人にだけ見えるメニューから選ぶ。
+- 手番は 30 秒。時間切れは core/autoplay.take_idle_turn に「出せる手＋パス」を渡して代わりに進める。
+  代打ちがオフならパス（場が空で自分が親のときは一番弱いカードを出す）。
+- 結果は 大富豪・富豪・平民・貧民・大貧民。大富豪の勝利を core/party_ranking.py に記録する（人間 2 人以上のときだけ）。
+"""
+import asyncio
+import random
+
+import discord
+from discord.ext import commands
+
+from core import autoplay, party_ranking
+
+GAME_ID = "daifugo"
+party_ranking.register(GAME_ID)
+
+COLOR = 0xFFFFFF
+RECRUIT_SECONDS = 30
+TURN_SECONDS = 30
+BOT_SECONDS = 1
+MIN_PLAYERS = 3
+MAX_PLAYERS = 6
+BOT_IDS = (-1, -2)
+JOKER = "JOKER"
+PASS = "パス"
+SUITS = "SHDC"
+ORDER = ("3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A", "2")
+
+
+def make_deck() -> list:
+    return [s + r for s in SUITS for r in ORDER] + [JOKER]
+
+
+def rank(card: str) -> str:
+    return JOKER if card == JOKER else card[1:]
+
+
+def strength(r: str, revolution: bool = False) -> int:
+    """数字の強さ。ジョーカーは常に最強。"""
+    if r == JOKER:
+        return 100
+    i = ORDER.index(r)
+    return len(ORDER) - 1 - i if revolution else i
+
+
+def sort_hand(hand: list) -> list:
+    return sorted(hand, key=lambda c: (strength(rank(c)), c))
+
+
+def label(play) -> str:
+    return PASS if play == PASS else " ".join(play)
+
+
+def legal_plays(hand: list, table, revolution: bool) -> list:
+    """出せる手（カードのタプル）の一覧。弱い順。table は場の手（なければ None）。"""
+    groups = {}
+    for c in sort_hand(hand):
+        groups.setdefault(rank(c), []).append(c)
+    plays = []
+    for r, cards in groups.items():
+        sizes = [1] if r == JOKER else range(1, len(cards) + 1)
+        for n in sizes:
+            plays.append(tuple(cards[:n]))
+    if table:
+        need, top = len(table), strength(rank(table[0]), revolution)
+        plays = [p for p in plays if len(p) == need and strength(rank(p[0]), revolution) > top]
+    return sorted(plays, key=lambda p: (len(p), strength(rank(p[0]), revolution), p))
+
+
+def titles(n: int) -> list:
+    """上がった順の身分。"""
+    if n <= 1:
+        return ["大富豪"][:n]
+    if n == 2:
+        return ["大富豪", "大貧民"]
+    if n == 3:
+        return ["大富豪", "平民", "大貧民"]
+    return ["大富豪", "富豪"] + ["平民"] * (n - 4) + ["貧民", "大貧民"]
+
+
+class DaifugoGame:
+    def __init__(self, channel_id, guild_id, host_id):
+        self.channel_id, self.guild_id, self.host_id = channel_id, guild_id, host_id
+        self.players: dict = {}      # user_id -> member（参加順。Bot は負の id で None）
+        self.hands: dict = {}
+        self.finished: list = []
+        self.phase = "recruit"       # recruit / playing / done
+        self.turn = None             # 手番の id
+        self.table = None            # 場のカード（タプル）
+        self.last_player = None      # 場に最後に出した人
+        self.passed: set = set()
+        self.revolution = False
+        self.acted = False           # この手番で行動した
+        self.cleared = False         # 直前の行動で場が流れた
+
+    def is_bot(self, uid) -> bool:
+        return uid in BOT_IDS
+
+    def name(self, uid) -> str:
+        return f"Bot{-uid}" if self.is_bot(uid) else self.players[uid].mention
+
+    @property
+    def active(self) -> list:
+        return [u for u in self.players if self.hands.get(u)]
+
+    def next_active(self, uid):
+        order = list(self.players)
+        i = order.index(uid)
+        for k in range(1, len(order) + 1):
+            other = order[(i + k) % len(order)]
+            if self.hands.get(other):
+                return other
+        return None
+
+    def start(self, rng=random):
+        deck = make_deck()
+        rng.shuffle(deck)
+        ids = list(self.players)
+        self.hands = {u: [] for u in ids}
+        for i, c in enumerate(deck):
+            self.hands[ids[i % len(ids)]].append(c)
+        for u in ids:
+            self.hands[u] = sort_hand(self.hands[u])
+        holder = next(u for u in ids if "D3" in self.hands[u])   # ダイヤの 3 を持つ人から
+        self.turn = holder
+        self.phase = "playing"
+
+    def legal(self, uid) -> list:
+        return legal_plays(self.hands[uid], self.table, self.revolution)
+
+    def can_play(self, uid, cards) -> bool:
+        """手札にあるカードで、出せる手と同じ数字・同じ枚数か（スートの選び方は問わない）。"""
+        hand = list(self.hands.get(uid, []))
+        for c in cards:
+            if c not in hand:
+                return False
+            hand.remove(c)
+        if not cards or len({rank(c) for c in cards}) != 1:
+            return False
+        return any(len(p) == len(cards) and rank(p[0]) == rank(cards[0]) for p in self.legal(uid))
+
+    def play(self, uid, cards) -> str:
+        """カードを出す。結果: "ok" / "revolution" / "invalid"。"""
+        cards = tuple(cards)
+        if self.phase != "playing" or uid != self.turn or not self.can_play(uid, cards):
+            return "invalid"
+        for c in cards:
+            self.hands[uid].remove(c)
+        self.table, self.last_player = cards, uid
+        self.passed = set()
+        result = "ok"
+        if len(cards) == 4:
+            self.revolution = not self.revolution
+            result = "revolution"
+        if not self.hands[uid]:
+            self.finished.append(uid)
+        self._advance(uid)
+        return result
+
+    def pass_turn(self, uid) -> bool:
+        if self.phase != "playing" or uid != self.turn or self.table is None:
+            return False
+        self.passed.add(uid)
+        self._advance(uid)
+        return True
+
+    def _advance(self, uid):
+        """次の手番を決める。ほかの全員がパスしたら場を流す。"""
+        active = self.active
+        if len(active) <= 1:
+            if active:
+                self.finished.append(active[0])
+                self.hands[active[0]] = []
+            self.phase = "done"
+            self.turn = None
+            return
+        others = [u for u in active if u != self.last_player]
+        if self.table is not None and all(u in self.passed for u in others):
+            self.table, self.passed = None, set()
+            lead = self.last_player if self.hands.get(self.last_player) else self.next_active(self.last_player)
+            self.turn = lead
+            self.cleared = True
+            return
+        self.cleared = False
+        self.turn = self.next_active(uid)
+
+    def results(self) -> list:
+        return list(zip(self.finished, titles(len(self.finished))))
+
+
+def table_text(g: DaifugoGame) -> str:
+    table = label(g.table) if g.table else "（なし）"
+    return f"場: {table}" + ("　【革命中】" if g.revolution else "")
+
+
+class JoinView(discord.ui.View):
+    def __init__(self, cog, game: DaifugoGame):
+        super().__init__(timeout=RECRUIT_SECONDS + 30)
+        self.cog, self.game = cog, game
+
+    @discord.ui.button(label="参加", style=discord.ButtonStyle.success)
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        g = self.game
+        if g.phase != "recruit":
+            return await interaction.response.send_message("募集は終わりました。", ephemeral=True)
+        if interaction.user.id in g.players:
+            return await interaction.response.send_message("もう参加しています。", ephemeral=True)
+        if len(g.players) >= MAX_PLAYERS:
+            return await interaction.response.send_message(f"定員（{MAX_PLAYERS}人）に達しました。", ephemeral=True)
+        g.players[interaction.user.id] = interaction.user
+        await interaction.response.send_message(f"参加しました（{len(g.players)}人）。", ephemeral=True)
+
+    @discord.ui.button(label="抜ける", style=discord.ButtonStyle.secondary)
+    async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
+        g = self.game
+        if g.phase != "recruit" or interaction.user.id not in g.players:
+            return await interaction.response.send_message("抜けられる募集がありません。", ephemeral=True)
+        if interaction.user.id == g.host_id:
+            return await interaction.response.send_message("募集した人は抜けられません。", ephemeral=True)
+        del g.players[interaction.user.id]
+        await interaction.response.send_message("参加をやめました。", ephemeral=True)
+
+
+class PlaySelect(discord.ui.Select):
+    def __init__(self, cog, game: DaifugoGame, plays: list):
+        options = [discord.SelectOption(label=label(p)[:100], value=str(i)) for i, p in enumerate(plays[:25])]
+        super().__init__(placeholder="出すカードを選ぶ", options=options)
+        self.cog, self.game, self.plays = cog, game, plays
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.cog.on_play(interaction, self.game, self.plays[int(self.values[0])])
+
+
+class PlayView(discord.ui.View):
+    """本人にだけ見える、出す手を選ぶメニュー。"""
+    def __init__(self, cog, game, plays):
+        super().__init__(timeout=TURN_SECONDS + 30)
+        self.add_item(PlaySelect(cog, game, plays))
+
+
+class TurnView(discord.ui.View):
+    def __init__(self, cog, game: DaifugoGame):
+        super().__init__(timeout=TURN_SECONDS + 30)
+        self.cog, self.game = cog, game
+
+    @discord.ui.button(label="手札から出す", style=discord.ButtonStyle.success)
+    async def open_hand(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.open_hand(interaction, self.game)
+
+    @discord.ui.button(label="パス", style=discord.ButtonStyle.secondary)
+    async def pass_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.on_pass(interaction, self.game)
+
+    @discord.ui.button(label="手札を見る", style=discord.ButtonStyle.secondary)
+    async def show(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.show_hand(interaction, self.game)
+
+
+class Daifugo(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.games: dict = {}   # channel_id -> DaifugoGame
+
+    async def start_recruit(self, interaction: discord.Interaction):
+        channel = interaction.channel
+        if channel.id in self.games:
+            return await interaction.response.send_message(
+                embed=discord.Embed(description="このチャンネルでは既に大富豪が進行中です。", color=COLOR),
+                ephemeral=True)
+        g = DaifugoGame(channel.id, interaction.guild_id, interaction.user.id)
+        g.players[interaction.user.id] = interaction.user
+        self.games[channel.id] = g
+        await interaction.response.send_message(
+            embed=discord.Embed(description=f"大富豪の募集を開始しました（{RECRUIT_SECONDS}秒）。", color=COLOR),
+            ephemeral=True)
+        try:
+            await channel.send(embed=discord.Embed(
+                title="大富豪 参加者募集",
+                description=(f"{interaction.user.mention} さんが募集中です。\n"
+                             f"{RECRUIT_SECONDS}秒以内に「参加」を押してください（{MIN_PLAYERS}〜{MAX_PLAYERS}人）。\n"
+                             f"{MIN_PLAYERS}人に足りないときは Bot が入ります。"),
+                color=COLOR), view=JoinView(self, g))
+            await asyncio.sleep(RECRUIT_SECONDS)
+            await self.run_game(channel, g)
+        finally:
+            g.phase = "done"
+            self.games.pop(channel.id, None)
+
+    def counts_text(self, g: DaifugoGame) -> str:
+        return "\n".join(f"{g.name(u)}: {len(g.hands.get(u, []))}枚" + ("（上がり）" if u in g.finished else "")
+                         for u in g.players)
+
+    async def run_game(self, channel, g: DaifugoGame, rng=random):
+        for bot_id in BOT_IDS:
+            if len(g.players) >= MIN_PLAYERS:
+                break
+            g.players[bot_id] = None
+        g.start(rng)
+        await channel.send(embed=discord.Embed(
+            title="大富豪 スタート！",
+            description=("カードを配りました。ダイヤの3を持っている人からです。\n"
+                         "自分の番に「手札から出す」で出すカードを選ぶか、「パス」を押してください。\n\n"
+                         + self.counts_text(g)),
+            color=COLOR))
+        while g.phase == "playing":
+            await self.play_turn(channel, g, rng)
+        await self.finish(channel, g)
+
+    async def play_turn(self, channel, g: DaifugoGame, rng=random):
+        uid = g.turn
+        g.acted = False
+        await channel.send(embed=discord.Embed(
+            description=(f"{g.name(uid)} さんの番です（{TURN_SECONDS}秒）。\n{table_text(g)}\n\n{self.counts_text(g)}"),
+            color=COLOR), view=TurnView(self, g))
+        if g.is_bot(uid):
+            await asyncio.sleep(BOT_SECONDS)
+            plays = g.legal(uid)
+            return await self.apply(channel, g, uid, plays[0] if plays else PASS)
+        elapsed = 0
+        while not g.acted and elapsed < TURN_SECONDS and g.phase == "playing":
+            await asyncio.sleep(1)
+            elapsed += 1
+        if not g.acted and g.phase == "playing":
+            await self.idle_turn(channel, g, uid)
+
+    async def idle_turn(self, channel, g: DaifugoGame, uid):
+        member = g.players[uid]
+        plays = g.legal(uid)
+        options = [label(p) for p in plays] + ([PASS] if g.table is not None else [])
+        result = await autoplay.take_idle_turn(
+            None, guild_id=g.guild_id, player_name=member.display_name,
+            state={"game": "大富豪", "hand": list(g.hands[uid]), "table": label(g.table) if g.table else None,
+                   "revolution": g.revolution},
+            legal_actions=options,
+            instructions="大富豪で、出すカード（またはパス）を 1 つ選んでください",
+            describe=lambda a: "パス" if a == PASS else f"{a} を出",
+            fallback=PASS if g.table is not None else options[0])
+        if result is not None and result.action is not None:
+            action = result.action
+            notice = result.notice.lstrip("⏰").strip()      # 絵文字を外して自分で送る
+        else:
+            action = PASS if g.table is not None else options[0]
+            notice = (f"{member.display_name}さんが時間切れのため、"
+                      + ("パスしました" if action == PASS else f"{action} を出しました"))
+        await channel.send(embed=discord.Embed(description=notice, color=COLOR))
+        play = PASS if action == PASS else plays[[label(p) for p in plays].index(action)]
+        await self.apply(channel, g, uid, play)
+
+    async def apply(self, channel, g: DaifugoGame, uid, play):
+        g.acted = True
+        if play == PASS:
+            g.pass_turn(uid)
+            lines = [f"{g.name(uid)} さんはパス。"]
+        else:
+            result = g.play(uid, play)
+            lines = [f"{g.name(uid)} さんが {label(play)} を出しました。"]
+            if result == "revolution":
+                lines.append("革命！ 数字の強さが逆になります。" if g.revolution else "革命返し！ 強さが元に戻ります。")
+            if uid in g.finished:
+                lines.append(f"{g.name(uid)} さんが上がりました（{g.finished.index(uid) + 1}番目）。")
+        if getattr(g, "cleared", False) and g.phase == "playing":
+            lines.append(f"全員パスしたので場を流します。次は {g.name(g.turn)} さんから。")
+        await channel.send(embed=discord.Embed(description="\n".join(lines), color=COLOR))
+
+    def _check_turn(self, interaction, g: DaifugoGame):
+        if g.phase != "playing":
+            return "このゲームは終わりました。"
+        if interaction.user.id != g.turn or g.acted:
+            return "あなたの番ではありません。"
+        return None
+
+    async def open_hand(self, interaction: discord.Interaction, g: DaifugoGame):
+        error = self._check_turn(interaction, g)
+        if error:
+            return await interaction.response.send_message(error, ephemeral=True)
+        plays = g.legal(interaction.user.id)
+        hand = " ".join(g.hands[interaction.user.id])
+        if not plays:
+            return await interaction.response.send_message(
+                f"出せるカードがありません。パスしてください。\nあなたの手札: {hand}", ephemeral=True)
+        await interaction.response.send_message(f"{table_text(g)}\nあなたの手札: {hand}",
+                                                view=PlayView(self, g, plays), ephemeral=True)
+
+    async def on_play(self, interaction: discord.Interaction, g: DaifugoGame, play):
+        error = self._check_turn(interaction, g)
+        if error:
+            return await interaction.response.send_message(error, ephemeral=True)
+        if not g.can_play(interaction.user.id, tuple(play)):
+            return await interaction.response.send_message("その手はもう出せません。", ephemeral=True)
+        await interaction.response.send_message(f"{label(play)} を出しました。", ephemeral=True)
+        await self.apply(interaction.channel, g, interaction.user.id, tuple(play))
+
+    async def on_pass(self, interaction: discord.Interaction, g: DaifugoGame):
+        error = self._check_turn(interaction, g)
+        if error:
+            return await interaction.response.send_message(error, ephemeral=True)
+        if g.table is None:
+            return await interaction.response.send_message("場にカードがないので、パスはできません。", ephemeral=True)
+        await interaction.response.send_message("パスしました。", ephemeral=True)
+        await self.apply(interaction.channel, g, interaction.user.id, PASS)
+
+    async def show_hand(self, interaction: discord.Interaction, g: DaifugoGame):
+        uid = interaction.user.id
+        if uid not in g.players:
+            return await interaction.response.send_message("このゲームに参加していません。", ephemeral=True)
+        hand = " ".join(sort_hand(g.hands.get(uid, []))) or "なし（上がり）"
+        await interaction.response.send_message(f"あなたの手札: {hand}", ephemeral=True)
+
+    async def finish(self, channel, g: DaifugoGame):
+        g.phase = "done"
+        results = g.results()
+        humans = [u for u in g.players if not g.is_bot(u)]
+        if results and len(humans) >= 2 and not g.is_bot(results[0][0]):
+            await party_ranking.shared().record_win(g.guild_id, results[0][0], GAME_ID)
+        text = "\n".join(f"{t}: {g.name(u)}" for u, t in results) or "（なし）"
+        if len(humans) < 2:
+            text += "\n（人間が2人以上いないゲームはランキングに数えません）"
+        await channel.send(embed=discord.Embed(title="大富豪 終了", description=text, color=COLOR))
+
+
+async def setup(bot):
+    await bot.add_cog(Daifugo(bot))
