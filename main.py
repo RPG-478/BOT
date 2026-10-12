@@ -9,14 +9,11 @@ import defining as df
 from keep_alive import keep_alive
 import logging
 from collections import deque
-from supabase import create_client, Client
 
-SUPABASE_URL = os.getenv('SUPABASE_URL')
-# Botは公開可能なSupabaseキーのみを使用する。サービスロールキーは使用しない。
-SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise RuntimeError('SUPABASE_URL と SUPABASE_KEY（公開キー）を設定してください。')
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Supabase クライアントは config（core/supabase_client.py）で作った 1 つを共有する。
+supabase = config.supabase
+if supabase is None:
+    raise RuntimeError('SUPABASE_URL と SUPABASE_KEYを設定してください。')
 
 NOTIFY_CHANNEL_ID = 1513038883787505764
 DEBUG_CHANNEL_ID = 1407389497016193177

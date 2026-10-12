@@ -8,12 +8,11 @@ from discord.ext import commands
 import math
 
 import config
-from supabase import create_client, Client
 
 # ======================================================
-#  Supabase クライアント（config.py に SUPABASE_URL / SUPABASE_KEY を定義）
+#  Supabase クライアント（config.supabase を共有）
 # ======================================================
-supabase: Client = create_client(config.SUPABASE_URL, config.SUPABASE_KEY)
+supabase = config.supabase  # core/supabase_client.py の共有クライアント
 RATINGS_TABLE = "jinrou_ratings"
 
 # ======================================================
