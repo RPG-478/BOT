@@ -21,6 +21,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link href="/">ホーム</Link>
             <Link href="/commands">コマンド</Link>
             <Link href="/games">ゲーム</Link>
+            <Link href="/jinrou/roles">人狼図鑑</Link>
             <Link href="/ranking">ランキング</Link>
             <Link href="/nation">国づくり</Link>
             <Link href="/map">マップ</Link>

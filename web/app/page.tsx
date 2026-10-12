@@ -36,6 +36,14 @@ export default function Home() {
           <div className="muted">1 つの共有マップで、サーバーごとに国をつくります。<code>/nation found</code> で建国、<code>/nation join</code> で参加。遊び方を見る →</div>
         </div>
       </Link>
+      <h2>人狼 役職図鑑</h2>
+      <Link href="/jinrou/roles" className="card game-card">
+        <img src="/img/jinrou/jinrou.png" alt="人狼" />
+        <div>
+          <strong>人狼の役職をイラストつきで紹介</strong>
+          <div className="muted">陣営・能力・勝ち方を役職ごとに見られます。はじめての人は遊ぶ前にどうぞ。図鑑を見る →</div>
+        </div>
+      </Link>
       <h2>できること</h2>
       <div className="grid">
         {catalog.categories.map((category) => (
