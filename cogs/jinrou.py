@@ -525,6 +525,13 @@ class JinrouCog(commands.Cog):
         app_commands.Choice(name="グローバルモード", value="global")
     ])
     async def jinrou(self, interaction: discord.Interaction, mode: str = "local"):
+        await self.open_setup(interaction, mode)
+
+    async def start_recruit(self, interaction: discord.Interaction):
+        """/game のハブから呼ぶ。このチャンネルでローカルモードの設定パネルを出す（グローバルモードは扱わない）。"""
+        await self.open_setup(interaction, "local")
+
+    async def open_setup(self, interaction: discord.Interaction, mode: str = "local"):
         # 追加
         if mode == "global":
             game = self.games.get("global")

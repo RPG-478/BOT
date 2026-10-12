@@ -184,6 +184,7 @@ class Doubt(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.games = {}
+        self.recruiting = set()  # 募集中のチャンネル（同じチャンネルで募集が重ならないように）
 
     async def send_main_screen(self, channel, game):
         if game.last_panel_msg:
@@ -226,16 +227,31 @@ class Doubt(commands.Cog):
 
     @commands.command(name="doubt")
     async def start_game(self, ctx):
-        if ctx.channel.id in self.games:
+        if ctx.channel.id in self.games or ctx.channel.id in self.recruiting:
             return await ctx.send(embed=we("このチャンネルでは既にダウトが進行中です。"))
-        view = DoubtJoinView(ctx.author.id)
+        await self._recruit(ctx.channel, ctx.author.id)
+
+    async def start_recruit(self, interaction: discord.Interaction):
+        """/game のハブから呼ぶ。interaction にはまだ応答していないこと。"""
+        channel = interaction.channel
+        if channel.id in self.games or channel.id in self.recruiting:
+            return await interaction.response.send_message(embed=we("このチャンネルでは既にダウトが進行中です。"), ephemeral=True)
+        await interaction.response.send_message(embed=we("ダウトの募集を開始しました。"), ephemeral=True)
+        await self._recruit(channel, interaction.user.id)
+
+    async def _recruit(self, channel, host_id):
+        view = DoubtJoinView(host_id)
         embed = discord.Embed(
             title="ダウト参加者募集", 
             description="ボタンを押して参加してください\n**3名以上で開始します**（募集時間: 60秒）", 
             color=0xFFFFFF
         )
-        view.message = await ctx.send(embed=embed, view=view)
-        await self.start_from_hub(ctx.channel, view.players, join_view=view)
+        self.recruiting.add(channel.id)
+        try:
+            view.message = await channel.send(embed=embed, view=view)
+            await self.start_from_hub(channel, view.players, join_view=view)
+        finally:
+            self.recruiting.discard(channel.id)
 
     @commands.Cog.listener()
     async def on_message(self, message):
