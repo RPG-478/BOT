@@ -1535,11 +1535,6 @@ class VoiceCog(commands.Cog):
             self._load_playlist_in_background(ctx, tracks, label, status_message)
         )
 
-    @commands.Cog.listener()
-    async def on_command_error(self, ctx, error):
-        logging.exception("Command error")
-        await ctx.send(embed=we(f"エラー: {error}"))
-    
     async def get_duration(self, url):
         try:
             cmd = [
