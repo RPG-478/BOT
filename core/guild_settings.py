@@ -128,3 +128,23 @@ def nation_should_notify(guild_id: int, *, major: bool) -> Optional[int]:
     if not major and s["notify"] != NOTIFY_ALL:
         return None
     return s["channel_id"]
+
+
+# ---------------------------------------------------------------- 放置したプレイヤーの代打ち（core/autoplay.py）
+AUTOPLAY_SECTION = "autoplay"
+AUTOPLAY_DEFAULTS = {"enabled": True}
+
+
+def autoplay_enabled(guild_id: Optional[int]) -> bool:
+    """このサーバーで放置したプレイヤーの番を代わりに進めるか（既定はオン）。
+
+    切り替え: ``await get_store().update(guild_id, AUTOPLAY_SECTION, enabled=False)``
+    """
+    if guild_id is None:
+        return AUTOPLAY_DEFAULTS["enabled"]
+    try:
+        raw = get_store().get(guild_id, AUTOPLAY_SECTION)
+    except Exception:
+        return AUTOPLAY_DEFAULTS["enabled"]
+    value = raw.get("enabled")
+    return value if isinstance(value, bool) else AUTOPLAY_DEFAULTS["enabled"]
