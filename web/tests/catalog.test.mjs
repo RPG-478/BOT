@@ -1,0 +1,31 @@
+// commands.json（とサンプル）が、サイトが期待する形になっているかを確かめる
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+
+const dataDir = path.join(import.meta.dirname, "..", "data");
+const files = ["commands.sample.json", "commands.json"].filter((f) => fs.existsSync(path.join(dataDir, f)));
+
+for (const file of files) {
+  test(`${file} の形`, () => {
+    const data = JSON.parse(fs.readFileSync(path.join(dataDir, file), "utf8"));
+    assert.ok(Array.isArray(data.categories) && data.categories.length > 0);
+    assert.ok(Array.isArray(data.commands));
+    const ids = new Set(data.categories.map((c) => c.id));
+    for (const c of data.categories) {
+      assert.equal(typeof c.label, "string");
+      assert.equal(typeof c.description, "string");
+    }
+    const seen = new Set();
+    for (const cmd of data.commands) {
+      assert.ok(["slash", "prefix"].includes(cmd.kind), `${cmd.name}: kind`);
+      assert.ok(ids.has(cmd.category), `${cmd.name}: 未定義のカテゴリ ${cmd.category}`);
+      assert.equal(typeof cmd.summary, "string");
+      assert.ok(Array.isArray(cmd.options) && Array.isArray(cmd.permissions) && Array.isArray(cmd.aliases));
+      const key = `${cmd.kind}:${cmd.name}`;
+      assert.ok(!seen.has(key), `重複: ${key}`);
+      seen.add(key);
+    }
+  });
+}
