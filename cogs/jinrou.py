@@ -5,6 +5,10 @@ import os
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+from core import party_ranking
+
+party_ranking.register("jinrou")
 import math
 
 import config
@@ -963,6 +967,7 @@ class JinrouCog(commands.Cog):
         if not wolves_alive:
             await game.game_channel.send("人狼全滅。村人陣営の勝利です。")
             await self._check_koumorimuni_win(game)
+            await self._record_team_win(game, winner_is_wolf=False)
             await self._process_elo_ratings(game, winner_is_wolf=False)
             game.is_running = False
             return True
@@ -982,11 +987,48 @@ class JinrouCog(commands.Cog):
         if len(wolves) >= len(non_wolves):
             await game.game_channel.send("人狼が支配した。人狼陣営の勝利です。")
             await self._check_koumorimuni_win(game)
+            await self._record_team_win(game, winner_is_wolf=True)
             await self._process_elo_ratings(game, winner_is_wolf=True)
             game.is_running = False
             return True
 
         return False
+
+    # ランキング（core/party_ranking.py）
+    # - 村人・人狼の勝ち: 勝った陣営の参加者全員（死んだ人も含む）に 1 勝。陣営の分け方は Elo と同じ
+    #   （人狼・デカ狼・狂人・狂信者・野良のワンころが人狼側、それ以外が村人側）
+    # - ハゲ・コウモリむには勝ち方が別なので陣営の勝ちには入れない。ハゲは追放されたとき、
+    #   コウモリむには陣営の勝負がついたときに生き残っていれば、その人だけ 1 勝
+    async def _record_wins(self, game, user_ids):
+        guild = getattr(getattr(game, "game_channel", None), "guild", None)
+        if guild is None:
+            return
+        for uid in dict.fromkeys(user_ids):
+            await party_ranking.shared().record_win(guild.id, uid, "jinrou")
+
+    async def _record_team_win(self, game, winner_is_wolf: bool):
+        alive_ids = {p.id for p in game.alive_players}
+
+        def is_wolf_side(p_id):
+            r = game.roles.get(p_id)
+            if r in ["人狼", "デカ狼", "狂人", "狂信者"]: return True
+            if r == "ワンころ":
+                owner_id = game.wan_owner.get(p_id)
+                if owner_id is None or owner_id not in alive_ids: return True
+            return False
+
+        winners = []
+        for p in game.players:
+            role = game.roles.get(p.id)
+            if role == "ハゲ":
+                continue
+            if role == "コウモリむに":
+                if p.id in alive_ids:
+                    winners.append(p.id)
+                continue
+            if is_wolf_side(p.id) == winner_is_wolf:
+                winners.append(p.id)
+        await self._record_wins(game, winners)
 
     async def _check_koumorimuni_win(self, game):
         koumoris = [p for p in game.alive_players if game.roles.get(p.id) == "コウモリむに"]
@@ -1126,6 +1168,7 @@ class JinrouCog(commands.Cog):
         executed_role = game.roles.get(actual_target_id)
         if executed_role == "ハゲ":
             await game.game_channel.send("<:f8cc0b1b5e501838:1491033609929490492>ハゲが追放された。ハゲの勝利です。")
+            await self._record_wins(game, [actual_target_id])
             game.is_running = False
             return
         elif executed_role == "コウモリむに":
@@ -1205,6 +1248,7 @@ class JinrouCog(commands.Cog):
         executed_role = game.roles.get(actual_target_id)
         if executed_role == "ハゲ":
             await game.game_channel.send("<:f8cc0b1b5e501838:1491033609929490492>ハゲが追放された。ハゲの勝利です。")
+            await self._record_wins(game, [actual_target_id])
             game.is_running = False
             return
         elif executed_role == "コウモリむに":
