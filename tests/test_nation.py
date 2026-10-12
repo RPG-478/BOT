@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+import types
 import unittest
 from pathlib import Path
 
@@ -17,13 +18,25 @@ from discord.ext import commands  # noqa: E402
 from cogs import nation as nation_module  # noqa: E402
 
 
+class NationFakeSupabase(FakeSupabase):
+    """呼ばれた rpc を記録する。nation_found の再現は tests/test_all_commands.py の FakeSupabase にある。"""
+
+    def __init__(self):
+        super().__init__()
+        self.rpc_calls = []
+
+    def rpc(self, name, params=None, **kwargs):
+        self.rpc_calls.append((name, params))
+        return super().rpc(name, params, **kwargs)
+
+
 def run(coro):
     return asyncio.run(coro)
 
 
 class NationTest(unittest.TestCase):
     def setUp(self):
-        self.db = FakeSupabase()
+        self.db = NationFakeSupabase()
         self.bot = commands.Bot(command_prefix='!', intents=discord.Intents.none())
         self.bot.supabase = self.db
         self.cog = nation_module.NationCog(self.bot)
@@ -66,6 +79,46 @@ class NationTest(unittest.TestCase):
         g = self.rows('nation_guilds')[0]
         self.assertNotEqual((g['capital_x'], g['capital_y']), (0, 0))
         self.assertLessEqual(max(abs(g['capital_x']), abs(g['capital_y'])), 1)
+
+    def test_found_uses_single_rpc(self):
+        self.call('found')
+        self.assertEqual(self.db.rpc_calls, [('nation_found', {'p_guild_id': '55', 'p_user_id': str(USER_ID)})])
+
+    def test_found_maps_rpc_errors_to_japanese(self):
+        for code, title in (('ALREADY_IN_NATION', '建国できません'), ('NO_FREE_TILE', '建国できません'),
+                            ('NATION_EXISTS', '建国済み')):
+            class Failing(NationFakeSupabase):
+                def rpc(self, name, params=None, **kwargs):
+                    def execute(code=code):
+                        raise RuntimeError(f"{{'message': '{code}: x', 'code': 'P0001'}}")
+                    return types.SimpleNamespace(execute=execute)
+            self.cog.supabase = Failing()
+            sent = self.call('found')
+            self.assertEqual(sent[0]['embed'].title, title, code)
+            self.assertTrue(sent[0]['ephemeral'])
+
+    def test_found_refuses_member_of_other_nation(self):
+        self.db.table('nation_players').insert({'user_id': str(USER_ID), 'guild_id': '999', 'role': 'citizen', 'hunger': 50}).execute()
+        sent = self.call('found')
+        self.assertIn('別の国', sent[0]['embed'].description)
+        self.assertEqual(self.rows('nation_guilds'), [])
+
+    def test_found_unknown_error_propagates(self):
+        class Down(NationFakeSupabase):
+            def rpc(self, name, params=None, **kwargs):
+                def execute():
+                    raise RuntimeError('connection reset')
+                return types.SimpleNamespace(execute=execute)
+        self.cog.supabase = Down()
+        with self.assertRaises(RuntimeError):
+            self.call('found')
+
+    def test_sql_file_defines_function_and_grant(self):
+        sql = (ROOT / 'docs' / 'sql' / 'nation_found.sql').read_text(encoding='utf-8')
+        for needle in ('function public.nation_found(', 'pg_advisory_xact_lock', 'unique_violation',
+                       'NATION_EXISTS', 'ALREADY_IN_NATION', 'NO_FREE_TILE',
+                       'grant execute on function public.nation_found(text, text) to anon, authenticated'):
+            self.assertIn(needle, sql)
 
     def test_found_requires_admin_or_owner(self):
         sent = self.call('found', admin=False)

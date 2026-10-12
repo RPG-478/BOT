@@ -25,8 +25,14 @@ log = logging.getLogger(__name__)
 
 COIN = "🪙"
 MAX_HUNGER = 100
-SEARCH_RADIUS = 50  # 首都を置く空きマスを原点からこの距離まで探す
+SEARCH_RADIUS = 50  # 首都を置く空きマスを原点からこの距離まで探す（nation_found.sql と同じ）
 ROLE_NAMES = {"king": "国王", "minister": "大臣", "citizen": "国民"}
+# nation_found（SQL）が投げるエラーの目印 → 返信のタイトルと本文
+FOUND_ERRORS = {
+    "NATION_EXISTS": ("建国済み", "このサーバーの国はもうあります。`/nation status` で確認できます。"),
+    "ALREADY_IN_NATION": ("建国できません", "あなたはすでに別の国に所属しています。"),
+    "NO_FREE_TILE": ("建国できません", "首都を置ける空き地が見つかりませんでした。"),
+}
 COLOR_OK, COLOR_INFO, COLOR_ERROR = 0x2ecc71, 0x3498db, 0xe74c3c
 
 
@@ -54,7 +60,6 @@ class NationCog(commands.Cog):
         if self.supabase is None and supabase_module is not None:
             url, key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
             self.supabase = supabase_module.create_client(url, key) if url and key else None
-        self._found_lock = asyncio.Lock()
 
     nation_group = app_commands.Group(name="nation", description="国づくり（共有マップの国家経営）のコマンド一覧",
                                       guild_only=True)
@@ -78,12 +83,17 @@ class NationCog(commands.Cog):
         rows = await self._run(lambda: self.supabase.table("users").select("balance").eq("user_id", user_id))
         return (rows[0].get("balance") or 0) if rows else None
 
-    async def _free_spot(self):
-        r = SEARCH_RADIUS
-        taken = await self._run(lambda: self.supabase.table("nation_tiles").select("x, y")
-                                .gte("x", -r).lte("x", r).gte("y", -r).lte("y", r))
-        used = {(t["x"], t["y"]) for t in taken}
-        return next(((x, y) for x, y in spiral_coords(r) if (x, y) not in used), None)
+    async def _found_rpc(self, guild_id: str, user_id: str):
+        """建国を DB 関数 nation_found（docs/sql/nation_found.sql）で 1 トランザクションで行う。"""
+        if self.supabase is None:
+            raise RuntimeError("Supabase が設定されていません")
+        res = await asyncio.to_thread(
+            lambda: self.supabase.rpc("nation_found", {"p_guild_id": guild_id, "p_user_id": user_id}).execute())
+        data = res.data
+        row = data[0] if isinstance(data, list) else data
+        if not row:
+            raise RuntimeError("nation_found が首都の座標を返しませんでした")
+        return row["capital_x"], row["capital_y"]
 
     @staticmethod
     def _embed(title, text, color=COLOR_INFO):
@@ -114,24 +124,15 @@ class NationCog(commands.Cog):
             await self._reply(interaction, self._embed("建国できません", "建国できるのはサーバーの管理者かオーナーだけです。", COLOR_ERROR), ephemeral=True)
             return
         gid, uid = str(guild.id), str(user.id)
-        async with self._found_lock:
-            if await self._nation(gid):
-                await self._reply(interaction, self._embed("建国済み", "このサーバーの国はもうあります。`/nation status` で確認できます。"), ephemeral=True)
-                return
-            player = await self._player(uid)
-            if player and player.get("guild_id"):
-                await self._reply(interaction, self._embed("建国できません", "あなたはすでに別の国に所属しています。", COLOR_ERROR), ephemeral=True)
-                return
-            spot = await self._free_spot()
-            if spot is None:
-                await self._reply(interaction, self._embed("建国できません", "首都を置ける空き地が見つかりませんでした。", COLOR_ERROR), ephemeral=True)
-                return
-            x, y = spot
-            await self._run(lambda: self.supabase.table("nation_guilds").insert({"guild_id": gid, "capital_x": x, "capital_y": y}))
-            await self._run(lambda: self.supabase.table("nation_tiles").insert({
-                "x": x, "y": y, "owner_guild_id": gid, "tile_type": "capital", "connected": True}))
-            await self._run(lambda: self.supabase.table("nation_players").upsert(
-                {"user_id": uid, "guild_id": gid, "role": "king", "hunger": MAX_HUNGER}, on_conflict="user_id"))
+        try:
+            x, y = await self._found_rpc(gid, uid)
+        except Exception as e:  # noqa: BLE001 - PostgREST のエラーはメッセージで判別する
+            msg = str(e)
+            for code, (title, text) in FOUND_ERRORS.items():
+                if code in msg:
+                    await self._reply(interaction, self._embed(title, text, COLOR_INFO if code == "NATION_EXISTS" else COLOR_ERROR), ephemeral=True)
+                    return
+            raise
         await self._reply(interaction, self._embed(
             "建国しました", f"**{guild.name}** が建国されました！\n首都: ({x}, {y})\n国王: {user.mention}\n"
             "サーバーのみんなは `/nation join` で国民になれます。", COLOR_OK))
