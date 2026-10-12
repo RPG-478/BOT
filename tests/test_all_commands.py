@@ -69,7 +69,6 @@ SLASH_ARGUMENTS = {
     'fujo hindo': {'target': 'USER'},
     'fujo ranking': {'mode': 'active'},
     'fujo freeze': {},
-    'join': {}, 'leave': {}, 'eq': {},
     'music play': {'query': 'test'}, 'music pause': {}, 'music skip': {}, 'music stop': {},
     'music seek': {'seconds': 10}, 'music queue': {}, 'music loop': {'mode': 'off'}, 'music shuffle': {},
     'music volume': {'value': 0.5}, 'music speed': {'value': 1.0}, 'music eq': {}, 'music spatial': {},
@@ -78,15 +77,6 @@ SLASH_ARGUMENTS = {
     'voice join': {}, 'voice leave': {}, 'voice status': {}, 'voice record': {'action': 'status'},
     'voice echo': {'action': 'stop'}, 'voice transcribe': {'action': 'stop'}, 'voice karaoke': {'action': 'score'},
     'voice changer': {'action': 'status'}, 'voice match': {'action': 'stop'}, 'voice global': {'action': 'leave'},
-    'spotify_link': {}, 'spotify_unlink': {}, 'spotify_playlists': {},
-    'play': {'query': 'test'},
-    'seek': {'seconds': 10},
-    'pause': {}, 'skip': {},
-    'loop': {'mode': 'off'},
-    'shuffle': {},
-    'playlist': {'action': 'list'},
-    'spatial': {}, 'queue': {},
-    'speak': {'text': 'こんにちは'},
     'check_api': {},
     'uno_end': {},
     'uno_start': {},
@@ -105,21 +95,11 @@ PREFIX_ARGUMENTS = {
     'ggrks': {'keyword': 'discord'},
     'mimic': {'prompt': 'こんにちは'}, 'mimic_toggle': {},
     'coin': {'amount': 1},
-    'stop_all': {}, 'ffversion': {}, 'panel': {}, 'pllist': {},
-    'volume': {'vol': 0.5}, 'speed': {'speed': 1.0}, 'rres': {'res': 48000},
-    'rval': {'feedback': 0.5}, 'list': {}, 'plist': {}, 'search': {'keyword': 'test'},
-    'save_current': {'name': 'test'}, 'plsave': {'name': 'test'}, 'plplay': {'name': 'test'},
-    'saito': {}, 'saito_stop': {},
-    'gvc': {}, 'gvc join': {'room_name': 'room'}, 'gvc info': {'room_name': 'room'},
-    'gvc leave': {}, 'gvc create': {'room_name': 'room'}, 'gvc chat': {},
+    'ffversion': {},
+    'gvc': {}, 'gvc info': {'room_name': 'room'},
+    'gvc create': {'room_name': 'room'}, 'gvc chat': {},
     'gvc chat disconnect': {}, 'gvc chat connect': {'room_name': 'room'},
     'gvc list': {}, 'gvc delete': {'room_name': 'room'},
-    'vc': {}, 'vc pitch': {'semitones': 2.0}, 'vc buffer': {'target_ms': 100.0},
-    'vc stop': {}, 'vc start': {},
-    'rec': {}, 'rec stop': {}, 'rec status': {}, 'rec pitch': {}, 'rec start': {},
-    'echo': {}, 'echo stop': {}, 'echo start': {}, 'echo delay': {'delay': 1.0},
-    'karaoke': {}, 'karaoke start': {'target_lyrics': 'らら'}, 'karaoke score': {}, 'karaoke stop': {},
-    'stt': {}, 'stt start': {}, 'stt stop': {},
 }
 
 # このテストで見つかった既知の問題。直したら消すこと（消し忘れは test_known_issues_are_still_present が知らせる）。
@@ -128,7 +108,6 @@ KNOWN_ISSUES: dict[str, str] = {}
 # 条件を満たさないときは、あえて何も返さないコマンド（返信がなくても合格にする）。
 SILENT_BY_DESIGN = {
     '!terminal': '許可されたユーザー以外には反応しない（存在を知らせないため）',
-    '!stop_all': 'VC に接続していないときは何もしない',
 }
 
 # discord.py 標準のヘルプコマンドは対象外（cog のコマンドではない）。

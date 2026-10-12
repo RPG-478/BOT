@@ -11,7 +11,7 @@ import discord.opus
 from discord.ext import commands
 from discord.ext import voice_recv
 
-from core.legacy import Responder, legacy
+from core.legacy import Responder
 from core.voice_session import VoiceBusy, get_manager
 
 logger = logging.getLogger(__name__)
@@ -370,7 +370,7 @@ class VoiceChangerCog(commands.Cog):
         self.voice_sessions = get_manager(bot)
 
     # --------------------------------------------------
-    # 実装（/voice changer と旧 !vc の共通）
+    # 実装（/voice changer）
     # --------------------------------------------------
     async def _changer_impl(self, r: Responder, action: str, pitch: float | None = None,
                             buffer_ms: float | None = None, max_ms: float | None = None):
@@ -492,39 +492,6 @@ class VoiceChangerCog(commands.Cog):
             f"📦 プリバッファ: `{(buffer[0] if buffer else DEFAULT_TARGET_BUFFER_MS):.0f} ms` (超低遅延モード)\n"
             f"📊 `/voice changer action:状態` で遅延数値を確認できます。"
         ))
-
-    # --------------------------------------------------
-    # 旧コマンド: !vc（/voice changer に移行）
-    # --------------------------------------------------
-    @commands.group(name="vc", invoke_without_command=True)
-    @commands.guild_only()
-    @legacy("/voice changer action:状態", "!vc")
-    async def vc_group(self, ctx: commands.Context):
-        await self._changer_impl(Responder(ctx), "status")
-
-    @vc_group.command(name="start")
-    @commands.guild_only()
-    @legacy("/voice changer action:開始", "!vc start")
-    async def vc_start(self, ctx: commands.Context, pitch: float = None):
-        await self._changer_impl(Responder(ctx), "start", pitch=pitch)
-
-    @vc_group.command(name="pitch")
-    @commands.guild_only()
-    @legacy("/voice changer action:状態 pitch:<半音数>", "!vc pitch")
-    async def vc_pitch(self, ctx: commands.Context, semitones: float):
-        await self._changer_impl(Responder(ctx), "status", pitch=semitones)
-
-    @vc_group.command(name="buffer")
-    @commands.guild_only()
-    @legacy("/voice changer action:状態 buffer_ms:<目標ms>", "!vc buffer")
-    async def vc_buffer(self, ctx: commands.Context, target_ms: float, max_ms: float = None):
-        await self._changer_impl(Responder(ctx), "status", buffer_ms=target_ms, max_ms=max_ms)
-
-    @vc_group.command(name="stop")
-    @commands.guild_only()
-    @legacy("/voice changer action:停止", "!vc stop")
-    async def vc_stop(self, ctx: commands.Context):
-        await self._changer_impl(Responder(ctx), "stop")
 
     def _cleanup(self, guild_id: int):
         """VC を手放すときの後片付け（切断は VoiceSessionManager が行う）。"""

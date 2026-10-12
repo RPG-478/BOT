@@ -109,6 +109,26 @@ class CommandCatalogTest(unittest.TestCase):
                        - set(command_meta.OPTIONAL_COMMANDS))
         self.assertEqual(stale, [], 'COMMAND_META に、もう存在しないコマンドが残っています（消すか OPTIONAL_COMMANDS へ）')
 
+    def test_removed_legacy_voice_commands_are_gone(self):
+        """移行期間を終えて削除した旧ボイス・音楽コマンドが、登録にも COMMAND_META にも残っていない。"""
+        removed = [
+            '/join', '/leave', '/play', '/pause', '/skip', '/seek', '/loop', '/shuffle', '/queue', '/playlist',
+            '/eq', '/spatial', '/speak', '/spotify_link', '/spotify_unlink', '/spotify_playlists',
+            '!panel', '!search', '!list', '!plist', '!save_current', '!plsave', '!pllist', '!plplay', '!volume',
+            '!speed', '!stop_all', '!rval', '!rres', '!rec', '!echo', '!stt', '!karaoke', '!vc', '!saito',
+            '!saito_stop', '!gvc join', '!gvc leave',
+        ]
+        registered = set(registered_commands(self.bot))
+        for key in removed:
+            with self.subTest(command=key):
+                self.assertNotIn(key, registered)
+                self.assertNotIn(key, command_meta.COMMAND_META)
+                self.assertIsNone(command_catalog.find_command(self.catalog, key, include_hidden=True))
+        self.assertFalse([k for k in registered if k.split(' ')[0] in ('!rec', '!echo', '!stt', '!karaoke', '!vc')])
+        for key in ('/music play', '/voice record', '!gvc create', '!gvc chat connect', '!ffversion'):
+            with self.subTest(kept=key):
+                self.assertIn(key, registered)
+
     def test_categories_are_valid(self):
         ids = [c['id'] for c in command_meta.CATEGORIES]
         self.assertEqual(ids, ['support', 'economy', 'game', 'voice', 'fun', 'admin'])
@@ -144,7 +164,7 @@ class CommandCatalogTest(unittest.TestCase):
         self.assertTrue(get('/clear')['guild_only'])
         self.assertIn('administrator', get('/send_panel')['permissions'])
         self.assertIn('manage_channels', get('!mimic_toggle')['permissions'])
-        self.assertTrue(get('!rec start')['guild_only'])
+        self.assertTrue(get('/music play')['guild_only'])  # グループの guild_only がサブコマンドにも付く
         self.assertEqual(get('!all_stats')['aliases'], ['stats', 'spec'])
         amount = next(o for o in get('/clear')['options'] if o['name'] == 'amount')
         self.assertEqual((amount['type'], amount['required']), ('integer', True))

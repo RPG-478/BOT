@@ -12,11 +12,11 @@ Bot はサーバーごとに 1 つしか VC に入れない。以前は録音・
 - ``on_voice_state_update``（Bot に 1 つだけ登録）:
   - VC に人がいない状態が ``AUTO_LEAVE_SECONDS`` 続いたら、どの機能でも終了して退出する。
   - Bot が外部から切断された（キック・チャンネル削除など）ときも後片付けを呼ぶ。
-    これで !gvc や録音の状態が「接続していないのに使用中」のまま残らない。
+    これでグローバルVC や録音の状態が「接続していないのに使用中」のまま残らない。
 
 各 cog は ``get_manager(bot)`` で共有のインスタンスを取得する。
 cleanup の中から同じサーバーの ``release()`` を await しないこと（ロックが再入できないため）。
-別サーバーを止めたいとき（!saito の相手側など）は ``asyncio.create_task`` で呼ぶ。
+別サーバーを止めたいとき（/voice match の相手側など）は ``asyncio.create_task`` で呼ぶ。
 """
 from __future__ import annotations
 

@@ -17,7 +17,7 @@ import discord.opus
 from discord.ext import commands
 from discord.ext import voice_recv
 
-from core.legacy import Responder, legacy
+from core.legacy import Responder
 from core.vosk_model import ensure_model
 from core.voice_session import VoiceBusy, get_manager
 
@@ -356,7 +356,7 @@ class TranscriptionCog(commands.Cog):
         return await channel.create_webhook(name="STT-Transcriber")
 
     # --------------------------------------------------
-    # 実装（/voice transcribe と旧 !stt の共通）
+    # 実装（/voice transcribe）
     # --------------------------------------------------
     async def _transcribe_impl(self, r: Responder, action: str, target_channel: discord.TextChannel | None = None):
         """action: start / stop / status"""
@@ -445,31 +445,6 @@ class TranscriptionCog(commands.Cog):
             f"🎙️ **{vc_channel.name}** で Vosk 軽量文字起こしを開始しました！\n"
             f"🤖 結果を {send_channel.mention} へ送信します。"
         ))
-
-    # --------------------------------------------------
-    # 旧コマンド: !stt（/voice transcribe に移行）
-    # --------------------------------------------------
-    @commands.group(name="stt", invoke_without_command=True)
-    @commands.guild_only()
-    @legacy("/voice status", "!stt")
-    async def stt_group(self, ctx: commands.Context):
-        await self._transcribe_impl(Responder(ctx), "status")
-
-    @stt_group.command(name="start")
-    @commands.guild_only()
-    @legacy("/voice transcribe action:開始", "!stt start")
-    async def stt_start(
-        self,
-        ctx: commands.Context,
-        target_channel: discord.TextChannel | None = None
-    ):
-        await self._transcribe_impl(Responder(ctx), "start", target_channel)
-
-    @stt_group.command(name="stop")
-    @commands.guild_only()
-    @legacy("/voice transcribe action:停止", "!stt stop")
-    async def stt_stop(self, ctx: commands.Context):
-        await self._transcribe_impl(Responder(ctx), "stop")
 
     def _cleanup(self, guild_id: int):
         """VC を手放すときの後片付け（切断は VoiceSessionManager が行う）。"""

@@ -33,7 +33,7 @@ import discord.opus
 from discord.ext import commands
 from discord.ext import voice_recv
 
-from core.legacy import Responder, legacy
+from core.legacy import Responder
 from core.voice_session import VoiceBusy, get_manager
 
 logger = logging.getLogger(__name__)
@@ -568,7 +568,7 @@ class RecordingCog(commands.Cog):
         self.echo_sessions: dict[int, dict] = {}
         self._ffmpeg_available: bool | None = None
         self.voice_sessions = get_manager(bot)
-        # 録音停止後のファイル送信タスク（!rec stop はこれを待ってから終わる）
+        # 録音停止後のファイル送信タスク（/voice record の停止はこれを待ってから終わる）
         self._deliveries: dict[int, asyncio.Task] = {}
 
     async def cog_unload(self) -> None:
@@ -579,7 +579,7 @@ class RecordingCog(commands.Cog):
             await self.voice_sessions.release(guild_id, "echo", reason="stop")
 
     # --------------------------------------------------
-    # 実装（/voice record・/voice echo と旧 !rec・!echo の共通）
+    # 実装（/voice record・/voice echo）
     # --------------------------------------------------
     async def _record_impl(self, r: Responder, action: str):
         """action: start / stop / status / pitch"""
@@ -686,72 +686,6 @@ class RecordingCog(commands.Cog):
             f"⏱️ 遅延時間: `{delay}`秒\n"
             f"遅延変更: `/voice echo action:遅延変更 delay:3.0` | 停止: `/voice echo action:停止`"
         ))
-
-    # --------------------------------------------------
-    # 旧コマンド: !rec / !echo（/voice record・/voice echo に移行）
-    # --------------------------------------------------
-    @commands.group(name="rec", invoke_without_command=True)
-    @commands.guild_only()
-    @legacy("/voice record action:状態", "!rec")
-    async def rec_group(self, ctx: commands.Context):
-        """!rec 単体で実行された場合はステータスを表示"""
-        await self._record_impl(Responder(ctx), "status")
-
-    @rec_group.command(name="start")
-    @commands.guild_only()
-    @legacy("/voice record action:開始", "!rec start")
-    async def rec_start(self, ctx: commands.Context):
-        """!rec start : 録音を開始"""
-        await self._record_impl(Responder(ctx), "start")
-
-    @rec_group.command(name="stop")
-    @commands.guild_only()
-    @legacy("/voice record action:停止", "!rec stop")
-    async def rec_stop(self, ctx: commands.Context):
-        """!rec stop : 録音を停止してファイルを送信"""
-        await self._record_impl(Responder(ctx), "stop")
-
-    @rec_group.command(name="status")
-    @commands.guild_only()
-    @legacy("/voice record action:状態", "!rec status")
-    async def rec_status(self, ctx: commands.Context):
-        """!rec status : 録音状況を表示"""
-        await self._record_impl(Responder(ctx), "status")
-
-    @rec_group.command(name="pitch")
-    @commands.guild_only()
-    @legacy("/voice record action:音程解析", "!rec pitch")
-    async def rec_pitch(self, ctx: commands.Context):
-        """!rec pitch : 直近の音声からリアルタイムでピアノ音階（単音/和音/声の倍音層）を解析"""
-        await self._record_impl(Responder(ctx), "pitch")
-
-    @commands.group(name="echo", invoke_without_command=True)
-    @commands.guild_only()
-    @legacy("/voice status", "!echo")
-    async def echo_group(self, ctx: commands.Context):
-        """!echo 単体で実行された場合の状態表示"""
-        await self._echo_impl(Responder(ctx), "status")
-
-    @echo_group.command(name="start")
-    @commands.guild_only()
-    @legacy("/voice echo action:開始", "!echo start")
-    async def echo_start(self, ctx: commands.Context, delay: float = None):
-        """!echo start [秒数] : やまびこを開始"""
-        await self._echo_impl(Responder(ctx), "start", delay)
-
-    @echo_group.command(name="delay")
-    @commands.guild_only()
-    @legacy("/voice echo action:遅延変更", "!echo delay")
-    async def echo_delay(self, ctx: commands.Context, delay: float):
-        """!echo delay <秒数> : 動作中にリアルタイムで遅延時間を変更"""
-        await self._echo_impl(Responder(ctx), "delay", delay)
-
-    @echo_group.command(name="stop")
-    @commands.guild_only()
-    @legacy("/voice echo action:停止", "!echo stop")
-    async def echo_stop(self, ctx: commands.Context):
-        """!echo stop : やまびこを停止"""
-        await self._echo_impl(Responder(ctx), "stop")
 
     def _echo_cleanup(self, guild_id: int):
         """VC を手放すとき（停止・切り替え・自動退出・外部切断）に呼ばれる後片付け。"""

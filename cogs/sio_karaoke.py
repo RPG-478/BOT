@@ -18,7 +18,7 @@ import discord.opus
 from discord.ext import commands
 from discord.ext import voice_recv
 
-from core.legacy import Responder, legacy
+from core.legacy import Responder
 from core.vosk_model import ensure_model
 from core.voice_session import VoiceBusy, get_manager
 
@@ -304,7 +304,7 @@ class KaraokeCog(commands.Cog):
         return await channel.create_webhook(name="Karaoke-Lyrics")
 
     # --------------------------------------------------
-    # 実装（/voice karaoke と旧 !karaoke の共通）
+    # 実装（/voice karaoke）
     # --------------------------------------------------
     async def _karaoke_impl(self, r: Responder, action: str, target_lyrics: str | None = None):
         """action: start / score / stop / help"""
@@ -415,33 +415,6 @@ class KaraokeCog(commands.Cog):
             embed.description = "まだ歌声が検知されていません！"
 
         await r.send(embed=embed)
-
-    # --------------------------------------------------
-    # 旧コマンド: !karaoke（/voice karaoke に移行）
-    # --------------------------------------------------
-    @commands.group(name="karaoke", invoke_without_command=True)
-    @commands.guild_only()
-    @legacy("/voice karaoke", "!karaoke")
-    async def karaoke_group(self, ctx: commands.Context):
-        await self._karaoke_impl(Responder(ctx), "help")
-
-    @karaoke_group.command(name="start")
-    @commands.guild_only()
-    @legacy("/voice karaoke action:開始", "!karaoke start")
-    async def karaoke_start(self, ctx: commands.Context, *, target_lyrics: str):
-        await self._karaoke_impl(Responder(ctx), "start", target_lyrics)
-
-    @karaoke_group.command(name="score")
-    @commands.guild_only()
-    @legacy("/voice karaoke action:採点", "!karaoke score")
-    async def karaoke_score(self, ctx: commands.Context):
-        await self._karaoke_impl(Responder(ctx), "score")
-
-    @karaoke_group.command(name="stop")
-    @commands.guild_only()
-    @legacy("/voice karaoke action:終了", "!karaoke stop")
-    async def karaoke_stop(self, ctx: commands.Context):
-        await self._karaoke_impl(Responder(ctx), "stop")
 
     def _cleanup(self, guild_id: int):
         """VC を手放すときの後片付け（切断は VoiceSessionManager が行う）。"""

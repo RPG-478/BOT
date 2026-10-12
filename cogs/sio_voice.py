@@ -1,8 +1,8 @@
 """/voice グループ: ボイスチャンネルを使う機能（参加・退出・録音・やまびこ・文字起こし・カラオケ・
 ボイスチェンジャー・ランダム通話・グローバルVC）の入口。
 
-それぞれの処理は各機能の cog にある実装関数（``_xxx_impl``）を呼ぶだけで、旧コマンド
-（/join・!rec・!stt など）も同じ関数を呼ぶ。VC を誰が使っているかは core/voice_session.py が持つ。
+それぞれの処理は各機能の cog にある実装関数（``_xxx_impl``）を呼ぶだけ。
+VC を誰が使っているかは core/voice_session.py が持つ。
 """
 from __future__ import annotations
 
