@@ -15,8 +15,8 @@ ROLE_GUIDE_BASE_URL = "https://bot-deshihito.vercel.app/jinrou/roles"
 
 # 役職 ID（スラッグ）は cogs/jinrou.py の HELP_ROLES の 5 番目の値で管理し、register_roles で読み込む。
 
-# 勝敗の判定（cogs/jinrou.py の _record_team_win）で人狼側として数える役職
-WOLF_SIDE = {"人狼", "デカ狼", "狂人", "狂信者"}
+# 勝敗の判定・人数比べ・レートで人狼側として数える役職（cogs/jinrou.py もここを使う）
+WOLF_SIDE = frozenset({"人狼", "デカ狼", "狂人", "狂信者", "ヤンデレ"})
 
 # 勝利条件の個別の説明（載っていない役職は陣営から決める）
 WIN_OVERRIDES = {
@@ -88,7 +88,7 @@ def win_condition(role: str) -> str:
         return WIN_OVERRIDES[role]
     if role in WOLF_SIDE:
         return "人狼の数が村人と同じ以上になれば、人狼陣営の勝ちです。"
-    if team_of(role) == "第三者陣営" or role == "ヤンデレ":
+    if team_of(role) == "第三者陣営":
         return "人狼が全滅すれば勝ち（勝敗の判定では村人側として数えられます）。"
     return "人狼を全員追放・退治すれば、村人陣営の勝ちです。"
 

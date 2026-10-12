@@ -143,3 +143,50 @@ class PhaseButtonTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class YandereTeamTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from unittest.mock import patch
+        p = patch.object(jinrou, "supabase", MagicMock())
+        p.start()
+        self.addCleanup(p.stop)
+
+    def game(self, roles, alive=None):
+        game = jinrou.JinrouGame()
+        players = [types.SimpleNamespace(id=i, mention=f"<@{i}>", display_name=str(i)) for i in roles]
+        game.players = players
+        game.alive_players = [p for p in players if alive is None or p.id in alive]
+        game.roles = dict(roles)
+        game.is_running = True
+        game.game_channel = types.SimpleNamespace(send=AsyncMock(), guild=types.SimpleNamespace(id=5))
+        return game
+
+    def cog(self):
+        cog = jinrou.JinrouCog.__new__(jinrou.JinrouCog)
+        cog._process_elo_ratings = AsyncMock()
+        cog._record_wins = AsyncMock()
+        return cog
+
+    def test_yandere_is_wolf_side(self):
+        game = self.game({1: "ヤンデレ", 2: "占い師"})
+        self.assertTrue(jinrou._is_wolf_side(game, 1))
+        self.assertFalse(jinrou._is_wolf_side(game, 2))
+        self.assertIn("人狼陣営の勝ち", guide.win_condition("ヤンデレ"))
+
+    async def test_parity_counts_yandere(self):
+        # 人狼 1 + ヤンデレ 1 対 村人 2 → 人狼陣営の勝ち
+        game = self.game({1: "人狼", 2: "ヤンデレ", 3: "占い師", 4: "騎士"})
+        cog = self.cog()
+        self.assertTrue(await cog.check_victory(game))
+        game.game_channel.send.assert_any_await("人狼が支配した。人狼陣営の勝利です。")
+        winners = cog._record_wins.await_args.args[1]
+        self.assertEqual(sorted(winners), [1, 2])
+
+    async def test_yandere_alone_does_not_keep_game_going(self):
+        # 人狼が全滅すれば、ヤンデレが生きていても村人陣営の勝ち（狂人と同じ）
+        game = self.game({1: "人狼", 2: "ヤンデレ", 3: "占い師", 4: "騎士"}, alive={2, 3, 4})
+        cog = self.cog()
+        self.assertTrue(await cog.check_victory(game))
+        game.game_channel.send.assert_any_await("人狼全滅。村人陣営の勝利です。")
+        self.assertEqual(sorted(cog._record_wins.await_args.args[1]), [3, 4])

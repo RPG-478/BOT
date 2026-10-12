@@ -96,6 +96,20 @@ HELP_ROLES = [
 jinrou_guide.register_roles(HELP_ROLES)
 
 
+def _is_wolf_side(game, p_id) -> bool:
+    """勝敗・人数比べで人狼側として数えるか（陣営の定義は core/jinrou_guide.WOLF_SIDE の 1 か所）。
+
+    ワンころは、飼い主がいないか死んでいれば人狼側。
+    """
+    r = game.roles.get(p_id)
+    if r in jinrou_guide.WOLF_SIDE:
+        return True
+    if r == "ワンころ":
+        owner_id = game.wan_owner.get(p_id)
+        return owner_id is None or owner_id not in {p.id for p in game.alive_players}
+    return False
+
+
 def _guide_role_lookup(game):
     """「？」ボタン用: 押した人の表示用役職（裏役職は偽装したまま）。参加していなければ None。"""
     return lambda uid: _get_display_role(game, uid, reveal_hidden=False) if game.roles.get(uid) else None
@@ -984,13 +998,7 @@ class JinrouCog(commands.Cog):
             return True
 
         def is_wolf_side(p_id):
-            r = game.roles.get(p_id)
-            if r in ["人狼", "デカ狼", "狂人", "狂信者"]: return True
-            if r == "ワンころ":
-                owner_id = game.wan_owner.get(p_id)
-                if owner_id is None: return True
-                if owner_id not in {p.id for p in game.alive_players}: return True
-            return False
+            return _is_wolf_side(game, p_id)
 
         wolves    = [p for p in game.alive_players if is_wolf_side(p.id)]
         non_wolves = [p for p in game.alive_players if not is_wolf_side(p.id)]
@@ -1007,7 +1015,7 @@ class JinrouCog(commands.Cog):
 
     # ランキング（core/party_ranking.py）
     # - 村人・人狼の勝ち: 勝った陣営の参加者全員（死んだ人も含む）に 1 勝。陣営の分け方は Elo と同じ
-    #   （人狼・デカ狼・狂人・狂信者・野良のワンころが人狼側、それ以外が村人側）
+    #   （人狼・デカ狼・狂人・狂信者・ヤンデレ・野良のワンころが人狼側、それ以外が村人側）
     # - ハゲ・コウモリむには勝ち方が別なので陣営の勝ちには入れない。ハゲは追放されたとき、
     #   コウモリむには陣営の勝負がついたときに生き残っていれば、その人だけ 1 勝
     async def _record_wins(self, game, user_ids):
@@ -1021,12 +1029,7 @@ class JinrouCog(commands.Cog):
         alive_ids = {p.id for p in game.alive_players}
 
         def is_wolf_side(p_id):
-            r = game.roles.get(p_id)
-            if r in ["人狼", "デカ狼", "狂人", "狂信者"]: return True
-            if r == "ワンころ":
-                owner_id = game.wan_owner.get(p_id)
-                if owner_id is None or owner_id not in alive_ids: return True
-            return False
+            return _is_wolf_side(game, p_id)
 
         winners = []
         for p in game.players:
@@ -1055,13 +1058,7 @@ class JinrouCog(commands.Cog):
     async def _process_elo_ratings(self, game, winner_is_wolf: bool):
         """ゲーム結果をもとにEloレーティングを更新"""
         def is_wolf_side(p_id):
-            r = game.roles.get(p_id)
-            if r in ["人狼", "デカ狼", "狂人", "狂信者"]: return True
-            if r == "ワンころ":
-                owner_id = game.wan_owner.get(p_id)
-                if owner_id is None: return True
-                if owner_id not in {p.id for p in game.alive_players}: return True
-            return False
+            return _is_wolf_side(game, p_id)
 
         for p in game.players:
             p_id = p.id
