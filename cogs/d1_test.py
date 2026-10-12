@@ -5,6 +5,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from cogs.terminal import ALLOWED_USER_IDS
+
 class D1TestCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -48,29 +50,20 @@ class D1TestCog(commands.Cog):
         await proc.communicate()
         return proc.returncode == 0
 
-    @app_commands.command(name="d1ping", description="d1-omni サーバーの応答テストと自動起動を行います。")
-    async def d1ping(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
-        # 応答テストを実行
+    @commands.command(name="d1ping")
+    async def d1ping(self, ctx: commands.Context):
+        """d1-omni サーバーの応答テストと自動起動（Bot の持ち主専用）。"""
+        if ctx.author.id not in ALLOWED_USER_IDS:
+            return
         is_running, elapsed_ms = await self._test_response()
-
         if is_running:
-            # 起動済みの場合は応答時間のみ返却
-            await interaction.followup.send(
-                f"**[d1-omni]** サーバーは稼働中です。\n応答速度: `{elapsed_ms:.2f} ms`"
-            )
+            await ctx.send(f"**[d1-omni]** サーバーは稼働中です。\n応答速度: `{elapsed_ms:.2f} ms`")
+            return
+        await ctx.send("**[d1-omni]** 応答が確認できませんでした。サービスを起動します...")
+        if await self._start_service():
+            await ctx.send("起動リクエストを送信しました。モデルロード完了まで数秒お待ちください。")
         else:
-            # 停止中の場合は起動コマンドを実行
-            await interaction.followup.send(
-                "**[d1-omni]** 応答が確認できませんでした。サービスを起動します..."
-            )
-            
-            success = await self._start_service()
-            if success:
-                await interaction.channel.send("起動リクエストを送信しました。モデルロード完了まで数秒お待ちください。")
-            else:
-                await interaction.channel.send("起動コマンドの実行に失敗しました。`sudoers` の権限設定を確認してください。")
+            await ctx.send("起動コマンドの実行に失敗しました。`sudoers` の権限設定を確認してください。")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(D1TestCog(bot))

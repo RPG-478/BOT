@@ -30,6 +30,7 @@ import logging
 from discord.ui import View
 from discord import app_commands, Interaction
 from discord.ext import commands, tasks
+from cogs.terminal import ALLOWED_USER_IDS
 from discord.ext.commands import Cog
 from PIL import Image, ImageDraw
 from zoneinfo import ZoneInfo
@@ -3189,11 +3190,11 @@ class DungeonCog(Cog):
         em = mv._embed("ダンジョンへようこそ！ D1の接続と作戦はSTATUS画面から選べます。", image_url=map_url)
         await interaction.followup.send(embed=em, view=mv, file=map_file)
 
-    @app_commands.command(name="dungeon_reset", description="ダンジョンマップをリセット（管理者のみ）")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def dungeon_reset(self, interaction: Interaction):
-        """ダンジョンリセットコマンド"""
-        await interaction.response.defer()
+    @commands.command(name="dungeon_reset")
+    async def dungeon_reset(self, ctx: commands.Context):
+        """ダンジョンマップを全サーバー分リセット（Bot の持ち主専用）"""
+        if ctx.author.id not in ALLOWED_USER_IDS:
+            return
         global dg_maps, dg_players, dg_starts, dg_used, dg_bases
         dg_maps.clear()
         dg_players.clear()
@@ -3216,7 +3217,7 @@ class DungeonCog(Cog):
                 await dg_save_map(fl, self.supabase)
 
         em = discord.Embed(title="リセット完了", description="マップを再生成しました！", color=0xFFFFFF)
-        await interaction.followup.send(embed=em)
+        await ctx.send(embed=em)
 
     @tasks.loop(hours=1)
     async def dungeon_monthly_task(self):
