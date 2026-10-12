@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
 import datetime
-from supabase import create_client, Client
 from dotenv import load_dotenv
 
 # .envの読み込み
@@ -13,16 +12,16 @@ PREFIX = "!"
 
 # --- Supabase設定 ---
 SUPABASE_URL = os.getenv('SUPABASE_URL')
-# Botは公開可能なSupabaseキーのみを使用する。サービスロールキーは使用しない。
-SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+# Bot は通常 SUPABASE_KEY（anon）を使う。SUPABASE_SERVICE_ROLE_KEY は任意の上書き。
+# 実際のクライアント作成は core/supabase_client.py に一本化している。
+from core import supabase_client as _supabase_client
+SUPABASE_KEY, SUPABASE_KEY_SOURCE = _supabase_client.select_key()
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 # クライアントの初期化
-if SUPABASE_URL and SUPABASE_KEY:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-else:
-    supabase = None
+supabase = _supabase_client.get_client()
+if supabase is None:
     print("WARNING: Supabase credentials are missing.")
 
 # --- 共通ユーティリティ ---

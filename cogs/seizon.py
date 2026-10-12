@@ -54,8 +54,8 @@ class FujoSurvival(commands.Cog):
         self.bot = bot
         self.supabase = getattr(bot, "supabase", None)
         if self.supabase is None and supabase_module is not None:
-            url, key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
-            self.supabase = supabase_module.create_client(url, key) if url and key else None
+            from core.supabase_client import create_client_from_env
+            self.supabase = create_client_from_env()
         # user_id -> fujo_users の行（メモリ上の写し）
         self.users: dict[int, dict] = {}
         self.users_loaded = False
