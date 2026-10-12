@@ -143,6 +143,7 @@ COMMAND_META: dict[str, dict] = {
     },
     "/chat": {"category": "support", "permissions": ["manage_channels"]},
     "/whisper": {"category": "support"},
+    "/giveaway": {"category": "support", "permissions": ["manage_guild"], "guild_only": True},
     "/fujo register": {"category": "support"},
     "/fujo status": {"category": "support"},
     "/fujo hindo": {"category": "support"},
