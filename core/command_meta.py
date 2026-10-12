@@ -144,6 +144,9 @@ COMMAND_META: dict[str, dict] = {
     "/pay": {"category": "economy"},
     "/leaderboard": {"category": "economy"},
     "/guess": {"category": "economy"},
+    "/nation join": {"category": "economy"},
+    "/nation found": {"category": "economy", "permissions": ["administrator"]},
+    "/nation status": {"category": "economy"},
     "!coin": {"category": "economy", "summary": "管理者が自分の残高を直接設定します", "permissions": ["bot_admin"],
               "hidden": True},
 

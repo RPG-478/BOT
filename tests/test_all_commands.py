@@ -84,6 +84,7 @@ SLASH_ARGUMENTS = {
     'wallet': {},
     'pay': {'receiver': 'OTHER', 'amount': 1},
     'leaderboard': {},
+    'nation join': {}, 'nation found': {}, 'nation status': {},
     'whisper': {},
     'wordwolf': {},
     'zetamodoki': {},
