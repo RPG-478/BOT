@@ -86,5 +86,31 @@ class GlobalRelayLookupTest(unittest.TestCase):
         self.assertEqual(deleted, [1])
 
 
+class GlobalNightSilenceTest(unittest.TestCase):
+    def run_msg(self, in_discussion):
+        cog = J.JinrouCog.__new__(J.JinrouCog)
+        g = J.JinrouGame()
+        user = types.SimpleNamespace(bot=False, id=5)
+        g.is_global, g.is_running, g.started, g.channels = True, True, True, [Chan(1), Chan(2)]
+        g.players, g.alive_players, g.in_discussion = [user], [user], in_discussion
+        g.last_speak_time = {}
+        cog.games = {"global": g}
+        deleted = []
+
+        async def delete():
+            deleted.append(1)
+        msg = types.SimpleNamespace(author=user, channel=g.channels[1], delete=delete, content="やあ",
+                                    guild=types.SimpleNamespace(name="s"))
+        cog.webhook_cache = {}
+        asyncio.run(J.JinrouCog.on_message(cog, msg))
+        return deleted
+
+    def test_night_message_deleted(self):
+        self.assertEqual(self.run_msg(False), [1])
+
+    def test_discussion_message_kept(self):
+        self.assertEqual(self.run_msg(True), [])
+
+
 if __name__ == "__main__":
     unittest.main()
