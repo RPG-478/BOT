@@ -89,12 +89,16 @@ class GlobalRelayLookupTest(unittest.TestCase):
 class GlobalNightSilenceTest(unittest.TestCase):
     def run_msg(self, in_discussion):
         cog = J.JinrouCog.__new__(J.JinrouCog)
+        cog.games = {}
         g = J.JinrouGame()
         user = types.SimpleNamespace(bot=False, id=5)
         g.is_global, g.is_running, g.started, g.channels = True, True, True, [Chan(1), Chan(2)]
         g.players, g.alive_players, g.in_discussion = [user], [user], in_discussion
+        if not in_discussion:
+            g.silenced_players = {5}  # 夜は生きている参加者が全員ここに入る（ローカルと同じ仕組み）
+        cog.games[2] = J.JinrouGame()  # 合流側にも止まっているローカル用のゲームが残っている
         g.last_speak_time = {}
-        cog.games = {"global": g}
+        cog.games["global"] = g
         deleted = []
 
         async def delete():

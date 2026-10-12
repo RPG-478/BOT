@@ -333,12 +333,6 @@ class JinrouCog(commands.Cog):
         player_role = game.roles.get(message.author.id)
         is_alive = any(p.id == message.author.id for p in game.alive_players)
 
-        # グローバルモードでは、ゲーム中（役職配布後）の議論の時間以外は参加者が発言できない（夜・投票など）
-        if getattr(game, "is_global", False) and game.started and not game.in_discussion and is_alive:
-            try: await message.delete()
-            except: pass
-            return
-
         if is_alive and player_role == "ネット民":
             if game.in_discussion:
                 try: await message.delete()
