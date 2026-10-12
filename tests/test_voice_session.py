@@ -27,6 +27,7 @@ for _name, _value in {'SUPABASE_URL': 'https://example.supabase.co', 'SUPABASE_K
 import discord  # noqa: E402
 
 from core import voice_session as vs  # noqa: E402
+from core.legacy import NOTICES, Responder  # noqa: E402
 from cogs import sio_globalVC as gvc  # noqa: E402
 from cogs import sio_rec as rec  # noqa: E402
 from cogs import sio_saito as saito  # noqa: E402
@@ -194,8 +195,8 @@ class ManagerTest(unittest.IsolatedAsyncioTestCase):
         message = str(caught.exception)
         self.assertIn('録音', message)
         self.assertIn('alice', message)
-        self.assertIn('!rec stop', message)
-        self.assertIn('/leave', message)
+        self.assertIn('/voice record action:停止', message)
+        self.assertIn('/voice leave', message)
         self.assertTrue(vc.is_connected())
         self.assertEqual(vc.disconnect_calls, 0)
         self.assertEqual(cleanup.reasons, [])
@@ -362,6 +363,10 @@ class CogTest(unittest.IsolatedAsyncioTestCase):
         gvc.ROOMS['lobby'] = gvc.RoomConfig(name='lobby', owner_id=self.w.alice.id, owner_guild_id=self.w.guild.id)
         self.opus = patch.object(rec.discord.opus, 'is_loaded', return_value=True)
         self.opus.start()
+        # 旧コマンドの「移りました」の案内は、このテストでは出さない（最後のメッセージを確かめるため）
+        self.notices = patch.object(NOTICES, 'should_notify', return_value=False)
+        self.notices.start()
+        self.addCleanup(self.notices.stop)
         self.rec = rec.RecordingCog(self.bot)
         self.gvc = gvc.GlobalVCCog(self.bot)
 
@@ -383,7 +388,7 @@ class CogTest(unittest.IsolatedAsyncioTestCase):
         await self.gvc.gvc_leave.callback(self.gvc, self.ctx(author))
 
     async def test_gvc_join_does_not_kick_recording(self):
-        await self.rec.start_command(self.ctx(self.w.alice))
+        await self.rec.start_command(Responder(self.ctx(self.w.alice)))
         vc = self.w.guild.voice_client
         self.assertEqual(self.manager.owner(self.w.guild.id), 'record')
         await self.gvc_join(self.w.bob)
@@ -395,13 +400,13 @@ class CogTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_recording_does_not_kick_gvc(self):
         await self.gvc_join(self.w.alice)
-        await self.rec.start_command(self.ctx(self.w.bob))
+        await self.rec.start_command(Responder(self.ctx(self.w.bob)))
         self.assertIn('グローバルVC', self.w.text.sent[-1])
         self.assertNotIn(self.w.guild.id, self.rec.sessions)
         self.assertEqual(len(gvc.GLOBAL_ROOMS['lobby']), 1)
 
     async def test_echo_refused_while_recording(self):
-        await self.rec.start_command(self.ctx(self.w.alice))
+        await self.rec.start_command(Responder(self.ctx(self.w.alice)))
         await self.rec.echo_start.callback(self.rec, self.ctx(self.w.bob), 2.0)
         self.assertNotIn(self.w.guild.id, self.rec.echo_sessions)
         self.assertIn('録音', self.w.text.sent[-1])
@@ -434,7 +439,7 @@ class CogTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('参加しました', self.w.text.sent[-1])
 
     async def test_gvc_leave_does_not_stop_other_features(self):
-        await self.rec.start_command(self.ctx(self.w.alice))
+        await self.rec.start_command(Responder(self.ctx(self.w.alice)))
         await self.gvc_leave(self.w.bob)
         self.assertIn('参加していません', self.w.text.sent[-1])
         self.assertEqual(self.manager.owner(self.w.guild.id), 'record')
@@ -447,16 +452,16 @@ class CogTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gvc.GLOBAL_ROOMS, {})
 
     async def test_rec_stop_delivers_and_disconnects(self):
-        await self.rec.start_command(self.ctx(self.w.alice))
+        await self.rec.start_command(Responder(self.ctx(self.w.alice)))
         vc = self.w.guild.voice_client
-        await self.rec.stop_command(self.ctx(self.w.alice))
+        await self.rec.stop_command(Responder(self.ctx(self.w.alice)))
         self.assertFalse(vc.is_connected())
         self.assertIsNone(self.manager.get(self.w.guild.id))
         self.assertIn('録音を停止しました', self.w.text.text())
 
     async def test_record_time_limit(self):
         with patch.object(rec, 'RECORD_LIMIT_SECONDS', 0.05):
-            await self.rec.start_command(self.ctx(self.w.alice))
+            await self.rec.start_command(Responder(self.ctx(self.w.alice)))
             vc = self.w.guild.voice_client
             self.assertTrue(vc.is_listening())
             await asyncio.sleep(0.2)
@@ -470,9 +475,9 @@ class CogTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('上限', self.w.text.text())
 
     async def test_record_limit_task_cancelled_on_stop(self):
-        await self.rec.start_command(self.ctx(self.w.alice))
+        await self.rec.start_command(Responder(self.ctx(self.w.alice)))
         task = self.rec.sessions[self.w.guild.id]['limit_task']
-        await self.rec.stop_command(self.ctx(self.w.alice))
+        await self.rec.stop_command(Responder(self.ctx(self.w.alice)))
         await settle()
         self.assertTrue(task.cancelled() or task.done())
 
@@ -480,7 +485,7 @@ class CogTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rec.RECORD_LIMIT_SECONDS, 30 * 60)
 
     async def test_starter_switches_from_recording_to_gvc(self):
-        await self.rec.start_command(self.ctx(self.w.alice))
+        await self.rec.start_command(Responder(self.ctx(self.w.alice)))
         await self.gvc_join(self.w.alice)
         task = self.rec._deliveries.get(self.w.guild.id)
         if task is not None:
@@ -514,6 +519,10 @@ class MusicTest(unittest.IsolatedAsyncioTestCase):
         self.music = sio_music.VoiceCog(self.bot)
         self.opus = patch.object(rec.discord.opus, 'is_loaded', return_value=True)
         self.opus.start()
+        # 旧コマンドの「移りました」の案内は、このテストでは出さない（最後のメッセージを確かめるため）
+        self.notices = patch.object(NOTICES, 'should_notify', return_value=False)
+        self.notices.start()
+        self.addCleanup(self.notices.stop)
         self.rec = rec.RecordingCog(self.bot)
 
     async def asyncTearDown(self):
@@ -526,15 +535,21 @@ class MusicTest(unittest.IsolatedAsyncioTestCase):
         async def send(content=None, **kwargs):
             sent.append((content, kwargs))
 
+        done = []
+
+        async def send_message(content=None, **kwargs):
+            done.append(True)
+            await send(content, **kwargs)
+
         async def defer(**kwargs):
-            pass
-        response = types.SimpleNamespace(send_message=send, defer=defer)
+            done.append(True)
+        response = types.SimpleNamespace(send_message=send_message, defer=defer, is_done=lambda: bool(done))
         return types.SimpleNamespace(
             user=user, guild=self.w.guild, guild_id=self.w.guild.id, channel=self.w.text,
             response=response, followup=types.SimpleNamespace(send=send)), sent
 
     async def test_join_refused_while_recording(self):
-        await self.rec.start_command(fake_ctx(self.w, self.w.alice, self.bot))
+        await self.rec.start_command(Responder(fake_ctx(self.w, self.w.alice, self.bot)))
         vc = self.w.guild.voice_client
         interaction, sent = self.interaction(self.w.bob)
         await self.music.join_cmd.callback(self.music, interaction)
@@ -552,7 +567,7 @@ class MusicTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.w.guild.voice_client)
 
     async def test_leave_protects_others_recording(self):
-        await self.rec.start_command(fake_ctx(self.w, self.w.alice, self.bot))
+        await self.rec.start_command(Responder(fake_ctx(self.w, self.w.alice, self.bot)))
         interaction, sent = self.interaction(self.w.bob)
         await self.music.leave_cmd.callback(self.music, interaction)
         self.assertEqual(self.manager.owner(self.w.guild.id), 'record')
@@ -563,7 +578,7 @@ class MusicTest(unittest.IsolatedAsyncioTestCase):
         if task is not None:
             await task
         self.assertIsNone(self.manager.get(self.w.guild.id))
-        self.assertIn('/leave で退出したため録音を停止しました', self.w.text.text())
+        self.assertIn('/voice leave で退出したため録音を停止しました', self.w.text.text())
 
     async def test_speak_is_disabled_without_touching_vc(self):
         interaction, sent = self.interaction(self.w.alice)

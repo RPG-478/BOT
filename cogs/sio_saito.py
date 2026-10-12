@@ -23,6 +23,7 @@ from scipy import signal
 import numpy as np
 
 
+from core.legacy import Responder, legacy
 from core.voice_session import VoiceBusy, get_manager
 
 
@@ -74,53 +75,70 @@ class SaitoRelay(commands.Cog):
             ))
         return cleanup
 
-    @commands.command()
-    async def saito(self, ctx):
-        """音声中継マッチング (エンコーダー強制初期化版)"""
-        if not ctx.author.voice:
-            return await ctx.send("VCに参加してから実行してください。")
+    # --------------------------------------------------
+    # 実装（/voice match と旧 !saito・!saito_stop の共通）
+    # --------------------------------------------------
+    async def _match_impl(self, r: Responder, action: str):
+        """action: start / stop"""
+        if action == "stop":
+            return await self._stop(r)
+        return await self._start(r)
 
-        busy = self.voice_sessions.get(ctx.guild.id)
+    @staticmethod
+    async def _notify(peer: Responder, text: str) -> None:
+        """待っていた側への連絡はチャンネルに送る（interaction の期限切れを避ける）。"""
+        try:
+            await peer.channel.send(text)
+        except Exception:
+            logging.debug("saito notify failed", exc_info=True)
+
+    async def _start(self, r: Responder):
+        """音声中継マッチング"""
+        voice = getattr(r.user, "voice", None)
+        if not voice or not voice.channel:
+            return await r.send("VCに参加してから実行してください。", ephemeral=True)
+
+        busy = self.voice_sessions.get(r.guild.id)
         if busy is not None:
-            return await ctx.send(self.voice_sessions.busy_message(busy))
-        if ctx.voice_client:
-            return await ctx.send("このサーバーでは既に接続中です。")
+            return await r.send(self.voice_sessions.busy_message(busy), ephemeral=True)
+        if r.voice_client:
+            return await r.send("このサーバーでは既に接続中です。", ephemeral=True)
 
         # 同じサーバーの古い待ちと、もう VC にいない人の待ちを取り除く
         self.matching_queue = [
             c for c in self.matching_queue
-            if c.guild.id != ctx.guild.id and getattr(c.author, "voice", None) and c.author.voice.channel
+            if c.guild.id != r.guild.id and getattr(c.user, "voice", None) and c.user.voice.channel
         ]
 
         target_peer = None
         for i, peer in enumerate(self.matching_queue):
-            if peer.guild.id != ctx.guild.id:
+            if peer.guild.id != r.guild.id:
                 target_peer = self.matching_queue.pop(i)
                 break
-        
-        if not target_peer:
-            self.matching_queue.append(ctx)
-            return await ctx.send(f"🔎 相手を探しています... ({ctx.guild.name})")
 
-        await ctx.send(f"🤝 **{target_peer.guild.name}** と接続中...")
-        await target_peer.send(f"🤝 **{ctx.guild.name}** と接続中...")
+        if not target_peer:
+            self.matching_queue.append(r)
+            return await r.send(f"🔎 相手を探しています... ({r.guild.name})")
+
+        await r.send(f"🤝 **{target_peer.guild.name}** と接続中...")
+        await self._notify(target_peer, f"🤝 **{r.guild.name}** と接続中...")
 
         acquired = []
         try:
             vc1 = await self.voice_sessions.acquire(
-                ctx.guild, ctx.author.voice.channel, "match", ctx.author,
-                cleanup=self._cleanup(ctx.guild.id, ctx.channel), text_channel=ctx.channel,
+                r.guild, voice.channel, "match", r.user,
+                cleanup=self._cleanup(r.guild.id, r.channel), text_channel=r.channel,
             )
-            acquired.append(ctx.guild.id)
+            acquired.append(r.guild.id)
             vc2 = await self.voice_sessions.acquire(
-                target_peer.guild, target_peer.author.voice.channel, "match", target_peer.author,
+                target_peer.guild, target_peer.user.voice.channel, "match", target_peer.user,
                 cleanup=self._cleanup(target_peer.guild.id, target_peer.channel), text_channel=target_peer.channel,
             )
             acquired.append(target_peer.guild.id)
-            self.peers[ctx.guild.id] = target_peer.guild.id
-            self.peers[target_peer.guild.id] = ctx.guild.id
+            self.peers[r.guild.id] = target_peer.guild.id
+            self.peers[target_peer.guild.id] = r.guild.id
 
-            silence_src1 = discord.FFmpegPCMAudio("/dev/null") 
+            silence_src1 = discord.FFmpegPCMAudio("/dev/null")
             silence_src2 = discord.FFmpegPCMAudio("/dev/null")
             vc1.play(silence_src1)
             vc2.play(silence_src2)
@@ -128,31 +146,45 @@ class SaitoRelay(commands.Cog):
             vc1.listen(_RelaySink(vc2))
             vc2.listen(_RelaySink(vc1))
 
-            await ctx.send("🎙️ 通話を開始しました。")
-            await target_peer.send("🎙️ 通話を開始しました。")
+            await r.send("🎙️ 通話を開始しました。")
+            await self._notify(target_peer, "🎙️ 通話を開始しました。")
 
         except VoiceBusy as busy:
             # 待っている間に相手サーバーで別の機能が始まった
             for guild_id in acquired:
                 self.peers.pop(guild_id, None)
                 await self.voice_sessions.release(guild_id, "match", reason="stop")
-            await ctx.send("⚠️ 相手のサーバーで別の機能が始まったため、通話できませんでした。もう一度お試しください。")
-            await target_peer.send(str(busy))
+            await r.send("⚠️ 相手のサーバーで別の機能が始まったため、通話できませんでした。もう一度お試しください。")
+            await self._notify(target_peer, str(busy))
         except Exception as e:
             logging.error(f"Saito Match Error: {e}")
             for guild_id in acquired:
                 self.peers.pop(guild_id, None)
                 await self.voice_sessions.release(guild_id, "match", reason="stop")
-            await ctx.send("❌ 通話の接続に失敗しました。")
+            await r.send("❌ 通話の接続に失敗しました。")
+
+    async def _stop(self, r: Responder):
+        if await self.voice_sessions.release(r.guild.id, "match", reason="stop"):
+            return await r.send("通話を終了しました。")
+        before = len(self.matching_queue)
+        self.matching_queue = [c for c in self.matching_queue if c.guild.id != r.guild.id]
+        if len(self.matching_queue) != before:
+            return await r.send("相手探しを取り消しました。")
+        await r.send("通話も相手探しもしていません。", ephemeral=True)
+
+    # --------------------------------------------------
+    # 旧コマンド: !saito / !saito_stop（/voice match に移行）
+    # --------------------------------------------------
+    @commands.command()
+    @legacy("/voice match action:開始", "!saito")
+    async def saito(self, ctx):
+        """音声中継マッチング"""
+        await self._match_impl(Responder(ctx), "start")
 
     @commands.command()
+    @legacy("/voice match action:終了", "!saito_stop")
     async def saito_stop(self, ctx):
-        if await self.voice_sessions.release(ctx.guild.id, "match", reason="stop"):
-            return await ctx.send("通話を終了しました。")
-        before = len(self.matching_queue)
-        self.matching_queue = [c for c in self.matching_queue if c.guild.id != ctx.guild.id]
-        if len(self.matching_queue) != before:
-            await ctx.send("相手探しを取り消しました。")
+        await self._match_impl(Responder(ctx), "stop")
 
 async def setup(bot):
     await bot.add_cog(SaitoRelay(bot))

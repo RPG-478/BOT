@@ -35,14 +35,14 @@ RECONNECT_DELAY_SECONDS = 1.0  # 切断してから入り直すまでの待ち�
 
 # 機能名 → (表示名, 終了コマンド)。/voice ができるまでは今あるコマンドを案内する。
 FEATURES: dict[str, tuple[str, str]] = {
-    "music": ("音楽再生", "/leave"),
-    "record": ("録音", "!rec stop"),
-    "echo": ("やまびこ", "!echo stop"),
-    "transcribe": ("文字起こし", "!stt stop"),
-    "karaoke": ("カラオケ", "!karaoke stop"),
-    "changer": ("ボイスチェンジャー", "!vc stop"),
-    "match": ("ランダム通話（!saito）", "!saito_stop"),
-    "global": ("グローバルVC", "!gvc leave"),
+    "music": ("音楽再生", "/voice leave"),
+    "record": ("録音", "/voice record action:停止"),
+    "echo": ("やまびこ", "/voice echo action:停止"),
+    "transcribe": ("文字起こし", "/voice transcribe action:停止"),
+    "karaoke": ("カラオケ", "/voice karaoke action:終了"),
+    "changer": ("ボイスチェンジャー", "/voice changer action:停止"),
+    "match": ("ランダム通話", "/voice match action:終了"),
+    "global": ("グローバルVC", "/voice global action:退出"),
 }
 
 # release() の理由ごとに、使っていたチャンネルへ送るお知らせ。None は送らない（コマンド側で返信する）。
@@ -52,7 +52,7 @@ DEFAULT_NOTICES: dict[str, Optional[str]] = {
     "idle": "ボイスチャンネルに誰もいない状態が{minutes}分続いたため、{label}を終了して退出しました。",
     "disconnected": "ボイスチャンネルから切断されたため、{label}を終了しました。",
     "takeover": "{by} さんが{by_label}を始めたため、{label}を終了しました。",
-    "leave": "{by} さんが /leave を実行したため、{label}を終了しました。",
+    "leave": "{by} さんが /voice leave を実行したため、{label}を終了しました。",
 }
 
 Cleanup = Callable[[str], Any]
@@ -63,7 +63,7 @@ def feature_label(feature: str) -> str:
 
 
 def stop_hint(feature: str) -> str:
-    return FEATURES.get(feature, ("", "/leave"))[1]
+    return FEATURES.get(feature, ("", "/voice leave"))[1]
 
 
 def _display_name(user) -> str:
@@ -170,13 +170,13 @@ class VoiceSessionManager:
         return not self._starter_present(session)
 
     def can_leave(self, session: VoiceSession, member) -> bool:
-        """/leave で止めてよいか。音楽は今までどおり誰でも止められる。"""
+        """/voice leave で止めてよいか。音楽は今までどおり誰でも止められる。"""
         return session.feature == "music" or self.can_override(session, member)
 
     def busy_message(self, session: VoiceSession) -> str:
         return (
             f"⚠️ いまこのサーバーのボイスチャンネルは **{session.label}**（{session.user_name} さんが開始）で使用中です。\n"
-            f"先に `{stop_hint(session.feature)}` で終了するか、`/leave` で退出させてから実行してください。\n"
+            f"先に `{stop_hint(session.feature)}` で終了するか、`/voice leave` で退出させてから実行してください。\n"
             "（開始した人・管理者が実行した場合や、開始した人が VC にいない場合はそのまま切り替わります）"
         )
 

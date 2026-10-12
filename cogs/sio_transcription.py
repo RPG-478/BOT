@@ -17,6 +17,8 @@ import discord.opus
 from discord.ext import commands
 from discord.ext import voice_recv
 
+from core.legacy import Responder, legacy
+from core.vosk_model import ensure_model
 from core.voice_session import VoiceBusy, get_manager
 
 # 超軽量音声認識 Vosk
@@ -353,56 +355,64 @@ class TranscriptionCog(commands.Cog):
 
         return await channel.create_webhook(name="STT-Transcriber")
 
-    @commands.group(name="stt", invoke_without_command=True)
-    @commands.guild_only()
-    async def stt_group(self, ctx: commands.Context):
-        session = self.sessions.get(ctx.guild.id)
+    # --------------------------------------------------
+    # 実装（/voice transcribe と旧 !stt の共通）
+    # --------------------------------------------------
+    async def _transcribe_impl(self, r: Responder, action: str, target_channel: discord.TextChannel | None = None):
+        """action: start / stop / status"""
+        if action == "start":
+            return await self._start(r, target_channel)
+        if action == "stop":
+            if r.guild.id not in self.sessions:
+                return await r.send(embed=we("⚠️ 現在文字起こしは実行されていません。"), ephemeral=True)
+            if not await self.voice_sessions.release(r.guild.id, "transcribe", reason="stop"):
+                self._cleanup(r.guild.id)("stop")
+            return await r.send(embed=we("🛑 文字起こしを停止しました。"))
+        session = self.sessions.get(r.guild.id)
         if session:
-            await ctx.send(embed=we(
+            await r.send(embed=we(
                 f"🎙️ **Vosk 文字起こし実行中**\n"
                 f"ボイスチャンネル: **{session['vc_channel_name']}**\n"
                 f"送信先チャンネル: {session['target_channel_mention']}\n"
-                f"停止コマンド: `{ctx.prefix}stt stop`"
+                f"停止コマンド: `/voice transcribe action:停止`"
             ))
         else:
-            await ctx.send(embed=we(f"⏸️ 文字起こし停止中 (`{ctx.prefix}stt start` で開始)"))
+            await r.send(embed=we("⏸️ 文字起こし停止中 (`/voice transcribe action:開始` で開始)"))
 
-    @stt_group.command(name="start")
-    @commands.guild_only()
-    async def stt_start(
-        self,
-        ctx: commands.Context,
-        target_channel: discord.TextChannel | None = None
-    ):
-        if self.vosk_model is None:
-            return await ctx.send(embed=we("❌ 文字起こし機能は現在利用できません。`vosk` と日本語モデルを設定してください。"))
-        if not ctx.author.voice or not ctx.author.voice.channel:
-            return await ctx.send(embed=we("⚠️ 先にボイスチャンネルに参加してから実行してください。"))
+    async def _start(self, r: Responder, target_channel: discord.TextChannel | None):
+        # モデルが無いときは VC に入る前に断る。
+        problem = await ensure_model(self, Model, MODEL_PATH)
+        if problem:
+            return await r.send(embed=we(problem), ephemeral=True)
+        voice = getattr(r.user, "voice", None)
+        if not voice or not voice.channel:
+            return await r.send(embed=we("⚠️ 先にボイスチャンネルに参加してから実行してください。"), ephemeral=True)
 
-        guild_id = ctx.guild.id
+        guild_id = r.guild.id
         if guild_id in self.sessions:
-            return await ctx.send(embed=we("⚠️ 既に文字起こしが実行中です。"))
+            return await r.send(embed=we("⚠️ 既に文字起こしが実行中です。"), ephemeral=True)
 
-        vc_channel = ctx.author.voice.channel
-        send_channel: discord.TextChannel = target_channel or ctx.channel
+        vc_channel = voice.channel
+        await r.defer()
+        send_channel: discord.TextChannel = target_channel or r.channel
 
         try:
             webhook = await self._get_or_create_webhook(send_channel)
         except discord.Forbidden:
-            return await ctx.send(embed=we(f"❌ Botに {send_channel.mention} の `ウェブフックの管理 (Manage Webhooks)` 権限がありません。"))
+            return await r.send(embed=we(f"❌ Botに {send_channel.mention} の `ウェブフックの管理 (Manage Webhooks)` 権限がありません。"))
         except Exception as e:
-            return await ctx.send(embed=we(f"❌ Webhookの取得に失敗しました: `{e}`"))
+            return await r.send(embed=we(f"❌ Webhookの取得に失敗しました: `{e}`"))
 
         # 別の機能が VC を使っているときは追い出さずに断る。
         try:
             vc = await self.voice_sessions.acquire(
-                ctx.guild, vc_channel, "transcribe", ctx.author,
-                cleanup=self._cleanup(guild_id), text_channel=ctx.channel, force=True, timeout=30.0,
+                r.guild, vc_channel, "transcribe", r.user,
+                cleanup=self._cleanup(guild_id), text_channel=r.channel, force=True, timeout=30.0,
             )
         except VoiceBusy as busy:
-            return await ctx.send(embed=we(str(busy)))
+            return await r.send(embed=we(str(busy)))
         except Exception as e:
-            return await ctx.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
+            return await r.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
 
         async def send_webhook(display_name: str, avatar_url: str | None, text: str):
             async with aiohttp.ClientSession() as session:
@@ -431,21 +441,35 @@ class TranscriptionCog(commands.Cog):
             "target_channel_mention": send_channel.mention
         }
 
-        await ctx.send(embed=we(
+        await r.send(embed=we(
             f"🎙️ **{vc_channel.name}** で Vosk 軽量文字起こしを開始しました！\n"
             f"🤖 結果を {send_channel.mention} へ送信します。"
         ))
 
+    # --------------------------------------------------
+    # 旧コマンド: !stt（/voice transcribe に移行）
+    # --------------------------------------------------
+    @commands.group(name="stt", invoke_without_command=True)
+    @commands.guild_only()
+    @legacy("/voice status", "!stt")
+    async def stt_group(self, ctx: commands.Context):
+        await self._transcribe_impl(Responder(ctx), "status")
+
+    @stt_group.command(name="start")
+    @commands.guild_only()
+    @legacy("/voice transcribe action:開始", "!stt start")
+    async def stt_start(
+        self,
+        ctx: commands.Context,
+        target_channel: discord.TextChannel | None = None
+    ):
+        await self._transcribe_impl(Responder(ctx), "start", target_channel)
+
     @stt_group.command(name="stop")
     @commands.guild_only()
+    @legacy("/voice transcribe action:停止", "!stt stop")
     async def stt_stop(self, ctx: commands.Context):
-        if ctx.guild.id not in self.sessions:
-            return await ctx.send(embed=we("⚠️ 現在文字起こしは実行されていません。"))
-
-        if not await self.voice_sessions.release(ctx.guild.id, "transcribe", reason="stop"):
-            self._cleanup(ctx.guild.id)("stop")
-
-        await ctx.send(embed=we("🛑 文字起こしを停止しました。"))
+        await self._transcribe_impl(Responder(ctx), "stop")
 
     def _cleanup(self, guild_id: int):
         """VC を手放すときの後片付け（切断は VoiceSessionManager が行う）。"""

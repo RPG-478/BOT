@@ -15,6 +15,7 @@ import discord.opus
 from discord.ext import commands
 from discord.ext import voice_recv
 
+from core.legacy import Responder, legacy
 from core.voice_session import VoiceBusy, get_manager
 
 logger = logging.getLogger(__name__)
@@ -383,11 +384,11 @@ class GlobalVCCog(commands.Cog):
         embed.description = (
             f"`{ctx.prefix}gvc create <ルーム名> [--max 5] [--private] [--password xxxx] [--desc 説明]` "
             f": 新しいルームを作成\n"
-            f"`{ctx.prefix}gvc join <ルーム名> [パスワード]` : 指定したルームに参加 (要ボイスチャンネル在室)\n"
+            f"`/voice global action:参加 room:<ルーム名> [password]` : 指定したルームに参加 (要ボイスチャンネル在室)\n"
             f"`{ctx.prefix}gvc list` : ルーム一覧を表示\n"
             f"`{ctx.prefix}gvc info <ルーム名>` : ルームの詳細設定を表示\n"
             f"`{ctx.prefix}gvc delete <ルーム名>` : ルームを削除 (作成者か、作成したサーバーの管理者のみ)\n"
-            f"`{ctx.prefix}gvc leave` : グローバルVCから離脱 (ルーム自体は残ります)\n"
+            f"`/voice global action:退出` : グローバルVCから離脱 (ルーム自体は残ります)\n"
             f"`{ctx.prefix}gvc chat connect <ルーム名> [パスワード]` : このチャンネルをグロチャに接続\n"
             f"`{ctx.prefix}gvc chat disconnect` : このチャンネルのグロチャ接続を解除\n\n"
             f"ルーム名にスペースを含める場合は `\"\"` で囲んでください。"
@@ -428,69 +429,8 @@ class GlobalVCCog(commands.Cog):
         embed.add_field(name="公開設定", value="🔒 非公開" if private else "🌍 公開")
         if description:
             embed.add_field(name="説明", value=description, inline=False)
-        embed.set_footer(text=f"{ctx.prefix}gvc join {room_name} で参加できます")
+        embed.set_footer(text=f"/voice global action:参加 room:{room_name} で参加できます")
         await ctx.send(embed=embed)
-
-    @gvc_group.command(name="join")
-    async def gvc_join(self, ctx: commands.Context, room_name: str, password: str = None):
-        if not ctx.author.voice or not ctx.author.voice.channel:
-            return await ctx.send("⚠️ ボイスチャンネルに参加してから実行してください。")
-
-        room = ROOMS.get(room_name)
-        if room is None:
-            return await ctx.send(
-                f"❌ ルーム **{room_name}** は存在しません。"
-                f"先に `{ctx.prefix}gvc create {room_name}` で作成してください。"
-            )
-
-        if room.private and password != room.password:
-            return await ctx.send("🔒 このルームは非公開です。正しいパスワードを指定してください。")
-
-        current_members = GLOBAL_ROOMS.get(room_name, [])
-        if room.max_servers and len(current_members) >= room.max_servers:
-            return await ctx.send(f"⚠️ ルーム **{room_name}** は満員です ({room.max_servers}サーバーまで)。")
-
-        if any(vc.guild and vc.guild.id == ctx.guild.id for vc in current_members):
-            return await ctx.send(f"⚠️ このサーバーはすでにルーム **{room_name}** に参加しています。")
-
-        vc_channel = ctx.author.voice.channel
-
-        session = self.voice_sessions.get(ctx.guild.id)
-        if session is not None and session.feature == "global":
-            joined = next((name for name, clients in GLOBAL_ROOMS.items()
-                           if any(c.guild and c.guild.id == ctx.guild.id for c in clients)), None)
-            return await ctx.send(
-                f"⚠️ このサーバーはすでにルーム **{joined or '不明'}** に参加しています。"
-                f"先に `{ctx.prefix}gvc leave` してください。"
-            )
-
-        # 別の機能（音楽・録音など）が VC を使っているときは追い出さずに断る。
-        try:
-            vc = await self.voice_sessions.acquire(
-                ctx.guild, vc_channel, "global", ctx.author,
-                cleanup=self._cleanup(ctx.guild.id), text_channel=ctx.channel, force=True, timeout=30.0,
-            )
-        except VoiceBusy as busy:
-            return await ctx.send(str(busy))
-        except Exception as e:
-            return await ctx.send(f"❌ ボイス接続に失敗しました: `{e}`")
-
-        # 再生用 AudioSource を登録して再生開始
-        source = GlobalAudioSource()
-        vc.global_source = source
-        vc.play(source)
-
-        # 受信 Sink の設定
-        sink = GlobalAudioSink(room_name, vc)
-        vc.listen(sink)
-
-        # ルーム管理に追加
-        GLOBAL_ROOMS.setdefault(room_name, []).append(vc)
-
-        await ctx.send(
-            f"🌐 ルーム **{room_name}** に参加しました！\n"
-            f"別サーバーの同名ルームと相互接続されています。"
-        )
 
     @gvc_group.command(name="list")
     async def gvc_list(self, ctx: commands.Context):
@@ -567,20 +507,102 @@ class GlobalVCCog(commands.Cog):
         del ROOMS[room_name]
         await ctx.send(f"🗑️ ルーム **{room_name}** を削除しました (VC・グロチャの連携もすべて解除)。")
 
-    @gvc_group.command(name="leave")
-    async def gvc_leave(self, ctx: commands.Context):
-        if ctx.guild is not None and await self.voice_sessions.release(ctx.guild.id, "global", reason="stop"):
-            return await ctx.send("🌐 グローバルVCから切断しました。ルーム自体は残っています。")
+    # --------------------------------------------------
+    # 実装（/voice global と旧 !gvc join・!gvc leave の共通）
+    # --------------------------------------------------
+    async def _global_impl(self, r: Responder, action: str, room_name: str | None = None, password: str | None = None):
+        """action: join / leave"""
+        if action == "leave":
+            return await self._leave(r)
+        return await self._join(r, room_name, password)
 
-        vc = ctx.voice_client
+    async def _join(self, r: Responder, room_name: str | None, password: str | None):
+        voice = getattr(r.user, "voice", None)
+        if not voice or not voice.channel:
+            return await r.send("⚠️ ボイスチャンネルに参加してから実行してください。", ephemeral=True)
+        if not room_name:
+            return await r.send("⚠️ 参加するルーム名を `room` に入れてください。", ephemeral=True)
+
+        room = ROOMS.get(room_name)
+        if room is None:
+            return await r.send(
+                f"❌ ルーム **{room_name}** は存在しません。"
+                f"先に `!gvc create {room_name}` で作成してください。"
+            )
+
+        if room.private and password != room.password:
+            return await r.send("🔒 このルームは非公開です。正しいパスワードを指定してください。")
+
+        current_members = GLOBAL_ROOMS.get(room_name, [])
+        if room.max_servers and len(current_members) >= room.max_servers:
+            return await r.send(f"⚠️ ルーム **{room_name}** は満員です ({room.max_servers}サーバーまで)。")
+
+        if any(vc.guild and vc.guild.id == r.guild.id for vc in current_members):
+            return await r.send(f"⚠️ このサーバーはすでにルーム **{room_name}** に参加しています。")
+
+        vc_channel = voice.channel
+        await r.defer()
+
+        session = self.voice_sessions.get(r.guild.id)
+        if session is not None and session.feature == "global":
+            joined = next((name for name, clients in GLOBAL_ROOMS.items()
+                           if any(c.guild and c.guild.id == r.guild.id for c in clients)), None)
+            return await r.send(
+                f"⚠️ このサーバーはすでにルーム **{joined or '不明'}** に参加しています。"
+                "先に `/voice global action:退出` してください。"
+            )
+
+        # 別の機能（音楽・録音など）が VC を使っているときは追い出さずに断る。
+        try:
+            vc = await self.voice_sessions.acquire(
+                r.guild, vc_channel, "global", r.user,
+                cleanup=self._cleanup(r.guild.id), text_channel=r.channel, force=True, timeout=30.0,
+            )
+        except VoiceBusy as busy:
+            return await r.send(str(busy))
+        except Exception as e:
+            return await r.send(f"❌ ボイス接続に失敗しました: `{e}`")
+
+        # 再生用 AudioSource を登録して再生開始
+        source = GlobalAudioSource()
+        vc.global_source = source
+        vc.play(source)
+
+        # 受信 Sink の設定
+        sink = GlobalAudioSink(room_name, vc)
+        vc.listen(sink)
+
+        # ルーム管理に追加
+        GLOBAL_ROOMS.setdefault(room_name, []).append(vc)
+
+        await r.send(
+            f"🌐 ルーム **{room_name}** に参加しました！\n"
+            f"別サーバーの同名ルームと相互接続されています。"
+        )
+
+    async def _leave(self, r: Responder):
+        if r.guild is not None and await self.voice_sessions.release(r.guild.id, "global", reason="stop"):
+            return await r.send("🌐 グローバルVCから切断しました。ルーム自体は残っています。")
+
+        vc = r.voice_client
         if not vc:
-            return await ctx.send("現在ボイスチャンネルに接続していません。")
+            return await r.send("現在ボイスチャンネルに接続していません。")
         if any(vc in clients for clients in GLOBAL_ROOMS.values()):
             # 持ち主の記録がない古い接続
             await _disconnect_and_cleanup(vc)
-            return await ctx.send("🌐 グローバルVCから切断しました。ルーム自体は残っています。")
+            return await r.send("🌐 グローバルVCから切断しました。ルーム自体は残っています。")
         # 音楽や録音など、グローバルVC 以外の機能は止めない（以前はここで何でも切断していた）
-        await ctx.send("このサーバーはグローバルVCに参加していません。")
+        await r.send("このサーバーはグローバルVCに参加していません。")
+
+    @gvc_group.command(name="join")
+    @legacy("/voice global action:参加", "!gvc join")
+    async def gvc_join(self, ctx: commands.Context, room_name: str, password: str = None):
+        await self._global_impl(Responder(ctx), "join", room_name, password)
+
+    @gvc_group.command(name="leave")
+    @legacy("/voice global action:退出", "!gvc leave")
+    async def gvc_leave(self, ctx: commands.Context):
+        await self._global_impl(Responder(ctx), "leave")
 
     # ------------------------------------------------------------
     # グロチャ (テキストチャット連携)
