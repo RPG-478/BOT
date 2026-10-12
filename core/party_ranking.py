@@ -13,7 +13,7 @@ import logging
 
 log = logging.getLogger(__name__)
 
-KNOWN_GAMES = ("ngword", "shiritori", "wordwolf", "jinrou", "uno", "doubt")
+KNOWN_GAMES = ("ngword", "shiritori", "wordwolf", "jinrou", "uno", "doubt", "janken")
 _MISSING = object()
 
 
