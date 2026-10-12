@@ -151,7 +151,7 @@ class CommandCatalogTest(unittest.TestCase):
                 self.assertTrue(entry['usage'].startswith('/' if entry['kind'] == 'slash' else '!'))
 
     def test_debug_and_owner_commands_are_hidden(self):
-        for key in ('!terminal', '!all_stats', '/d1ping', '/check_api', '!coin'):
+        for key in ('!terminal', '!guild', '!all_stats', '/d1ping', '/check_api', '!coin'):
             with self.subTest(command=key):
                 entry = command_catalog.find_command(self.catalog, key, include_hidden=True)
                 self.assertTrue(entry['hidden'])
