@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""/game: パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle・神経衰弱・ババ抜き・数字当て・フラッシュ暗算）の入口。
+"""/game: パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle・神経衰弱・ババ抜き・数字当て・フラッシュ暗算・大富豪）の入口。
 
 ゲームを選ぶと、人数の目安・所要時間と「ルール」「募集する」ボタンが出る。
 募集は各ゲームの cog の ``start_recruit(interaction)`` をそのまま呼ぶので、個別のコマンド
@@ -28,6 +28,7 @@ GAME_COGS = {
     "babanuki": "Babanuki",
     "guess": "Guess",
     "flash": "FlashMentalArithmetic",
+    "daifugo": "Daifugo",
 }
 
 # 勝利数を記録しているゲーム（ここだけ「ランキング」ボタンを出す）

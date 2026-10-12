@@ -7,7 +7,7 @@ import discord
 
 from game_fakes import (FakeBot, FakeChannel, FakeGuild, FakeInteraction, FakeMember, FakeMessage, choose, fast_time,
                         press, real_sleep)
-from cogs import babanuki, doubt, flash, game, guess, janken, jinrou, ngword, shiritori, shinkei, uno, wordle, wordwolf
+from cogs import babanuki, daifugo, doubt, flash, game, guess, janken, jinrou, ngword, shiritori, shinkei, uno, wordle, wordwolf
 from core import game_guides as guides
 from core import party_ranking
 from core.game_guides import GAME_GUIDES, GAME_ORDER
@@ -54,6 +54,7 @@ class GameHubTest(unittest.IsolatedAsyncioTestCase):
         self.babanuki = self.bot.add(babanuki.Babanuki(self.bot))
         self.guess = self.bot.add(guess.Guess(self.bot))
         self.flash = self.bot.add(flash.FlashMentalArithmetic(self.bot))
+        self.daifugo = self.bot.add(daifugo.Daifugo(self.bot))
 
     async def open_hub(self):
         inter = FakeInteraction(self.host, self.channel)

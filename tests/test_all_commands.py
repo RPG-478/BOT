@@ -46,13 +46,10 @@ OPTIONAL_COGS = {'judgement': 'needle'}
 
 SLASH_ARGUMENTS = {
     'giveaway': {'prize': 'テスト賞品', 'winners': 1, 'minutes': 5},
-    'send_panel': {'channel': 'CHANNEL', 'role': 'ROLE'},
     'setup': {},
-    'sync_category_perms': {'category': 'CATEGORY', 'role': 'ROLE'},
     'clear': {'amount': 1},
     'dungeon': {},
     'game': {},
-    'chat': {},
     'muted': {},
     'help': {},
     'fujo panic set': {'days': 3, 'message': 'テスト'},

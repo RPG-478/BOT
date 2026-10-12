@@ -61,8 +61,8 @@ CATEGORIES = [
             "`/help` でカテゴリごとのコマンド一覧を見られます。`/help command:` にコマンド名を入れると、"
             "そのコマンドの使い方だけを表示します。\n\n"
             "## グローバルチャット\n"
-            "`/chat` を実行したチャンネルの発言が、同じく `/chat` をオンにしたほかのサーバーのチャンネルへ届きます"
-            "（実行には「チャンネルの管理」権限が必要です）。部屋を分けたいときは `!gvc` のルームを使います。"
+            "`/setup` のグローバルチャットのステップでつないだチャンネルの発言が、ほかのサーバーのつないだチャンネルへ届きます"
+            "（`/setup` には「サーバー管理」権限が必要です）。部屋を分けたいときは `!gvc` のルームを使います。"
         ),
     },
     {
@@ -81,7 +81,7 @@ CATEGORIES = [
     {
         "id": "game",
         "label": "パーティーゲーム",
-        "description": "人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle・神経衰弱・ババ抜きなど、チャンネルのみんなで遊べるゲームです。",
+        "description": "人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle・神経衰弱・ババ抜き・大富豪など、チャンネルのみんなで遊べるゲームです。",
         "guide": (
             "## 遊び方\n"
             "それぞれのゲームのコマンドを実行すると参加者の募集が始まり、ボタンで参加できます。"
@@ -141,7 +141,6 @@ COMMAND_META: dict[str, dict] = {
         "summary": "コマンドの一覧と使い方を表示します（詳しくは /help）",
         "options": {"command": "使い方を見たいコマンド名"},
     },
-    "/chat": {"category": "support", "permissions": ["manage_channels"]},
     "/whisper": {"category": "support"},
     "/giveaway": {"category": "support", "permissions": ["manage_guild"], "guild_only": True},
     "/fujo register": {"category": "support"},
@@ -246,14 +245,13 @@ COMMAND_META: dict[str, dict] = {
             "選んだ内容はすぐ保存されます。使わない機能は「次へ（スキップ）」で飛ばせます。"
             "もう一度実行すると、今の設定が表示されます。\n\n"
             "## ステップ\n"
-            "1. 認証: 付けるロール、自己紹介チャンネル、フォームの有効/停止。このチャンネルに認証パネルも送れます\n"
+            "1. 認証: 付けるロール、自己紹介チャンネル、フォームの有効/停止。このチャンネルに認証パネルを送ることや、"
+            "カテゴリを認証ロールの人だけに見せることもできます\n"
             "2. グローバルチャット: このチャンネルをつなぐ / 外す\n"
             "3. ミュート管理ロール（対応している場合）\n"
             "4. まとめ: 設定内容と、機能ごとに Bot に足りない権限の一覧"
         ),
     },
-    "/send_panel": {"category": "admin"},
-    "/sync_category_perms": {"category": "admin"},
     "/clear": {"category": "admin", "permissions": ["manage_messages"]},
     "/muted": {"category": "admin"},
     "!dungeon_reset": {"category": "admin", "summary": "ダンジョンのマップを全サーバー分リセットします", "permissions": ["bot_admin"],
