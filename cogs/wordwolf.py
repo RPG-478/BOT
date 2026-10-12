@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 import discord
 from discord.ext import commands
+
+from core import party_ranking
+
+party_ranking.register("wordwolf")
 from discord import app_commands
 import asyncio
 import random
@@ -230,6 +234,16 @@ class CustomWordWolf(commands.Cog):
 
     async def end_game(self, channel, result):
         self.game_running = False
+        # サーバーごとのランキング（core/party_ranking.py）: チーム戦なので勝った側の全員に 1 勝。
+        # 村人の勝ち → ウルフ以外の参加者全員（脱落した人も含む）、ウルフの勝ち → ウルフ 1 人
+        guild = getattr(channel, "guild", None)
+        if guild is not None:
+            if result == "villager_win":
+                winners = [p for p in self.players if p != self.wolf]
+            else:
+                winners = [self.wolf] if self.wolf is not None else []
+            for p in winners:
+                await party_ranking.shared().record_win(guild.id, p.id, "wordwolf")
         
         if result == "villager_win":
             msg = "**村人チームの勝利です！**"
