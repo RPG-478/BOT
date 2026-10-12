@@ -206,3 +206,6 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 screener_data.db
+
+# cog が実行時に作るローカルDB
+mimic_memory.db

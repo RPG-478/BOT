@@ -8,7 +8,7 @@ import re
 from collections import deque
 from google import genai
 from google.genai import types
-from .gemini_compat import generate_content
+from core.gemini_compat import generate_content
 
 TARGET_USER_ID = 1320705325686587408
 DB_PATH = "mimic_memory.db"
