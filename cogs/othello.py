@@ -1,15 +1,53 @@
 """/game のオセロ（2人対戦、標準8x8ルール）。"""
 import asyncio
+import io
+from pathlib import Path
 
 import discord
 from discord.ext import commands
 from core import game_panels
+from PIL import Image
 
 COLOR = 0xFFFFFF
 RECRUIT_SECONDS = 30
 TURN_SECONDS = 60
 EMPTY, BLACK, WHITE = ".", "●", "○"
 DIRECTIONS = [(dr, dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if (dr, dc) != (0, 0)]
+ASSET_DIR = Path(__file__).resolve().parents[1] / "Assets" / "reversi"
+BOARD_SIZE = 800
+
+
+def render_board_image(board):
+    """追加素材を使い、8x8盤面と石を高解像度PNGに合成する。"""
+    source = Image.open(ASSET_DIR / "IMG_4894.png").convert("RGBA")
+    board_image = source.crop((72, 45, 529, 505)).resize(
+        (BOARD_SIZE, BOARD_SIZE), Image.Resampling.LANCZOS
+    )
+    pieces = {
+        BLACK: Image.open(ASSET_DIR / "IMG_4896.png").convert("RGBA"),
+        WHITE: Image.open(ASSET_DIR / "IMG_4895.png").convert("RGBA"),
+    }
+    pieces = {key: image.crop(image.getchannel("A").getbbox()) for key, image in pieces.items()}
+    cell_size = BOARD_SIZE / 8
+    piece_size = round(cell_size * 0.78)
+    for row in range(8):
+        for col in range(8):
+            piece = board[row][col]
+            if piece not in pieces:
+                continue
+            stone = pieces[piece].resize((piece_size, piece_size), Image.Resampling.LANCZOS)
+            x = round(col * cell_size + (cell_size - piece_size) / 2)
+            y = round(row * cell_size + (cell_size - piece_size) / 2)
+            board_image.alpha_composite(stone, (x, y))
+    output = io.BytesIO()
+    board_image.save(output, format="PNG", optimize=True)
+    output.seek(0)
+    return output
+
+
+def board_attachment(board):
+    filename = "othello_board.png"
+    return discord.File(render_board_image(board), filename=filename), f"attachment://{filename}"
 
 
 def new_board():
@@ -141,7 +179,10 @@ class TurnView(discord.ui.View):
         g = self.game
         if interaction.user.id != g.current_user().id or g.acted:
             return await interaction.response.send_message("あなたの番ではありません。", ephemeral=True)
-        await interaction.response.send_message(render(g.board) + "\n置く場所を選んでください。",
+        file, image_url = board_attachment(g.board)
+        embed = discord.Embed(description="置く場所を選んでください。", color=COLOR)
+        embed.set_image(url=image_url)
+        await interaction.response.send_message(embed=embed, file=file,
                                                 view=MoveView(self.cog, g, legal_moves(g.board, g.turn)), ephemeral=True)
 
 
@@ -180,7 +221,10 @@ class Othello(commands.Cog):
             return
         g.phase = "playing"
         g.players[BLACK], g.players[WHITE] = list(g.players.values())
-        await channel.send("オセロを開始します。黒（●）が先手です。\n" + render(g.board))
+        file, image_url = board_attachment(g.board)
+        start_embed = discord.Embed(description="オセロを開始します。黒（●）が先手です。", color=COLOR)
+        start_embed.set_image(url=image_url)
+        await channel.send(embed=start_embed, file=file)
         idle = 0
         while g.phase == "playing":
             moves = legal_moves(g.board, g.turn)
@@ -189,12 +233,18 @@ class Othello(commands.Cog):
                 if g.pass_count >= 2 or all(cell != EMPTY for row in g.board for cell in row):
                     break
                 g.turn = WHITE if g.turn == BLACK else BLACK
-                await channel.send(f"{g.players[BLACK if g.turn == WHITE else WHITE].mention} さんは置ける場所がないためパス。\n{render(g.board)}")
+                file, image_url = board_attachment(g.board)
+                pass_embed = discord.Embed(description=f"{g.players[BLACK if g.turn == WHITE else WHITE].mention} さんは置ける場所がないためパス。", color=COLOR)
+                pass_embed.set_image(url=image_url)
+                await channel.send(embed=pass_embed, file=file)
                 continue
             g.acted = False
             color, uid = g.turn, g.current_user().id
-            await game_panels.replace(channel, "party", embed=discord.Embed(
-                description=f"{g.players[color].mention} さんの番（{ '黒 ●' if color == BLACK else '白 ○'}）。\n{render(g.board)}", color=COLOR), view=TurnView(self, g))
+            file, image_url = board_attachment(g.board)
+            turn_embed = discord.Embed(
+                description=f"{g.players[color].mention} さんの番（{ '黒 ●' if color == BLACK else '白 ○'}）。", color=COLOR)
+            turn_embed.set_image(url=image_url)
+            await game_panels.replace(channel, "party", embed=turn_embed, file=file, view=TurnView(self, g))
             for _ in range(TURN_SECONDS):
                 if g.acted or g.phase != "playing": break
                 await asyncio.sleep(1)
@@ -211,7 +261,10 @@ class Othello(commands.Cog):
         g.phase = "done"
         black, white = g.score()
         outcome = "引き分け" if black == white else f"勝者: {g.players[BLACK if black > white else WHITE].mention}"
-        await channel.send(embed=discord.Embed(title="オセロ 終了", description=f"{outcome}\n黒: {black} / 白: {white}\n\n{render(g.board)}", color=COLOR))
+        file, image_url = board_attachment(g.board)
+        result_embed = discord.Embed(title="オセロ 終了", description=f"{outcome}\n黒: {black} / 白: {white}", color=COLOR)
+        result_embed.set_image(url=image_url)
+        await channel.send(embed=result_embed, file=file)
 
 
 async def setup(bot):
