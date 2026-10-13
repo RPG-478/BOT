@@ -1,0 +1,36 @@
+-- REVIEW ONLY — NOT APPLIED.
+-- Enabling RLS without suitable policies blocks anon/authenticated access.
+-- Review service-role and client access paths and add appropriate policies before execution.
+ALTER TABLE public.guilds ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.item_inventories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.item_instances ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.railways ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.raid_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.players ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.chaos_dive_saves ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.jinrou_ratings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.stock_quiz_stats ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.positions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.trade_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_music_playlists ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.monsters ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.work_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.fujo_users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.fujo_activities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.dungeon_maps ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.dungeon_players ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.dungeon_bases ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.analysis_alerts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.analysis_watchlists ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.bot_kv ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.nation_guilds ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.nation_tiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.nation_alliances ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.nation_players ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.bump_rta_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.bump_rta_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.bump_rta_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.bump_rta_reminders ENABLE ROW LEVEL SECURITY;

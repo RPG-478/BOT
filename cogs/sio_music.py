@@ -2842,100 +2842,78 @@ class VoiceCog(commands.Cog):
                          file: discord.Attachment | None = None, start_at: float | None = None):
         await self._play_impl(interaction, query, file, start_at)
 
-    @music_group.command(name="pause", description="一時停止と再開を切り替えます")
-    async def music_pause(self, interaction: discord.Interaction):
-        await self._pause_impl(interaction)
-
-    @music_group.command(name="skip", description="次の曲へスキップします")
-    async def music_skip(self, interaction: discord.Interaction):
-        await self._skip_impl(interaction)
-
-    @music_group.command(name="stop", description="再生を止めてキューを空にします（VC には残ります）")
-    async def music_stop(self, interaction: discord.Interaction):
-        await self._stop_impl(Responder(interaction))
-
-    @music_group.command(name="seek", description="今の曲を指定した秒数へ移動します")
-    @app_commands.describe(seconds="移動先の位置（秒）")
-    async def music_seek(self, interaction: discord.Interaction, seconds: app_commands.Range[float, 0.0]):
-        await self._seek_impl(interaction, seconds)
-
-    @music_group.command(name="queue", description="再生キューを表示します")
-    async def music_queue(self, interaction: discord.Interaction):
-        await self._queue_impl(interaction)
-
-    @music_group.command(name="loop", description="ループ再生を切り替えます")
-    @app_commands.choices(mode=LOOP_CHOICES)
-    @app_commands.describe(mode="ループの種類")
-    async def music_loop(self, interaction: discord.Interaction, mode: app_commands.Choice[str]):
-        await self._loop_impl(interaction, mode.value)
-
-    @music_group.command(name="shuffle", description="シャッフル再生のオン・オフを切り替えます")
-    async def music_shuffle(self, interaction: discord.Interaction):
-        await self._shuffle_impl(interaction)
-
-    @music_group.command(name="volume", description="音量を変えます（1.0 で 100%）")
-    @app_commands.describe(value="音量（0.1〜2.0）")
-    async def music_volume(self, interaction: discord.Interaction, value: app_commands.Range[float, 0.1, 2.0]):
-        await self._volume_impl(Responder(interaction), value)
-
-    @music_group.command(name="speed", description="再生速度を変えます（1.0 で等速）")
-    @app_commands.describe(value=f"再生速度（{MIN_PLAYBACK_SPEED}〜{MAX_PLAYBACK_SPEED:g}）")
-    async def music_speed(self, interaction: discord.Interaction,
-                          value: app_commands.Range[float, MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED]):
-        await self._speed_impl(Responder(interaction), value)
-
-    @music_group.command(name="eq", description="イコライザ（EQ）や音響エフェクトを設定します")
-    @app_commands.describe(mode="プリセット選択、または直接 FFmpeg フィルター文字列を入力")
-    async def music_eq(self, interaction: discord.Interaction, mode: str = "flat"):
-        await self._eq_impl(interaction, mode)
-
-    @music_eq.autocomplete("mode")
-    async def music_eq_autocomplete(self, interaction: discord.Interaction, current: str):
-        return self._eq_choices(current)
-
-    @music_group.command(name="spatial", description="立体音響パネルを開きます。オプションを付けるとリバーブの値を変えます")
-    @app_commands.describe(
-        feedback="残響の長さ（0.0〜0.95）",
-        wet="残響の量（0.0〜1.0）",
-        resolution="リバーブの細かさ",
-    )
-    @app_commands.choices(resolution=[
-        app_commands.Choice(name="4（軽量・クリア）", value=4),
-        app_commands.Choice(name="8（高密度・なめらか）", value=8),
-    ])
-    async def music_spatial(self, interaction: discord.Interaction,
-                            feedback: app_commands.Range[float, 0.0, 0.95] | None = None,
-                            wet: app_commands.Range[float, 0.0, 1.0] | None = None,
-                            resolution: int | None = None):
-        await self._spatial_impl(Responder(interaction), feedback=feedback, wet=wet, resolution=resolution)
-
     @music_group.command(name="panel", description="音楽の操作パネルを開きます（VC に自動で参加）")
     async def music_panel(self, interaction: discord.Interaction):
         await self._panel_impl(Responder(interaction))
 
-    @music_group.command(name="search", description="YouTube を検索して上位10件から選んで再生します")
-    @app_commands.describe(keyword="検索する言葉（Spotify のプレイリスト URL も可）")
-    async def music_search(self, interaction: discord.Interaction, keyword: str):
-        await self._search_impl(Responder(interaction), keyword)
+    @music_group.command(name="control", description="一時停止・スキップ・停止・キューなどを操作します")
+    @app_commands.choices(action=[
+        app_commands.Choice(name="一時停止/再開", value="pause"), app_commands.Choice(name="スキップ", value="skip"),
+        app_commands.Choice(name="停止", value="stop"), app_commands.Choice(name="シーク", value="seek"),
+        app_commands.Choice(name="キュー表示", value="queue"), app_commands.Choice(name="ループ", value="loop"),
+        app_commands.Choice(name="シャッフル切替", value="shuffle"),
+    ], loop_mode=LOOP_CHOICES)
+    @app_commands.describe(action="実行する操作", seconds="シーク先の秒数", loop_mode="ループの種類")
+    async def music_control(self, interaction: discord.Interaction, action: app_commands.Choice[str] | None = None,
+                            seconds: app_commands.Range[float, 0.0] | None = None,
+                            loop_mode: app_commands.Choice[str] | None = None):
+        if action is None: return await interaction.response.send_message("実行する操作を選んでください。", ephemeral=True)
+        if action.value == "pause": await self._pause_impl(interaction)
+        elif action.value == "skip": await self._skip_impl(interaction)
+        elif action.value == "stop": await self._stop_impl(Responder(interaction))
+        elif action.value == "seek":
+            if seconds is None: return await interaction.response.send_message("シークには seconds を指定してください。", ephemeral=True)
+            await self._seek_impl(interaction, seconds)
+        elif action.value == "queue": await self._queue_impl(interaction)
+        elif action.value == "loop":
+            if loop_mode is None: return await interaction.response.send_message("ループには loop_mode を指定してください。", ephemeral=True)
+            await self._loop_impl(interaction, loop_mode.value)
+        elif action.value == "shuffle": await self._shuffle_impl(interaction)
 
-    @music_group.command(name="playlist", description="プレイリストを保存・一覧・再生します（自分用 / サーバー共有）")
-    @app_commands.choices(action=PLAYLIST_ACTION_CHOICES, scope=PLAYLIST_SCOPE_CHOICES)
-    @app_commands.describe(
-        action="実行する操作",
-        name="プレイリスト名（一覧では不要）。サーバー共有の再生では ID の並びも指定できます",
-        scope="自分用（既定）か、サーバーのみんなで共有するか",
-        file="サーバー共有の再生で使う JSON ファイル（ID の配列）",
-    )
-    async def music_playlist(self, interaction: discord.Interaction, action: app_commands.Choice[str],
-                             name: str | None = None, scope: app_commands.Choice[str] | None = None,
-                             file: discord.Attachment | None = None):
-        await self._playlist_impl(Responder(interaction), action.value, name, scope.value if scope else 'me', file)
+    @music_group.command(name="sound", description="音量・速度・EQ・立体音響をまとめて設定します")
+    @app_commands.choices(action=[
+        app_commands.Choice(name="音量", value="volume"), app_commands.Choice(name="再生速度", value="speed"),
+        app_commands.Choice(name="EQ", value="eq"), app_commands.Choice(name="立体音響", value="spatial"),
+    ])
+    @app_commands.describe(action="変更する音響設定", value="音量または再生速度", preset="EQプリセット/フィルター",
+                           feedback="残響の長さ", wet="残響の量", resolution="リバーブの細かさ")
+    @app_commands.choices(resolution=[app_commands.Choice(name="4（軽量）", value=4), app_commands.Choice(name="8（高密度）", value=8)])
+    async def music_sound(self, interaction: discord.Interaction, action: app_commands.Choice[str] | None = None,
+                          value: float | None = None, preset: str | None = None,
+                          feedback: app_commands.Range[float, 0.0, 0.95] | None = None,
+                          wet: app_commands.Range[float, 0.0, 1.0] | None = None, resolution: int | None = None):
+        if action is None: return await interaction.response.send_message("変更する音響設定を選んでください。", ephemeral=True)
+        if action.value in ("volume", "speed"):
+            if value is None: return await interaction.response.send_message("この操作には value が必要です。", ephemeral=True)
+            if action.value == "volume":
+                if not 0.1 <= value <= 2.0: return await interaction.response.send_message("音量は0.1〜2.0で指定してください。", ephemeral=True)
+                await self._volume_impl(Responder(interaction), value)
+            else:
+                if not MIN_PLAYBACK_SPEED <= value <= MAX_PLAYBACK_SPEED: return await interaction.response.send_message(f"速度は{MIN_PLAYBACK_SPEED}〜{MAX_PLAYBACK_SPEED:g}で指定してください。", ephemeral=True)
+                await self._speed_impl(Responder(interaction), value)
+        elif action.value == "eq": await self._eq_impl(interaction, preset or "flat")
+        else: await self._spatial_impl(Responder(interaction), feedback=feedback, wet=wet, resolution=resolution)
 
-    @music_group.command(name="files", description="このチャンネルにアップロードされた音声の ID を表示します")
-    @app_commands.describe(limit="さかのぼるメッセージ数（1〜100）")
-    async def music_files(self, interaction: discord.Interaction, limit: app_commands.Range[int, 1, 100] = 20):
-        await self._files_impl(Responder(interaction), limit)
-
+    @music_group.command(name="library", description="検索・プレイリスト・音声ファイルを操作します")
+    @app_commands.choices(action=[
+        app_commands.Choice(name="検索", value="search"), app_commands.Choice(name="プレイリスト", value="playlist"),
+        app_commands.Choice(name="音声ファイルID一覧", value="files"),
+    ], playlist_action=PLAYLIST_ACTION_CHOICES, scope=PLAYLIST_SCOPE_CHOICES)
+    @app_commands.describe(action="実行する操作", query="検索語", playlist_action="保存・一覧・再生",
+                           name="プレイリスト名またはID列", scope="自分用かサーバー共有", file="音声またはJSON添付", limit="検索するメッセージ数")
+    async def music_library(self, interaction: discord.Interaction, action: app_commands.Choice[str] | None = None,
+                            query: str | None = None, playlist_action: app_commands.Choice[str] | None = None,
+                            name: str | None = None, scope: app_commands.Choice[str] | None = None,
+                            file: discord.Attachment | None = None,
+                            limit: app_commands.Range[int, 1, 100] = 20):
+        if action is None: return await interaction.response.send_message("実行する操作を選んでください。", ephemeral=True)
+        if action.value == "search":
+            if not query: return await interaction.response.send_message("検索には query が必要です。", ephemeral=True)
+            await self._search_impl(Responder(interaction), query)
+        elif action.value == "files": await self._files_impl(Responder(interaction), limit)
+        else:
+            if playlist_action is None: return await interaction.response.send_message("playlist_action を指定してください。", ephemeral=True)
+            await self._playlist_impl(Responder(interaction), playlist_action.value, name, scope.value if scope else 'me', file)
 
 #↓落ちた原因これね
 async def setup(bot):
