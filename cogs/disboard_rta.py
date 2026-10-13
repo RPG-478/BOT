@@ -211,7 +211,7 @@ class BumpRta(commands.Cog):
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                     original = None
                 noun = "bump" if row["event_type"] == "bump" else "up"
-                embed = discord.Embed(description=f"{noun}できるようになりました", color=discord.Color.blurple())
+                embed = discord.Embed(description=f"{noun}できます", color=discord.Color.blurple())
                 sent = await channel.send(
                     embed=embed, reference=original, mention_author=False,
                     allowed_mentions=discord.AllowedMentions.none(),
@@ -237,6 +237,10 @@ class BumpRta(commands.Cog):
             return
         lock = self._locks.setdefault((guild_id, kind), asyncio.Lock())
         async with lock:
+            await message.channel.send(
+                f"{kind}を検知しました。2時間後に通知します。",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             if self.db is None:
                 return
             try:
