@@ -66,7 +66,7 @@ AS $$
       WHERE EXCLUDED.elapsed_ms < public.bump_rta_records.elapsed_ms;
 $$;
 REVOKE ALL ON FUNCTION public.record_bump_rta_best(text, text, integer, timestamptz) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.record_bump_rta_best(text, text, integer, timestamptz) TO service_role;
+GRANT EXECUTE ON FUNCTION public.record_bump_rta_best(text, text, integer, timestamptz) TO anon, service_role;
 
 CREATE OR REPLACE FUNCTION public.get_bump_rta_global_ranking(p_limit integer DEFAULT 10)
 RETURNS TABLE(user_id text, elapsed_ms integer, attempts bigint)
@@ -79,4 +79,4 @@ AS $$
     LIMIT greatest(1, least(coalesce(p_limit, 10), 100));
 $$;
 REVOKE ALL ON FUNCTION public.get_bump_rta_global_ranking(integer) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.get_bump_rta_global_ranking(integer) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_bump_rta_global_ranking(integer) TO anon, service_role;

@@ -1,12 +1,15 @@
 """Default-on Disboard bump / Dis速 up reminders and RTA leaderboard."""
 import asyncio
+import logging
 import re
 from datetime import timedelta
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+from core.supabase_client import key_role, select_key
 
+logger = logging.getLogger(__name__)
 DISBOARD_BOT_ID = 302050872383242240
 DISOKU_BOT_ID = 761562078095867916
 LEADERBOARD_SCOPE_CHOICES = [
@@ -24,17 +27,38 @@ def message_text(message):
     return " ".join(parts)
 
 
-def event_kind(text):
+def event_kind(text, author_id=None):
     """Return a successful bump/up notice kind; ignore cooldown/error messages."""
     value = text.casefold()
-    success = any(token in value for token in ("success", "done", "完了", "成功", "しました", "ました", "bumped", "アップしました"))
+    success = any(token in value for token in (
+        "success", "done", "完了", "成功", "しました", "ました", "bumped", "アップしました",
+        "表示順をアップしたよ", "アップしたよ",
+    ))
     bump = "bump" in value or "バンプ" in value
     up = bool(re.search(r"(?<![a-z])up(?![a-z])", value)) or any(token in value for token in ("上げ", "アップ", "掲載", "更新"))
+    # DISBOARD's success embed says "表示順をアップしたよ" and may not include
+    # the word "bump" in its message body. The verified bot ID disambiguates it from an up.
+    if author_id == DISBOARD_BOT_ID and success and up:
+        return "bump"
+    if author_id == DISOKU_BOT_ID and success and up:
+        return "up"
     if bump and success:
         return "bump"
     if up and success:
         return "up"
     return None
+
+
+def interaction_user_id(message):
+    """Get the user who invoked the bot command (discord.py exposes metadata.user)."""
+    metadata = getattr(message, "interaction_metadata", None)
+    user = getattr(metadata, "user", None)
+    user_id = getattr(user, "id", None) or getattr(metadata, "user_id", None)
+    if user_id is not None:
+        return user_id
+    interaction = getattr(message, "interaction", None)
+    user = getattr(interaction, "user", None)
+    return getattr(user, "id", None) or getattr(interaction, "user_id", None)
 
 
 class BumpRta(commands.Cog):
@@ -49,6 +73,14 @@ class BumpRta(commands.Cog):
     async def cog_load(self):
         if self.db is not None and not self.reminder_worker.is_running():
             self.reminder_worker.start()
+        key, source = select_key()
+        role = key_role(key) if key else "not-set"
+        if self.db is not None and role not in {"anon", "service_role"}:
+            logger.warning(
+                "bump/up RTA RPC requires an anon/service_role key and the matching SQL grant; "
+                "configured key source=%s role=%s. Key value is not logged.",
+                source or "not-set", role,
+            )
 
     def cog_unload(self):
         self.reminder_worker.cancel()
@@ -70,6 +102,7 @@ class BumpRta(commands.Cog):
             return enabled
         except Exception:
             # Keep the out-of-box default usable during a transient read failure.
+            logger.exception("bump_rta_settings read failed; using default enabled state: guild=%s", gid)
             return True
 
     @bumprta.command(name="notifications", description="bump/up通知とRTA計測をオン/オフします（初期状態はオン）")
@@ -164,7 +197,7 @@ class BumpRta(commands.Cog):
                 await self._call(lambda row=row: self.db.table("bump_rta_reminders").update(
                     {"sent_at": discord.utils.utcnow().isoformat()}).eq("message_id", row["message_id"]).execute())
         except Exception:
-            return
+            logger.exception("bump/up reminder worker failed")
 
     @reminder_worker.before_loop
     async def before_reminder_worker(self):
@@ -174,8 +207,8 @@ class BumpRta(commands.Cog):
     async def on_message(self, message: discord.Message):
         if not message.guild or not getattr(message.author, "bot", False):
             return
-        kind = event_kind(message_text(message))
         author_id = int(message.author.id)
+        kind = event_kind(message_text(message), author_id)
         if not ((kind == "bump" and author_id == DISBOARD_BOT_ID) or
                 (kind == "up" and author_id == DISOKU_BOT_ID)):
             return
@@ -184,17 +217,22 @@ class BumpRta(commands.Cog):
             return
         lock = self._locks.setdefault(guild_id, asyncio.Lock())
         async with lock:
-            try:
-                # Scheduled notices are independent of RTA/user attribution and work in any channel.
-                if self.db is not None:
-                    user_id = getattr(getattr(message, "interaction_metadata", None), "user_id", None)
-                    if user_id is None:
-                        interaction = getattr(message, "interaction", None)
-                        user_id = getattr(getattr(interaction, "user", None), "id", None) or getattr(interaction, "user_id", None)
+            if self.db is not None:
+                user_id = interaction_user_id(message)
+                if user_id is None:
+                    logger.warning(
+                        "Could not attribute successful %s notice to its invoking user: guild=%s message=%s author=%s",
+                        kind, guild_id, message.id, author_id,
+                    )
+                # A reminder DB failure should not prevent the RTA state machine from running.
+                try:
                     await self._schedule_reminder(message, user_id, kind)
+                except Exception:
+                    logger.exception("Failed to save %s reminder: guild=%s message=%s", kind, guild_id, message.id)
+                try:
                     await self._record_rta_event(message, kind, user_id)
-            except Exception:
-                return
+                except Exception:
+                    logger.exception("Failed to record %s RTA event: guild=%s message=%s", kind, guild_id, message.id)
 
     async def _record_rta_event(self, message, kind, user_id):
         gid = str(message.guild.id)
@@ -211,16 +249,25 @@ class BumpRta(commands.Cog):
         if not pending.data:
             return
         start = pending.data[0]
-        elapsed = max(1, int((message.created_at - discord.utils.parse_time(start["bump_at"])).total_seconds() * 1000))
-        await self._call(lambda: self.db.table("bump_rta_pending").delete().eq("guild_id", gid).execute())
-        await self._call(lambda: self.db.table("bump_rta_events").insert({
-            "guild_id": gid, "user_id": str(start["user_id"]), "elapsed_ms": elapsed,
-            "bump_message_id": start["bump_message_id"], "completed_at": message.created_at.isoformat(),
-        }).execute())
+        existing = await self._call(lambda: self.db.table("bump_rta_events").select(
+            "elapsed_ms,completed_at").eq("bump_message_id", start["bump_message_id"]).limit(1).execute())
+        if existing.data:
+            # A prior attempt may have inserted the event but failed at the service_role-only RPC.
+            elapsed = int(existing.data[0]["elapsed_ms"])
+            completed_at = existing.data[0]["completed_at"]
+        else:
+            elapsed = max(1, int((message.created_at - discord.utils.parse_time(start["bump_at"])).total_seconds() * 1000))
+            completed_at = message.created_at.isoformat()
+            await self._call(lambda: self.db.table("bump_rta_events").insert({
+                "guild_id": gid, "user_id": str(start["user_id"]), "elapsed_ms": elapsed,
+                "bump_message_id": start["bump_message_id"], "completed_at": completed_at,
+            }).execute())
         await self._call(lambda: self.db.rpc("record_bump_rta_best", {
             "p_guild_id": gid, "p_user_id": str(start["user_id"]), "p_elapsed_ms": elapsed,
-            "p_completed_at": message.created_at.isoformat(),
+            "p_completed_at": completed_at,
         }).execute())
+        # Keep the timer until the best-record RPC has succeeded; retries are idempotent above.
+        await self._call(lambda: self.db.table("bump_rta_pending").delete().eq("guild_id", gid).execute())
         await message.channel.send(f"🏁 <@{start['user_id']}> のRTA記録: **{elapsed / 1000:.2f}秒**",
                                    allowed_mentions=discord.AllowedMentions(users=True))
 
