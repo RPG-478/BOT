@@ -24,6 +24,7 @@ import asyncio
 import io
 import time
 import base64
+import hashlib
 import aiohttp
 import datetime
 import logging
@@ -304,6 +305,10 @@ dg_used    = {}  # {floor: set((x, y), ...)}
 dg_bases   = {}  # {uid: (floor, x, y)}
 _ASSET_CACHE = {}
 _PLAYER_LOCKS = {}
+# 正常保存済みペイロードのハッシュ。同一状態の再保存を省略して、
+# 巨大なマップ／プレイヤーJSONの不要なPostgREST・WAL書き込みを防ぐ。
+_MAP_SAVE_DIGESTS = {}
+_PLAYER_SAVE_DIGESTS = {}
 
 # 環境変数
 DUNGEON_IMG_CHANNEL_ID = int(os.environ.get("DUNGEON_IMG_CHANNEL_ID", 0))
@@ -993,7 +998,7 @@ async def dg_load_all(supabase):
     try:
         res = supabase.table("dungeon_players").select("*").execute()
         for row in res.data:
-            inventory = row.get("inventory", {}) or {}
+            inventory = dict(row.get("inventory", {}) or {})
             meta = inventory.pop("_dungeon_meta", {}) if isinstance(inventory, dict) else {}
             dg_players[row["user_id"]] = {
                 "floor": row.get("floor", 1),
@@ -1047,15 +1052,21 @@ async def dg_save_map(floor, supabase):
     if floor not in dg_maps:
         return
     try:
-        grid_json = json.dumps(dg_maps[floor], ensure_ascii=False)
-        used_coords = list(dg_used.get(floor, set()))
+        grid_json = json.dumps(dg_maps[floor], ensure_ascii=False, separators=(",", ":"))
+        used_coords = sorted(dg_used.get(floor, set()))
         start_pos = dg_starts.get(floor, (1, 1))
-        supabase.table("dungeon_maps").upsert({
+        payload = {
             "floor": floor,
             "grid": grid_json,
-            "used_coords": json.dumps(used_coords),
+            "used_coords": json.dumps(used_coords, separators=(",", ":")),
             "start_pos": list(start_pos),
-        }).execute()
+        }
+        digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                                           separators=(",", ":")).encode()).hexdigest()
+        if _MAP_SAVE_DIGESTS.get(floor) == digest:
+            return
+        supabase.table("dungeon_maps").upsert(payload, on_conflict="floor").execute()
+        _MAP_SAVE_DIGESTS[floor] = digest
     except Exception as e:
         print(f"dg_save_map失敗 floor={floor}: {e}")
 
@@ -1089,7 +1100,7 @@ async def dg_save_player(uid, supabase):
             "battle_resource": p.get("battle_resource", {}),
             "floor_goals": p.get("floor_goals", {}),
         }
-        supabase.table("dungeon_players").upsert({
+        payload = {
             "user_id": uid,
             "floor": p["floor"],
             "x": p["x"],
@@ -1109,7 +1120,13 @@ async def dg_save_player(uid, supabase):
             "season_id": p.get("season_id", SEASON_ID),
             "season_score": p.get("season_score", 0), "turns": p.get("turns", 0),
             "cooldowns": p.get("cooldowns", {}),
-        }).execute()
+        }
+        digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                                           separators=(",", ":")).encode()).hexdigest()
+        if _PLAYER_SAVE_DIGESTS.get(uid) == digest:
+            return
+        supabase.table("dungeon_players").upsert(payload, on_conflict="user_id").execute()
+        _PLAYER_SAVE_DIGESTS[uid] = digest
     except Exception as e:
         print(f"dg_save_player失敗 uid={uid}: {e}")
 
@@ -1122,7 +1139,7 @@ async def dg_save_base(uid, floor, x, y, supabase):
             "floor": floor,
             "x": x,
             "y": y,
-        }).execute()
+        }, on_conflict="user_id").execute()
     except Exception as e:
         print(f"dg_save_base失敗 uid={uid}: {e}")
 
