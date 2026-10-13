@@ -36,14 +36,21 @@ ALLOWED_CHANNEL_TYPES = {
 
 
 def _collect_embed_text(message):
-    """Collect searchable text from message content and all embeds."""
+    """Collect searchable text from message content and all embed parts."""
     parts = [getattr(message, "content", "") or ""]
     for embed in getattr(message, "embeds", ()) or ():
+        parts.append(getattr(embed, "title", "") or "")
         parts.append(getattr(embed, "description", "") or "")
+        author = getattr(embed, "author", None)
+        if author:
+            parts.append(getattr(author, "name", "") or "")
+        footer = getattr(embed, "footer", None)
+        if footer:
+            parts.append(getattr(footer, "text", "") or "")
         for field in getattr(embed, "fields", ()) or ():
             parts.append(getattr(field, "name", "") or "")
             parts.append(getattr(field, "value", "") or "")
-    return " ".join(parts)
+    return " ".join(p for p in parts if p)
 
 
 def detect_event(message):
@@ -57,22 +64,26 @@ def detect_event(message):
     application_id = getattr(message, "application_id", None)
     if author_id not in (DISBOARD_BOT_ID, DISOKU_BOT_ID):
         return None
-    if application_id is not None and application_id != author_id:
+    # Allow application_id mismatch for app command responses (common with Disoku)
+    if application_id is not None and application_id != author_id and author_id != DISOKU_BOT_ID:
         return None
     text = _collect_embed_text(message)
     folded = text.casefold()
     if author_id == DISBOARD_BOT_ID:
         if "表示順をアップしたよ" not in text and "bump done" not in folded:
+            logger.debug("Disboard message ignored (no success text): %s", text[:120])
             return None
         kind = "bump"
     else:
         if "アップしたよ" not in text and "up successful" not in folded:
+            logger.debug("Disoku message ignored (no success text): %s", text[:120])
             return None
         kind = "up"
     metadata = getattr(message, "interaction_metadata", None)
     if metadata is not None and getattr(metadata, "type", None) not in (
         None, discord.InteractionType.application_command
     ):
+        logger.debug("Ignored non-application_command interaction type: %s", getattr(metadata, "type", None))
         return None
     user = getattr(metadata, "user", None)
     user_id = getattr(user, "id", None)
