@@ -115,6 +115,7 @@ class CommandCatalogTest(unittest.TestCase):
             '/join', '/leave', '/play', '/pause', '/skip', '/seek', '/loop', '/shuffle', '/queue', '/playlist',
             '/voice join', '/voice leave', '/voice status', '/voice record', '/voice echo', '/voice transcribe',
             '/voice karaoke', '/voice changer', '/voice match', '/voice global', '/bumprta best', '/bumprta ranking',
+            '/bumprta notifications', '/bumprta status', '/bumprta leaderboard',
             '/eq', '/spatial', '/speak', '/spotify_link', '/spotify_unlink', '/spotify_playlists',
             '!panel', '!search', '!list', '!plist', '!save_current', '!plsave', '!pllist', '!plplay', '!volume',
             '!speed', '!stop_all', '!rval', '!rres', '!rec', '!echo', '!stt', '!karaoke', '!vc', '!saito',
