@@ -60,7 +60,7 @@ ALTER TABLE public.bump_rta_records DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.bump_rta_pending DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.bump_rta_reminders DISABLE ROW LEVEL SECURITY;
 
-DROP FUNCTION IF EXISTS public.record_bump_rta_best(text, text, integer, timestamptz);
+DROP FUNCTION IF EXISTS public.record_bump_rta_best(text, text, text, integer, timestamptz);
 CREATE OR REPLACE FUNCTION public.record_bump_rta_best(
     p_guild_id text, p_user_id text, p_event_type text, p_elapsed_ms integer, p_completed_at timestamptz
 ) RETURNS void
@@ -75,7 +75,7 @@ $$;
 REVOKE ALL ON FUNCTION public.record_bump_rta_best(text, text, text, integer, timestamptz) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.record_bump_rta_best(text, text, text, integer, timestamptz) TO anon, service_role;
 
-DROP FUNCTION IF EXISTS public.get_bump_rta_global_ranking(integer);
+DROP FUNCTION IF EXISTS public.get_bump_rta_global_ranking(text, integer);
 CREATE OR REPLACE FUNCTION public.get_bump_rta_global_ranking(p_event_type text, p_limit integer DEFAULT 10)
 RETURNS TABLE(user_id text, elapsed_ms integer, attempts bigint)
 LANGUAGE sql SECURITY INVOKER
