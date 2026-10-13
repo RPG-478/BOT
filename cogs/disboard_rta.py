@@ -1,7 +1,6 @@
 """Default-on Disboard bump / Dis速 up reminders and RTA leaderboard."""
 import asyncio
 import logging
-import re
 from datetime import timedelta
 
 import discord
@@ -19,46 +18,34 @@ LEADERBOARD_SCOPE_CHOICES = [
 ]
 
 
-def message_text(message):
-    parts = [getattr(message, "content", "") or ""]
-    for embed in getattr(message, "embeds", ()):
-        parts.extend((getattr(embed, "title", "") or "", getattr(embed, "description", "") or ""))
-        parts.extend(f"{f.name} {f.value}" for f in getattr(embed, "fields", ()))
-    return " ".join(parts)
+def command_event(message):
+    """Identify a bump/up command interaction by the responding bot application.
 
-
-def event_kind(text, author_id=None):
-    """Return a successful bump/up notice kind; ignore cooldown/error messages."""
-    value = text.casefold()
-    success = any(token in value for token in (
-        "success", "done", "完了", "成功", "しました", "ました", "bumped", "アップしました",
-        "表示順をアップしたよ", "アップしたよ",
-    ))
-    bump = "bump" in value or "バンプ" in value
-    up = bool(re.search(r"(?<![a-z])up(?![a-z])", value)) or any(token in value for token in ("上げ", "アップ", "掲載", "更新"))
-    # DISBOARD's success embed says "表示順をアップしたよ" and may not include
-    # the word "bump" in its message body. The verified bot ID disambiguates it from an up.
-    if author_id == DISBOARD_BOT_ID and success and up:
-        return "bump"
-    if author_id == DISOKU_BOT_ID and success and up:
-        return "up"
-    if bump and success:
-        return "bump"
-    if up and success:
-        return "up"
-    return None
-
-
-def interaction_user_id(message):
-    """Get the user who invoked the bot command (discord.py exposes metadata.user)."""
+    This deliberately does not inspect message content or embeds. Discord.py provides
+    MessageInteractionMetadata even when Message Content Intent fields are unavailable.
+    """
+    author_id = getattr(getattr(message, "author", None), "id", None)
+    application_id = getattr(message, "application_id", None)
+    if author_id == DISBOARD_BOT_ID:
+        kind, expected_application_id = "bump", DISBOARD_BOT_ID
+    elif author_id == DISOKU_BOT_ID:
+        kind, expected_application_id = "up", DISOKU_BOT_ID
+    else:
+        return None
     metadata = getattr(message, "interaction_metadata", None)
+    if metadata is None:
+        return None
+    if getattr(metadata, "type", None) != discord.InteractionType.application_command:
+        return None
+    # Bind the response to the expected official app and its bot user; reject mismatches.
+    if application_id is None or int(application_id) != expected_application_id:
+        return None
     user = getattr(metadata, "user", None)
-    user_id = getattr(user, "id", None) or getattr(metadata, "user_id", None)
-    if user_id is not None:
-        return user_id
-    interaction = getattr(message, "interaction", None)
-    user = getattr(interaction, "user", None)
-    return getattr(user, "id", None) or getattr(interaction, "user_id", None)
+    user_id = getattr(user, "id", None)
+    event_at = getattr(metadata, "created_at", None) or getattr(message, "created_at", None)
+    if user_id is None or event_at is None:
+        return None
+    return kind, int(user_id), event_at
 
 
 class BumpRta(commands.Cog):
@@ -157,11 +144,11 @@ class BumpRta(commands.Cog):
             title = "このサーバーのRTAランキング"
         await interaction.response.send_message(f"🏁 **{title}**\n" + ("\n".join(lines) if lines else "まだ記録がありません。"))
 
-    async def _schedule_reminder(self, message, user_id, kind):
+    async def _schedule_reminder(self, message, user_id, kind, event_at):
         reminder = {
             "message_id": str(message.id), "guild_id": str(message.guild.id),
             "channel_id": str(message.channel.id), "user_id": str(user_id) if user_id else None,
-            "event_type": kind, "due_at": (message.created_at + timedelta(hours=2)).isoformat(),
+            "event_type": kind, "due_at": (event_at + timedelta(hours=2)).isoformat(),
         }
         await self._call(lambda: self.db.table("bump_rta_reminders").upsert(
             reminder, on_conflict="message_id", ignore_duplicates=True).execute())
@@ -207,41 +194,34 @@ class BumpRta(commands.Cog):
     async def on_message(self, message: discord.Message):
         if not message.guild or not getattr(message.author, "bot", False):
             return
-        author_id = int(message.author.id)
-        kind = event_kind(message_text(message), author_id)
-        if not ((kind == "bump" and author_id == DISBOARD_BOT_ID) or
-                (kind == "up" and author_id == DISOKU_BOT_ID)):
+        event = command_event(message)
+        if event is None:
             return
+        kind, user_id, event_at = event
         guild_id = message.guild.id
         if not await self._is_enabled(guild_id):
             return
         lock = self._locks.setdefault(guild_id, asyncio.Lock())
         async with lock:
             if self.db is not None:
-                user_id = interaction_user_id(message)
-                if user_id is None:
-                    logger.warning(
-                        "Could not attribute successful %s notice to its invoking user: guild=%s message=%s author=%s",
-                        kind, guild_id, message.id, author_id,
-                    )
                 # A reminder DB failure should not prevent the RTA state machine from running.
                 try:
-                    await self._schedule_reminder(message, user_id, kind)
+                    await self._schedule_reminder(message, user_id, kind, event_at)
                 except Exception:
                     logger.exception("Failed to save %s reminder: guild=%s message=%s", kind, guild_id, message.id)
                 try:
-                    await self._record_rta_event(message, kind, user_id)
+                    await self._record_rta_event(message, kind, user_id, event_at)
                 except Exception:
                     logger.exception("Failed to record %s RTA event: guild=%s message=%s", kind, guild_id, message.id)
 
-    async def _record_rta_event(self, message, kind, user_id):
+    async def _record_rta_event(self, message, kind, user_id, event_at):
         gid = str(message.guild.id)
         if kind == "bump":
             if user_id is None:
                 return
             await self._call(lambda: self.db.table("bump_rta_pending").upsert({
                 "guild_id": gid, "user_id": str(user_id), "bump_message_id": str(message.id),
-                "bump_at": message.created_at.isoformat(),
+                "bump_at": event_at.isoformat(),
             }, on_conflict="guild_id").execute())
             return
         pending = await self._call(lambda: self.db.table("bump_rta_pending").select(
@@ -256,8 +236,8 @@ class BumpRta(commands.Cog):
             elapsed = int(existing.data[0]["elapsed_ms"])
             completed_at = existing.data[0]["completed_at"]
         else:
-            elapsed = max(1, int((message.created_at - discord.utils.parse_time(start["bump_at"])).total_seconds() * 1000))
-            completed_at = message.created_at.isoformat()
+            elapsed = max(1, int((event_at - discord.utils.parse_time(start["bump_at"])).total_seconds() * 1000))
+            completed_at = event_at.isoformat()
             await self._call(lambda: self.db.table("bump_rta_events").insert({
                 "guild_id": gid, "user_id": str(start["user_id"]), "elapsed_ms": elapsed,
                 "bump_message_id": start["bump_message_id"], "completed_at": completed_at,
