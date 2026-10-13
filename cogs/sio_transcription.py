@@ -356,7 +356,7 @@ class TranscriptionCog(commands.Cog):
         return await channel.create_webhook(name="STT-Transcriber")
 
     # --------------------------------------------------
-    # 実装（/voice transcribe）
+    # 実装（/voice studio）
     # --------------------------------------------------
     async def _transcribe_impl(self, r: Responder, action: str, target_channel: discord.TextChannel | None = None):
         """action: start / stop / status"""
@@ -374,10 +374,10 @@ class TranscriptionCog(commands.Cog):
                 f"🎙️ **Vosk 文字起こし実行中**\n"
                 f"ボイスチャンネル: **{session['vc_channel_name']}**\n"
                 f"送信先チャンネル: {session['target_channel_mention']}\n"
-                f"停止コマンド: `/voice transcribe action:停止`"
+                f"停止コマンド: `/voice studio feature:文字起こし action:停止`"
             ))
         else:
-            await r.send(embed=we("⏸️ 文字起こし停止中 (`/voice transcribe action:開始` で開始)"))
+            await r.send(embed=we("⏸️ 文字起こし停止中 (`/voice studio feature:文字起こし action:開始` で開始)"))
 
     async def _start(self, r: Responder, target_channel: discord.TextChannel | None):
         # モデルが無いときは VC に入る前に断る。

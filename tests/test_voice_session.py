@@ -4,7 +4,7 @@
 - 別の機能が使用中なら追い出さずに断ること（バグ10）
 - 開始した本人・管理者は force で切り替えられること
 - 誰もいない状態が続くと退出すること、外部から切断されたら後片付けすること
-- グローバルVC の参加・退出（/voice global）が「参加中のまま」残らないこと
+- グローバルVC の参加・退出（/voice community）が「参加中のまま」残らないこと
 - 録音が上限時間で自動停止すること
 を確かめる。
 """
@@ -195,8 +195,8 @@ class ManagerTest(unittest.IsolatedAsyncioTestCase):
         message = str(caught.exception)
         self.assertIn('録音', message)
         self.assertIn('alice', message)
-        self.assertIn('/voice record action:停止', message)
-        self.assertIn('/voice leave', message)
+        self.assertIn('/voice studio feature:録音 action:停止', message)
+        self.assertIn('/voice connection action:退出', message)
         self.assertTrue(vc.is_connected())
         self.assertEqual(vc.disconnect_calls, 0)
         self.assertEqual(cleanup.reasons, [])
@@ -553,7 +553,7 @@ class MusicTest(unittest.IsolatedAsyncioTestCase):
         interaction, sent = self.interaction(self.w.alice)
         await self.music._join_impl(Responder(interaction))
         self.assertEqual(self.manager.owner(self.w.guild.id), 'music')
-        interaction, sent = self.interaction(self.w.bob)  # 音楽は誰でも /voice leave できる
+        interaction, sent = self.interaction(self.w.bob)  # 音楽は誰でも /voice connection action:退出 できる
         await self.music._leave_impl(Responder(interaction))
         self.assertIsNone(self.manager.get(self.w.guild.id))
         self.assertIsNone(self.w.guild.voice_client)
@@ -570,7 +570,7 @@ class MusicTest(unittest.IsolatedAsyncioTestCase):
         if task is not None:
             await task
         self.assertIsNone(self.manager.get(self.w.guild.id))
-        self.assertIn('/voice leave で退出したため録音を停止しました', self.w.text.text())
+        self.assertIn('/voice connection action:退出 で退出したため録音を停止しました', self.w.text.text())
 
     async def test_join_hints_point_to_slash_join(self):
         source = (ROOT / 'cogs' / 'sio_music.py').read_text(encoding='utf-8')

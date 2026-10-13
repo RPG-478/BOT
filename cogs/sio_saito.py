@@ -76,7 +76,7 @@ class SaitoRelay(commands.Cog):
         return cleanup
 
     # --------------------------------------------------
-    # 実装（/voice match）
+    # 実装（/voice community）
     # --------------------------------------------------
     async def _match_impl(self, r: Responder, action: str):
         """action: start / stop"""

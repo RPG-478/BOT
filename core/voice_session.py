@@ -16,7 +16,7 @@ Bot はサーバーごとに 1 つしか VC に入れない。以前は録音・
 
 各 cog は ``get_manager(bot)`` で共有のインスタンスを取得する。
 cleanup の中から同じサーバーの ``release()`` を await しないこと（ロックが再入できないため）。
-別サーバーを止めたいとき（/voice match の相手側など）は ``asyncio.create_task`` で呼ぶ。
+別サーバーを止めたいとき（/voice community の相手側など）は ``asyncio.create_task`` で呼ぶ。
 """
 from __future__ import annotations
 
@@ -33,16 +33,16 @@ AUTO_LEAVE_SECONDS = 180  # 誰もいない状態がこれだけ続いたら退�
 DISCONNECT_GRACE_SECONDS = 5.0  # 外部切断を検知してから、自動再接続を待つ時間
 RECONNECT_DELAY_SECONDS = 1.0  # 切断してから入り直すまでの待ち時間（ハンドシェイクのリセット待ち）
 
-# 機能名 → (表示名, 終了コマンド)。/voice ができるまでは今あるコマンドを案内する。
+# 機能名 → (表示名, 統合voiceコマンドの終了案内)。
 FEATURES: dict[str, tuple[str, str]] = {
-    "music": ("音楽再生", "/voice leave"),
-    "record": ("録音", "/voice record action:停止"),
-    "echo": ("やまびこ", "/voice echo action:停止"),
-    "transcribe": ("文字起こし", "/voice transcribe action:停止"),
-    "karaoke": ("カラオケ", "/voice karaoke action:終了"),
-    "changer": ("ボイスチェンジャー", "/voice changer action:停止"),
-    "match": ("ランダム通話", "/voice match action:終了"),
-    "global": ("グローバルVC", "/voice global action:退出"),
+    "music": ("音楽再生", "/voice connection action:退出"),
+    "record": ("録音", "/voice studio feature:録音 action:停止/終了"),
+    "echo": ("やまびこ", "/voice studio feature:やまびこ action:停止/終了"),
+    "transcribe": ("文字起こし", "/voice studio feature:文字起こし action:停止/終了"),
+    "karaoke": ("カラオケ", "/voice studio feature:カラオケ action:停止/終了"),
+    "changer": ("ボイスチェンジャー", "/voice effects action:停止"),
+    "match": ("ランダム通話", "/voice community network:ランダム通話 action:終了/退出"),
+    "global": ("グローバルVC", "/voice community network:グローバルVC action:終了/退出"),
 }
 
 # release() の理由ごとに、使っていたチャンネルへ送るお知らせ。None は送らない（コマンド側で返信する）。
@@ -52,7 +52,7 @@ DEFAULT_NOTICES: dict[str, Optional[str]] = {
     "idle": "ボイスチャンネルに誰もいない状態が{minutes}分続いたため、{label}を終了して退出しました。",
     "disconnected": "ボイスチャンネルから切断されたため、{label}を終了しました。",
     "takeover": "{by} さんが{by_label}を始めたため、{label}を終了しました。",
-    "leave": "{by} さんが /voice leave を実行したため、{label}を終了しました。",
+    "leave": "{by} さんが /voice connection action:退出 を実行したため、{label}を終了しました。",
 }
 
 Cleanup = Callable[[str], Any]
@@ -63,7 +63,7 @@ def feature_label(feature: str) -> str:
 
 
 def stop_hint(feature: str) -> str:
-    return FEATURES.get(feature, ("", "/voice leave"))[1]
+    return FEATURES.get(feature, ("", "/voice connection action:退出"))[1]
 
 
 def _display_name(user) -> str:
@@ -170,13 +170,13 @@ class VoiceSessionManager:
         return not self._starter_present(session)
 
     def can_leave(self, session: VoiceSession, member) -> bool:
-        """/voice leave で止めてよいか。音楽は今までどおり誰でも止められる。"""
+        """/voice connection action:退出 で止めてよいか。音楽は今までどおり誰でも止められる。"""
         return session.feature == "music" or self.can_override(session, member)
 
     def busy_message(self, session: VoiceSession) -> str:
         return (
             f"⚠️ いまこのサーバーのボイスチャンネルは **{session.label}**（{session.user_name} さんが開始）で使用中です。\n"
-            f"先に `{stop_hint(session.feature)}` で終了するか、`/voice leave` で退出させてから実行してください。\n"
+            f"先に `{stop_hint(session.feature)}` で終了するか、`/voice connection action:退出` で退出させてから実行してください。\n"
             "（開始した人・管理者が実行した場合や、開始した人が VC にいない場合はそのまま切り替わります）"
         )
 

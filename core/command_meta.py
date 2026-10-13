@@ -98,11 +98,11 @@ CATEGORIES = [
             "## はじめに\n"
             "先に自分がボイスチャンネルに入ってから実行してください。音楽は `/music play` に URL・検索語・音声ファイルを渡すと"
             "Bot が VC に入って再生します。`/music panel` の操作パネルからまとめて操作できます。"
-            "録音・やまびこ・文字起こし・カラオケ・ボイスチェンジャー・ランダム通話・グローバルVC は `/voice` の各サブコマンドで、"
-            "`action` で開始・停止などを選びます。\n\n"
+            "録音・やまびこ・文字起こし・カラオケは `/voice studio`、ボイスチェンジャーは `/voice effects`、"
+            "ランダム通話・グローバルVCは `/voice community` から操作できます。\n\n"
             "## 注意\n"
             "音楽と `/voice` の機能は、どれも Bot の接続を 1 つ使います。ほかの機能が使用中のときは断られるので、"
-            "`/voice status` で何が使っているかを確かめ、終わってから（または `/voice leave` してから）実行してください。"
+            "`/voice connection action:状態` で何が使っているかを確かめ、終わってから（または `/voice connection action:退出` してから）実行してください。"
             "録音を始めると、チャンネルに「録音を開始しました」と表示されます。"
             "誰もいない状態が 3 分続くと Bot は自動で退出します。"
         ),
@@ -191,21 +191,11 @@ COMMAND_META: dict[str, dict] = {
     "/music panel": {"category": "voice", "usage": "/music panel"},
     "/bumprta notifications": {"category": "voice", "usage": "/bumprta notifications enabled:<オン|オフ>", "permissions": ["manage_guild"]},
     "/bumprta status": {"category": "voice", "usage": "/bumprta status"},
-    "/bumprta best": {"category": "voice", "usage": "/bumprta best"},
-    "/bumprta ranking": {"category": "voice", "usage": "/bumprta ranking [scope:<このサーバー / 全サーバー>]"},
-    "/voice join": {"category": "voice", "usage": "/voice join"},
-    "/voice leave": {"category": "voice", "usage": "/voice leave"},
-    "/voice status": {"category": "voice", "usage": "/voice status"},
-    "/voice record": {"category": "voice", "usage": "/voice record action:<開始|停止|状態|音程解析>"},
-    "/voice echo": {"category": "voice", "usage": "/voice echo action:<開始|遅延変更|停止> [delay:<秒>]"},
-    "/voice transcribe": {"category": "voice", "usage": "/voice transcribe action:<開始|停止> [channel:<送り先>]"},
-    "/voice karaoke": {"category": "voice", "usage": "/voice karaoke action:<開始|採点|終了> [lyrics:<お題の歌詞>]"},
-    "/voice changer": {
-        "category": "voice",
-        "usage": "/voice changer action:<開始|停止|状態> [pitch:<半音>] [buffer_ms:<ms>] [max_ms:<ms>]",
-    },
-    "/voice match": {"category": "voice", "usage": "/voice match action:<開始|終了>"},
-    "/voice global": {"category": "voice", "usage": "/voice global action:<参加|退出> [room:<ルーム名>] [password:<合言葉>]"},
+    "/bumprta leaderboard": {"category": "voice", "usage": "/bumprta leaderboard [scope:<自分のベスト|このサーバー|全サーバー>]"},
+    "/voice connection": {"category": "voice", "usage": "/voice connection action:<参加|退出|状態>"},
+    "/voice studio": {"category": "voice", "usage": "/voice studio feature:<録音|やまびこ|文字起こし|カラオケ> action:<操作> [delay|channel|lyrics]"},
+    "/voice effects": {"category": "voice", "usage": "/voice effects action:<開始|停止|状態/設定変更> [pitch|buffer_ms|max_ms]"},
+    "/voice community": {"category": "voice", "usage": "/voice community network:<ランダム通話|グローバルVC> action:<開始/参加|終了/退出> [room|password]"},
     "!ffversion": {"category": "voice", "hidden": True},
 
     # ---------------------------------------------------------------- おたのしみ・AI

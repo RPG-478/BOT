@@ -9,7 +9,8 @@ from discord.ext import commands, tasks
 
 DISBOARD_BOT_ID = 302050872383242240
 DISOKU_BOT_ID = 761562078095867916
-RANKING_SCOPE_CHOICES = [
+LEADERBOARD_SCOPE_CHOICES = [
+    app_commands.Choice(name="自分のベスト", value="me"),
     app_commands.Choice(name="このサーバー", value="local"),
     app_commands.Choice(name="全サーバー", value="global"),
 ]
@@ -93,27 +94,24 @@ class BumpRta(commands.Cog):
         await interaction.response.send_message(
             f"bump/up通知とRTA計測: **{'オン' if enabled else 'オフ'}**（初期状態: オン）", ephemeral=True)
 
-    @bumprta.command(name="best", description="自分のこのサーバー/全体の自己ベストを表示します")
-    async def best(self, interaction: discord.Interaction):
-        if self.db is None:
-            return await interaction.response.send_message("Supabase未接続のため記録を取得できません。", ephemeral=True)
-        uid, gid = str(interaction.user.id), str(interaction.guild_id)
-        local = await self._call(lambda: self.db.table("bump_rta_records").select(
-            "elapsed_ms,completed_at").eq("guild_id", gid).eq("user_id", uid).limit(1).execute())
-        global_best = await self._call(lambda: self.db.table("bump_rta_events").select(
-            "elapsed_ms,completed_at").eq("user_id", uid).order("elapsed_ms").limit(1).execute())
-        local_text = f"{local.data[0]['elapsed_ms'] / 1000:.2f}秒" if local.data else "記録なし"
-        global_text = f"{global_best.data[0]['elapsed_ms'] / 1000:.2f}秒" if global_best.data else "記録なし"
-        await interaction.response.send_message(
-            f"🏁 <@{uid}> の自己ベスト\nこのサーバー: **{local_text}**\n全サーバー: **{global_text}**")
-
-    @bumprta.command(name="ranking", description="最速記録をサーバー内/全体で表示します")
-    @app_commands.choices(scope=RANKING_SCOPE_CHOICES)
-    @app_commands.describe(scope="このサーバー内、または全サーバー")
-    async def ranking(self, interaction: discord.Interaction, scope: app_commands.Choice[str] | None = None):
+    @bumprta.command(name="leaderboard", description="自己ベストまたはサーバー内/全体ランキングを表示します")
+    @app_commands.choices(scope=LEADERBOARD_SCOPE_CHOICES)
+    @app_commands.describe(scope="自分のベスト、このサーバー、または全サーバー")
+    async def leaderboard(self, interaction: discord.Interaction, scope: app_commands.Choice[str] | None = None):
         if self.db is None:
             return await interaction.response.send_message("Supabase未接続のため順位を取得できません。", ephemeral=True)
-        if scope and scope.value == "global":
+        selected = scope.value if scope else "local"
+        if selected == "me":
+            uid, gid = str(interaction.user.id), str(interaction.guild_id)
+            local = await self._call(lambda: self.db.table("bump_rta_records").select(
+                "elapsed_ms,completed_at").eq("guild_id", gid).eq("user_id", uid).limit(1).execute())
+            global_best = await self._call(lambda: self.db.table("bump_rta_events").select(
+                "elapsed_ms,completed_at").eq("user_id", uid).order("elapsed_ms").limit(1).execute())
+            local_text = f"{local.data[0]['elapsed_ms'] / 1000:.2f}秒" if local.data else "記録なし"
+            global_text = f"{global_best.data[0]['elapsed_ms'] / 1000:.2f}秒" if global_best.data else "記録なし"
+            return await interaction.response.send_message(
+                f"🏁 <@{uid}> の自己ベスト\nこのサーバー: **{local_text}**\n全サーバー: **{global_text}**")
+        if selected == "global":
             rows = await self._call(lambda: self.db.rpc("get_bump_rta_global_ranking", {"p_limit": 10}).execute())
             data = rows.data or []
             lines = [f"**{i}.** <@{r['user_id']}> — **{r['elapsed_ms'] / 1000:.2f}秒**（{r['attempts']}回）" for i, r in enumerate(data, 1)]
