@@ -75,10 +75,10 @@ class BumpRta(commands.Cog):
             self.reminder_worker.start()
         key, source = select_key()
         role = key_role(key) if key else "not-set"
-        if self.db is not None and role != "service_role":
+        if self.db is not None and role not in {"anon", "service_role"}:
             logger.warning(
-                "bump/up RTA RPC requires Supabase service_role; configured key source=%s role=%s. "
-                "Set SUPABASE_SERVICE_ROLE_KEY in the Bot runtime (key value is not logged).",
+                "bump/up RTA RPC requires an anon/service_role key and the matching SQL grant; "
+                "configured key source=%s role=%s. Key value is not logged.",
                 source or "not-set", role,
             )
 
