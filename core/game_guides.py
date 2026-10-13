@@ -1,1 +1,1 @@
-# content will be long, use file read in practice but here abbreviated for call; actually need full
+PLACEHOLDER_GUIDES
