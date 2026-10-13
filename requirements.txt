@@ -2,6 +2,7 @@ discord.py
 flask
 requests
 matplotlib
+Pillow
 numpy
 supabase
 discord-ext-voice-recv
