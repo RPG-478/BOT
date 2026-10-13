@@ -189,7 +189,7 @@ COMMAND_META: dict[str, dict] = {
     "/music sound": {"category": "voice", "usage": "/music sound action:<音量|速度|EQ|立体音響> [value|preset|feedback|wet|resolution]"},
     "/music library": {"category": "voice", "usage": "/music library action:<検索|プレイリスト|音声ID> [query|playlist_action|name|scope|file|limit]"},
     "/music panel": {"category": "voice", "usage": "/music panel"},
-    "/bumprta setup": {"category": "voice", "usage": "/bumprta setup disboard_bot:<Bot> disoku_bot:<Bot> channel:<チャンネル>", "permissions": ["manage_guild"]},
+    "/bumprta notifications": {"category": "voice", "usage": "/bumprta notifications enabled:<オン|オフ>", "permissions": ["manage_guild"]},
     "/bumprta status": {"category": "voice", "usage": "/bumprta status"},
     "/bumprta best": {"category": "voice", "usage": "/bumprta best"},
     "/bumprta ranking": {"category": "voice", "usage": "/bumprta ranking [scope:<このサーバー / 全サーバー>]"},

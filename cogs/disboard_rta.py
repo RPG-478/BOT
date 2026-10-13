@@ -1,13 +1,14 @@
-"""Disboard bump から Dis速 up までのRTA記録と、2時間後の返信リマインダー。"""
+"""Default-on Disboard bump / Dis速 up reminders and RTA leaderboard."""
 import asyncio
 import re
-import time
 from datetime import timedelta
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+DISBOARD_BOT_ID = 302050872383242240
+DISOKU_BOT_ID = 761562078095867916
 RANKING_SCOPE_CHOICES = [
     app_commands.Choice(name="このサーバー", value="local"),
     app_commands.Choice(name="全サーバー", value="global"),
@@ -23,8 +24,9 @@ def message_text(message):
 
 
 def event_kind(text):
+    """Return a successful bump/up notice kind; ignore cooldown/error messages."""
     value = text.casefold()
-    success = any(token in value for token in ("success", "done", "完了", "成功", "しました", "ました", "bumped"))
+    success = any(token in value for token in ("success", "done", "完了", "成功", "しました", "ました", "bumped", "アップしました"))
     bump = "bump" in value or "バンプ" in value
     up = bool(re.search(r"(?<![a-z])up(?![a-z])", value)) or any(token in value for token in ("上げ", "アップ", "掲載", "更新"))
     if bump and success:
@@ -35,12 +37,12 @@ def event_kind(text):
 
 
 class BumpRta(commands.Cog):
-    bumprta = app_commands.Group(name="bumprta", description="DisboardからDis速 upまでのRTA", guild_only=True)
+    bumprta = app_commands.Group(name="bumprta", description="bump/up通知とRTAランキング", guild_only=True)
 
     def __init__(self, bot):
         self.bot = bot
         self.db = getattr(bot, "supabase", None)
-        self._pending = {}
+        self._enabled_cache = {}
         self._locks = {}
 
     async def cog_load(self):
@@ -53,44 +55,57 @@ class BumpRta(commands.Cog):
     async def _call(self, fn):
         return await asyncio.to_thread(fn)
 
-    @bumprta.command(name="setup", description="計測するDisboard/Dis速 Botとチャンネルを設定します")
-    @app_commands.default_permissions(manage_guild=True)
-    async def setup_rta(self, interaction: discord.Interaction, disboard_bot: discord.User | None = None,
-                        disoku_bot: discord.User | None = None, channel: discord.TextChannel | None = None):
-        if not disboard_bot or not disoku_bot or channel is None:
-            return await interaction.response.send_message("Disboard Bot・Dis速 Bot・計測チャンネルをすべて指定してください。", ephemeral=True)
-        if not disboard_bot.bot or not disoku_bot.bot or disboard_bot.id == disoku_bot.id:
-            return await interaction.response.send_message("異なる2つのBotユーザーを指定してください。", ephemeral=True)
-        row = {"guild_id": str(interaction.guild_id), "channel_id": str(channel.id),
-               "disboard_bot_id": str(disboard_bot.id), "disoku_bot_id": str(disoku_bot.id)}
-        await interaction.response.defer(ephemeral=True)
-        await self._call(lambda: self.db.table("bump_rta_settings").upsert(row, on_conflict="guild_id").execute())
-        await interaction.followup.send(f"設定しました: {channel.mention} / Disboard {disboard_bot.mention} / Dis速 {disoku_bot.mention}", ephemeral=True)
-
-    @bumprta.command(name="status", description="このサーバーの計測設定と現在の記録を表示します")
-    async def status(self, interaction: discord.Interaction):
+    async def _is_enabled(self, guild_id):
+        gid = str(guild_id)
+        if gid in self._enabled_cache:
+            return self._enabled_cache[gid]
         if self.db is None:
-            return await interaction.response.send_message("Supabase未接続のため設定を確認できません。", ephemeral=True)
-        rows = await self._call(lambda: self.db.table("bump_rta_settings").select("channel_id,disboard_bot_id,disoku_bot_id").eq("guild_id", str(interaction.guild_id)).limit(1).execute())
-        if not rows.data:
-            return await interaction.response.send_message("未設定です。管理者が `/bumprta setup` を実行してください。", ephemeral=True)
-        cfg = rows.data[0]
-        current = self._pending.get(interaction.guild_id)
-        text = f"計測チャンネル: <#{cfg['channel_id']}>\nDisboard Bot: <@{cfg['disboard_bot_id']}>\nDis速 Bot: <@{cfg['disoku_bot_id']}>"
-        if current:
-            text += f"\n計測中: <@{current['user_id']}> / {time.monotonic() - current['started']:.2f}秒"
-        await interaction.response.send_message(text, ephemeral=True)
+            return True
+        try:
+            result = await self._call(lambda: self.db.table("bump_rta_settings").select(
+                "notifications_enabled").eq("guild_id", gid).limit(1).execute())
+            enabled = bool(result.data[0]["notifications_enabled"]) if result.data else True
+            self._enabled_cache[gid] = enabled
+            return enabled
+        except Exception:
+            # Keep the out-of-box default usable during a transient read failure.
+            return True
+
+    @bumprta.command(name="notifications", description="bump/up通知とRTA計測をオン/オフします（初期状態はオン）")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.describe(enabled="オフにすると2時間後通知とRTA計測の両方を停止")
+    async def notifications(self, interaction: discord.Interaction, enabled: bool):
+        gid = str(interaction.guild_id)
+        self._enabled_cache[gid] = enabled
+        if self.db is not None:
+            await self._call(lambda: self.db.table("bump_rta_settings").upsert(
+                {"guild_id": gid, "notifications_enabled": enabled}, on_conflict="guild_id").execute())
+            if not enabled:
+                await self._call(lambda: self.db.table("bump_rta_reminders").update(
+                    {"sent_at": discord.utils.utcnow().isoformat()}).eq("guild_id", gid).is_("sent_at", "null").execute())
+                await self._call(lambda: self.db.table("bump_rta_pending").delete().eq("guild_id", gid).execute())
+        status = "オン" if enabled else "オフ"
+        await interaction.response.send_message(f"bump/up通知とRTA計測を **{status}** にしました。", ephemeral=True)
+
+    @bumprta.command(name="status", description="bump/up通知とRTAの有効状態を表示します")
+    async def status(self, interaction: discord.Interaction):
+        enabled = await self._is_enabled(interaction.guild_id)
+        await interaction.response.send_message(
+            f"bump/up通知とRTA計測: **{'オン' if enabled else 'オフ'}**（初期状態: オン）", ephemeral=True)
 
     @bumprta.command(name="best", description="自分のこのサーバー/全体の自己ベストを表示します")
     async def best(self, interaction: discord.Interaction):
         if self.db is None:
             return await interaction.response.send_message("Supabase未接続のため記録を取得できません。", ephemeral=True)
         uid, gid = str(interaction.user.id), str(interaction.guild_id)
-        local = await self._call(lambda: self.db.table("bump_rta_records").select("elapsed_ms,completed_at").eq("guild_id", gid).eq("user_id", uid).limit(1).execute())
-        global_best = await self._call(lambda: self.db.table("bump_rta_events").select("elapsed_ms,completed_at").eq("user_id", uid).order("elapsed_ms").limit(1).execute())
+        local = await self._call(lambda: self.db.table("bump_rta_records").select(
+            "elapsed_ms,completed_at").eq("guild_id", gid).eq("user_id", uid).limit(1).execute())
+        global_best = await self._call(lambda: self.db.table("bump_rta_events").select(
+            "elapsed_ms,completed_at").eq("user_id", uid).order("elapsed_ms").limit(1).execute())
         local_text = f"{local.data[0]['elapsed_ms'] / 1000:.2f}秒" if local.data else "記録なし"
         global_text = f"{global_best.data[0]['elapsed_ms'] / 1000:.2f}秒" if global_best.data else "記録なし"
-        await interaction.response.send_message(f"🏁 <@{uid}> の自己ベスト\nこのサーバー: **{local_text}**\n全サーバー: **{global_text}**")
+        await interaction.response.send_message(
+            f"🏁 <@{uid}> の自己ベスト\nこのサーバー: **{local_text}**\n全サーバー: **{global_text}**")
 
     @bumprta.command(name="ranking", description="最速記録をサーバー内/全体で表示します")
     @app_commands.choices(scope=RANKING_SCOPE_CHOICES)
@@ -98,35 +113,41 @@ class BumpRta(commands.Cog):
     async def ranking(self, interaction: discord.Interaction, scope: app_commands.Choice[str] | None = None):
         if self.db is None:
             return await interaction.response.send_message("Supabase未接続のため順位を取得できません。", ephemeral=True)
-        selected = scope.value if scope else "local"
-        if selected == "global":
+        if scope and scope.value == "global":
             rows = await self._call(lambda: self.db.rpc("get_bump_rta_global_ranking", {"p_limit": 10}).execute())
             data = rows.data or []
             lines = [f"**{i}.** <@{r['user_id']}> — **{r['elapsed_ms'] / 1000:.2f}秒**（{r['attempts']}回）" for i, r in enumerate(data, 1)]
             title = "全サーバー RTAランキング"
         else:
-            rows = await self._call(lambda: self.db.table("bump_rta_records").select("user_id,elapsed_ms,completed_at").eq("guild_id", str(interaction.guild_id)).order("elapsed_ms").limit(10).execute())
+            rows = await self._call(lambda: self.db.table("bump_rta_records").select(
+                "user_id,elapsed_ms,completed_at").eq("guild_id", str(interaction.guild_id)).order("elapsed_ms").limit(10).execute())
             data = rows.data or []
             lines = [f"**{i}.** <@{r['user_id']}> — **{r['elapsed_ms'] / 1000:.2f}秒**" for i, r in enumerate(data, 1)]
             title = "このサーバーのRTAランキング"
         await interaction.response.send_message(f"🏁 **{title}**\n" + ("\n".join(lines) if lines else "まだ記録がありません。"))
 
     async def _schedule_reminder(self, message, user_id, kind):
-        due_at = (message.created_at + timedelta(hours=2)).isoformat()
-        reminder = {"message_id": str(message.id), "guild_id": str(message.guild.id),
-                    "channel_id": str(message.channel.id), "user_id": str(user_id) if user_id else None,
-                    "event_type": kind, "due_at": due_at}
+        reminder = {
+            "message_id": str(message.id), "guild_id": str(message.guild.id),
+            "channel_id": str(message.channel.id), "user_id": str(user_id) if user_id else None,
+            "event_type": kind, "due_at": (message.created_at + timedelta(hours=2)).isoformat(),
+        }
         await self._call(lambda: self.db.table("bump_rta_reminders").upsert(
             reminder, on_conflict="message_id", ignore_duplicates=True).execute())
 
     @tasks.loop(minutes=1)
     async def reminder_worker(self):
-        """期限到来した通知を、元メッセージへの返信として送る。"""
+        if self.db is None:
+            return
         try:
             due = await self._call(lambda: self.db.table("bump_rta_reminders").select(
                 "message_id,guild_id,channel_id,user_id,event_type,due_at"
             ).is_("sent_at", "null").lte("due_at", discord.utils.utcnow().isoformat()).order("due_at").limit(50).execute())
             for row in due.data or []:
+                if not await self._is_enabled(row["guild_id"]):
+                    await self._call(lambda row=row: self.db.table("bump_rta_reminders").update(
+                        {"sent_at": discord.utils.utcnow().isoformat()}).eq("message_id", row["message_id"]).execute())
+                    continue
                 channel = self.bot.get_channel(int(row["channel_id"]))
                 if channel is None:
                     try:
@@ -137,14 +158,14 @@ class BumpRta(commands.Cog):
                     original = await channel.fetch_message(int(row["message_id"]))
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                     original = None
+                noun = "bump" if row["event_type"] == "bump" else "up"
                 user = f"<@{row['user_id']}> " if row.get("user_id") else ""
-                text = f"⏰ {user}{'bump' if row['event_type'] == 'bump' else 'up'}から2時間です。次のbump / upが可能か確認してください。"
+                text = f"⏰ {user}{noun}から2時間です。bumpしましょう！" if noun == "bump" else f"⏰ {user}upから2時間です。upしましょう！"
                 await channel.send(text, reference=original, mention_author=False,
                                    allowed_mentions=discord.AllowedMentions(users=bool(row.get("user_id"))))
                 await self._call(lambda row=row: self.db.table("bump_rta_reminders").update(
                     {"sent_at": discord.utils.utcnow().isoformat()}).eq("message_id", row["message_id"]).execute())
         except Exception:
-            # A temporary database/Discord failure should not stop the periodic loop.
             return
 
     @reminder_worker.before_loop
@@ -153,49 +174,57 @@ class BumpRta(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if not message.guild or not getattr(message.author, "bot", False) or self.db is None:
+        if not message.guild or not getattr(message.author, "bot", False):
             return
-        gid = message.guild.id
-        lock = self._locks.setdefault(gid, asyncio.Lock())
+        kind = event_kind(message_text(message))
+        author_id = int(message.author.id)
+        if not ((kind == "bump" and author_id == DISBOARD_BOT_ID) or
+                (kind == "up" and author_id == DISOKU_BOT_ID)):
+            return
+        guild_id = message.guild.id
+        if not await self._is_enabled(guild_id):
+            return
+        lock = self._locks.setdefault(guild_id, asyncio.Lock())
         async with lock:
             try:
-                result = await self._call(lambda: self.db.table("bump_rta_settings").select(
-                    "channel_id,disboard_bot_id,disoku_bot_id").eq("guild_id", str(gid)).limit(1).execute())
-                if not result.data:
-                    return
-                cfg = result.data[0]
-                if str(message.channel.id) != cfg["channel_id"]:
-                    return
-                kind = event_kind(message_text(message))
-                bot_id = str(message.author.id)
-                if kind == "bump" and bot_id == cfg["disboard_bot_id"]:
+                # Scheduled notices are independent of RTA/user attribution and work in any channel.
+                if self.db is not None:
                     user_id = getattr(getattr(message, "interaction_metadata", None), "user_id", None)
                     if user_id is None:
-                        interaction_user = getattr(getattr(message, "interaction", None), "user", None)
-                        user_id = getattr(interaction_user, "id", None) or getattr(
-                            getattr(message, "interaction", None), "user_id", None)
-                    if user_id is not None:
-                        self._pending[gid] = {"started": time.monotonic(), "user_id": int(user_id),
-                                              "bump_message_id": str(message.id)}
+                        interaction = getattr(message, "interaction", None)
+                        user_id = getattr(getattr(interaction, "user", None), "id", None) or getattr(interaction, "user_id", None)
                     await self._schedule_reminder(message, user_id, kind)
-                elif kind == "up" and bot_id == cfg["disoku_bot_id"]:
-                    started = self._pending.pop(gid, None)
-                    if started:
-                        elapsed = max(1, int((time.monotonic() - started["started"]) * 1000))
-                        await self._call(lambda: self.db.table("bump_rta_events").insert({
-                            "guild_id": str(gid), "user_id": str(started["user_id"]), "elapsed_ms": elapsed,
-                            "bump_message_id": started["bump_message_id"], "completed_at": message.created_at.isoformat()
-                        }).execute())
-                        await self._call(lambda: self.db.rpc("record_bump_rta_best", {
-                            "p_guild_id": str(gid), "p_user_id": str(started["user_id"]),
-                            "p_elapsed_ms": elapsed, "p_completed_at": message.created_at.isoformat()
-                        }).execute())
-                        await message.channel.send(f"🏁 <@{started['user_id']}> のRTA記録: **{elapsed / 1000:.2f}秒**",
-                                                   allowed_mentions=discord.AllowedMentions(users=True))
-                    await self._schedule_reminder(message, started["user_id"] if started else None, kind)
+                    await self._record_rta_event(message, kind, user_id)
             except Exception:
-                # Tracking failures must not interrupt normal message processing.
                 return
+
+    async def _record_rta_event(self, message, kind, user_id):
+        gid = str(message.guild.id)
+        if kind == "bump":
+            if user_id is None:
+                return
+            await self._call(lambda: self.db.table("bump_rta_pending").upsert({
+                "guild_id": gid, "user_id": str(user_id), "bump_message_id": str(message.id),
+                "bump_at": message.created_at.isoformat(),
+            }, on_conflict="guild_id").execute())
+            return
+        pending = await self._call(lambda: self.db.table("bump_rta_pending").select(
+            "user_id,bump_message_id,bump_at").eq("guild_id", gid).limit(1).execute())
+        if not pending.data:
+            return
+        start = pending.data[0]
+        elapsed = max(1, int((message.created_at - discord.utils.parse_time(start["bump_at"])).total_seconds() * 1000))
+        await self._call(lambda: self.db.table("bump_rta_pending").delete().eq("guild_id", gid).execute())
+        await self._call(lambda: self.db.table("bump_rta_events").insert({
+            "guild_id": gid, "user_id": str(start["user_id"]), "elapsed_ms": elapsed,
+            "bump_message_id": start["bump_message_id"], "completed_at": message.created_at.isoformat(),
+        }).execute())
+        await self._call(lambda: self.db.rpc("record_bump_rta_best", {
+            "p_guild_id": gid, "p_user_id": str(start["user_id"]), "p_elapsed_ms": elapsed,
+            "p_completed_at": message.created_at.isoformat(),
+        }).execute())
+        await message.channel.send(f"🏁 <@{start['user_id']}> のRTA記録: **{elapsed / 1000:.2f}秒**",
+                                   allowed_mentions=discord.AllowedMentions(users=True))
 
 
 async def setup(bot):
