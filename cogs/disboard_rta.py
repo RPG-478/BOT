@@ -18,34 +18,39 @@ LEADERBOARD_SCOPE_CHOICES = [
 ]
 
 
-def command_event(message):
-    """Identify a bump/up command interaction by the responding bot application.
-
-    This deliberately does not inspect message content or embeds. Discord.py provides
-    MessageInteractionMetadata even when Message Content Intent fields are unavailable.
-    """
+def detect_event(message):
+    """Identify a successful bump/up response by official bot ID and embed description."""
     author_id = getattr(getattr(message, "author", None), "id", None)
-    application_id = getattr(message, "application_id", None)
+    if not getattr(message, "guild", None):
+        return None
+    if getattr(getattr(message, "channel", None), "type", None) != discord.ChannelType.text:
+        return None
+    embeds = getattr(message, "embeds", ()) or ()
+    description = (getattr(embeds[0], "description", "") or "") if embeds else ""
     if author_id == DISBOARD_BOT_ID:
-        kind, expected_application_id = "bump", DISBOARD_BOT_ID
+        # Accept the Japanese success copy from the supplied example and its English variant.
+        if "表示順をアップしたよ" not in description and "Bump done" not in description:
+            return None
+        kind = "bump"
     elif author_id == DISOKU_BOT_ID:
-        kind, expected_application_id = "up", DISOKU_BOT_ID
+        if "アップしたよ" not in description and "up successful" not in description.casefold():
+            return None
+        kind = "up"
     else:
         return None
     metadata = getattr(message, "interaction_metadata", None)
-    if metadata is None:
-        return None
-    if getattr(metadata, "type", None) != discord.InteractionType.application_command:
-        return None
-    # Bind the response to the expected official app and its bot user; reject mismatches.
-    if application_id is None or int(application_id) != expected_application_id:
-        return None
+    if metadata is not None and getattr(metadata, "type", None) != discord.InteractionType.application_command:
+        metadata = None
     user = getattr(metadata, "user", None)
     user_id = getattr(user, "id", None)
+    if user_id is None:
+        # Legacy discord.py interaction payload support.
+        interaction = getattr(message, "interaction", None)
+        user_id = getattr(getattr(interaction, "user", None), "id", None)
     event_at = getattr(metadata, "created_at", None) or getattr(message, "created_at", None)
-    if user_id is None or event_at is None:
+    if event_at is None:
         return None
-    return kind, int(user_id), event_at
+    return kind, int(user_id) if user_id is not None else None, event_at
 
 
 class BumpRta(commands.Cog):
@@ -194,7 +199,7 @@ class BumpRta(commands.Cog):
     async def on_message(self, message: discord.Message):
         if not message.guild or not getattr(message.author, "bot", False):
             return
-        event = command_event(message)
+        event = detect_event(message)
         if event is None:
             return
         kind, user_id, event_at = event

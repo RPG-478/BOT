@@ -8,7 +8,7 @@ from cogs.disboard_rta import (
     BumpRta,
     DISBOARD_BOT_ID,
     DISOKU_BOT_ID,
-    command_event,
+    detect_event,
 )
 
 
@@ -17,47 +17,52 @@ class BumpRtaParserTest(unittest.TestCase):
         self.assertEqual(DISBOARD_BOT_ID, 302050872383242240)
         self.assertEqual(DISOKU_BOT_ID, 761562078095867916)
 
-    def make_message(self, author_id=DISBOARD_BOT_ID, application_id=DISBOARD_BOT_ID,
-                     interaction_type=discord.InteractionType.application_command,
-                     content='', embeds=None):
+    def make_message(self, author_id=DISBOARD_BOT_ID, description='表示順をアップしたよ 👍',
+                     content='', interaction_type=discord.InteractionType.application_command,
+                     user_id=987654321):
         invoked_at = datetime(2026, 10, 13, 8, 0, 0, tzinfo=timezone.utc)
         metadata = SimpleNamespace(
             type=interaction_type,
-            user=SimpleNamespace(id=987654321),
+            user=SimpleNamespace(id=user_id) if user_id is not None else None,
             created_at=invoked_at,
         )
         return SimpleNamespace(
             author=SimpleNamespace(id=author_id, bot=True),
-            application_id=application_id,
+            application_id=author_id,
+            guild=SimpleNamespace(id=222),
+            channel=SimpleNamespace(type=discord.ChannelType.text),
             interaction_metadata=metadata,
             created_at=datetime(2026, 10, 13, 8, 0, 1, tzinfo=timezone.utc),
             content=content,
-            embeds=embeds or [],
+            embeds=[SimpleNamespace(description=description)] if description else [],
         )
 
-    def test_official_disboard_application_flags_bump_without_content(self):
-        msg = self.make_message(content='', embeds=[])
-        event = command_event(msg)
+    def test_disboard_embed_description_flags_bump_without_content(self):
+        msg = self.make_message(content='', description='表示順をアップしたよ 👍')
+        event = detect_event(msg)
         self.assertEqual(event[:2], ('bump', 987654321))
         self.assertEqual(event[2].isoformat(), '2026-10-13T08:00:00+00:00')
 
-    def test_official_disoku_application_flags_up_without_content(self):
-        msg = self.make_message(author_id=DISOKU_BOT_ID, application_id=DISOKU_BOT_ID)
-        event = command_event(msg)
+    def test_disoku_embed_description_flags_up_without_content(self):
+        msg = self.make_message(author_id=DISOKU_BOT_ID, description='Lunachan.com をアップしたよ! 🙏')
+        event = detect_event(msg)
         self.assertEqual(event[:2], ('up', 987654321))
 
-    def test_bot_and_application_must_match(self):
-        self.assertIsNone(command_event(self.make_message(application_id=999)))
-        self.assertIsNone(command_event(self.make_message(author_id=999, application_id=999)))
+    def test_unofficial_bot_and_missing_success_embed_are_ignored(self):
+        self.assertIsNone(detect_event(self.make_message(author_id=999)))
+        self.assertIsNone(detect_event(self.make_message(description='あと2時間待ってください')))
 
-    def test_only_application_command_interactions_are_flagged(self):
+    def test_requires_guild_text_channel_and_success_embed(self):
         msg = self.make_message(interaction_type=discord.InteractionType.component)
-        self.assertIsNone(command_event(msg))
+        # The message event is validated by bot ID and the success embed, not
+        # the interaction type; a component metadata field does not override it.
+        self.assertEqual(detect_event(msg)[0], 'bump')
+        msg.channel.type = discord.ChannelType.private
+        self.assertIsNone(detect_event(msg))
 
-    def test_message_content_and_embed_are_not_used(self):
-        plain = self.make_message(content='', embeds=[])
-        noisy = self.make_message(content='error, cooldown, arbitrary text', embeds=[SimpleNamespace(description='unrelated')])
-        self.assertEqual(command_event(plain), command_event(noisy))
+    def test_embed_success_text_is_used_not_message_content(self):
+        plain = self.make_message(content='arbitrary message text', description='表示順をアップしたよ 👍')
+        self.assertEqual(detect_event(plain)[0], 'bump')
 
 
 class DefaultNotificationsTest(unittest.IsolatedAsyncioTestCase):
@@ -79,7 +84,9 @@ class DefaultNotificationsTest(unittest.IsolatedAsyncioTestCase):
             id=111, guild=SimpleNamespace(id=222),
             author=SimpleNamespace(id=DISBOARD_BOT_ID, bot=True),
             application_id=DISBOARD_BOT_ID,
-            content='', embeds=[],
+            channel=SimpleNamespace(type=discord.ChannelType.text),
+            content='', embeds=[SimpleNamespace(description='表示順をアップしたよ 👍')],
+            created_at=datetime(2026, 10, 13, 8, 0, 1, tzinfo=timezone.utc),
             interaction_metadata=SimpleNamespace(
                 type=discord.InteractionType.application_command,
                 user=SimpleNamespace(id=333),
@@ -100,7 +107,9 @@ class DefaultNotificationsTest(unittest.IsolatedAsyncioTestCase):
             id=444, guild=SimpleNamespace(id=222),
             author=SimpleNamespace(id=DISOKU_BOT_ID, bot=True),
             application_id=DISOKU_BOT_ID,
-            content='', embeds=[],
+            channel=SimpleNamespace(type=discord.ChannelType.text),
+            content='', embeds=[SimpleNamespace(description='Lunachan.com をアップしたよ! 🙏')],
+            created_at=datetime(2026, 10, 13, 8, 1, 1, tzinfo=timezone.utc),
             interaction_metadata=SimpleNamespace(
                 type=discord.InteractionType.application_command,
                 user=SimpleNamespace(id=333),
