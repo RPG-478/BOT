@@ -1579,7 +1579,7 @@ class VoiceCog(commands.Cog):
         return True
 
     # --------------------------------------------------
-    # 実装（/voice join・/voice leave）
+    # 実装（/voice connection action:参加・/voice connection action:退出）
     # --------------------------------------------------
     async def _join_impl(self, r: Responder):
         voice = getattr(r.user, "voice", None)

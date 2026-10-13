@@ -113,6 +113,8 @@ class CommandCatalogTest(unittest.TestCase):
         """移行期間を終えて削除した旧ボイス・音楽コマンドが、登録にも COMMAND_META にも残っていない。"""
         removed = [
             '/join', '/leave', '/play', '/pause', '/skip', '/seek', '/loop', '/shuffle', '/queue', '/playlist',
+            '/voice join', '/voice leave', '/voice status', '/voice record', '/voice echo', '/voice transcribe',
+            '/voice karaoke', '/voice changer', '/voice match', '/voice global', '/bumprta best', '/bumprta ranking',
             '/eq', '/spatial', '/speak', '/spotify_link', '/spotify_unlink', '/spotify_playlists',
             '!panel', '!search', '!list', '!plist', '!save_current', '!plsave', '!pllist', '!plplay', '!volume',
             '!speed', '!stop_all', '!rval', '!rres', '!rec', '!echo', '!stt', '!karaoke', '!vc', '!saito',
@@ -125,7 +127,7 @@ class CommandCatalogTest(unittest.TestCase):
                 self.assertNotIn(key, command_meta.COMMAND_META)
                 self.assertIsNone(command_catalog.find_command(self.catalog, key, include_hidden=True))
         self.assertFalse([k for k in registered if k.split(' ')[0] in ('!rec', '!echo', '!stt', '!karaoke', '!vc')])
-        for key in ('/music play', '/voice record', '!gvc create', '!gvc chat connect', '!ffversion'):
+        for key in ('/music play', '/voice studio', '!gvc create', '!gvc chat connect', '!ffversion'):
             with self.subTest(kept=key):
                 self.assertIn(key, registered)
 

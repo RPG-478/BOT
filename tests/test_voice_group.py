@@ -1,10 +1,10 @@
-"""/voice グループ（PR-C）のテスト。Discord には接続しない。
+"""統合した/voiceグループ（PR-C）のテスト。Discord には接続しない。
 
-- 10 個のサブコマンドが、各機能の実装関数を正しい引数で呼ぶこと
+- 4 個の統合サブコマンドが、各機能の実装関数を正しい引数で呼ぶこと
 - 旧コマンド（/join・!rec・!stt・!saito・!gvc join など）が登録されていないこと
-- /voice status が、VC を使っている機能と開始した人を表示すること
+- /voice connection action:状態 が、VC を使っている機能と開始した人を表示すること
 - 音声認識モデルが無いとき、文字起こし・カラオケは VC に入らずに断ること
-- /voice record action:音程解析が NameError にならず音階を返すこと
+- /voice studio feature:録音 action:音程解析が NameError にならず音階を返すこと
 - 録音を始めると、テキストチャンネルに全員に見えるお知らせが出ること
 """
 
@@ -66,6 +66,23 @@ class Base(unittest.IsolatedAsyncioTestCase):
         return FakeCtx(self.w, user or self.w.alice)
 
     async def voice(self, name, interaction=None, **kwargs):
+        # Keep readable legacy test cases, but invoke only the new consolidated slash commands.
+        if name in ('join', 'leave', 'status'):
+            old_name = name
+            name = 'connection'
+            kwargs['action'] = choice({'join': 'join', 'leave': 'leave', 'status': 'status'}[old_name])
+        elif name in ('record', 'echo', 'transcribe', 'karaoke'):
+            feature = name
+            name = 'studio'
+            kwargs['feature'] = choice(feature)
+        elif name == 'changer':
+            name = 'effects'
+        elif name in ('match', 'global'):
+            network = name
+            name = 'community'
+            kwargs['network'] = choice(network)
+            if network == 'global' and 'action' in kwargs:
+                kwargs['action'] = choice({'join': 'start', 'leave': 'stop'}.get(kwargs['action'].value, kwargs['action'].value))
         command = self.hub.voice_group.get_command(name)
         interaction = interaction or self.interaction()
         await command.callback(self.hub, interaction, **kwargs)
@@ -150,10 +167,9 @@ class SubcommandImplementationTest(Base):
         await self.check(self.gvc, '_global_impl', 'global', {'action': choice('leave')},
                          {'action': 'leave', 'room_name': None, 'password': None})
 
-    def test_ten_subcommands(self):
+    def test_four_consolidated_subcommands(self):
         names = sorted(c.name for c in self.hub.voice_group.commands)
-        self.assertEqual(names, sorted(['join', 'leave', 'status', 'record', 'echo', 'transcribe', 'karaoke',
-                                        'changer', 'match', 'global']))
+        self.assertEqual(names, sorted(['connection', 'studio', 'effects', 'community']))
 
 
 class LegacyRemovedTest(Base):
@@ -199,13 +215,13 @@ class StatusTest(Base):
         fields = {f.name: f.value for f in embed.fields}
         self.assertEqual(fields['機能'], '録音')
         self.assertEqual(fields['開始した人'], 'alice')
-        self.assertIn('/voice record action:停止', fields['終了するには'])
+        self.assertIn('/voice studio feature:録音 action:停止', fields['終了するには'])
         self.assertIn('秒', fields['経過時間'])
 
     async def test_busy_message_points_to_voice_commands(self):
         await self.rec._record_impl(Responder(self.ctx(self.w.alice)), 'start')
         interaction = await self.voice('join', self.interaction(self.w.bob))
-        self.assertIn('/voice record action:停止', interaction.texts())
+        self.assertIn('/voice studio feature:録音 action:停止', interaction.texts())
         self.assertEqual(self.manager.owner(self.w.guild.id), 'record')
 
 
