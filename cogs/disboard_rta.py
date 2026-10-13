@@ -92,7 +92,7 @@ class BumpRta(commands.Cog):
         self._enabled_cache = {}
         self._locks = {}
         self._processed_messages = set()
-        self._claimed_reminders = set()  # in-memory guard against 1-min re-sends
+        self._claimed_reminders = set()
 
     async def cog_load(self):
         if self.db is not None and not self.reminder_worker.is_running():
@@ -165,31 +165,36 @@ class BumpRta(commands.Cog):
             return await interaction.response.send_message("Supabase未接続のため順位を取得できません。", ephemeral=True)
         kind = event_type.value if event_type else "bump"
         selected_scope = scope.value if scope else "local"
-        if selected_scope == "me":
-            uid, gid = str(interaction.user.id), str(interaction.guild_id)
-            local = await self._call(lambda: self.db.table("bump_rta_records").select(
-                "elapsed_ms,completed_at").eq("guild_id", gid).eq("user_id", uid).eq("event_type", kind).limit(1).execute())
-            global_best = await self._call(lambda: self.db.table("bump_rta_events").select(
-                "elapsed_ms,completed_at").eq("user_id", uid).eq("event_type", kind).order("elapsed_ms").limit(1).execute())
-            local_text = f"{local.data[0]['elapsed_ms'] / 1000:.2f}秒" if local.data else "記録なし"
-            global_text = f"{global_best.data[0]['elapsed_ms'] / 1000:.2f}秒" if global_best.data else "記録なし"
+        try:
+            if selected_scope == "me":
+                uid, gid = str(interaction.user.id), str(interaction.guild_id)
+                local = await self._call(lambda: self.db.table("bump_rta_records").select(
+                    "elapsed_ms,completed_at").eq("guild_id", gid).eq("user_id", uid).eq("event_type", kind).limit(1).execute())
+                global_best = await self._call(lambda: self.db.table("bump_rta_events").select(
+                    "elapsed_ms,completed_at").eq("user_id", uid).eq("event_type", kind).order("elapsed_ms").limit(1).execute())
+                local_text = f"{local.data[0]['elapsed_ms'] / 1000:.2f}秒" if local.data else "記録なし"
+                global_text = f"{global_best.data[0]['elapsed_ms'] / 1000:.2f}秒" if global_best.data else "記録なし"
+                return await interaction.response.send_message(
+                    f"🏁 <@{uid}> の**{kind}自己ベスト**\nこのサーバー: **{local_text}**\n全サーバー: **{global_text}**")
+            if selected_scope == "global":
+                rows = await self._call(lambda: self.db.rpc("get_bump_rta_global_ranking", {
+                    "p_event_type": kind, "p_limit": 10}).execute())
+                data = rows.data or []
+                lines = [f"**{i}.** <@{r['user_id']}> — **{r['elapsed_ms'] / 1000:.2f}秒**（{r['attempts']}回）" for i, r in enumerate(data, 1)]
+                title = f"全サーバー {kind} RTAランキング"
+            else:
+                rows = await self._call(lambda: self.db.table("bump_rta_records").select(
+                    "user_id,elapsed_ms,completed_at").eq("guild_id", str(interaction.guild_id)).eq(
+                    "event_type", kind).order("elapsed_ms").limit(10).execute())
+                data = rows.data or []
+                lines = [f"**{i}.** <@{r['user_id']}> — **{r['elapsed_ms'] / 1000:.2f}秒**" for i, r in enumerate(data, 1)]
+                title = f"このサーバー {kind} RTAランキング"
             return await interaction.response.send_message(
-                f"🏁 <@{uid}> の**{kind}自己ベスト**\nこのサーバー: **{local_text}**\n全サーバー: **{global_text}**")
-        if selected_scope == "global":
-            rows = await self._call(lambda: self.db.rpc("get_bump_rta_global_ranking", {
-                "p_event_type": kind, "p_limit": 10}).execute())
-            data = rows.data or []
-            lines = [f"**{i}.** <@{r['user_id']}> — **{r['elapsed_ms'] / 1000:.2f}秒**（{r['attempts']}回）" for i, r in enumerate(data, 1)]
-            title = f"全サーバー {kind} RTAランキング"
-        else:
-            rows = await self._call(lambda: self.db.table("bump_rta_records").select(
-                "user_id,elapsed_ms,completed_at").eq("guild_id", str(interaction.guild_id)).eq(
-                "event_type", kind).order("elapsed_ms").limit(10).execute())
-            data = rows.data or []
-            lines = [f"**{i}.** <@{r['user_id']}> — **{r['elapsed_ms'] / 1000:.2f}秒**" for i, r in enumerate(data, 1)]
-            title = f"このサーバー {kind} RTAランキング"
-        return await interaction.response.send_message(
-            f"🏁 **{title}**\n" + ("\n".join(lines) if lines else "まだ記録がありません。"))
+                f"🏁 **{title}**\n" + ("\n".join(lines) if lines else "まだ記録がありません。"))
+        except Exception as e:
+            logger.exception("bump/up leaderboard query failed: scope=%s kind=%s", selected_scope, kind)
+            return await interaction.response.send_message(
+                f"❌ ランキングの取得に失敗しました。\n（{type(e).__name__}: {e}）", ephemeral=True)
 
     async def _schedule_reminder(self, message, user_id, kind, event_at):
         due_at = (event_at + timedelta(hours=2)).isoformat()
@@ -217,7 +222,6 @@ class BumpRta(commands.Cog):
             return False
         self._claimed_reminders.add(message_id)
         if len(self._claimed_reminders) > 2000:
-            # keep memory bounded; old entries are already sent
             self._claimed_reminders.clear()
             self._claimed_reminders.add(message_id)
         if self.db is None:
@@ -227,10 +231,10 @@ class BumpRta(commands.Cog):
                 {"sent_at": discord.utils.utcnow().isoformat()}
             ).eq("message_id", message_id).is_("sent_at", "null").execute())
             logger.debug("Claimed reminder %s, data=%s", message_id, bool(result.data))
-            return True  # local claim already succeeded
+            return True
         except Exception:
             logger.exception("DB claim failed for reminder %s (local claim still active)", message_id)
-            return True  # still honor local claim so we don't spam
+            return True
 
     @tasks.loop(minutes=1)
     async def reminder_worker(self):
@@ -258,7 +262,7 @@ class BumpRta(commands.Cog):
                         channel = await self.bot.fetch_channel(int(row["channel_id"]))
                     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                         logger.warning("Could not fetch channel %s for reminder", row["channel_id"])
-                        self._claimed_reminders.discard(mid)  # allow retry
+                        self._claimed_reminders.discard(mid)
                         continue
                 try:
                     original = await channel.fetch_message(int(mid))
