@@ -143,43 +143,43 @@ class SubcommandImplementationTest(Base):
         self.assertEqual(mock.await_count, 1, impl)
         self.assertEqual(self.bound(impl, mock.await_args), expected, f'/music {name}')
 
-    async def test_sixteen_subcommands(self):
+    async def test_five_subcommands(self):
         names = sorted(c.name for c in self.cog.music_group.commands)
         self.assertEqual(names, sorted([
-            'play', 'pause', 'skip', 'stop', 'seek', 'queue', 'loop', 'shuffle', 'volume', 'speed',
-            'eq', 'spatial', 'panel', 'search', 'playlist', 'files']))
+            'play', 'control', 'sound', 'library', 'panel']))
 
     async def test_interaction_based(self):
         await self.check('_play_impl', 'play', {'query': 'song'}, {'query': 'song', 'file': None, 'start_at': None})
-        for impl, name in [('_pause_impl', 'pause'), ('_skip_impl', 'skip'), ('_queue_impl', 'queue'),
-                           ('_shuffle_impl', 'shuffle')]:
-            await self.check(impl, name, {}, {})
-        await self.check('_seek_impl', 'seek', {'seconds': 12.0}, {'seconds': 12.0})
-        await self.check('_loop_impl', 'loop', {'mode': choice('track')}, {'mode': 'track'})
-        await self.check('_eq_impl', 'eq', {'mode': 'bass'}, {'mode': 'bass'})
+        await self.check('_pause_impl', 'control', {'action': choice('pause')}, {})
+        await self.check('_skip_impl', 'control', {'action': choice('skip')}, {})
+        await self.check('_queue_impl', 'control', {'action': choice('queue')}, {})
+        await self.check('_shuffle_impl', 'control', {'action': choice('shuffle')}, {})
+        await self.check('_seek_impl', 'control', {'action': choice('seek'), 'seconds': 12.0}, {'seconds': 12.0})
+        await self.check('_loop_impl', 'control', {'action': choice('loop'), 'loop_mode': choice('track')}, {'mode': 'track'})
+        await self.check('_eq_impl', 'sound', {'action': choice('eq'), 'preset': 'bass'}, {'mode': 'bass'})
 
     async def test_responder_based(self):
-        await self.check('_stop_impl', 'stop', {}, {})
-        await self.check('_volume_impl', 'volume', {'value': 0.5}, {'value': 0.5})
-        await self.check('_speed_impl', 'speed', {'value': 1.5}, {'value': 1.5})
+        await self.check('_stop_impl', 'control', {'action': choice('stop')}, {})
+        await self.check('_volume_impl', 'sound', {'action': choice('volume'), 'value': 0.5}, {'value': 0.5})
+        await self.check('_speed_impl', 'sound', {'action': choice('speed'), 'value': 1.5}, {'value': 1.5})
         await self.check('_panel_impl', 'panel', {}, {})
-        await self.check('_search_impl', 'search', {'keyword': 'abc'}, {'keyword': 'abc'})
-        await self.check('_files_impl', 'files', {'limit': 20}, {'limit': 20})
+        await self.check('_search_impl', 'library', {'action': choice('search'), 'query': 'abc'}, {'keyword': 'abc'})
+        await self.check('_files_impl', 'library', {'action': choice('files'), 'limit': 20}, {'limit': 20})
 
     async def test_spatial(self):
         none = {'feedback': None, 'wet': None, 'resolution': None}
-        await self.check('_spatial_impl', 'spatial', {}, none)
-        await self.check('_spatial_impl', 'spatial', {'feedback': 0.4, 'wet': 0.5}, {**none, 'feedback': 0.4, 'wet': 0.5})
-        await self.check('_spatial_impl', 'spatial', {'resolution': 8}, {**none, 'resolution': 8})
+        await self.check('_spatial_impl', 'sound', {'action': choice('spatial')}, none)
+        await self.check('_spatial_impl', 'sound', {'action': choice('spatial'), 'feedback': 0.4, 'wet': 0.5}, {**none, 'feedback': 0.4, 'wet': 0.5})
+        await self.check('_spatial_impl', 'sound', {'action': choice('spatial'), 'resolution': 8}, {**none, 'resolution': 8})
 
     async def test_playlist(self):
         def kwargs(action, name=None, scope=None):
-            return {'action': choice(action), 'name': name, 'scope': choice(scope) if scope else None}
-        await self.check('_playlist_impl', 'playlist', kwargs('save', 'mix'),
+            return {'action': choice('playlist'), 'playlist_action': choice(action), 'name': name, 'scope': choice(scope) if scope else None}
+        await self.check('_playlist_impl', 'library', kwargs('save', 'mix'),
                          {'action': 'save', 'name': 'mix', 'scope': 'me', 'file': None})
-        await self.check('_playlist_impl', 'playlist', kwargs('list'),
+        await self.check('_playlist_impl', 'library', kwargs('list'),
                          {'action': 'list', 'name': None, 'scope': 'me', 'file': None})
-        await self.check('_playlist_impl', 'playlist', kwargs('play', 'mix', 'server'),
+        await self.check('_playlist_impl', 'library', kwargs('play', 'mix', 'server'),
                          {'action': 'play', 'name': 'mix', 'scope': 'server', 'file': None})
 
 
@@ -213,11 +213,11 @@ class PlaylistScopeTest(Base):
         state['current_track'] = ('https://cdn/x.mp3', 'upload.mp3', 10, 'ID1', False)
         await state['queue'].put(('https://youtube.com/watch?v=a', 'yt song', None, True))
         await state['queue'].put(('https://cdn/y.mp3', 'upload2.mp3', 'ID2', False))
-        self.playlist = self.cog.music_group.get_command('playlist')
+        self.playlist = self.cog.music_group.get_command('library')
 
     async def run_playlist(self, action, name=None, scope=None, user=None, file=None):
         interaction = self.interaction(user)
-        await self.slash(self.playlist, interaction, action=choice(action), name=name,
+        await self.slash(self.playlist, interaction, action=choice('playlist'), playlist_action=choice(action), name=name,
                          scope=choice(scope) if scope else None, file=file)
         return interaction
 
@@ -320,11 +320,11 @@ class PlayAutoJoinTest(Base):
 
     async def test_spatial_options_set_values(self):
         interaction = self.interaction()
-        await self.slash(self.cog.music_group.get_command('spatial'), interaction, feedback=0.4, wet=0.2, resolution=8)
+        await self.slash(self.cog.music_group.get_command('sound'), interaction, action=choice('spatial'), feedback=0.4, wet=0.2, resolution=8)
         state = self.cog.get_state(self.w.guild.id)
         self.assertEqual((state['fdn_feedback'], state['fdn_wet'], state['fdn_resolution']), (0.4, 0.2, 8))
         interaction = self.interaction()
-        await self.slash(self.cog.music_group.get_command('spatial'), interaction, resolution=5)
+        await self.slash(self.cog.music_group.get_command('sound'), interaction, action=choice('spatial'), resolution=5)
         self.assertIn('4', interaction.texts())
         self.assertEqual(state['fdn_resolution'], 8)
 
@@ -333,7 +333,7 @@ class PlayAutoJoinTest(Base):
         state = self.cog.get_state(self.w.guild.id)
         await state['queue'].put(('u', 't', None, True))
         interaction = self.interaction()
-        await self.slash(self.cog.music_group.get_command('stop'), interaction)
+        await self.slash(self.cog.music_group.get_command('control'), interaction, action=choice('stop'))
         self.assertEqual(state['queue'].qsize(), 0)
         self.assertTrue(self.w.guild.voice_client.is_connected())
 
