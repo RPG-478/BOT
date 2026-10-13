@@ -1,14 +1,14 @@
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import discord
 from cogs.disboard_rta import (
     BumpRta,
     DISBOARD_BOT_ID,
     DISOKU_BOT_ID,
-    event_kind,
-    interaction_user_id,
-    message_text,
+    command_event,
 )
 
 
@@ -17,41 +17,47 @@ class BumpRtaParserTest(unittest.TestCase):
         self.assertEqual(DISBOARD_BOT_ID, 302050872383242240)
         self.assertEqual(DISOKU_BOT_ID, 761562078095867916)
 
-    def test_successful_bump_variants(self):
-        for text in ('Bump done!', 'Bump successful!', 'バンプ成功しました'):
-            self.assertEqual(event_kind(text), 'bump', text)
-
-    def test_successful_up_variants(self):
-        for text in ('Up successful!', 'サーバーをupしました', '掲載完了'):
-            self.assertEqual(event_kind(text), 'up', text)
-
-    def test_disboard_success_embed_with_bot_id(self):
-        # DISBOARD's embed can omit the literal word "bump"; the verified bot ID
-        # disambiguates its Japanese success copy from a Dis速 up event.
-        self.assertEqual(event_kind('表示順をアップしたよ 👍', DISBOARD_BOT_ID), 'bump')
-        self.assertEqual(event_kind('Lunachan.com をアップしたよ! 🙏', DISOKU_BOT_ID), 'up')
-
-    def test_unrelated_messages_are_ignored(self):
-        for text in ('bump again in 2 hours', 'up in 15 minutes', 'hello'):
-            self.assertIsNone(event_kind(text), text)
-
-    def test_embed_text_is_parsed(self):
-        msg = SimpleNamespace(content='', embeds=[SimpleNamespace(title='Bump done!', description='Thanks', fields=[])])
-        self.assertEqual(event_kind(message_text(msg)), 'bump')
-
-    def test_interaction_metadata_user_is_attributed(self):
-        msg = SimpleNamespace(
-            interaction_metadata=SimpleNamespace(user=SimpleNamespace(id=987654321)),
-            interaction=None,
+    def make_message(self, author_id=DISBOARD_BOT_ID, application_id=DISBOARD_BOT_ID,
+                     interaction_type=discord.InteractionType.application_command,
+                     content='', embeds=None):
+        invoked_at = datetime(2026, 10, 13, 8, 0, 0, tzinfo=timezone.utc)
+        metadata = SimpleNamespace(
+            type=interaction_type,
+            user=SimpleNamespace(id=987654321),
+            created_at=invoked_at,
         )
-        self.assertEqual(interaction_user_id(msg), 987654321)
-
-    def test_legacy_interaction_user_is_supported(self):
-        msg = SimpleNamespace(
-            interaction_metadata=None,
-            interaction=SimpleNamespace(user=SimpleNamespace(id=123456789)),
+        return SimpleNamespace(
+            author=SimpleNamespace(id=author_id, bot=True),
+            application_id=application_id,
+            interaction_metadata=metadata,
+            created_at=datetime(2026, 10, 13, 8, 0, 1, tzinfo=timezone.utc),
+            content=content,
+            embeds=embeds or [],
         )
-        self.assertEqual(interaction_user_id(msg), 123456789)
+
+    def test_official_disboard_application_flags_bump_without_content(self):
+        msg = self.make_message(content='', embeds=[])
+        event = command_event(msg)
+        self.assertEqual(event[:2], ('bump', 987654321))
+        self.assertEqual(event[2].isoformat(), '2026-10-13T08:00:00+00:00')
+
+    def test_official_disoku_application_flags_up_without_content(self):
+        msg = self.make_message(author_id=DISOKU_BOT_ID, application_id=DISOKU_BOT_ID)
+        event = command_event(msg)
+        self.assertEqual(event[:2], ('up', 987654321))
+
+    def test_bot_and_application_must_match(self):
+        self.assertIsNone(command_event(self.make_message(application_id=999)))
+        self.assertIsNone(command_event(self.make_message(author_id=999, application_id=999)))
+
+    def test_only_application_command_interactions_are_flagged(self):
+        msg = self.make_message(interaction_type=discord.InteractionType.component)
+        self.assertIsNone(command_event(msg))
+
+    def test_message_content_and_embed_are_not_used(self):
+        plain = self.make_message(content='', embeds=[])
+        noisy = self.make_message(content='error, cooldown, arbitrary text', embeds=[SimpleNamespace(description='unrelated')])
+        self.assertEqual(command_event(plain), command_event(noisy))
 
 
 class DefaultNotificationsTest(unittest.IsolatedAsyncioTestCase):
@@ -64,7 +70,7 @@ class DefaultNotificationsTest(unittest.IsolatedAsyncioTestCase):
         cog._enabled_cache['123'] = False
         self.assertFalse(await cog._is_enabled(123))
 
-    async def test_disboard_bot_comment_triggers_bump_and_attributes_interaction_user(self):
+    async def test_disboard_interaction_triggers_bump_and_attributes_interaction_user(self):
         cog = BumpRta(SimpleNamespace(supabase=object()))
         cog._is_enabled = AsyncMock(return_value=True)
         cog._schedule_reminder = AsyncMock()
@@ -72,13 +78,18 @@ class DefaultNotificationsTest(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(
             id=111, guild=SimpleNamespace(id=222),
             author=SimpleNamespace(id=DISBOARD_BOT_ID, bot=True),
-            content='', embeds=[SimpleNamespace(title='', description='表示順をアップしたよ 👍', fields=[])],
-            interaction_metadata=SimpleNamespace(user=SimpleNamespace(id=333)),
-            interaction=None,
+            application_id=DISBOARD_BOT_ID,
+            content='', embeds=[],
+            interaction_metadata=SimpleNamespace(
+                type=discord.InteractionType.application_command,
+                user=SimpleNamespace(id=333),
+                created_at=datetime(2026, 10, 13, 8, 0, 0, tzinfo=timezone.utc),
+            ),
         )
         await cog.on_message(message)
-        cog._schedule_reminder.assert_awaited_once_with(message, 333, 'bump')
-        cog._record_rta_event.assert_awaited_once_with(message, 'bump', 333)
+        invoked_at = message.interaction_metadata.created_at
+        cog._schedule_reminder.assert_awaited_once_with(message, 333, 'bump', invoked_at)
+        cog._record_rta_event.assert_awaited_once_with(message, 'bump', 333, invoked_at)
 
     async def test_disoku_bot_comment_triggers_up(self):
         cog = BumpRta(SimpleNamespace(supabase=object()))
@@ -88,13 +99,18 @@ class DefaultNotificationsTest(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(
             id=444, guild=SimpleNamespace(id=222),
             author=SimpleNamespace(id=DISOKU_BOT_ID, bot=True),
-            content='', embeds=[SimpleNamespace(title='', description='Lunachan.com をアップしたよ! 🙏', fields=[])],
-            interaction_metadata=SimpleNamespace(user=SimpleNamespace(id=333)),
-            interaction=None,
+            application_id=DISOKU_BOT_ID,
+            content='', embeds=[],
+            interaction_metadata=SimpleNamespace(
+                type=discord.InteractionType.application_command,
+                user=SimpleNamespace(id=333),
+                created_at=datetime(2026, 10, 13, 8, 1, 0, tzinfo=timezone.utc),
+            ),
         )
         await cog.on_message(message)
-        cog._schedule_reminder.assert_awaited_once_with(message, 333, 'up')
-        cog._record_rta_event.assert_awaited_once_with(message, 'up', 333)
+        invoked_at = message.interaction_metadata.created_at
+        cog._schedule_reminder.assert_awaited_once_with(message, 333, 'up', invoked_at)
+        cog._record_rta_event.assert_awaited_once_with(message, 'up', 333, invoked_at)
 
 
 if __name__ == '__main__':
