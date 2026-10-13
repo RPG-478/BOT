@@ -6,7 +6,7 @@ from pathlib import Path
 import discord
 from discord.ext import commands
 from core import game_panels
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 COLOR = 0xFFFFFF
 RECRUIT_SECONDS = 30
@@ -15,10 +15,29 @@ EMPTY, BLACK, WHITE = ".", "●", "○"
 DIRECTIONS = [(dr, dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if (dr, dc) != (0, 0)]
 ASSET_DIR = Path(__file__).resolve().parents[1] / "Assets" / "reversi"
 BOARD_SIZE = 800
+MOVE_LABELS = tuple("123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+REACTION_PAGE_SIZE = 17  # 前後ページ用リアクションを含め、上限20に余裕を持たせる
+NEXT_PAGE_EMOJI = "➡️"
+PREVIOUS_PAGE_EMOJI = "⬅️"
 
 
-def render_board_image(board):
-    """追加素材を使い、8x8盤面と石を高解像度PNGに合成する。"""
+def reaction_emoji(label):
+    """盤面に印字するラベルとDiscordリアクションを対応させる。"""
+    if label in "123456789" and len(label) == 1:
+        return f"{label}\ufe0f\u20e3"
+    if label in MOVE_LABELS[9:] and len(label) == 1:
+        return chr(0x1F1E6 + ord(label) - ord("A"))
+    raise ValueError(f"不明な手ラベル: {label}")
+
+
+def labelled_moves(moves):
+    if len(moves) > len(MOVE_LABELS):
+        raise ValueError(f"合法手がラベル上限{len(MOVE_LABELS)}を超えています")
+    return list(zip(MOVE_LABELS, moves))
+
+
+def render_board_image(board, moves=()):
+    """追加素材を使い、盤面・石・合法手ラベルを高解像度PNGに合成する。"""
     source = Image.open(ASSET_DIR / "IMG_4894.png").convert("RGBA")
     board_image = source.crop((72, 45, 529, 505)).resize(
         (BOARD_SIZE, BOARD_SIZE), Image.Resampling.LANCZOS
@@ -39,15 +58,23 @@ def render_board_image(board):
             x = round(col * cell_size + (cell_size - piece_size) / 2)
             y = round(row * cell_size + (cell_size - piece_size) / 2)
             board_image.alpha_composite(stone, (x, y))
+    draw = ImageDraw.Draw(board_image, "RGBA")
+    label_font = ImageFont.truetype(str(ASSET_DIR.parent.parent / "font.ttf"), 34)
+    for label, (row, col) in labelled_moves(moves):
+        cx, cy = round((col + 0.5) * cell_size), round((row + 0.5) * cell_size)
+        radius = 23
+        draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius),
+                     fill=(12, 48, 24, 235), outline=(255, 255, 255, 245), width=3)
+        draw.text((cx, cy), label, font=label_font, fill=(255, 255, 255, 255), anchor="mm")
     output = io.BytesIO()
     board_image.save(output, format="PNG", optimize=True)
     output.seek(0)
     return output
 
 
-def board_attachment(board):
+def board_attachment(board, moves=()):
     filename = "othello_board.png"
-    return discord.File(render_board_image(board), filename=filename), f"attachment://{filename}"
+    return discord.File(render_board_image(board, moves), filename=filename), f"attachment://{filename}"
 
 
 def new_board():
@@ -135,60 +162,80 @@ class JoinView(discord.ui.View):
         await interaction.response.send_message("参加を取り消しました。", ephemeral=True)
 
 
-class MoveSelect(discord.ui.Select):
-    def __init__(self, cog, game, moves, page=0):
-        self.cog, self.game, self.moves = cog, game, moves
-        self.page = page
-        start = page * 25
-        options = [discord.SelectOption(label=f"{chr(65+c)}{r+1}", value=str(i))
-                   for i, (r, c) in enumerate(moves[start:start + 25], start)]
-        super().__init__(placeholder="置くマスを選択", options=options)
-
-    async def callback(self, interaction):
-        r, c = self.moves[int(self.values[0])]
-        await self.cog.submit_move(interaction, self.game, r, c)
-
-
-class MoveView(discord.ui.View):
-    def __init__(self, cog, game, moves):
-        super().__init__(timeout=TURN_SECONDS)
-        self.cog, self.game, self.moves, self.page = cog, game, moves, 0
-        self.add_item(MoveSelect(cog, game, moves, self.page))
-        if len(moves) > 25:
-            self.add_item(discord.ui.Button(label="次の候補", style=discord.ButtonStyle.secondary))
-            self.children[-1].callback = self.next_page
-
-    async def next_page(self, interaction):
-        self.page = (self.page + 1) % ((len(self.moves) + 24) // 25)
-        self.clear_items()
-        self.add_item(MoveSelect(self.cog, self.game, self.moves, self.page))
-        if len(self.moves) > 25:
-            button = discord.ui.Button(label="次の候補", style=discord.ButtonStyle.secondary)
-            button.callback = self.next_page
-            self.add_item(button)
-        await interaction.response.edit_message(view=self)
-
-
-class TurnView(discord.ui.View):
-    def __init__(self, cog, game):
-        super().__init__(timeout=TURN_SECONDS + 10)
-        self.cog, self.game = cog, game
-
-    @discord.ui.button(label="置くマスを選ぶ", style=discord.ButtonStyle.primary)
-    async def choose(self, interaction, button):
-        g = self.game
-        if interaction.user.id != g.current_user().id or g.acted:
-            return await interaction.response.send_message("あなたの番ではありません。", ephemeral=True)
-        file, image_url = board_attachment(g.board)
-        embed = discord.Embed(description="置く場所を選んでください。", color=COLOR)
-        embed.set_image(url=image_url)
-        await interaction.response.send_message(embed=embed, file=file,
-                                                view=MoveView(self.cog, g, legal_moves(g.board, g.turn)), ephemeral=True)
-
-
 class Othello(commands.Cog):
     def __init__(self, bot):
         self.bot, self.games = bot, {}
+        self.reaction_sessions = {}
+
+    async def add_move_reactions(self, message, game, moves, description, offset=0):
+        page_moves = labelled_moves(moves)[offset:offset + REACTION_PAGE_SIZE]
+        active = [reaction_emoji(label) for label, _ in page_moves]
+        if offset + REACTION_PAGE_SIZE < len(moves):
+            active.append(NEXT_PAGE_EMOJI)
+        if offset > 0:
+            active.append(PREVIOUS_PAGE_EMOJI)
+        self.reaction_sessions[message.id] = {
+            "game": game, "moves": moves, "offset": offset, "active": active,
+            "description": description,
+        }
+        for label, _ in page_moves:
+            try:
+                await message.add_reaction(reaction_emoji(label))
+            except discord.HTTPException:
+                pass
+        if offset + REACTION_PAGE_SIZE < len(moves):
+            try:
+                await message.add_reaction(NEXT_PAGE_EMOJI)
+            except discord.HTTPException:
+                pass
+        if offset > 0:
+            try:
+                await message.add_reaction(PREVIOUS_PAGE_EMOJI)
+            except discord.HTTPException:
+                pass
+
+    @commands.Cog.listener()
+    async def on_reaction_add(self, reaction, user):
+        if user.bot:
+            return
+        message = reaction.message
+        session = self.reaction_sessions.get(message.id)
+        if not session:
+            return
+        game = session["game"]
+        if game.phase != "playing" or game.acted or game.current_user().id != user.id:
+            return
+        emoji = str(reaction.emoji)
+        try:
+            await message.remove_reaction(reaction.emoji, user)
+        except discord.HTTPException:
+            pass
+        if emoji in (NEXT_PAGE_EMOJI, PREVIOUS_PAGE_EMOJI):
+            new_offset = session["offset"] + (REACTION_PAGE_SIZE if emoji == NEXT_PAGE_EMOJI else -REACTION_PAGE_SIZE)
+            if 0 <= new_offset < len(session["moves"]):
+                moves = session["moves"]
+                start, end = new_offset + 1, min(new_offset + REACTION_PAGE_SIZE, len(moves))
+                description = f"{session['description']}\n候補 {start}〜{end} / {len(moves)}"
+                file, image_url = board_attachment(game.board, moves)
+                embed = discord.Embed(description=description, color=COLOR)
+                embed.set_image(url=image_url)
+                try:
+                    await message.delete()
+                    replacement = await game_panels.replace(
+                        message.channel, "party", embed=embed, file=file
+                    )
+                except discord.HTTPException:
+                    return
+                self.reaction_sessions.pop(message.id, None)
+                await self.add_move_reactions(replacement, game, moves, session["description"], new_offset)
+            return
+        offset = session["offset"]
+        page_moves = labelled_moves(session["moves"])[offset:offset + REACTION_PAGE_SIZE]
+        chosen = next((move for label, move in page_moves if reaction_emoji(label) == emoji), None)
+        if chosen is None:
+            return
+        if game.phase == "playing" and not game.acted and game.current_user().id == user.id:
+            game.acted = play_move(game.board, game.turn, *chosen)
 
     async def start_recruit(self, interaction):
         channel = interaction.channel
@@ -206,14 +253,6 @@ class Othello(commands.Cog):
         finally:
             g.phase = "done"
             self.games.pop(channel.id, None)
-
-    async def submit_move(self, interaction, g, row, col):
-        if g.phase != "playing" or interaction.user.id != g.current_user().id or g.acted:
-            return await interaction.response.send_message("この手は受け付けられません。", ephemeral=True)
-        if not play_move(g.board, g.turn, row, col):
-            return await interaction.response.send_message("その場所には置けません。", ephemeral=True)
-        g.acted = True
-        await interaction.response.send_message(f"{chr(65+col)}{row+1} に置きました。", ephemeral=True)
 
     async def run_game(self, channel, g):
         if len(g.players) != 2:
@@ -240,14 +279,20 @@ class Othello(commands.Cog):
                 continue
             g.acted = False
             color, uid = g.turn, g.current_user().id
-            file, image_url = board_attachment(g.board)
+            labelled_moves(moves)
+            file, image_url = board_attachment(g.board, moves)
             turn_embed = discord.Embed(
-                description=f"{g.players[color].mention} さんの番（{ '黒 ●' if color == BLACK else '白 ○'}）。", color=COLOR)
+                description=(f"{g.players[color].mention} さんの番（{ '黒 ●' if color == BLACK else '白 ○'}）。\n"
+                             "画像の番号・アルファベットと同じリアクションを押してください。"), color=COLOR)
             turn_embed.set_image(url=image_url)
-            await game_panels.replace(channel, "party", embed=turn_embed, file=file, view=TurnView(self, g))
+            turn_message = await game_panels.replace(channel, "party", embed=turn_embed, file=file)
+            await self.add_move_reactions(turn_message, g, moves, turn_embed.description)
             for _ in range(TURN_SECONDS):
                 if g.acted or g.phase != "playing": break
                 await asyncio.sleep(1)
+            for message_id, session in list(self.reaction_sessions.items()):
+                if session["game"] is g:
+                    self.reaction_sessions.pop(message_id, None)
             if g.acted:
                 idle = 0
                 g.pass_count = 0
