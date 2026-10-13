@@ -330,7 +330,7 @@ GAME_GUIDES = {
 カードを裏返して同じ絵柄を揃えます。
 
 ## コマンド
-- `/game": パーティーゲームの入口
+- `/game`: パーティーゲームの入口
 """,
     },
     "babanuki": {
@@ -342,7 +342,7 @@ GAME_GUIDES = {
 ババを引かないようにカードを交換します。
 
 ## コマンド
-- `/game": パーティーゲームの入口
+- `/game`: パーティーゲームの入口
 """,
     },
     "guess": {
@@ -354,67 +354,75 @@ GAME_GUIDES = {
 数字を当てます。
 
 ## コマンド
-- `/game": パーティーゲームの入口
+- `/game`: パーティーゲームの入口
 """,
     },
     "flash": {
         "id": "flash", "name": "フラッシュ暗算", "category": "game",
         "summary": "素早く暗算するゲーム。",
         "players": "1人〜", "min_players": 1, "max_players": None,
-        "duration": "約5分", "commands": ["/game"],
+        "duration": "約3分", "commands": ["/game"],
         "guide": """## 概要
 素早く暗算します。
 
 ## コマンド
-- `/game": パーティーゲームの入口
+- `/game`: パーティーゲームの入口
 """,
     },
     "daifugo": {
         "id": "daifugo", "name": "大富豪", "category": "game",
-        "summary": "トランプで大富豪をするゲーム。",
+        "summary": "トランプで大富豪をします。",
         "players": "2人以上", "min_players": 2, "max_players": None,
         "duration": "約15分", "commands": ["/game"],
         "guide": """## 概要
 トランプで大富豪をします。
 
 ## コマンド
-- `/game": パーティーゲームの入口
+- `/game`: パーティーゲームの入口
 """,
     },
     "othello": {
         "id": "othello", "name": "オセロ", "category": "game",
-        "summary": "黒白の石で挟んでひっくり返し、最後に石が多い方が勝ち。",
+        "summary": "オセロ・リバーシ。2人対戦。",
         "players": "2人", "min_players": 2, "max_players": 2,
-        "duration": "約2〜10分（募集30秒）", "commands": ["/game"],
+        "duration": "約10分", "commands": ["/game"],
         "guide": """## 概要
-黒白の石を盤に置き、相手の石を挟んでひっくり返します。最後に石の数が多い方の勝ちです。
+標準のオセロルールで2人対戦します。
+
+## 人数
+2人で遊べます。
+
+## 所要時間
+約10分。
 
 ## 遊び方
 1. `/game` で「オセロ」を選び、募集します。
 2. 盤面画像の番号と同じリアクションを押して石を置きます。
 
 ## コマンド
-- `/game": パーティーゲームの入口
+- `/game`: パーティーゲームの入口
 """,
     },
     "poker": {
         "id": "poker", "name": "ポーカー", "category": "game",
-        "summary": "5枚ドローポーカー。カードを交換し、最も強い役を作ろう。",
-        "players": "2〜6人", "min_players": 2, "max_players": 6,
-        "duration": "約2分（募集30秒）", "commands": ["/game"],
+        "summary": "ポーカーの簡易版。",
+        "players": "2人以上", "min_players": 2, "max_players": None,
+        "duration": "約10分", "commands": ["/game"],
         "guide": """## 概要
-各自に5枚配られる「5枚ドローポーカー」です。交換後に役を比べます。
+ポーカーをします。
 
 ## 遊び方
 1. `/game` で「ポーカー」を選び、募集します。
 2. 手札を確認して交換するカードを選びます。
 
 ## コマンド
-- `/game": パーティーゲームの入口
+- `/game`: パーティーゲームの入口
 """,
     },
     "shogi": {
-        "id": "shogi", "name": "将棋", "category": "game",
+        "id": "shogi",
+        "name": "将棋",
+        "category": "game",
         "summary": "日本の将棋。駒を動かして相手の王を詰める2人対戦。Assets/shogi の駒画像を使用。",
         "players": "2人", "min_players": 2, "max_players": 2,
         "duration": "約10〜30分（募集30秒）", "commands": ["/game"],
@@ -438,7 +446,7 @@ GAME_GUIDES = {
 - 成り・持ち駒・厳密な詰み判定は簡略化されています。今後拡張予定です。
 
 ## コマンド
-- `/game": パーティーゲームの入口（ルール確認と募集）
+- `/game`: パーティーゲームの入口（ルール確認と募集）
 """,
     },
 }
