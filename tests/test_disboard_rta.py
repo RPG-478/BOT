@@ -91,6 +91,12 @@ class BumpRtaCogTest(unittest.IsolatedAsyncioTestCase):
             message = self.make_event_message(message_id, bot_id, description, kind)
             await cog.on_message(message)
             event_at = message.interaction_metadata.created_at
+            message.channel.send.assert_awaited_once()
+            ack_text, ack_kwargs = message.channel.send.await_args.args, message.channel.send.await_args.kwargs
+            self.assertEqual(ack_text, (f"{kind}を検知しました。2時間後に通知します。",))
+            self.assertFalse(ack_kwargs["allowed_mentions"].users)
+            self.assertFalse(ack_kwargs["allowed_mentions"].roles)
+            self.assertFalse(ack_kwargs["allowed_mentions"].everyone)
             cog._record_rta_event.assert_any_await(message, kind, 321, event_at)
             cog._schedule_reminder.assert_any_await(message, 321, kind, event_at)
 
@@ -98,7 +104,7 @@ class BumpRtaCogTest(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(
             id=message_id,
             guild=SimpleNamespace(id=456),
-            channel=SimpleNamespace(id=789, type=discord.ChannelType.text),
+            channel=SimpleNamespace(id=789, type=discord.ChannelType.text, send=AsyncMock()),
             author=SimpleNamespace(id=bot_id, bot=True),
             application_id=bot_id,
             embeds=[SimpleNamespace(description=description)],
