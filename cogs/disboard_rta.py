@@ -57,7 +57,6 @@ def detect_event(message):
     application_id = getattr(message, "application_id", None)
     if author_id not in (DISBOARD_BOT_ID, DISOKU_BOT_ID):
         return None
-    # application_id may be absent on some message types; only reject clear mismatches
     if application_id is not None and application_id != author_id:
         return None
     text = _collect_embed_text(message)
@@ -92,7 +91,8 @@ class BumpRta(commands.Cog):
         self.db = getattr(bot, "supabase", None)
         self._enabled_cache = {}
         self._locks = {}
-        self._processed_messages = set()  # prevent duplicate processing of the same message
+        self._processed_messages = set()
+        self._claimed_reminders = set()  # in-memory guard against 1-min re-sends
 
     async def cog_load(self):
         if self.db is not None and not self.reminder_worker.is_running():
@@ -202,7 +202,6 @@ class BumpRta(commands.Cog):
             reminder, on_conflict="message_id", ignore_duplicates=True).execute())
 
     async def _start_rta_timer(self, row, due_at_iso):
-        """Start RTA from the scheduled due time for more accurate 'available from' measurement."""
         kind = row["event_type"]
         pending = {
             "guild_id": str(row["guild_id"]), "event_type": kind,
@@ -213,19 +212,25 @@ class BumpRta(commands.Cog):
             pending, on_conflict="guild_id,event_type").execute())
 
     async def _claim_reminder(self, message_id):
-        """Atomically mark a reminder as sent. Returns True if this process claimed it."""
+        """Claim a reminder. Local set is the primary guard; DB is secondary."""
+        if message_id in self._claimed_reminders:
+            return False
+        self._claimed_reminders.add(message_id)
+        if len(self._claimed_reminders) > 2000:
+            # keep memory bounded; old entries are already sent
+            self._claimed_reminders.clear()
+            self._claimed_reminders.add(message_id)
         if self.db is None:
             return True
         try:
-            # Update only if still unsent
             result = await self._call(lambda: self.db.table("bump_rta_reminders").update(
                 {"sent_at": discord.utils.utcnow().isoformat()}
             ).eq("message_id", message_id).is_("sent_at", "null").execute())
-            # If the row was updated (data returned or count > 0), we claimed it
-            return bool(result.data)
+            logger.debug("Claimed reminder %s, data=%s", message_id, bool(result.data))
+            return True  # local claim already succeeded
         except Exception:
-            logger.exception("Failed to claim reminder %s", message_id)
-            return False
+            logger.exception("DB claim failed for reminder %s (local claim still active)", message_id)
+            return True  # still honor local claim so we don't spam
 
     @tasks.loop(minutes=1)
     async def reminder_worker(self):
@@ -237,12 +242,15 @@ class BumpRta(commands.Cog):
                 "message_id,guild_id,channel_id,user_id,event_type,due_at"
             ).is_("sent_at", "null").lte("due_at", now_iso).order("due_at").limit(50).execute())
             for row in due.data or []:
+                mid = row["message_id"]
+                if mid in self._claimed_reminders:
+                    continue
                 if not await self._is_enabled(row["guild_id"]):
                     await self._call(lambda row=row: self.db.table("bump_rta_reminders").update(
-                        {"sent_at": discord.utils.utcnow().isoformat()}).eq("message_id", row["message_id"]).execute())
+                        {"sent_at": discord.utils.utcnow().isoformat()}).eq("message_id", mid).execute())
+                    self._claimed_reminders.add(mid)
                     continue
-                # Claim first to prevent duplicate sends
-                if not await self._claim_reminder(row["message_id"]):
+                if not await self._claim_reminder(mid):
                     continue
                 channel = self.bot.get_channel(int(row["channel_id"]))
                 if channel is None:
@@ -250,9 +258,10 @@ class BumpRta(commands.Cog):
                         channel = await self.bot.fetch_channel(int(row["channel_id"]))
                     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                         logger.warning("Could not fetch channel %s for reminder", row["channel_id"])
+                        self._claimed_reminders.discard(mid)  # allow retry
                         continue
                 try:
-                    original = await channel.fetch_message(int(row["message_id"]))
+                    original = await channel.fetch_message(int(mid))
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                     original = None
                 noun = "bump" if row["event_type"] == "bump" else "up"
@@ -272,9 +281,9 @@ class BumpRta(commands.Cog):
                     )
                 except discord.HTTPException as e:
                     logger.warning("Failed to send %s reminder in %s: %s", noun, row["channel_id"], e)
-                    # Revert claim so it can be retried next cycle
-                    await self._call(lambda row=row: self.db.table("bump_rta_reminders").update(
-                        {"sent_at": None}).eq("message_id", row["message_id"]).execute())
+                    self._claimed_reminders.discard(mid)
+                    await self._call(lambda mid=mid: self.db.table("bump_rta_reminders").update(
+                        {"sent_at": None}).eq("message_id", mid).execute())
                     continue
                 await self._start_rta_timer(row, row["due_at"])
         except Exception:
@@ -296,7 +305,6 @@ class BumpRta(commands.Cog):
         if not await self._is_enabled(guild_id):
             return
         self._processed_messages.add(message.id)
-        # Keep set from growing unbounded
         if len(self._processed_messages) > 5000:
             self._processed_messages.clear()
         lock = self._locks.setdefault((guild_id, kind), asyncio.Lock())
