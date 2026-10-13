@@ -9,8 +9,7 @@
   ほかの全員がパスしたら場を流し、最後に出した人から（上がっていれば次の人から）。
 - 4 枚出しで革命（数字の強さが逆になる。ジョーカーはいつでも最強）。もう一度 4 枚出しで戻る。
 - 出すカードは「手札から出す」で本人にだけ見えるメニューから選ぶ。
-- 手番は 30 秒。時間切れは core/autoplay.take_idle_turn に「出せる手＋パス」を渡して代わりに進める。
-  代打ちがオフならパス（場が空で自分が親のときは一番弱いカードを出す）。
+- 手番は 30 秒。時間切れはパス（場が空で自分が親のときは一番弱いカードを出す）。
 - 結果は 大富豪・富豪・平民・貧民・大貧民。大富豪の勝利を core/party_ranking.py に記録する（人間 2 人以上のときだけ）。
 """
 import asyncio
@@ -20,7 +19,7 @@ import discord
 from core import game_panels
 from discord.ext import commands
 
-from core import autoplay, party_ranking
+from core import party_ranking
 
 GAME_ID = "daifugo"
 party_ranking.register(GAME_ID)
@@ -103,6 +102,7 @@ class DaifugoGame:
         self.revolution = False
         self.acted = False           # この手番で行動した
         self.cleared = False         # 直前の行動で場が流れた
+        self.eight_cut = False
 
     def is_bot(self, uid) -> bool:
         return uid in BOT_IDS
@@ -165,7 +165,13 @@ class DaifugoGame:
             result = "revolution"
         if not self.hands[uid]:
             self.finished.append(uid)
-        self._advance(uid)
+        self.eight_cut = any(rank(c) == "8" for c in cards)
+        if self.eight_cut and self.phase == "playing":
+            self.table, self.passed = None, set()
+            self.turn = self.next_active(uid)
+            self.cleared = True
+        else:
+            self._advance(uid)
         return result
 
     def pass_turn(self, uid) -> bool:
@@ -321,12 +327,6 @@ class Daifugo(commands.Cog):
         uid = g.turn
         g.acted = False
         plays = g.legal(uid)
-        # 場に対して出せるカードがなく、パスだけが合法な場合は
-        # 無操作のパネルを出さず、その場で自動的にパスする。
-        if g.table is not None and not plays:
-            await channel.send(embed=discord.Embed(
-                description=f"{g.name(uid)} さんは出せるカードがないため、自動でパスしました。", color=COLOR))
-            return await self.apply(channel, g, uid, PASS)
         await game_panels.replace(channel, "party", embed=discord.Embed(
             description=(f"{g.name(uid)} さんの番です（{TURN_SECONDS}秒）。\n{table_text(g)}\n\n{self.counts_text(g)}"),
             color=COLOR), view=TurnView(self, g))
@@ -338,30 +338,10 @@ class Daifugo(commands.Cog):
             await asyncio.sleep(1)
             elapsed += 1
         if not g.acted and g.phase == "playing":
-            await self.idle_turn(channel, g, uid)
-
-    async def idle_turn(self, channel, g: DaifugoGame, uid):
-        member = g.players[uid]
-        plays = g.legal(uid)
-        options = [label(p) for p in plays] + ([PASS] if g.table is not None else [])
-        result = await autoplay.take_idle_turn(
-            None, guild_id=g.guild_id, player_name=member.display_name,
-            state={"game": "大富豪", "hand": list(g.hands[uid]), "table": label(g.table) if g.table else None,
-                   "revolution": g.revolution},
-            legal_actions=options,
-            instructions="大富豪で、出すカード（またはパス）を 1 つ選んでください",
-            describe=lambda a: "パス" if a == PASS else f"{a} を出",
-            fallback=PASS if g.table is not None else options[0])
-        if result is not None and result.action is not None:
-            action = result.action
-            notice = result.notice.lstrip("⏰").strip()      # 絵文字を外して自分で送る
-        else:
-            action = PASS if g.table is not None else options[0]
-            notice = (f"{member.display_name}さんが時間切れのため、"
-                      + ("パスしました" if action == PASS else f"{action} を出しました"))
-        await channel.send(embed=discord.Embed(description=notice, color=COLOR))
-        play = PASS if action == PASS else plays[[label(p) for p in plays].index(action)]
-        await self.apply(channel, g, uid, play)
+            action = PASS if g.table is not None else plays[0]
+            await channel.send(embed=discord.Embed(
+                description=f"{g.name(uid)} さんは時間切れのため自動で{('パス' if action == PASS else label(action) + ' を出しました')}。", color=COLOR))
+            await self.apply(channel, g, uid, action)
 
     async def apply(self, channel, g: DaifugoGame, uid, play):
         g.acted = True
@@ -373,6 +353,8 @@ class Daifugo(commands.Cog):
             lines = [f"{g.name(uid)} さんが {label(play)} を出しました。"]
             if result == "revolution":
                 lines.append("革命！ 数字の強さが逆になります。" if g.revolution else "革命返し！ 強さが元に戻ります。")
+            if g.eight_cut:
+                lines.append("8切り！ 場を流します。")
             if uid in g.finished:
                 lines.append(f"{g.name(uid)} さんが上がりました（{g.finished.index(uid) + 1}番目）。")
         if getattr(g, "cleared", False) and g.phase == "playing":
