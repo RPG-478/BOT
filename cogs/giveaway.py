@@ -56,6 +56,8 @@ def build_embed(g: dict[str, Any]) -> tuple[discord.Embed, dict]:
     elif status == ENDED:
         winners = g.get("winner_ids") or []
         embed.description = ("当選: " + " ".join(f"<@{u}>" for u in winners)) if winners else "参加者がいなかったため、当選者はいません。"
+        if g.get("winner_dm_message") or g.get("winner_dm_link"):
+            embed.description += "\n当選者へDMで案内を送信します。"
     else:
         embed.description = "この抽選は中止されました。"
     return embed, extra
@@ -224,11 +226,13 @@ class GiveawayCog(commands.Cog):
 
     # ------------------------------------------------------------ 操作
     async def create(self, *, message_id: int, guild_id: int, channel_id: int, host_id: int, prize: str,
-                     winners: int, minutes: int, role_id: Optional[int] = None, cost: int = 0) -> dict:
+                     winners: int, minutes: int, role_id: Optional[int] = None, cost: int = 0,
+                     winner_dm_message: Optional[str] = None, winner_dm_link: Optional[str] = None) -> dict:
         key = str(message_id)
         self.data[key] = {
             "guild_id": guild_id, "channel_id": channel_id, "host_id": host_id, "prize": prize,
             "winners": winners, "ends_at": self.clock() + minutes * 60, "role_id": role_id, "cost": cost,
+            "winner_dm_message": winner_dm_message, "winner_dm_link": winner_dm_link,
             "entrants": [], "paid": [], "winner_ids": [], "status": RUNNING,
         }
         await self.save(key)
@@ -290,7 +294,24 @@ class GiveawayCog(commands.Cog):
         winners = g["winner_ids"]
         await self.announce(g, (f"🎉 **{g['prize']}** の当選者: " + " ".join(f"<@{u}>" for u in winners) + " おめでとうございます！")
                             if winners else f"**{g['prize']}** の抽選は参加者がいなかったため、当選者はいません。", key)
+        if winners:
+            await self.dm_winners(g, winners)
         return True
+
+    async def dm_winners(self, g, winner_ids):
+        text = f"🎉 抽選「{g['prize']}」に当選しました！"
+        if g.get("winner_dm_message"):
+            text += "\n" + g["winner_dm_message"]
+        if g.get("winner_dm_link"):
+            text += "\n" + g["winner_dm_link"]
+        for uid in winner_ids:
+            try:
+                user = self.bot.get_user(uid) if hasattr(self.bot, "get_user") else None
+                if user is None:
+                    user = await self.bot.fetch_user(uid)
+                await user.send(text, allowed_mentions=discord.AllowedMentions.none())
+            except Exception:
+                log.info("抽選当選DMを送信できませんでした user=%s", uid, exc_info=True)
 
     async def reroll(self, message_id: int) -> list[int]:
         """前回の当選者を除いて、当選人数ぶん引き直す。"""
@@ -306,6 +327,7 @@ class GiveawayCog(commands.Cog):
             await self.save(key)
         await self.refresh_message(key)
         await self.announce(g, f"🔁 **{g['prize']}** を再抽選しました。当選: " + " ".join(f"<@{u}>" for u in new), key)
+        await self.dm_winners(g, new)
         return new
 
     async def cancel(self, message_id: int) -> bool:
@@ -352,19 +374,24 @@ class GiveawayCog(commands.Cog):
     @app_commands.command(name="giveaway", description="抽選（プレゼント企画）を始めます")
     @app_commands.describe(prize="賞品", winners="当選人数", minutes="締め切りまでの時間（分）",
                            channel="抽選を出すチャンネル（省略するとこのチャンネル）",
-                           required_role="参加に必要なロール（任意）", cost="参加費 AGO（任意、既定 0）")
+                           required_role="参加に必要なロール（任意）", cost="参加費 AGO（任意、既定 0）",
+                           winner_dm_message="当選者へのDMコメント（任意）", winner_dm_link="当選者へのDMリンク（任意）")
     @app_commands.guild_only()
     @app_commands.default_permissions(manage_guild=True)
     async def giveaway(self, interaction: discord.Interaction, prize: app_commands.Range[str, 1, 200],
                        winners: app_commands.Range[int, 1, MAX_WINNERS], minutes: app_commands.Range[int, 1, MAX_MINUTES],
                        channel: Optional[discord.TextChannel] = None, required_role: Optional[discord.Role] = None,
-                       cost: app_commands.Range[int, 0, MAX_COST] = 0):
+                       cost: app_commands.Range[int, 0, MAX_COST] = 0,
+                       winner_dm_message: Optional[app_commands.Range[str, 1, 500]] = None,
+                       winner_dm_link: Optional[app_commands.Range[str, 1, 500]] = None):
         channel = channel or interaction.channel
         if cost and self.wallet() is None:
             return await interaction.response.send_message("コインの機能が読み込まれていないため、参加費は設定できません。", ephemeral=True)
         await interaction.response.defer(ephemeral=True, thinking=True)
         g = {"prize": prize, "winners": winners, "ends_at": self.clock() + minutes * 60, "host_id": interaction.user.id,
-             "role_id": required_role.id if required_role else None, "cost": cost, "entrants": [], "status": RUNNING}
+             "role_id": required_role.id if required_role else None, "cost": cost,
+             "winner_dm_message": winner_dm_message, "winner_dm_link": winner_dm_link,
+             "entrants": [], "status": RUNNING}
         embed, extra = build_embed(g)
         try:
             message = await channel.send(embed=embed, **extra)
@@ -372,7 +399,8 @@ class GiveawayCog(commands.Cog):
             return await interaction.followup.send(f"{channel.mention} に投稿できませんでした。Bot の権限を確認してください。", ephemeral=True)
         await self.create(message_id=message.id, guild_id=interaction.guild_id, channel_id=channel.id,
                           host_id=interaction.user.id, prize=prize, winners=winners, minutes=minutes,
-                          role_id=g["role_id"], cost=cost)
+                          role_id=g["role_id"], cost=cost, winner_dm_message=winner_dm_message,
+                          winner_dm_link=winner_dm_link)
         await message.edit(view=build_view(message.id, self.data[str(message.id)]))
         await interaction.followup.send(f"{channel.mention} に抽選を出しました。メッセージの「管理」から終了・再抽選・中止ができます。",
                                         ephemeral=True)

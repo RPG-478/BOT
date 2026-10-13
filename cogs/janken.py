@@ -13,6 +13,7 @@ import asyncio
 import random
 
 import discord
+from cogs.wallet import INSUFFICIENT
 from core import game_panels
 from discord.ext import commands
 
@@ -57,6 +58,8 @@ class JankenGame:
         self.phase = "recruit"      # recruit / choosing / done
         self.round = 0
         self.log: list = []         # 各回の結果テキスト
+        self.wager = 0
+        self.escrow = []
 
     @property
     def vs_bot(self) -> bool:
@@ -126,13 +129,14 @@ class Janken(commands.Cog):
         self.bot = bot
         self.games: dict = {}   # channel_id -> JankenGame
 
-    async def start_recruit(self, interaction: discord.Interaction):
+    async def start_recruit(self, interaction: discord.Interaction, wager: int = 0):
         channel = interaction.channel
         if channel.id in self.games:
             return await interaction.response.send_message(
                 embed=discord.Embed(description="このチャンネルでは既にじゃんけんが進行中です。", color=COLOR),
                 ephemeral=True)
         g = JankenGame(channel.id, interaction.guild_id, interaction.user.id)
+        g.wager = max(0, min(int(wager), 500))
         g.players[interaction.user.id] = interaction.user
         self.games[channel.id] = g
         await interaction.response.send_message(
@@ -143,7 +147,8 @@ class Janken(commands.Cog):
                 title="じゃんけん 参加者募集",
                 description=(f"{interaction.user.mention} さんが募集中です。\n"
                              f"{RECRUIT_SECONDS}秒以内に「参加」を押してください（最大{MAX_PLAYERS}人）。\n"
-                             "だれも来なければ Bot が相手をします。"),
+                             + (f"勝敗コイン: 1人 {g.wager} AGO（勝者へ配分）\n" if g.wager else "")
+                             + "だれも来なければ Bot が相手をします。"),
                 color=COLOR), view=JoinView(self, g))
             await asyncio.sleep(RECRUIT_SECONDS)
             await self.run_game(channel, g)
@@ -154,6 +159,9 @@ class Janken(commands.Cog):
     async def run_game(self, channel, g: JankenGame, rng=random):
         if len(g.players) < 2:
             g.players[BOT_ID] = None
+        if g.wager and not await self._collect_wagers(g):
+            await channel.send("コインを賭けたじゃんけんを開始できませんでした（残高不足または更新エラー）。賭けコインは全額返金しました。")
+            return
         g.alive = list(g.players)
         names = "、".join(g.name(uid) for uid in g.alive)
         await channel.send(embed=discord.Embed(title="じゃんけん スタート！",
@@ -203,8 +211,41 @@ class Janken(commands.Cog):
         g.log.append(f"第{g.round}回: {result}")
         await channel.send(embed=discord.Embed(title="ぽん！", description=f"{shown}\n\n**{result}**", color=COLOR))
 
+    async def _collect_wagers(self, g):
+        wallet = self.bot.get_cog("WalletCog") if hasattr(self.bot, "get_cog") else None
+        if wallet is None:
+            return False
+        debited = []
+        for uid in g.players:
+            if uid == BOT_ID:
+                continue
+            result = await wallet._change_balance(str(uid), -g.wager, require_funds=True)
+            if result is INSUFFICIENT or result is None:
+                for paid_uid in debited:
+                    await wallet._change_balance(str(paid_uid), g.wager)
+                return False
+            debited.append(uid)
+        g.escrow = debited
+        return True
+
+    async def _pay_winners(self, g, winners):
+        if not g.escrow:
+            return
+        wallet = self.bot.get_cog("WalletCog") if hasattr(self.bot, "get_cog") else None
+        if wallet is None:
+            return
+        prize = len(g.escrow) * g.wager
+        recipients = [uid for uid in winners if uid in g.escrow]
+        if not recipients:
+            recipients = g.escrow
+        each, remainder = divmod(prize, len(recipients))
+        for index, uid in enumerate(recipients):
+            await wallet._change_balance(str(uid), each + (1 if index < remainder else 0))
+        g.escrow = []
+
     async def finish(self, channel, g: JankenGame, winners: list):
         g.phase = "done"
+        await self._pay_winners(g, winners)
         humans = [u for u in g.players if u != BOT_ID]
         if len(humans) >= 2:
             for uid in winners:
@@ -217,6 +258,8 @@ class Janken(commands.Cog):
             text = "勝者なし" if g.round < MAX_ROUNDS or not g.alive else f"{MAX_ROUNDS}回あいこが続いたので引き分けです。"
         embed = discord.Embed(title="じゃんけん 終了", description=text, color=COLOR)
         embed.add_field(name="経過", value="\n".join(g.log)[-1024:] or "（なし）", inline=False)
+        if g.wager:
+            embed.add_field(name="勝敗コイン", value=(f"各人 {g.wager} AGO を預かり、勝者へ配分しました。" if winners else "勝者がいないため、預かり分は参加者へ返金しました。"), inline=False)
         await channel.send(embed=embed)
 
 

@@ -105,6 +105,16 @@ class EntryTest(Base):
 
 
 class DrawTest(Base):
+    async def test_winner_dm_is_sent_with_optional_comment_and_link(self):
+        winner = types.SimpleNamespace(send=AsyncMock())
+        self.bot.get_user = lambda uid: winner if uid == 1 else None
+        await self.start(winner_dm_message="おめでとう", winner_dm_link="https://example.com")
+        await self.cog.toggle_entry(900, member(1))
+        await self.cog.finish(900)
+        message = winner.send.await_args.args[0]
+        self.assertIn("おめでとう", message)
+        self.assertIn("https://example.com", message)
+
     async def test_end_early_and_reroll(self):
         await self.start(winners=2)
         for uid in (1, 2, 3):

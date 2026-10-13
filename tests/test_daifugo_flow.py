@@ -155,22 +155,14 @@ class DaifugoFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assert_no_emoji()
         self.assertEqual(self.cog.games, {})
 
-    async def test_solo_with_bots_and_autoplay(self):
-        calls = []
-
-        async def fake_idle(channel, **kw):
-            calls.append(kw['legal_actions'])
-            return autoplay.AutoplayResult(kw['legal_actions'][0], autoplay.SOURCE_FALLBACK,
-                                           '\u23f0 P1さんが放置したため、代わりに出しました')
-
+    async def test_solo_with_bots_and_timeout_pass(self):
         before = dict(party_ranking.shared().memory.get((66, 'daifugo'), {}))
-        with fast_time(scale=0.0005), patch.object(autoplay, 'take_idle_turn', fake_idle):
+        with fast_time(scale=0.0005), patch.object(autoplay, 'take_idle_turn') as take_idle_turn:
             task = await self.start([])
             await asyncio.wait_for(task, 20)
-        self.assertTrue(calls)
-        self.assertTrue(any(d.PASS in c for c in calls) or calls)
+        take_idle_turn.assert_not_called()
         texts = self.channel.texts()
-        self.assertTrue(any('放置したため' in t for t in texts))
+        self.assertTrue(any('時間切れのため' in t for t in texts))
         self.assertIn('Bot1', texts[-1])
         self.assertIn('ランキングに数えません', texts[-1])
         self.assert_no_emoji()

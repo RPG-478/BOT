@@ -29,6 +29,8 @@ GAME_COGS = {
     "guess": "Guess",
     "flash": "FlashMentalArithmetic",
     "daifugo": "Daifugo",
+    "othello": "Othello",
+    "poker": "Poker",
 }
 
 # 勝利数を記録しているゲーム（ここだけ「ランキング」ボタンを出す）
@@ -190,6 +192,22 @@ class JinrouModeSelect(discord.ui.Select):
         await interaction.response.edit_message(view=self.view)
 
 
+JANKEN_WAGER_CHOICES = (0, 10, 50, 100, 500)
+
+class JankenWagerSelect(discord.ui.Select):
+    def __init__(self, selected=0):
+        super().__init__(placeholder="勝敗で動くコイン（1人あたり）", row=1, options=[
+            discord.SelectOption(label="なし", value="0", default=selected == 0),
+            *[discord.SelectOption(label=f"{amount} AGO", value=str(amount), default=selected == amount)
+              for amount in JANKEN_WAGER_CHOICES[1:]]])
+
+    async def callback(self, interaction):
+        self.view.wager = int(self.values[0])
+        for option in self.options:
+            option.default = option.value == self.values[0]
+        await interaction.response.edit_message(view=self.view)
+
+
 class GameDetailView(discord.ui.View):
     """ゲームを選んだ後の画面（ルール・募集する・戻る）"""
     def __init__(self, cog, game_id: str):
@@ -200,6 +218,9 @@ class GameDetailView(discord.ui.View):
         self.ng_minutes, self.ng_mode = 3, "word"
         self.jinrou_mode = "local"
         self.wordle_mode = "shared"
+        self.wager = 0
+        if game_id == "janken":
+            self.add_item(JankenWagerSelect(self.wager))
         if game_id == "wordle":
             self.add_item(WordleModeSelect(self.wordle_mode))
         if game_id == "ngword":
@@ -225,7 +246,8 @@ class GameDetailView(discord.ui.View):
     async def recruit(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.start_game(interaction, self.game_id, wordlist=self.wordlist,
                                   ng_minutes=self.ng_minutes, ng_mode=self.ng_mode,
-                                  wordle_mode=self.wordle_mode, jinrou_mode=self.jinrou_mode)
+                                  wordle_mode=self.wordle_mode, jinrou_mode=self.jinrou_mode,
+                                  wager=self.wager)
 
     @discord.ui.button(label="ランキング", style=discord.ButtonStyle.primary, row=2)
     async def ranking(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -278,6 +300,8 @@ class GameHub(commands.Cog):
             return await cog.start_recruit(interaction, options.get("wordlist") or "standard")
         if game_id == "jinrou":
             return await cog.start_recruit(interaction, options.get("jinrou_mode") or "local")
+        if game_id == "janken":
+            return await cog.start_recruit(interaction, wager=options.get("wager", 0))
         return await cog.start_recruit(interaction)
 
 
