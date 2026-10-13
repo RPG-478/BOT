@@ -55,7 +55,7 @@ SLASH_ARGUMENTS = {
     'fujo': {'action': 'register'},
     'music play': {'query': 'test'}, 'music control': {}, 'music sound': {},
     'music library': {}, 'music panel': {},
-    'bumprta notifications': {'enabled': True}, 'bumprta status': {}, 'bumprta leaderboard': {'scope': 'local'},
+    'bumprta': {'action': 'status', 'event_type': 'bump', 'scope': 'local'},
     'voice connection': {'action': 'status'},
     'voice studio': {'feature': 'record', 'action': 'status'},
     'voice effects': {'action': 'status'},
