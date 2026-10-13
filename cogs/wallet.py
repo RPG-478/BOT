@@ -116,7 +116,23 @@ class WalletCog(commands.Cog):
         sender_id = str(interaction.user.id)
         receiver_id = str(receiver.id)
 
-        # 1. 送り手の残高を減らす（残高を読み直して、変わっていなければ書き込む。変わっていたらやり直す）
+        # 1回のDBトランザクションで送金できる新しい環境を優先する。
+        # RPCがまだ適用されていない環境では、後段のCASフォールバックを使う。
+        try:
+            atomic_balance = await self._transfer_atomic(sender_id, receiver_id, amount)
+        except Exception:
+            logger.exception("pay: 原子送金RPCに失敗 sender=%s receiver=%s amount=%s", sender_id, receiver_id, amount)
+            atomic_balance = None
+        if atomic_balance is not None:
+            mine, extra = coin_embed("送金しました", f"{receiver.mention} に **{amount:,} AGO** を送りました。")
+            mine.add_field(name="あなたの残高", value=f"{atomic_balance:,} AGO", inline=True)
+            await interaction.followup.send(embed=mine, ephemeral=True, **extra)
+            embed, extra = coin_embed(
+                "送金完了", f"{interaction.user.mention} さんが {receiver.mention} に **{amount:,} AGO** コインを送金しました。")
+            await interaction.followup.send(embed=embed, **extra)
+            return
+
+        # 旧スキーマ用: 送り手の残高を減らす（CASで競合時は読み直す）
         try:
             debit = await self._change_balance(sender_id, -amount, require_funds=True)
         except Exception:
@@ -211,6 +227,30 @@ class WalletCog(commands.Cog):
             if updated.data:
                 return new_balance
         return None
+
+    async def _transfer_atomic(self, sender_id: str, receiver_id: str, amount: int):
+        """transfer_coins RPCを呼ぶ。RPC未適用ならNoneを返して旧実装へ委譲する。
+
+        RPCが返す ``NULL`` は、テスト用クライアントまたは旧環境の「関数なし」を
+        表すため成功扱いにしない。実DBの関数は送金後の送り手残高(bigint)を返す。
+        """
+        def _call():
+            response = config.supabase.rpc("transfer_coins", {
+                "p_sender_id": sender_id,
+                "p_receiver_id": receiver_id,
+                "p_amount": int(amount),
+                "p_new_user_balance": NEW_USER_BALANCE,
+            }).execute()
+            data = response.data
+            if data is None:
+                return None
+            if isinstance(data, list):
+                data = data[0] if data else None
+            if isinstance(data, dict):
+                data = data.get("balance")
+            return int(data) if data is not None else None
+
+        return await asyncio.to_thread(_call)
 
     @app_commands.command(name="leaderboard", description="コイン保有数のランキングを表示します。")
     async def leaderboard(self, interaction: discord.Interaction):
