@@ -26,7 +26,7 @@ class BumpRtaDetectionTest(unittest.TestCase):
             interaction_metadata=interaction_metadata,
             interaction=None,
             created_at=datetime(2026, 10, 13, 8, 0, 1, tzinfo=timezone.utc),
-            embeds=[SimpleNamespace(description=description)] if description else [],
+            embeds=[SimpleNamespace(description=description, fields=[])] if description else [],
             content="",
         )
 
@@ -92,11 +92,13 @@ class BumpRtaCogTest(unittest.IsolatedAsyncioTestCase):
             await cog.on_message(message)
             event_at = message.interaction_metadata.created_at
             message.channel.send.assert_awaited_once()
-            ack_text, ack_kwargs = message.channel.send.await_args.args, message.channel.send.await_args.kwargs
-            self.assertEqual(ack_text, (f"{kind}を検知しました。2時間後に通知します。",))
-            self.assertFalse(ack_kwargs["allowed_mentions"].users)
-            self.assertFalse(ack_kwargs["allowed_mentions"].roles)
-            self.assertFalse(ack_kwargs["allowed_mentions"].everyone)
+            # Now sends an embed instead of plain text
+            send_kwargs = message.channel.send.await_args.kwargs
+            self.assertIn("embed", send_kwargs)
+            self.assertEqual(send_kwargs["embed"].title, f"{kind.upper()} を検知しました")
+            self.assertFalse(send_kwargs["allowed_mentions"].users)
+            self.assertFalse(send_kwargs["allowed_mentions"].roles)
+            self.assertFalse(send_kwargs["allowed_mentions"].everyone)
             cog._record_rta_event.assert_any_await(message, kind, 321, event_at)
             cog._schedule_reminder.assert_any_await(message, 321, kind, event_at)
 
@@ -107,7 +109,7 @@ class BumpRtaCogTest(unittest.IsolatedAsyncioTestCase):
             channel=SimpleNamespace(id=789, type=discord.ChannelType.text, send=AsyncMock()),
             author=SimpleNamespace(id=bot_id, bot=True),
             application_id=bot_id,
-            embeds=[SimpleNamespace(description=description)],
+            embeds=[SimpleNamespace(description=description, fields=[])],
             content="",
             created_at=datetime(2026, 10, 13, 8, 0, 1, tzinfo=timezone.utc),
             interaction_metadata=SimpleNamespace(

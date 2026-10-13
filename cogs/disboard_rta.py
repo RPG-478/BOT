@@ -26,31 +26,54 @@ LEADERBOARD_SCOPE_CHOICES = [
     app_commands.Choice(name="このサーバー", value="local"),
     app_commands.Choice(name="全サーバー", value="global"),
 ]
+ALLOWED_CHANNEL_TYPES = {
+    discord.ChannelType.text,
+    discord.ChannelType.news,
+    discord.ChannelType.public_thread,
+    discord.ChannelType.private_thread,
+    discord.ChannelType.news_thread,
+}
+
+
+def _collect_embed_text(message):
+    """Collect searchable text from message content and all embeds."""
+    parts = [getattr(message, "content", "") or ""]
+    for embed in getattr(message, "embeds", ()) or ():
+        parts.append(getattr(embed, "description", "") or "")
+        for field in getattr(embed, "fields", ()) or ():
+            parts.append(getattr(field, "name", "") or "")
+            parts.append(getattr(field, "value", "") or "")
+    return " ".join(parts)
 
 
 def detect_event(message):
     """Return (kind, user_id, event_at) for an official successful service embed."""
     if not getattr(message, "guild", None):
         return None
-    if getattr(getattr(message, "channel", None), "type", None) != discord.ChannelType.text:
+    channel_type = getattr(getattr(message, "channel", None), "type", None)
+    if channel_type not in ALLOWED_CHANNEL_TYPES:
         return None
     author_id = getattr(getattr(message, "author", None), "id", None)
     application_id = getattr(message, "application_id", None)
-    if author_id not in (DISBOARD_BOT_ID, DISOKU_BOT_ID) or application_id != author_id:
+    if author_id not in (DISBOARD_BOT_ID, DISOKU_BOT_ID):
         return None
-    embeds = getattr(message, "embeds", ()) or ()
-    description = (getattr(embeds[0], "description", "") or "") if embeds else ""
-    folded = description.casefold()
+    # application_id may be absent on some message types; only reject clear mismatches
+    if application_id is not None and application_id != author_id:
+        return None
+    text = _collect_embed_text(message)
+    folded = text.casefold()
     if author_id == DISBOARD_BOT_ID:
-        if "表示順をアップしたよ" not in description and "bump done" not in folded:
+        if "表示順をアップしたよ" not in text and "bump done" not in folded:
             return None
         kind = "bump"
     else:
-        if "アップしたよ" not in description and "up successful" not in folded:
+        if "アップしたよ" not in text and "up successful" not in folded:
             return None
         kind = "up"
     metadata = getattr(message, "interaction_metadata", None)
-    if metadata is not None and getattr(metadata, "type", None) != discord.InteractionType.application_command:
+    if metadata is not None and getattr(metadata, "type", None) not in (
+        None, discord.InteractionType.application_command
+    ):
         return None
     user = getattr(metadata, "user", None)
     user_id = getattr(user, "id", None)
@@ -69,6 +92,7 @@ class BumpRta(commands.Cog):
         self.db = getattr(bot, "supabase", None)
         self._enabled_cache = {}
         self._locks = {}
+        self._processed_messages = set()  # prevent duplicate processing of the same message
 
     async def cog_load(self):
         if self.db is not None and not self.reminder_worker.is_running():
@@ -168,57 +192,91 @@ class BumpRta(commands.Cog):
             f"🏁 **{title}**\n" + ("\n".join(lines) if lines else "まだ記録がありません。"))
 
     async def _schedule_reminder(self, message, user_id, kind, event_at):
+        due_at = (event_at + timedelta(hours=2)).isoformat()
         reminder = {
             "message_id": str(message.id), "guild_id": str(message.guild.id),
             "channel_id": str(message.channel.id), "user_id": str(user_id) if user_id else None,
-            "event_type": kind, "due_at": (event_at + timedelta(hours=2)).isoformat(),
+            "event_type": kind, "due_at": due_at,
         }
         await self._call(lambda: self.db.table("bump_rta_reminders").upsert(
             reminder, on_conflict="message_id", ignore_duplicates=True).execute())
 
-    async def _start_rta_timer(self, row, sent_message):
+    async def _start_rta_timer(self, row, due_at_iso):
+        """Start RTA from the scheduled due time for more accurate 'available from' measurement."""
         kind = row["event_type"]
-        sent_at = getattr(sent_message, "created_at", None) or discord.utils.utcnow()
         pending = {
             "guild_id": str(row["guild_id"]), "event_type": kind,
             "user_id": str(row["user_id"]) if row.get("user_id") else None,
-            "bump_message_id": str(row["message_id"]), "bump_at": sent_at.isoformat(),
+            "bump_message_id": str(row["message_id"]), "bump_at": due_at_iso,
         }
         await self._call(lambda: self.db.table("bump_rta_pending").upsert(
             pending, on_conflict="guild_id,event_type").execute())
+
+    async def _claim_reminder(self, message_id):
+        """Atomically mark a reminder as sent. Returns True if this process claimed it."""
+        if self.db is None:
+            return True
+        try:
+            # Update only if still unsent
+            result = await self._call(lambda: self.db.table("bump_rta_reminders").update(
+                {"sent_at": discord.utils.utcnow().isoformat()}
+            ).eq("message_id", message_id).is_("sent_at", "null").execute())
+            # If the row was updated (data returned or count > 0), we claimed it
+            return bool(result.data)
+        except Exception:
+            logger.exception("Failed to claim reminder %s", message_id)
+            return False
 
     @tasks.loop(minutes=1)
     async def reminder_worker(self):
         if self.db is None:
             return
         try:
+            now_iso = discord.utils.utcnow().isoformat()
             due = await self._call(lambda: self.db.table("bump_rta_reminders").select(
                 "message_id,guild_id,channel_id,user_id,event_type,due_at"
-            ).is_("sent_at", "null").lte("due_at", discord.utils.utcnow().isoformat()).order("due_at").limit(50).execute())
+            ).is_("sent_at", "null").lte("due_at", now_iso).order("due_at").limit(50).execute())
             for row in due.data or []:
                 if not await self._is_enabled(row["guild_id"]):
                     await self._call(lambda row=row: self.db.table("bump_rta_reminders").update(
                         {"sent_at": discord.utils.utcnow().isoformat()}).eq("message_id", row["message_id"]).execute())
+                    continue
+                # Claim first to prevent duplicate sends
+                if not await self._claim_reminder(row["message_id"]):
                     continue
                 channel = self.bot.get_channel(int(row["channel_id"]))
                 if channel is None:
                     try:
                         channel = await self.bot.fetch_channel(int(row["channel_id"]))
                     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        logger.warning("Could not fetch channel %s for reminder", row["channel_id"])
                         continue
                 try:
                     original = await channel.fetch_message(int(row["message_id"]))
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                     original = None
                 noun = "bump" if row["event_type"] == "bump" else "up"
-                embed = discord.Embed(description=f"{noun}できます", color=discord.Color.blurple())
-                sent = await channel.send(
-                    embed=embed, reference=original, mention_author=False,
-                    allowed_mentions=discord.AllowedMentions.none(),
+                embed = discord.Embed(
+                    title=f"{noun.upper()} できます",
+                    description=f"{noun}が可能になりました！",
+                    color=discord.Color.blurple(),
+                    timestamp=discord.utils.utcnow(),
                 )
-                await self._start_rta_timer(row, sent)
-                await self._call(lambda row=row: self.db.table("bump_rta_reminders").update(
-                    {"sent_at": discord.utils.utcnow().isoformat()}).eq("message_id", row["message_id"]).execute())
+                embed.set_footer(text="2時間後に再通知します")
+                try:
+                    await channel.send(
+                        embed=embed,
+                        reference=original,
+                        mention_author=False,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                except discord.HTTPException as e:
+                    logger.warning("Failed to send %s reminder in %s: %s", noun, row["channel_id"], e)
+                    # Revert claim so it can be retried next cycle
+                    await self._call(lambda row=row: self.db.table("bump_rta_reminders").update(
+                        {"sent_at": None}).eq("message_id", row["message_id"]).execute())
+                    continue
+                await self._start_rta_timer(row, row["due_at"])
         except Exception:
             logger.exception("bump/up reminder worker failed")
 
@@ -228,6 +286,8 @@ class BumpRta(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        if message.id in self._processed_messages:
+            return
         event = detect_event(message)
         if event is None:
             return
@@ -235,12 +295,27 @@ class BumpRta(commands.Cog):
         guild_id = message.guild.id
         if not await self._is_enabled(guild_id):
             return
+        self._processed_messages.add(message.id)
+        # Keep set from growing unbounded
+        if len(self._processed_messages) > 5000:
+            self._processed_messages.clear()
         lock = self._locks.setdefault((guild_id, kind), asyncio.Lock())
         async with lock:
-            await message.channel.send(
-                f"{kind}を検知しました。2時間後に通知します。",
-                allowed_mentions=discord.AllowedMentions.none(),
+            embed = discord.Embed(
+                title=f"{kind.upper()} を検知しました",
+                description="2時間後に通知します。",
+                color=discord.Color.green(),
+                timestamp=event_at,
             )
+            if user_id:
+                embed.add_field(name="実行者", value=f"<@{user_id}>", inline=True)
+            try:
+                await message.channel.send(
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.HTTPException as e:
+                logger.warning("Failed to send detection ack for %s: %s", message.id, e)
             if self.db is None:
                 return
             try:
@@ -270,7 +345,11 @@ class BumpRta(commands.Cog):
             elapsed = int(existing.data[0]["elapsed_ms"])
             completed_at = existing.data[0]["completed_at"]
         else:
-            elapsed = max(1, int((event_at - discord.utils.parse_time(start["bump_at"])).total_seconds() * 1000))
+            try:
+                start_time = discord.utils.parse_time(start["bump_at"])
+                elapsed = max(1, int((event_at - start_time).total_seconds() * 1000))
+            except (TypeError, ValueError):
+                elapsed = 1
             completed_at = event_at.isoformat()
             await self._call(lambda: self.db.table("bump_rta_events").insert({
                 "guild_id": gid, "user_id": record_user_id, "event_type": kind,
@@ -283,10 +362,18 @@ class BumpRta(commands.Cog):
         }).execute())
         await self._call(lambda: self.db.table("bump_rta_pending").delete().eq("guild_id", gid).eq(
             "event_type", kind).execute())
-        await message.channel.send(
-            embed=discord.Embed(description=f"🏁 {kind} RTA記録: **{elapsed / 1000:.2f}秒**", color=discord.Color.green()),
-            allowed_mentions=discord.AllowedMentions.none(),
+        embed = discord.Embed(
+            title="RTA記録",
+            description=f"🏁 {kind} **{elapsed / 1000:.2f}秒**",
+            color=discord.Color.gold(),
         )
+        try:
+            await message.channel.send(
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException as e:
+            logger.warning("Failed to send RTA result embed: %s", e)
 
 
 async def setup(bot):
