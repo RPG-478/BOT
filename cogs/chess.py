@@ -358,13 +358,11 @@ class Chess(commands.Cog):
     async def _play_loop(self, channel, g):
         while g.phase == "playing":
             if g.mode == "cpu" and g.turn == "black":
-                await channel.send("CPUが考えています……")
                 move = await asyncio.to_thread(choose_ai_move, g.board, "black", g.difficulty)
                 if move is None:
                     break
                 g.board = apply_move(g.board, move)
                 g.turn = "white"
-                await channel.send("CPUが着手しました。")
                 continue
             g.acted = False
             g.selected = None

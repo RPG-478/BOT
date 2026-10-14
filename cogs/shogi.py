@@ -126,6 +126,29 @@ class ShogiRenderer:
             elif piece.type == PieceType.LANCE:
                 base = "成香赤.png" if is_gote else "成香.png"
         path = ASSET_DIR / base
+        if not path.exists():
+            # 一部素材は別名・片側のみ提供されているため、透明画像ではなく
+            # 対応する実在素材を使う。将来的に正式な成駒素材を追加しても、
+            # この候補順で自動的にそちらを優先する。
+            aliases = {
+                "成桂.png": "成桂 .png",
+                "成銀赤.png": "成銀.png",
+                "成桂赤.png": "成桂赤.png",
+                "成香.png": "香.png",
+                "成香赤.png": "香.png",
+            }
+            path = ASSET_DIR / aliases.get(base, {
+                "成銀赤.png": "銀.png",
+                "成桂赤.png": "桂.png",
+                "成香赤.png": "香.png",
+            }.get(base, base))
+        if not path.exists():
+            path = ASSET_DIR / {
+                PieceType.PAWN: "歩.png", PieceType.LANCE: "香.png",
+                PieceType.KNIGHT: "桂.png", PieceType.SILVER: "銀.png",
+                PieceType.GOLD: "金.png", PieceType.BISHOP: "角.png",
+                PieceType.ROOK: "飛.png", PieceType.KING: "王.png",
+            }[piece.type]
         ck = str(path) + ("g" if is_gote else "")
         if ck not in self.cache:
             try:
@@ -310,13 +333,11 @@ class Shogi(commands.Cog):
         idle = 0
         while s.phase == "playing":
             if s.mode == "cpu" and s.game.turn == Color.GOTE:
-                await channel.send("CPUが考えています……")
                 move = await asyncio.to_thread(choose_ai_move, s.game, s.difficulty)
                 if move is None:
                     break
                 source, dest, promote, drop_type = move
                 s.game.make_move(source, dest, promote=promote, drop_type=drop_type)
-                await channel.send("CPUが着手しました。")
                 continue
             turn_user = s.players[s.game.turn]
             s.acted = False
