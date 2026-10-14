@@ -2,6 +2,7 @@ import logging
 import re
 
 import discord
+from core.emojis import SUCCESS, FAILED
 from discord import app_commands
 from discord.ext import commands
 
@@ -118,14 +119,14 @@ class QuestionModal(discord.ui.Modal, title="認証フォーム"):
             await interaction.user.add_roles(role, reason="認証フォーム")
         except discord.Forbidden:
             await interaction.followup.send(
-                f"⚠️ ロールを付けられなかったため、認証できませんでした。管理者に伝えてください。\n理由: {role_failure_reason(interaction.guild, role)}",
+                f"{FAILED} ロールを付けられなかったため、認証できませんでした。管理者に伝えてください。\n理由: {role_failure_reason(interaction.guild, role)}",
                 ephemeral=True,
             )
             return
         except discord.HTTPException:
             logger.warning("認証ロールの付与に失敗しました", exc_info=True)
             await interaction.followup.send(
-                "⚠️ ロールを付けられませんでした（Discord との通信エラー）。少し待ってからもう一度試してください。", ephemeral=True,
+                f"{FAILED} ロールを付けられませんでした（Discord との通信エラー）。少し待ってからもう一度試してください。", ephemeral=True,
             )
             return
 
@@ -148,7 +149,7 @@ class QuestionModal(discord.ui.Modal, title="認証フォーム"):
             except discord.HTTPException:
                 logger.warning("自己紹介の投稿に失敗しました（認証は完了）", exc_info=True)
 
-        await interaction.followup.send("認証が完了しました。ロールを付与しました。", ephemeral=True)
+        await interaction.followup.send(f"{SUCCESS} 認証が完了しました。ロールを付与しました。", ephemeral=True)
 
 class VerifyView(discord.ui.View):
     def __init__(self, role_id: int | None):
