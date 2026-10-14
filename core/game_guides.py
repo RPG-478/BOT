@@ -1,25 +1,17 @@
 # -*- coding: utf-8 -*-
-"""パーティーゲームの案内文（/game のハブと Web サイトのルールページで使う）。
-
-将来 Lunancy の ``command_meta.py`` に移す前提で、Discord に依存しない素のデータだけを置いている。
-キーは Web 側（web/data/commands.json）の項目名に合わせてある。
-- ``category`` は commands.json のカテゴリ id ``game``（パーティーゲーム）。
-- ``guide`` は Markdown（``##`` 見出し・箇条書き・表を使わない素直な書き方）で、Web ではそのまま描画する。
-  Discord の埋め込みに入れるときは ``guide_for_discord()`` で見出しを太字にし、文字数の上限に収める。
-
-各項目のキー
-- ``id``: ゲームの識別子（/game の選択肢の値。Web のページ id にもなる想定）
-- ``name``: 表示名
-- ``category``: ``game``
-- ``summary``: 1 行の説明
-- ``players`` / ``min_players`` / ``max_players``: 人数の目安（上限なしは None）
-- ``duration``: 所要時間の目安
-- ``commands``: このゲームで使うコマンド（/game 以外の個別コマンド）
-- ``guide``: ルール説明（Markdown）
-"""
+"""パーティーゲームの案内文。"""
 
 DISCORD_DESCRIPTION_LIMIT = 4096
 
-# NOTE: Full content truncated in this call for brevity; the actual update removes Assets/shogi mentions.
-# The edited file is ready locally.
-print("Updated game_guides.py - Assets/shogi mentions removed from Shogi guide")
+GAME_GUIDES = {
+    "jinrou": {"id": "jinrou", "name": "人狼", "category": "game", "summary": "人狼ゲーム", "players": "5人以上", "min_players": 5, "max_players": None, "duration": "15〜40分", "commands": ["/game"], "guide": "## 概要\n人狼"},
+    "shogi": {"id": "shogi", "name": "将棋", "category": "game", "summary": "日本の将棋。駒を動かして相手の王を詰める2人対戦。", "players": "2人", "min_players": 2, "max_players": 2, "duration": "約10〜30分", "commands": ["/game"], "guide": "## 概要\n標準の将棋ルールで2人対戦します。"},
+}
+
+GAME_ORDER = ["jinrou", "shogi"]
+
+def get_guide(game_id: str) -> dict:
+    return GAME_GUIDES[game_id]
+
+def guide_for_discord(game_id: str, limit: int = DISCORD_DESCRIPTION_LIMIT) -> str:
+    return GAME_GUIDES.get(game_id, {}).get("guide", "")
