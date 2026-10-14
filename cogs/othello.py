@@ -346,11 +346,9 @@ class Othello(commands.Cog):
                 await channel.send(embed=pass_embed, file=file)
                 continue
             if g.mode == "cpu" and g.turn == WHITE:
-                await channel.send("CPUが考えています……")
                 move = await asyncio.to_thread(choose_ai_move, g.board, WHITE, g.difficulty)
                 play_move(g.board, WHITE, *move)
                 g.turn = BLACK
-                await channel.send("CPUが着手しました。")
                 continue
             g.acted = False
             color, uid = g.turn, g.current_user().id
