@@ -252,9 +252,21 @@ class ShogiGame:
                 self.hands[self.turn][cap_type] += 1
             self.board[tr][tf] = piece
             self.board[fr][ff] = None
-            if promote and self.can_promote(piece, fr, tr):
+            # Forced promotion
+            force = False
+            if piece.type == PieceType.PAWN and not piece.promoted:
+                if (piece.color == Color.SENTE and tr == 0) or (piece.color == Color.GOTE and tr == 8):
+                    force = True
+            elif piece.type == PieceType.LANCE and not piece.promoted:
+                if (piece.color == Color.SENTE and tr == 0) or (piece.color == Color.GOTE and tr == 8):
+                    force = True
+            elif piece.type == PieceType.KNIGHT and not piece.promoted:
+                if piece.color == Color.SENTE and tr <= 1:
+                    force = True
+                if piece.color == Color.GOTE and tr >= 7:
+                    force = True
+            if force or (promote and self.can_promote(piece, fr, tr)):
                 piece.promoted = True
-            # Forced promotion for some cases (pawn/lance/knight on last ranks) omitted for brevity
         self.turn = Color.GOTE if self.turn == Color.SENTE else Color.SENTE
         return True
 
