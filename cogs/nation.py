@@ -18,6 +18,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from core.emojis import COIN
 from core.guild_settings import nation_settings
 
 try:  # テストでは supabase.create_client が差し替えられる
@@ -27,7 +28,6 @@ except ImportError:  # pragma: no cover
 
 log = logging.getLogger(__name__)
 
-COIN = "🪙"
 MAX_HUNGER = 100
 SEARCH_RADIUS = 50  # 首都を置く空きマスを原点からこの距離まで探す（nation_found.sql と同じ）
 ROLE_NAMES = {"king": "国王", "minister": "大臣", "citizen": "国民"}
