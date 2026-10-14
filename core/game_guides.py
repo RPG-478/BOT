@@ -437,11 +437,44 @@ GAME_GUIDES = {
 
 ## コマンド
 - `/game`: パーティーゲームの入口（ルール確認と募集）
+        """,
+    },
+    "chess": {
+        "id": "chess", "name": "チェス", "category": "game",
+        "summary": "駒を動かして相手のキングを詰ませる、2人対戦の西洋ボードゲーム。",
+        "players": "2人", "min_players": 2, "max_players": 2,
+        "duration": "約10〜30分（募集30秒）", "commands": ["/game"],
+        "guide": """## 概要
+白と黒に分かれ、相手のキングを逃げられない状態（チェックメイト）にするゲームです。提供されたチェス盤と駒の画像を使って盤面を表示します。
+
+## 人数
+2人で遊べます。募集主が白、2人目が黒です。
+
+## 所要時間
+募集30秒＋各手90秒を目安に、全体で10〜30分ほどです。
+
+## 遊び方
+1. `/game` で「チェス」を選びます。
+2. 「2人対戦」または「CPU対戦」を選びます。CPU対戦では難易度を1〜10から指定できます。
+3. 2人対戦では30秒以内にもう1人が「参加」を押すと、CPU対戦ではすぐに対局が始まります。
+4. 盤面画像のラベルに対応するリアクションで、動かす駒を選びます。
+5. 続けて表示される移動先のリアクションを押して駒を動かします。ポーンが最奥段に着くとクイーンに昇格します。
+6. 相手のキングを取られる状態にして、合法な逃げ道がなくなれば勝利です。
+
+## ルール
+- ポーン、ナイト、ビショップ、ルーク、クイーン、キングは通常のチェスの動きで移動します。
+- 自分のキングが攻撃される手は選べません。
+- 手番は白から始まり、1手ごとに交代します。90秒以内に操作してください。
+- キャスリングとアンパッサンには対応していません。ポーンの昇格先はクイーンです。
+- CPUの難易度は1（ランダム寄り）〜10（深く読む）です。
+
+## コマンド
+- `/game`: パーティーゲームの入口（ルール確認と募集）
 """,
     },
 }
 
-GAME_ORDER = ["jinrou", "wordwolf", "uno", "doubt", "ngword", "shiritori", "janken", "wordle", "shinkei", "babanuki", "guess", "flash", "daifugo", "othello", "poker", "shogi"]
+GAME_ORDER = ["jinrou", "wordwolf", "uno", "doubt", "ngword", "shiritori", "janken", "wordle", "shinkei", "babanuki", "guess", "flash", "daifugo", "othello", "poker", "shogi", "chess"]
 
 
 def get_guide(game_id: str) -> dict:
@@ -481,4 +514,3 @@ def guide_for_discord(game_id: str, limit: int = DISCORD_DESCRIPTION_LIMIT) -> s
             return (text or part[: limit - len(more)]) + more
         text = candidate
     return text
-
