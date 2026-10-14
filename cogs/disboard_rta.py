@@ -68,7 +68,6 @@ def detect_event(message):
     text = _collect_embed_text(message)
     folded = text.casefold()
 
-    # Detailed log for Disoku
     if author_id == DISOKU_BOT_ID:
         metadata = getattr(message, "interaction_metadata", None)
         logger.info(
@@ -83,7 +82,6 @@ def detect_event(message):
             return None
         kind = "bump"
     else:
-        # Lenient: any message from Disoku containing "アップ" or "up"
         if "アップ" not in text and "up" not in folded:
             logger.info("Disoku message ignored (no up keyword): %s", text[:200])
             return None
@@ -320,16 +318,28 @@ class BumpRta(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # TEMP DEBUG: visible ack for any Disoku message
+        # TEMP DEBUG: show structure of Disoku messages
         if getattr(getattr(message, "author", None), "id", None) == DISOKU_BOT_ID:
             try:
-                text = _collect_embed_text(message)
-                await message.channel.send(
-                    f"[debug] Disokuメッセージを受信しました\ntext={text[:100]!r}",
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-            except Exception:
-                pass
+                embeds = getattr(message, "embeds", ()) or ()
+                components = getattr(message, "components", ()) or ()
+                content = getattr(message, "content", "") or ""
+                lines = [
+                    f"[debug] Disoku message",
+                    f"content={content!r}",
+                    f"embeds={len(embeds)}",
+                    f"components={len(components)}",
+                ]
+                for i, e in enumerate(embeds[:2]):
+                    lines.append(f"embed[{i}] title={getattr(e,'title',None)!r}")
+                    lines.append(f"embed[{i}] desc={getattr(e,'description',None)!r}")
+                    lines.append(f"embed[{i}] fields={len(getattr(e,'fields',()) or ())}")
+                await message.channel.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
+            except Exception as e:
+                try:
+                    await message.channel.send(f"[debug] error: {e}")
+                except Exception:
+                    pass
 
         if message.id in self._processed_messages:
             return
