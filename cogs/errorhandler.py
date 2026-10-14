@@ -16,6 +16,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.command_catalog import permission_label
+from core.emojis import FAILED
 
 logger = logging.getLogger(__name__)
 
@@ -66,18 +67,18 @@ def classify(error: Exception, *, usage: Optional[str] = None) -> tuple[Optional
 
     # クールダウン・同時実行
     if isinstance(error, (commands.CommandOnCooldown, app_commands.CommandOnCooldown)):
-        return f"⏳ 少し待ってからもう一度試してください（あと {error.retry_after:.1f} 秒）。", False
+        return f"{FAILED} 少し待ってからもう一度試してください（あと {error.retry_after:.1f} 秒）。", False
     if isinstance(error, commands.MaxConcurrencyReached):
-        return "⏳ いまはこのコマンドを同時に実行できる上限に達しています。少し待ってから試してください。", False
+        return f"{FAILED} いまはこのコマンドを同時に実行できる上限に達しています。少し待ってから試してください。", False
 
     # 権限・ロール
     if isinstance(error, (commands.MissingPermissions, app_commands.MissingPermissions)):
-        return f"🚫 このコマンドを使うには次の権限が必要です: {_permissions_text(error.missing_permissions)}", False
+        return f"{FAILED} このコマンドを使うには次の権限が必要です: {_permissions_text(error.missing_permissions)}", False
     if isinstance(error, (commands.BotMissingPermissions, app_commands.BotMissingPermissions)):
-        return f"🚫 Bot に次の権限がないため実行できません: {_permissions_text(error.missing_permissions)}", False
+        return f"{FAILED} Bot に次の権限がないため実行できません: {_permissions_text(error.missing_permissions)}", False
     if isinstance(error, (commands.MissingRole, commands.MissingAnyRole,
                           app_commands.MissingRole, app_commands.MissingAnyRole)):
-        return "🚫 このコマンドを使うのに必要なロールがありません。", False
+        return f"{FAILED} このコマンドを使うのに必要なロールがありません。", False
 
     # DM / サーバー
     if isinstance(error, (commands.NoPrivateMessage, app_commands.NoPrivateMessage)):
@@ -85,30 +86,30 @@ def classify(error: Exception, *, usage: Optional[str] = None) -> tuple[Optional
     if isinstance(error, commands.PrivateMessageOnly):
         return "✉️ このコマンドは DM で使ってください。", False
     if isinstance(error, commands.DisabledCommand):
-        return "⚠️ このコマンドはいま使えません。", False
+        return f"{FAILED} このコマンドはいま使えません。", False
 
     # 引数
     if isinstance(error, commands.MissingRequiredArgument):
-        return _with_usage(f"⚠️ `{error.param.name}` が足りません。", usage), False
+        return _with_usage(f"{FAILED} `{error.param.name}` が足りません。", usage), False
     if isinstance(error, commands.MissingRequiredAttachment):
-        return _with_usage("⚠️ ファイルを添付してください。", usage), False
+        return _with_usage(f"{FAILED} ファイルを添付してください。", usage), False
     if isinstance(error, commands.TooManyArguments):
-        return _with_usage("⚠️ 引数が多すぎます。", usage), False
+        return _with_usage(f"{FAILED} 引数が多すぎます。", usage), False
     if isinstance(error, (commands.BadArgument, commands.BadUnionArgument, commands.BadLiteralArgument,
                           commands.ArgumentParsingError, app_commands.TransformerError)):
-        return _with_usage("⚠️ 引数の形が正しくありません。", usage), False
+        return _with_usage(f"{FAILED} 引数の形が正しくありません。", usage), False
     if isinstance(error, commands.UserInputError):
-        return _with_usage("⚠️ コマンドの書き方が正しくありません。", usage), False
+        return _with_usage(f"{FAILED} コマンドの書き方が正しくありません。", usage), False
 
     # そのほかのチェック失敗（独自のチェックなど）
     if isinstance(error, (commands.CheckFailure, app_commands.CheckFailure)):
-        return "🚫 このコマンドを実行できる条件を満たしていません。", False
+        return f"{FAILED} このコマンドを実行できる条件を満たしていません。", False
 
     return None, True
 
 
 def unexpected_message(error_id: str) -> str:
-    return f"❌ 予期しないエラーが起きました。管理者に伝えるときはエラーID `{error_id}` を添えてください。"
+    return f"{FAILED} 予期しないエラーが起きました。管理者に伝えるときはエラーID `{error_id}` を添えてください。"
 
 
 def _cog_overrides(cog, name: str) -> bool:
