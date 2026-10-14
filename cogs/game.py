@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""/game: パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle・神経衰弱・ババ抜き・数字当て・フラッシュ暗算・大富豪・オセロ・ポーカー・将棋）の入口。
+"""/game: パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle・神経衰弱・ババ抜き・数字当て・フラッシュ暗算・大富豪・オセロ・ポーカー・将棋・チェス）の入口。
 
 ゲームを選ぶと、人数の目安・所要時間と「ルール」「募集する」ボタンが出る。
 募集は各ゲームの cog の ``start_recruit(interaction)`` をそのまま呼ぶので、個別のコマンド
@@ -31,6 +31,7 @@ GAME_COGS = {
     "othello": "Othello",
     "poker": "Poker",
     "shogi": "Shogi",
+    "chess": "Chess",
 }
 
 RANKED_GAMES = {"ngword", "shiritori"}
@@ -187,6 +188,40 @@ class JinrouModeSelect(discord.ui.Select):
         await interaction.response.edit_message(view=self.view)
 
 
+class ChessModeSelect(discord.ui.Select):
+    def __init__(self, selected: str):
+        options = [
+            discord.SelectOption(label="2人対戦", value="human", default=selected == "human"),
+            discord.SelectOption(label="CPU対戦", value="cpu", default=selected == "cpu"),
+        ]
+        super().__init__(placeholder="チェスの対戦モード", options=options, row=1)
+
+    async def callback(self, interaction):
+        self.view.chess_mode = self.values[0]
+        for option in self.options:
+            option.default = option.value == self.view.chess_mode
+        await interaction.response.edit_message(view=self.view)
+
+
+class BoardGameModeSelect(ChessModeSelect):
+    def __init__(self, selected: str):
+        super().__init__(selected)
+        self.placeholder = "対戦モード"
+
+
+class ChessDifficultySelect(discord.ui.Select):
+    def __init__(self, selected: int):
+        options = [discord.SelectOption(label=f"CPU難易度 {level}/10", value=str(level), default=level == selected)
+                   for level in range(1, 11)]
+        super().__init__(placeholder="CPU難易度（1〜10）", options=options, row=2)
+
+    async def callback(self, interaction):
+        self.view.chess_difficulty = int(self.values[0])
+        for option in self.options:
+            option.default = option.value == self.values[0]
+        await interaction.response.edit_message(view=self.view)
+
+
 JANKEN_WAGER_CHOICES = (0, 10, 50, 100, 500)
 
 class JankenWagerSelect(discord.ui.Select):
@@ -213,6 +248,8 @@ class GameDetailView(discord.ui.View):
         self.jinrou_mode = "local"
         self.wordle_mode = "shared"
         self.wager = 0
+        self.chess_mode = "human"
+        self.chess_difficulty = 5
         if game_id == "janken":
             self.add_item(JankenWagerSelect(self.wager))
         if game_id == "wordle":
@@ -225,6 +262,9 @@ class GameDetailView(discord.ui.View):
             self.add_item(WordlistSelect(self.wordlist))
         if game_id == "jinrou":
             self.add_item(JinrouModeSelect(self.jinrou_mode))
+        if game_id in ("chess", "othello", "shogi"):
+            self.add_item(ChessModeSelect(self.chess_mode) if game_id == "chess" else BoardGameModeSelect(self.chess_mode))
+            self.add_item(ChessDifficultySelect(self.chess_difficulty))
         else:
             self.remove_item(self.rating)
         if game_id not in ENDABLE_GAMES:
@@ -232,18 +272,19 @@ class GameDetailView(discord.ui.View):
         if game_id not in RANKED_GAMES and not party_ranking.is_ranked(game_id):
             self.remove_item(self.ranking)
 
-    @discord.ui.button(label="ルール", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="ルール", style=discord.ButtonStyle.secondary, row=3)
     async def rules(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(embed=rules_embed(self.game_id), ephemeral=True)
 
-    @discord.ui.button(label="募集する", style=discord.ButtonStyle.success, row=2)
+    @discord.ui.button(label="募集する", style=discord.ButtonStyle.success, row=3)
     async def recruit(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.start_game(interaction, self.game_id, wordlist=self.wordlist,
                                   ng_minutes=self.ng_minutes, ng_mode=self.ng_mode,
                                   wordle_mode=self.wordle_mode, jinrou_mode=self.jinrou_mode,
-                                  wager=self.wager)
+                                  wager=self.wager, chess_mode=self.chess_mode,
+                                  chess_difficulty=self.chess_difficulty)
 
-    @discord.ui.button(label="ランキング", style=discord.ButtonStyle.primary, row=2)
+    @discord.ui.button(label="ランキング", style=discord.ButtonStyle.primary, row=3)
     async def ranking(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(embed=await ranking_embed(interaction.guild_id, self.game_id),
                                                 ephemeral=True)
@@ -265,7 +306,7 @@ class GameDetailView(discord.ui.View):
                 embed=discord.Embed(description=f"{name} は現在利用できません。", color=HUB_COLOR), ephemeral=True)
         await cog.force_end(interaction)
 
-    @discord.ui.button(label="戻る", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="戻る", style=discord.ButtonStyle.secondary, row=3)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(embed=hub_embed(), view=GameHubView(self.cog))
 
@@ -274,7 +315,7 @@ class GameHub(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="game", description="パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle・神経衰弱・ババ抜き・オセロ・ポーカー・将棋）のルール確認と募集")
+    @app_commands.command(name="game", description="パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle・神経衰弱・ババ抜き・オセロ・ポーカー・将棋・チェス）のルール確認と募集")
     async def game(self, interaction: discord.Interaction):
         await interaction.response.send_message(embed=hub_embed(), view=GameHubView(self), ephemeral=True)
 
@@ -295,6 +336,12 @@ class GameHub(commands.Cog):
             return await cog.start_recruit(interaction, options.get("jinrou_mode") or "local")
         if game_id == "janken":
             return await cog.start_recruit(interaction, wager=options.get("wager", 0))
+        if game_id == "chess":
+            return await cog.start_recruit(interaction, mode=options.get("chess_mode") or "human",
+                                           difficulty=options.get("chess_difficulty") or 5)
+        if game_id in ("othello", "shogi"):
+            return await cog.start_recruit(interaction, mode=options.get("chess_mode") or "human",
+                                           difficulty=options.get("chess_difficulty") or 5)
         return await cog.start_recruit(interaction)
 
 
