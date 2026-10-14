@@ -203,6 +203,12 @@ class ChessModeSelect(discord.ui.Select):
         await interaction.response.edit_message(view=self.view)
 
 
+class BoardGameModeSelect(ChessModeSelect):
+    def __init__(self, selected: str):
+        super().__init__(selected)
+        self.placeholder = "対戦モード"
+
+
 class ChessDifficultySelect(discord.ui.Select):
     def __init__(self, selected: int):
         options = [discord.SelectOption(label=f"CPU難易度 {level}/10", value=str(level), default=level == selected)
@@ -256,8 +262,8 @@ class GameDetailView(discord.ui.View):
             self.add_item(WordlistSelect(self.wordlist))
         if game_id == "jinrou":
             self.add_item(JinrouModeSelect(self.jinrou_mode))
-        if game_id == "chess":
-            self.add_item(ChessModeSelect(self.chess_mode))
+        if game_id in ("chess", "othello", "shogi"):
+            self.add_item(ChessModeSelect(self.chess_mode) if game_id == "chess" else BoardGameModeSelect(self.chess_mode))
             self.add_item(ChessDifficultySelect(self.chess_difficulty))
         else:
             self.remove_item(self.rating)
@@ -331,6 +337,9 @@ class GameHub(commands.Cog):
         if game_id == "janken":
             return await cog.start_recruit(interaction, wager=options.get("wager", 0))
         if game_id == "chess":
+            return await cog.start_recruit(interaction, mode=options.get("chess_mode") or "human",
+                                           difficulty=options.get("chess_difficulty") or 5)
+        if game_id in ("othello", "shogi"):
             return await cog.start_recruit(interaction, mode=options.get("chess_mode") or "human",
                                            difficulty=options.get("chess_difficulty") or 5)
         return await cog.start_recruit(interaction)

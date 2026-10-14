@@ -1,6 +1,7 @@
 """/game のオセロ（2人対戦、標準8x8ルール）。"""
 import asyncio
 import io
+import random
 from pathlib import Path
 
 import discord
@@ -111,6 +112,59 @@ def play_move(board, player, row, col):
     return True
 
 
+def _copy_board(board):
+    return [row[:] for row in board]
+
+
+def _apply_move_copy(board, player, move):
+    result = _copy_board(board)
+    play_move(result, player, *move)
+    return result
+
+
+def _ai_score(board, player):
+    opponent = WHITE if player == BLACK else BLACK
+    corners = {(0, 0), (0, 7), (7, 0), (7, 7)}
+    score = sum(cell == player for row in board for cell in row) - sum(cell == opponent for row in board for cell in row)
+    score += 18 * sum(board[r][c] == player for r, c in corners)
+    score -= 18 * sum(board[r][c] == opponent for r, c in corners)
+    score += 3 * (len(legal_moves(board, player)) - len(legal_moves(board, opponent)))
+    return score
+
+
+def _ai_minimax(board, turn, ai_color, depth, alpha, beta):
+    moves = legal_moves(board, turn)
+    opponent = WHITE if turn == BLACK else BLACK
+    if depth == 0 or not moves:
+        return _ai_score(board, ai_color), None
+    maximizing = turn == ai_color
+    best = -float("inf") if maximizing else float("inf")
+    best_move = None
+    for move in moves:
+        score, _ = _ai_minimax(_apply_move_copy(board, turn, move), opponent, ai_color, depth - 1, alpha, beta)
+        if (maximizing and score > best) or (not maximizing and score < best):
+            best, best_move = score, move
+        if maximizing:
+            alpha = max(alpha, best)
+        else:
+            beta = min(beta, best)
+        if beta <= alpha:
+            break
+    return best, best_move
+
+
+def choose_ai_move(board, player=WHITE, difficulty=5):
+    difficulty = max(1, min(10, int(difficulty)))
+    moves = legal_moves(board, player)
+    if not moves:
+        return None
+    if difficulty <= 2:
+        return random.choice(moves)
+    depth = 1 if difficulty <= 4 else 2 if difficulty <= 7 else 3
+    _, move = _ai_minimax(board, player, player, depth, -float("inf"), float("inf"))
+    return move or random.choice(moves)
+
+
 def render(board):
     header = "  A B C D E F G H"
     rows = [f"{r+1} " + " ".join(board[r]) for r in range(8)]
@@ -118,7 +172,7 @@ def render(board):
 
 
 class OthelloGame:
-    def __init__(self, channel_id, guild_id, host_id):
+    def __init__(self, channel_id, guild_id, host_id, mode="human", difficulty=5):
         self.channel_id, self.guild_id, self.host_id = channel_id, guild_id, host_id
         self.players = {}
         self.board = new_board()
@@ -126,6 +180,8 @@ class OthelloGame:
         self.pass_count = 0
         self.acted = False
         self.phase = "recruit"
+        self.mode = mode
+        self.difficulty = max(1, min(10, int(difficulty)))
 
     def current_user(self):
         return self.players[BLACK if self.turn == BLACK else WHITE]
@@ -237,11 +293,22 @@ class Othello(commands.Cog):
         if game.phase == "playing" and not game.acted and game.current_user().id == user.id:
             game.acted = play_move(game.board, game.turn, *chosen)
 
-    async def start_recruit(self, interaction):
+    async def start_recruit(self, interaction, mode="human", difficulty=5):
         channel = interaction.channel
         if channel.id in self.games:
             return await interaction.response.send_message("このチャンネルでは既にゲーム中です。", ephemeral=True)
-        g = OthelloGame(channel.id, interaction.guild_id, interaction.user.id)
+        g = OthelloGame(channel.id, interaction.guild_id, interaction.user.id, mode, difficulty)
+        if mode == "cpu":
+            g.players[BLACK] = interaction.user
+            g.players[WHITE] = None
+            self.games[channel.id] = g
+            await interaction.response.send_message(f"オセロCPU対戦（難易度 {g.difficulty}/10）を開始します。", ephemeral=True)
+            try:
+                await self.run_game(channel, g)
+            finally:
+                g.phase = "done"
+                self.games.pop(channel.id, None)
+            return
         g.players[interaction.user.id] = interaction.user
         self.games[channel.id] = g
         await interaction.response.send_message("オセロの募集を開始しました。", ephemeral=True)
@@ -259,7 +326,8 @@ class Othello(commands.Cog):
             await channel.send("参加者が2人集まらなかったため、オセロを開始できませんでした。")
             return
         g.phase = "playing"
-        g.players[BLACK], g.players[WHITE] = list(g.players.values())
+        if g.mode != "cpu":
+            g.players[BLACK], g.players[WHITE] = list(g.players.values())
         file, image_url = board_attachment(g.board)
         start_embed = discord.Embed(description="オセロを開始します。黒（●）が先手です。", color=COLOR)
         start_embed.set_image(url=image_url)
@@ -276,6 +344,13 @@ class Othello(commands.Cog):
                 pass_embed = discord.Embed(description=f"{g.players[BLACK if g.turn == WHITE else WHITE].mention} さんは置ける場所がないためパス。", color=COLOR)
                 pass_embed.set_image(url=image_url)
                 await channel.send(embed=pass_embed, file=file)
+                continue
+            if g.mode == "cpu" and g.turn == WHITE:
+                await channel.send("CPUが考えています……")
+                move = await asyncio.to_thread(choose_ai_move, g.board, WHITE, g.difficulty)
+                play_move(g.board, WHITE, *move)
+                g.turn = BLACK
+                await channel.send("CPUが着手しました。")
                 continue
             g.acted = False
             color, uid = g.turn, g.current_user().id

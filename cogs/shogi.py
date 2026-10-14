@@ -1,6 +1,8 @@
 """/game の将棋（2人対戦、リアクション選択、手駒・二歩対応）。"""
 import asyncio
 import io
+import random
+from copy import deepcopy
 from pathlib import Path
 
 import discord
@@ -25,6 +27,65 @@ NEXT_PAGE = "➡️"
 PREV_PAGE = "⬅️"
 HAND_EMOJI = "✋"
 CANCEL_EMOJI = "↩️"
+
+
+SHOGI_VALUES = {
+    PieceType.PAWN: 100, PieceType.LANCE: 300, PieceType.KNIGHT: 350,
+    PieceType.SILVER: 500, PieceType.GOLD: 600, PieceType.BISHOP: 800,
+    PieceType.ROOK: 1000, PieceType.KING: 20000,
+}
+
+
+def _shogi_candidates(game):
+    candidates = []
+    for source in game.get_selectable_pieces():
+        for dest in game._generate_moves(*source):
+            piece = game.board[source[0]][source[1]]
+            candidates.append((source, dest, game.can_promote(piece, source[0], dest[0]), None))
+    for piece_type in game.get_hand_pieces():
+        for dest in game.get_drop_squares(piece_type):
+            candidates.append((None, dest, False, piece_type))
+    return candidates
+
+
+def _shogi_eval(game, side):
+    score = 0
+    for row in game.board:
+        for piece in row:
+            if piece:
+                value = SHOGI_VALUES[piece.type] * (1.15 if piece.promoted else 1)
+                score += value if piece.color == side else -value
+    for color, sign in ((side, 1), (Color.SENTE if side == Color.GOTE else Color.GOTE, -1)):
+        score += sign * sum(SHOGI_VALUES[piece_type] * count / 4 for piece_type, count in game.hands[color].items())
+    return score
+
+
+def choose_ai_move(game, difficulty=5):
+    """将棋のCPU手。難易度1〜10でランダム性と読みの深さを調整する。"""
+    difficulty = max(1, min(10, int(difficulty)))
+    candidates = _shogi_candidates(game)
+    if not candidates:
+        return None
+    if difficulty <= 2:
+        return random.choice(candidates)
+    scored = []
+    side = game.turn
+    for candidate in candidates:
+        trial = deepcopy(game)
+        source, dest, promote, drop_type = candidate
+        if not trial.make_move(source, dest, promote=promote, drop_type=drop_type):
+            continue
+        score = _shogi_eval(trial, side)
+        # capture and promotion preferences are intentionally stronger at higher levels
+        if source is not None and game.board[dest[0]][dest[1]] is not None:
+            score += 180 * difficulty
+        if promote:
+            score += 40 * difficulty
+        score += random.uniform(-120, 120) * max(0, 10 - difficulty) / 10
+        scored.append((score, candidate))
+    if not scored:
+        return random.choice(candidates)
+    return max(scored, key=lambda item: item[0])[1]
 
 def reaction_emoji(label: str) -> str:
     if label in "123456789" and len(label) == 1:
@@ -125,7 +186,7 @@ class ShogiRenderer:
                 yy += 22
 
 class ShogiSession:
-    def __init__(self, channel_id, guild_id, host_id):
+    def __init__(self, channel_id, guild_id, host_id, mode="human", difficulty=5):
         self.channel_id = channel_id
         self.guild_id = guild_id
         self.host_id = host_id
@@ -138,6 +199,8 @@ class ShogiSession:
         self.acted = False
         self.renderer = ShogiRenderer()
         self.current_msg = None
+        self.mode = mode
+        self.difficulty = max(1, min(10, int(difficulty)))
 
 class JoinView(discord.ui.View):
     def __init__(self, session):
@@ -181,11 +244,22 @@ class Shogi(commands.Cog):
         except Exception:
             pass
 
-    async def start_recruit(self, interaction):
+    async def start_recruit(self, interaction, mode="human", difficulty=5):
         ch = interaction.channel
         if ch.id in self.sessions:
             return await interaction.response.send_message("このチャンネルでは既に将棋中です。", ephemeral=True)
-        s = ShogiSession(ch.id, interaction.guild_id, interaction.user.id)
+        s = ShogiSession(ch.id, interaction.guild_id, interaction.user.id, mode, difficulty)
+        if mode == "cpu":
+            s.players[Color.SENTE] = interaction.user
+            s.players[Color.GOTE] = None
+            self.sessions[ch.id] = s
+            await interaction.response.send_message(f"将棋CPU対戦（難易度 {s.difficulty}/10）を開始します。", ephemeral=True)
+            try:
+                await self.run_game(ch, s)
+            finally:
+                s.phase = "done"
+                self.sessions.pop(ch.id, None)
+            return
         s.players[interaction.user.id] = interaction.user
         self.sessions[ch.id] = s
         await interaction.response.send_message("将棋の募集を開始しました。", ephemeral=True)
@@ -226,11 +300,24 @@ class Shogi(commands.Cog):
             await channel.send("参加者が2人集まらなかったため開始できませんでした。")
             return
         s.phase = "playing"
-        ids = list(s.players.values())
-        s.players = {Color.SENTE: ids[0], Color.GOTE: ids[1]}
-        await channel.send(f"将棋開始！ 先手: {ids[0].mention} / 後手: {ids[1].mention}")
+        if s.mode != "cpu":
+            ids = list(s.players.values())
+            s.players = {Color.SENTE: ids[0], Color.GOTE: ids[1]}
+        if s.mode == "cpu":
+            await channel.send(f"将棋CPU対戦開始！ 先手: {s.players[Color.SENTE].mention} / 後手: CPU（難易度 {s.difficulty}/10）")
+        else:
+            await channel.send(f"将棋開始！ 先手: {ids[0].mention} / 後手: {ids[1].mention}")
         idle = 0
         while s.phase == "playing":
+            if s.mode == "cpu" and s.game.turn == Color.GOTE:
+                await channel.send("CPUが考えています……")
+                move = await asyncio.to_thread(choose_ai_move, s.game, s.difficulty)
+                if move is None:
+                    break
+                source, dest, promote, drop_type = move
+                s.game.make_move(source, dest, promote=promote, drop_type=drop_type)
+                await channel.send("CPUが着手しました。")
+                continue
             turn_user = s.players[s.game.turn]
             s.acted = False
             s.state = "select_piece"
