@@ -41,8 +41,6 @@ class ShogiRenderer:
 
     def _piece_img(self, piece: Piece) -> Image.Image:
         is_gote = piece.color == Color.GOTE
-        key = (piece.type, piece.promoted, is_gote)
-        # Simple mapping; expand as needed
         base = {
             PieceType.KING: "王.png" if not is_gote else "玉.png",
             PieceType.ROOK: "飛.png",
@@ -53,8 +51,19 @@ class ShogiRenderer:
             PieceType.LANCE: "香.png",
             PieceType.PAWN: "歩.png",
         }.get(piece.type, "なし.png")
-        if piece.promoted and piece.type == PieceType.PAWN:
-            base = "と金赤.png" if is_gote else "と金.png"
+        if piece.promoted:
+            if piece.type == PieceType.PAWN:
+                base = "と金赤.png" if is_gote else "と金.png"
+            elif piece.type == PieceType.ROOK:
+                base = "龍赤.png" if is_gote else "龍.png"
+            elif piece.type == PieceType.BISHOP:
+                base = "馬赤.png" if is_gote else "馬.png"
+            elif piece.type == PieceType.SILVER:
+                base = "成銀赤.png" if is_gote else "成銀.png"
+            elif piece.type == PieceType.KNIGHT:
+                base = "成桂赤.png" if is_gote else "成桂.png"
+            elif piece.type == PieceType.LANCE:
+                base = "成香赤.png" if is_gote else "成香.png"
         path = ASSET_DIR / base
         ck = str(path) + ("g" if is_gote else "")
         if ck not in self.cache:
@@ -68,7 +77,7 @@ class ShogiRenderer:
                 self.cache[ck] = Image.new("RGBA", (40, 40), (0, 0, 0, 0))
         return self.cache[ck]
 
-    def render(self, game: ShogiGame, labels=None, selected=None, hand_mode=False) -> io.BytesIO:
+    def render(self, game: ShogiGame, labels=None, selected=None) -> io.BytesIO:
         img = Image.new("RGB", (IMG_W, IMG_H), "#f4e4c1")
         draw = ImageDraw.Draw(img)
         # Hands
@@ -128,6 +137,7 @@ class ShogiSession:
         self.selected_drop = None
         self.acted = False
         self.renderer = ShogiRenderer()
+        self.current_msg = None
 
 class JoinView(discord.ui.View):
     def __init__(self, session):
@@ -160,6 +170,17 @@ class Shogi(commands.Cog):
         self.sessions = {}
         self.reaction_sessions = {}
 
+    async def _add_reactions(self, msg, emojis):
+        # Parallel-ish for speed
+        tasks = [msg.add_reaction(e) for e in emojis]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _clear_reactions(self, msg):
+        try:
+            await msg.clear_reactions()
+        except Exception:
+            pass
+
     async def start_recruit(self, interaction):
         ch = interaction.channel
         if ch.id in self.sessions:
@@ -169,14 +190,36 @@ class Shogi(commands.Cog):
         self.sessions[ch.id] = s
         await interaction.response.send_message("将棋の募集を開始しました。", ephemeral=True)
         try:
-            await game_panels.replace(ch, "party", embed=discord.Embed(
-                title="将棋 参加者募集", description=f"{interaction.user.mention} さんが募集中です。\\n{RECRUIT_SECONDS}秒以内に参加してください（2人対戦）。", color=COLOR),
+            msg = await game_panels.replace(ch, "party", embed=discord.Embed(
+                title="将棋 参加者募集", description=f"{interaction.user.mention} さんが募集中です。\n{RECRUIT_SECONDS}秒以内に参加してください（2人対戦）。", color=COLOR),
                 view=JoinView(s))
             await asyncio.sleep(RECRUIT_SECONDS)
             await self.run_game(ch, s)
         finally:
             s.phase = "done"
             self.sessions.pop(ch.id, None)
+
+    async def _update_board_msg(self, s: ShogiSession, channel, description, labels=None, selected=None, extra_emojis=None):
+        buf = s.renderer.render(s.game, labels=labels, selected=selected)
+        file = discord.File(buf, "shogi.png")
+        embed = discord.Embed(description=description, color=COLOR)
+        embed.set_image(url="attachment://shogi.png")
+        if s.current_msg is None:
+            s.current_msg = await game_panels.replace(channel, "party", embed=embed, file=file)
+        else:
+            try:
+                await s.current_msg.edit(embed=embed, attachments=[file])
+            except Exception:
+                # Fallback if edit fails
+                s.current_msg = await game_panels.replace(channel, "party", embed=embed, file=file)
+        await self._clear_reactions(s.current_msg)
+        emojis = []
+        if labels:
+            emojis.extend(reaction_emoji(lab) for lab, _ in labels[:REACTION_PAGE_SIZE])
+        if extra_emojis:
+            emojis.extend(extra_emojis)
+        await self._add_reactions(s.current_msg, emojis)
+        self.reaction_sessions[s.current_msg.id] = {"session": s, "labels": dict(labels or [])}
 
     async def run_game(self, channel, s: ShogiSession):
         if len(s.players) != 2:
@@ -193,33 +236,17 @@ class Shogi(commands.Cog):
             s.state = "select_piece"
             s.selected = None
             s.selected_drop = None
-            # Show board with movable pieces
             selectables = s.game.get_selectable_pieces()
             labels = list(zip(MOVE_LABELS, selectables))[:REACTION_PAGE_SIZE]
-            buf = s.renderer.render(s.game, labels=labels)
-            file = discord.File(buf, "shogi.png")
-            embed = discord.Embed(
-                description=f"{turn_user.mention} さんの番（{'先手' if s.game.turn == Color.SENTE else '後手'}）。\\n"
-                            "動ける駒のラベルに対応するリアクションを押すか、✋で手駒を確認してください。",
-                color=COLOR)
-            embed.set_image(url="attachment://shogi.png")
-            msg = await game_panels.replace(channel, "party", embed=embed, file=file)
-            # Add reactions
-            for label, _ in labels:
-                try:
-                    await msg.add_reaction(reaction_emoji(label))
-                except Exception:
-                    pass
-            try:
-                await msg.add_reaction(HAND_EMOJI)
-            except Exception:
-                pass
-            self.reaction_sessions[msg.id] = {"session": s, "msg": msg, "labels": dict(labels)}
+            desc = (f"{turn_user.mention} さんの番（{'先手' if s.game.turn == Color.SENTE else '後手'}）。\n"
+                    "動ける駒のラベルに対応するリアクションを押すか、✋で手駒を確認してください。")
+            await self._update_board_msg(s, channel, desc, labels=labels, extra_emojis=[HAND_EMOJI])
             for _ in range(TURN_SECONDS):
                 if s.acted or s.phase != "playing":
                     break
                 await asyncio.sleep(1)
-            self.reaction_sessions.pop(msg.id, None)
+            if s.current_msg:
+                self.reaction_sessions.pop(s.current_msg.id, None)
             if not s.acted:
                 idle += 1
                 await channel.send(f"{turn_user.mention} さんは時間切れのためパスしました。")
@@ -228,7 +255,6 @@ class Shogi(commands.Cog):
                 s.game.turn = Color.GOTE if s.game.turn == Color.SENTE else Color.SENTE
             else:
                 idle = 0
-        # End
         await channel.send("将棋を終了しました。")
 
     @commands.Cog.listener()
@@ -239,39 +265,65 @@ class Shogi(commands.Cog):
         if not session_data:
             return
         s: ShogiSession = session_data["session"]
-        if s.phase != "playing" or s.players[s.game.turn].id != user.id or s.acted:
+        if s.phase != "playing" or s.players.get(s.game.turn, None) is None or s.players[s.game.turn].id != user.id or s.acted:
             return
         emoji = str(reaction.emoji)
         try:
             await reaction.message.remove_reaction(reaction.emoji, user)
         except Exception:
             pass
-        if emoji == HAND_EMOJI and s.state == "select_piece":
-            hand = s.game.get_hand_pieces()
-            if not hand:
-                await reaction.message.channel.send("手駒がありません。", delete_after=4)
-                return
-            # Simple hand select for demo
-            s.state = "select_hand"
-            await reaction.message.channel.send("手駒選択は簡易実装です。直接打ち場所を選んでください（実装拡張予定）。", delete_after=5)
-            return
-        # Piece / dest selection
         labels = session_data.get("labels", {})
+        if emoji == HAND_EMOJI and s.state == "select_piece":
+            hand_pieces = s.game.get_hand_pieces()
+            if not hand_pieces:
+                await reaction.message.channel.send("手駒がありません。", delete_after=3)
+                return
+            # Switch to hand selection
+            s.state = "select_hand"
+            hand_labels = list(zip(MOVE_LABELS, hand_pieces))[:REACTION_PAGE_SIZE]
+            desc = f"{s.players[s.game.turn].mention} さんの手駒選択。打ちたい駒を選んでください。"
+            await self._update_board_msg(s, reaction.message.channel, desc, labels=hand_labels, extra_emojis=[CANCEL_EMOJI])
+            return
+        if emoji == CANCEL_EMOJI and s.state in ("select_hand", "select_drop_dest"):
+            s.state = "select_piece"
+            s.selected_drop = None
+            # Re-show piece selection
+            selectables = s.game.get_selectable_pieces()
+            labels = list(zip(MOVE_LABELS, selectables))[:REACTION_PAGE_SIZE]
+            desc = f"{s.players[s.game.turn].mention} さんの番。駒を選んでください。"
+            await self._update_board_msg(s, reaction.message.channel, desc, labels=labels, extra_emojis=[HAND_EMOJI])
+            return
         for label, pos in labels.items():
             if reaction_emoji(label) == emoji:
                 if s.state == "select_piece":
+                    # Select piece, show destinations
                     s.selected = pos
                     dests = s.game._generate_moves(*pos)
-                    # Update to show dests (simplified; in full version re-render)
+                    if not dests:
+                        return
                     s.state = "select_dest"
-                    await reaction.message.channel.send(f"移動先を選択してください（{len(dests)}箇所）。", delete_after=5)
-                    # For brevity, auto-pick first dest if any, or implement full re-render
-                    if dests:
-                        success = s.game.make_move(pos, dests[0], promote=True)
-                        if success:
-                            s.acted = True
+                    dest_labels = list(zip(MOVE_LABELS, dests))[:REACTION_PAGE_SIZE]
+                    desc = f"移動先を選択してください（{len(dests)}箇所）。↩️でキャンセル。"
+                    await self._update_board_msg(s, reaction.message.channel, desc, labels=dest_labels, selected=pos, extra_emojis=[CANCEL_EMOJI])
                 elif s.state == "select_dest":
+                    # Execute move
                     success = s.game.make_move(s.selected, pos, promote=True)
+                    if success:
+                        s.acted = True
+                        # Force refresh on next loop
+                elif s.state == "select_hand":
+                    # pos is PieceType
+                    s.selected_drop = pos
+                    drops = s.game.get_drop_squares(pos)
+                    if not drops:
+                        await reaction.message.channel.send("打てる場所がありません。", delete_after=3)
+                        return
+                    s.state = "select_drop_dest"
+                    drop_labels = list(zip(MOVE_LABELS, drops))[:REACTION_PAGE_SIZE]
+                    desc = f"打ち場所を選択してください。↩️でキャンセル。"
+                    await self._update_board_msg(s, reaction.message.channel, desc, labels=drop_labels, extra_emojis=[CANCEL_EMOJI])
+                elif s.state == "select_drop_dest":
+                    success = s.game.make_move(None, pos, drop_type=s.selected_drop)
                     if success:
                         s.acted = True
                 break
