@@ -64,26 +64,36 @@ def detect_event(message):
     application_id = getattr(message, "application_id", None)
     if author_id not in (DISBOARD_BOT_ID, DISOKU_BOT_ID):
         return None
-    # Allow application_id mismatch for app command responses (common with Disoku)
-    if application_id is not None and application_id != author_id and author_id != DISOKU_BOT_ID:
-        return None
+
     text = _collect_embed_text(message)
     folded = text.casefold()
+
+    # Detailed log for Disoku to diagnose detection failures
+    if author_id == DISOKU_BOT_ID:
+        metadata = getattr(message, "interaction_metadata", None)
+        logger.info(
+            "Disoku message seen: app_id=%s meta_type=%s text=%s",
+            application_id,
+            getattr(metadata, "type", None),
+            text[:200],
+        )
+
     if author_id == DISBOARD_BOT_ID:
         if "表示順をアップしたよ" not in text and "bump done" not in folded:
-            logger.debug("Disboard message ignored (no success text): %s", text[:120])
             return None
         kind = "bump"
     else:
-        if "アップしたよ" not in text and "up successful" not in folded:
-            logger.debug("Disoku message ignored (no success text): %s", text[:120])
+        # More lenient: any message from Disoku containing "アップ" is treated as success
+        if "アップ" not in text and "up" not in folded:
+            logger.info("Disoku message ignored (no up keyword): %s", text[:200])
             return None
         kind = "up"
+
     metadata = getattr(message, "interaction_metadata", None)
     if metadata is not None and getattr(metadata, "type", None) not in (
         None, discord.InteractionType.application_command
     ):
-        logger.debug("Ignored non-application_command interaction type: %s", getattr(metadata, "type", None))
+        logger.info("Ignored non-application_command type: %s", getattr(metadata, "type", None))
         return None
     user = getattr(metadata, "user", None)
     user_id = getattr(user, "id", None)
