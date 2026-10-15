@@ -1,7 +1,7 @@
 """Default-on Disboard bump / Dis速 up reminders and separate RTA leaderboards."""
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
@@ -53,8 +53,18 @@ def _collect_embed_text(message):
     return " ".join(p for p in parts if p)
 
 
+def _snowflake_datetime(snowflake_id):
+    """Decode a Discord Snowflake ID into its UTC creation timestamp."""
+    timestamp_ms = (int(snowflake_id) >> 22) + 1420070400000
+    return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+
+
 def detect_event(message):
-    """Return (kind, user_id, event_at) for an official successful service embed."""
+    """Return (kind, user_id, event_at) for an official successful service embed.
+
+    Use the message Snowflake timestamp as the event time. This avoids relying on
+    interaction metadata timestamps, which may differ from the actual message time.
+    """
     if not getattr(message, "guild", None):
         return None
     channel_type = getattr(getattr(message, "channel", None), "type", None)
@@ -98,8 +108,11 @@ def detect_event(message):
     if user_id is None:
         legacy_interaction = getattr(message, "interaction", None)
         user_id = getattr(getattr(legacy_interaction, "user", None), "id", None)
-    event_at = getattr(metadata, "created_at", None) or getattr(message, "created_at", None)
-    if event_at is None:
+    try:
+        # Discord Snowflake stores the message creation time at millisecond precision.
+        event_at = _snowflake_datetime(message.id)
+    except (TypeError, ValueError, OverflowError):
+        logger.exception("Could not decode message Snowflake timestamp: %s", getattr(message, "id", None))
         return None
     return kind, int(user_id) if user_id is not None else None, event_at
 
@@ -255,7 +268,7 @@ class BumpRta(commands.Cog):
             logger.exception("DB claim failed for reminder %s (local claim still active)", message_id)
             return True
 
-    @tasks.loop(minutes=1)
+    @tasks.loop(seconds=10)
     async def reminder_worker(self):
         if self.db is None:
             return
