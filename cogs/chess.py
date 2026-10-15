@@ -292,6 +292,12 @@ class Chess(commands.Cog):
     def __init__(self, bot):
         self.bot, self.games, self.reaction_sessions = bot, {}, {}
 
+    async def _add_reactions(self, message, emojis):
+        await asyncio.gather(
+            *(message.add_reaction(emoji) for emoji in emojis),
+            return_exceptions=True,
+        )
+
     async def start_recruit(self, interaction, mode="human", difficulty=5):
         channel = interaction.channel
         if channel.id in self.games:
@@ -338,8 +344,7 @@ class Chess(commands.Cog):
         else:
             await g.current_msg.edit(embed=embed, attachments=[file])
         self.reaction_sessions[g.current_msg.id] = {"game": g, "labels": dict(labels), "sources": sources}
-        for label, _ in labels:
-            await g.current_msg.add_reaction(reaction_emoji(label))
+        await self._add_reactions(g.current_msg, [reaction_emoji(label) for label, _ in labels])
 
     async def run_game(self, channel, g):
         if len(g.players) != 2:
@@ -404,8 +409,7 @@ class Chess(commands.Cog):
             embed.set_image(url="attachment://chess_board.png")
             await reaction.message.edit(embed=embed, attachments=[file])
             self.reaction_sessions[reaction.message.id] = {"game": g, "labels": dict(labels), "sources": destinations}
-            for label, _ in labels:
-                await reaction.message.add_reaction(reaction_emoji(label))
+            await self._add_reactions(reaction.message, [reaction_emoji(label) for label, _ in labels])
             return
         source = g.selected
         if (source, chosen) not in legal_moves(g.board, g.turn):

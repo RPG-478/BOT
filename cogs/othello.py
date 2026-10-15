@@ -223,6 +223,12 @@ class Othello(commands.Cog):
         self.bot, self.games = bot, {}
         self.reaction_sessions = {}
 
+    async def _add_reactions(self, message, emojis):
+        await asyncio.gather(
+            *(message.add_reaction(emoji) for emoji in emojis),
+            return_exceptions=True,
+        )
+
     async def add_move_reactions(self, message, game, moves, description, offset=0):
         page_moves = labelled_moves(moves)[offset:offset + REACTION_PAGE_SIZE]
         active = [reaction_emoji(label) for label, _ in page_moves]
@@ -234,21 +240,12 @@ class Othello(commands.Cog):
             "game": game, "moves": moves, "offset": offset, "active": active,
             "description": description,
         }
-        for label, _ in page_moves:
-            try:
-                await message.add_reaction(reaction_emoji(label))
-            except discord.HTTPException:
-                pass
+        emojis = [reaction_emoji(label) for label, _ in page_moves]
         if offset + REACTION_PAGE_SIZE < len(moves):
-            try:
-                await message.add_reaction(NEXT_PAGE_EMOJI)
-            except discord.HTTPException:
-                pass
+            emojis.append(NEXT_PAGE_EMOJI)
         if offset > 0:
-            try:
-                await message.add_reaction(PREVIOUS_PAGE_EMOJI)
-            except discord.HTTPException:
-                pass
+            emojis.append(PREVIOUS_PAGE_EMOJI)
+        await self._add_reactions(message, emojis)
 
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction, user):
