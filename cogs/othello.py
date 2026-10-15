@@ -218,6 +218,28 @@ class JoinView(discord.ui.View):
         await interaction.response.send_message("参加を取り消しました。", ephemeral=True)
 
 
+class OthelloMoveSelect(discord.ui.Select):
+    def __init__(self, cog, game, moves):
+        self.cog, self.game, self.moves = cog, game, moves
+        options = [discord.SelectOption(label=f"{label}番", value=label)
+                   for label, _ in labelled_moves(moves)[:REACTION_PAGE_SIZE]]
+        super().__init__(placeholder="置き場所の番号を選んでください", options=options)
+
+    async def callback(self, interaction):
+        await interaction.response.defer()
+        label = self.values[0]
+        move = dict(labelled_moves(self.moves)).get(label)
+        if (self.game.phase == "playing" and not self.game.acted and
+                move in legal_moves(self.game.board, self.game.turn)):
+            self.game.acted = play_move(self.game.board, self.game.turn, *move)
+
+
+class OthelloMoveView(discord.ui.View):
+    def __init__(self, cog, game, moves):
+        super().__init__(timeout=TURN_SECONDS)
+        self.add_item(OthelloMoveSelect(cog, game, moves))
+
+
 class Othello(commands.Cog):
     def __init__(self, bot):
         self.bot, self.games = bot, {}
@@ -355,7 +377,8 @@ class Othello(commands.Cog):
                 description=(f"{g.players[color].mention} さんの番（{ '黒 ●' if color == BLACK else '白 ○'}）。\n"
                              "画像の番号・アルファベットと同じリアクションを押してください。"), color=COLOR)
             turn_embed.set_image(url=image_url)
-            turn_message = await game_panels.replace(channel, "party", embed=turn_embed, file=file)
+            turn_message = await game_panels.replace(channel, "party", embed=turn_embed, file=file,
+                                                     view=OthelloMoveView(self, g, moves))
             await self.add_move_reactions(turn_message, g, moves, turn_embed.description)
             for _ in range(TURN_SECONDS):
                 if g.acted or g.phase != "playing": break

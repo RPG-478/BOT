@@ -250,6 +250,23 @@ class JoinView(discord.ui.View):
         del s.players[interaction.user.id]
         await interaction.response.send_message("参加を取り消しました", ephemeral=True)
 
+
+class ShogiMoveSelect(discord.ui.Select):
+    def __init__(self, cog, session, labels):
+        self.cog, self.session, self.labels = cog, session, dict(labels)
+        options = [discord.SelectOption(label=f"{label}番", value=label) for label, _ in labels]
+        super().__init__(placeholder="番号を選んでください", options=options)
+
+    async def callback(self, interaction):
+        await self.cog.handle_select(interaction, self.session, self.labels, self.values[0])
+
+
+class ShogiMoveView(discord.ui.View):
+    def __init__(self, cog, session, labels):
+        super().__init__(timeout=TURN_SECONDS)
+        self.add_item(ShogiMoveSelect(cog, session, labels))
+
+
 class Shogi(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -266,6 +283,25 @@ class Shogi(commands.Cog):
             await msg.clear_reactions()
         except Exception:
             pass
+
+    async def handle_select(self, interaction, s, labels, label):
+        await interaction.response.defer()
+        pos = labels.get(label)
+        if s.phase != "playing" or s.acted or not isinstance(pos, tuple):
+            return
+        if s.state == "select_piece":
+            s.selected = pos
+            dests = s.game._generate_moves(*pos)
+            if not dests:
+                return
+            s.state = "select_dest"
+            dest_labels = list(zip(MOVE_LABELS, dests))[:REACTION_PAGE_SIZE]
+            await self._update_board_msg(s, interaction.message.channel,
+                                          f"移動先の番号を選んでください（{len(dests)}箇所）。",
+                                          labels=dest_labels, selected=pos)
+        elif s.state == "select_dest" and s.selected:
+            if s.game.make_move(s.selected, pos, promote=True):
+                s.acted = True
 
     async def start_recruit(self, interaction, mode="human", difficulty=5):
         ch = interaction.channel
@@ -301,14 +337,17 @@ class Shogi(commands.Cog):
         file = discord.File(buf, "shogi.png")
         embed = discord.Embed(description=description, color=COLOR)
         embed.set_image(url="attachment://shogi.png")
+        select_view = ShogiMoveView(self, s, labels) if labels and isinstance(labels[0][1], tuple) else None
         if s.current_msg is None:
-            s.current_msg = await game_panels.replace(channel, "party", embed=embed, file=file)
+            s.current_msg = await game_panels.replace(channel, "party", embed=embed, file=file,
+                                                      view=select_view)
         else:
             try:
-                await s.current_msg.edit(embed=embed, attachments=[file])
+                await s.current_msg.edit(embed=embed, attachments=[file], view=select_view)
             except Exception:
                 # Fallback if edit fails
-                s.current_msg = await game_panels.replace(channel, "party", embed=embed, file=file)
+                s.current_msg = await game_panels.replace(channel, "party", embed=embed, file=file,
+                                                          view=select_view)
         await self._clear_reactions(s.current_msg)
         emojis = []
         if labels:
