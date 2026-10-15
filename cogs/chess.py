@@ -288,6 +288,22 @@ class JoinView(discord.ui.View):
         await interaction.response.send_message("参加を取り消しました。", ephemeral=True)
 
 
+class ChessMoveSelect(discord.ui.Select):
+    def __init__(self, cog, game, labels, stage):
+        self.cog, self.game, self.labels, self.stage = cog, game, dict(labels), stage
+        options = [discord.SelectOption(label=f"{label}番", value=label) for label, _ in labels[:25]]
+        super().__init__(placeholder="番号を選んでください", options=options)
+
+    async def callback(self, interaction):
+        await self.cog.handle_select(interaction, self.game, self.labels, self.stage, self.values[0])
+
+
+class ChessMoveView(discord.ui.View):
+    def __init__(self, cog, game, labels, stage):
+        super().__init__(timeout=TURN_SECONDS)
+        self.add_item(ChessMoveSelect(cog, game, labels, stage))
+
+
 class Chess(commands.Cog):
     def __init__(self, bot):
         self.bot, self.games, self.reaction_sessions = bot, {}, {}
@@ -297,6 +313,29 @@ class Chess(commands.Cog):
             *(message.add_reaction(emoji) for emoji in emojis),
             return_exceptions=True,
         )
+
+    async def handle_select(self, interaction, g, labels, stage, label):
+        await interaction.response.defer()
+        chosen = labels.get(label)
+        if chosen is None or g.phase != "playing" or g.acted:
+            return
+        if stage == "source":
+            g.selected = chosen
+            destinations = [dest for source, dest in legal_moves(g.board, g.turn) if source == chosen]
+            if not destinations:
+                return
+            move_labels = [(move_label(i), dest) for i, dest in enumerate(destinations)]
+            file = discord.File(render_board(g.board, move_labels, chosen), filename="chess_board.png")
+            embed = discord.Embed(description="移動先の番号を選んでください。", color=COLOR)
+            embed.set_image(url="attachment://chess_board.png")
+            await interaction.message.edit(embed=embed, attachments=[file],
+                                           view=ChessMoveView(self, g, move_labels, "destination"))
+            return
+        source = g.selected
+        if source is not None and (source, chosen) in legal_moves(g.board, g.turn):
+            g.board = apply_move(g.board, (source, chosen))
+            g.turn = "black" if g.turn == "white" else "white"
+            g.acted = True
 
     async def start_recruit(self, interaction, mode="human", difficulty=5):
         channel = interaction.channel
@@ -340,9 +379,11 @@ class Chess(commands.Cog):
         embed = discord.Embed(description=desc, color=COLOR)
         embed.set_image(url="attachment://chess_board.png")
         if g.current_msg is None:
-            g.current_msg = await game_panels.replace(channel, "party", embed=embed, file=file)
+            g.current_msg = await game_panels.replace(channel, "party", embed=embed, file=file,
+                                                      view=ChessMoveView(self, g, labels, "source"))
         else:
-            await g.current_msg.edit(embed=embed, attachments=[file])
+            await g.current_msg.edit(embed=embed, attachments=[file],
+                                     view=ChessMoveView(self, g, labels, "source"))
         self.reaction_sessions[g.current_msg.id] = {"game": g, "labels": dict(labels), "sources": sources}
         await self._add_reactions(g.current_msg, [reaction_emoji(label) for label, _ in labels])
 
