@@ -36,21 +36,24 @@ ALLOWED_CHANNEL_TYPES = {
 
 
 def _collect_embed_text(message):
-    """Collect searchable text from message content and all embed parts."""
+    """Collect text from message content and all relevant Discord embed properties."""
     parts = [getattr(message, "content", "") or ""]
     for embed in getattr(message, "embeds", ()) or ():
-        parts.append(getattr(embed, "title", "") or "")
-        parts.append(getattr(embed, "description", "") or "")
-        author = getattr(embed, "author", None)
-        if author:
-            parts.append(getattr(author, "name", "") or "")
-        footer = getattr(embed, "footer", None)
-        if footer:
-            parts.append(getattr(footer, "text", "") or "")
+        # Include properties that are easy to overlook when an app uses rich embeds.
+        for attr in ("title", "description", "url", "type"):
+            value = getattr(embed, attr, None)
+            if value:
+                parts.append(str(value))
+        for section_name in ("author", "footer", "provider", "image", "thumbnail", "video"):
+            section = getattr(embed, section_name, None)
+            if section:
+                for attr in ("name", "text", "url", "proxy_url"):
+                    value = getattr(section, attr, None)
+                    if value:
+                        parts.append(str(value))
         for field in getattr(embed, "fields", ()) or ():
-            parts.append(getattr(field, "name", "") or "")
-            parts.append(getattr(field, "value", "") or "")
-    return " ".join(p for p in parts if p)
+            parts.extend((getattr(field, "name", "") or "", getattr(field, "value", "") or ""))
+    return " ".join(str(part) for part in parts if part)
 
 
 def _snowflake_datetime(snowflake_id):
@@ -72,28 +75,45 @@ def detect_event(message):
         return None
     author_id = getattr(getattr(message, "author", None), "id", None)
     application_id = getattr(message, "application_id", None)
-    if author_id not in (DISBOARD_BOT_ID, DISOKU_BOT_ID):
-        return None
 
     text = _collect_embed_text(message)
     folded = text.casefold()
+    # Some application-generated messages may expose an application/integration
+    # author differently across discord.py/API versions. Recognize the visible
+    # Disoku success embed as well as its known bot ID, while requiring both the
+    # service branding and an explicit successful /up result for this fallback.
+    is_disoku = (
+        author_id == DISOKU_BOT_ID
+        or ("ディス速" in text and ("アップしたよ" in text or "をアップ" in text)
+            and ("command:/up" in folded or "/up" in folded))
+    )
+    is_disboard = author_id == DISBOARD_BOT_ID
+    if not (is_disboard or is_disoku):
+        return None
 
-    if author_id == DISOKU_BOT_ID:
+    if is_disoku:
         metadata = getattr(message, "interaction_metadata", None)
         logger.info(
-            "Disoku message seen: app_id=%s meta_type=%s text=%s",
+            "Disoku message seen: author_id=%s app_id=%s meta_type=%s content=%r embed_count=%s text=%s",
+            author_id,
             application_id,
             getattr(metadata, "type", None),
-            text[:200],
+            getattr(message, "content", "") or "",
+            len(getattr(message, "embeds", ()) or ()),
+            text[:1000],
         )
 
-    if author_id == DISBOARD_BOT_ID:
+    if is_disboard:
         if "表示順をアップしたよ" not in text and "bump done" not in folded:
             return None
         kind = "bump"
     else:
         if "アップ" not in text and "up" not in folded:
-            logger.info("Disoku message ignored (no up keyword): %s", text[:200])
+            logger.info("Disoku message ignored (no up keyword): %s", text[:1000])
+            return None
+        # Require an explicit success phrase to avoid matching unrelated chat.
+        if not any(phrase in text for phrase in ("アップしたよ", "をアップ", "アップしました")):
+            logger.info("Disoku message ignored (no success phrase): %s", text[:1000])
             return None
         kind = "up"
 
@@ -302,12 +322,12 @@ class BumpRta(commands.Cog):
                     original = None
                 noun = "bump" if row["event_type"] == "bump" else "up"
                 embed = discord.Embed(
-                    title=f"{noun.upper()} できます",
-                    description=f"{noun}が可能になりました！",
+                    title=f"{noun.upper()} RTA記録開始",
+                    description=f"{noun}の再実行可能時刻になりました。ここからRTA計測を開始します！",
                     color=discord.Color.blurple(),
                     timestamp=discord.utils.utcnow(),
                 )
-                embed.set_footer(text="2時間後に再通知します")
+                embed.set_footer(text="RTA計測を開始しました")
                 try:
                     await channel.send(
                         embed=embed,
@@ -331,28 +351,27 @@ class BumpRta(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # TEMP DEBUG: show structure of Disoku messages
-        if getattr(getattr(message, "author", None), "id", None) == DISOKU_BOT_ID:
+        # Diagnostic logging for Disoku's application embed. The screenshot shows
+        # the success phrase inside the embed description, not message.content.
+        if (getattr(getattr(message, "author", None), "id", None) == DISOKU_BOT_ID
+                or "ディス速" in _collect_embed_text(message)):
             try:
-                embeds = getattr(message, "embeds", ()) or ()
-                components = getattr(message, "components", ()) or ()
-                content = getattr(message, "content", "") or ""
-                lines = [
-                    f"[debug] Disoku message",
-                    f"content={content!r}",
-                    f"embeds={len(embeds)}",
-                    f"components={len(components)}",
-                ]
-                for i, e in enumerate(embeds[:2]):
-                    lines.append(f"embed[{i}] title={getattr(e,'title',None)!r}")
-                    lines.append(f"embed[{i}] desc={getattr(e,'description',None)!r}")
-                    lines.append(f"embed[{i}] fields={len(getattr(e,'fields',()) or ())}")
-                await message.channel.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
-            except Exception as e:
-                try:
-                    await message.channel.send(f"[debug] error: {e}")
-                except Exception:
-                    pass
+                metadata = getattr(message, "interaction_metadata", None)
+                logger.info(
+                    "Disoku debug: message_id=%s author_id=%s application_id=%s "
+                    "channel_type=%s content=%r metadata_type=%s metadata_user=%s",
+                    message.id,
+                    getattr(getattr(message, "author", None), "id", None),
+                    getattr(message, "application_id", None),
+                    getattr(getattr(message, "channel", None), "type", None),
+                    getattr(message, "content", "") or "",
+                    getattr(metadata, "type", None),
+                    getattr(getattr(metadata, "user", None), "id", None),
+                )
+                for index, embed in enumerate(getattr(message, "embeds", ()) or ()):
+                    logger.info("Disoku embed[%s] raw=%s", index, embed.to_dict())
+            except Exception:
+                logger.exception("Failed to log Disoku embed details")
 
         if message.id in self._processed_messages:
             return
@@ -368,21 +387,8 @@ class BumpRta(commands.Cog):
             self._processed_messages.clear()
         lock = self._locks.setdefault((guild_id, kind), asyncio.Lock())
         async with lock:
-            embed = discord.Embed(
-                title=f"{kind.upper()} を検知しました",
-                description="2時間後に通知します。",
-                color=discord.Color.green(),
-                timestamp=event_at,
-            )
-            if user_id:
-                embed.add_field(name="実行者", value=f"<@{user_id}>", inline=True)
-            try:
-                await message.channel.send(
-                    embed=embed,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-            except discord.HTTPException as e:
-                logger.warning("Failed to send detection ack for %s: %s", message.id, e)
+            # Do not send a separate notification at detection time. The bump/up
+            # notification is sent when the two-hour RTA timer actually starts.
             if self.db is None:
                 return
             try:
