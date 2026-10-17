@@ -322,8 +322,8 @@ class BumpRta(commands.Cog):
                     original = None
                 noun = "bump" if row["event_type"] == "bump" else "up"
                 embed = discord.Embed(
-                    title=f"{noun.upper()} RTA記録開始",
-                    description=f"{noun}の再実行可能時刻になりました。ここからRTA計測を開始します！",
+                    title=f"{noun.upper()} できます",
+                    description=f"{noun}が可能になりました!",
                     color=discord.Color.blurple(),
                     timestamp=discord.utils.utcnow(),
                 )
