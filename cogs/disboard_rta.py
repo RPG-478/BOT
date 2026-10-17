@@ -1,6 +1,9 @@
 """Default-on Disboard bump / Dis速 up reminders and separate RTA leaderboards."""
 import asyncio
 import logging
+import socket
+import struct
+import time
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -60,6 +63,35 @@ def _snowflake_datetime(snowflake_id):
     """Decode a Discord Snowflake ID into its UTC creation timestamp."""
     timestamp_ms = (int(snowflake_id) >> 22) + 1420070400000
     return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+
+
+def _query_ntp_offset():
+    """Estimate local wall-clock offset from an NTP server; returns seconds."""
+    ntp_epoch_offset = 2208988800
+    request = bytearray(48)
+    request[0] = 0x1B
+    errors = []
+    for host in ("time.google.com", "pool.ntp.org"):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(1.5)
+                before = time.time()
+                sock.sendto(request, (host, 123))
+                response, _ = sock.recvfrom(512)
+                after = time.time()
+            if len(response) < 48:
+                raise ValueError("short NTP response")
+            seconds, fraction = struct.unpack("!II", response[40:48])
+            server_time = seconds - ntp_epoch_offset + fraction / 2**32
+            return server_time - ((before + after) / 2)
+        except Exception as exc:
+            errors.append(f"{host}: {exc}")
+    raise OSError("NTP sync failed: " + "; ".join(errors))
+
+
+def _utcnow_with_offset(offset_seconds):
+    """UTC wall time corrected by the most recently measured NTP offset."""
+    return datetime.fromtimestamp(time.time() + offset_seconds, tz=timezone.utc)
 
 
 def detect_event(message):
@@ -145,6 +177,20 @@ class BumpRta(commands.Cog):
         self._locks = {}
         self._processed_messages = set()
         self._claimed_reminders = set()
+        self._ntp_offset_seconds = 0.0
+        self._last_ntp_sync = 0.0
+
+    async def _sync_ntp_if_due(self):
+        """Refresh NTP offset once per minute; keep last/system time on failure."""
+        monotonic_now = time.monotonic()
+        if monotonic_now - self._last_ntp_sync < 60:
+            return
+        self._last_ntp_sync = monotonic_now
+        try:
+            self._ntp_offset_seconds = await asyncio.to_thread(_query_ntp_offset)
+            logger.info("NTP clock offset updated: %+.6f seconds", self._ntp_offset_seconds)
+        except Exception as exc:
+            logger.warning("NTP sync unavailable; using last known/system clock: %s", exc)
 
     async def cog_load(self):
         if self.db is not None and not self.reminder_worker.is_running():
@@ -288,22 +334,43 @@ class BumpRta(commands.Cog):
             logger.exception("DB claim failed for reminder %s (local claim still active)", message_id)
             return True
 
-    @tasks.loop(seconds=10)
+    @tasks.loop(seconds=1)
     async def reminder_worker(self):
         if self.db is None:
             return
         try:
-            now_iso = discord.utils.utcnow().isoformat()
-            due = await self._call(lambda: self.db.table("bump_rta_reminders").select(
+            await self._sync_ntp_if_due()
+            now = _utcnow_with_offset(self._ntp_offset_seconds)
+
+            # Recalculate due_at from each persisted message Snowflake on every pass.
+            pending_rows = await self._call(lambda: self.db.table("bump_rta_reminders").select(
                 "message_id,guild_id,channel_id,user_id,event_type,due_at"
-            ).is_("sent_at", "null").lte("due_at", now_iso).order("due_at").limit(50).execute())
-            for row in due.data or []:
-                mid = row["message_id"]
+            ).is_("sent_at", "null").order("due_at").limit(500).execute())
+
+            for row in pending_rows.data or []:
+                mid = str(row["message_id"])
+                try:
+                    exact_due = _snowflake_datetime(mid) + timedelta(hours=2)
+                except (TypeError, ValueError, OverflowError):
+                    logger.exception("Invalid stored Snowflake message ID: %s", mid)
+                    continue
+
+                stored_due = discord.utils.parse_time(row["due_at"]) if row.get("due_at") else None
+                if stored_due is None or abs((stored_due - exact_due).total_seconds()) >= 0.001:
+                    exact_due_iso = exact_due.isoformat()
+                    await self._call(lambda mid=mid, exact_due_iso=exact_due_iso: self.db.table(
+                        "bump_rta_reminders"
+                    ).update({"due_at": exact_due_iso}).eq("message_id", mid).is_("sent_at", "null").execute())
+                    row["due_at"] = exact_due_iso
+
+                if exact_due > now:
+                    continue
                 if mid in self._claimed_reminders:
                     continue
                 if not await self._is_enabled(row["guild_id"]):
-                    await self._call(lambda row=row: self.db.table("bump_rta_reminders").update(
-                        {"sent_at": discord.utils.utcnow().isoformat()}).eq("message_id", mid).execute())
+                    await self._call(lambda mid=mid: self.db.table("bump_rta_reminders").update(
+                        {"sent_at": _utcnow_with_offset(self._ntp_offset_seconds).isoformat()}
+                    ).eq("message_id", mid).is_("sent_at", "null").execute())
                     self._claimed_reminders.add(mid)
                     continue
                 if not await self._claim_reminder(mid):
@@ -322,8 +389,8 @@ class BumpRta(commands.Cog):
                     original = None
                 noun = "bump" if row["event_type"] == "bump" else "up"
                 embed = discord.Embed(
-                    title=f"{noun.upper()} できます",
-                    description=f"{noun}が可能になりました!",
+                    title=f"{noun.upper()} RTA記録開始",
+                    description=f"{noun}の再実行可能時刻になりました。ここからRTA計測を開始します！",
                     color=discord.Color.blurple(),
                     timestamp=discord.utils.utcnow(),
                 )
@@ -341,7 +408,7 @@ class BumpRta(commands.Cog):
                     await self._call(lambda mid=mid: self.db.table("bump_rta_reminders").update(
                         {"sent_at": None}).eq("message_id", mid).execute())
                     continue
-                await self._start_rta_timer(row, row["due_at"])
+                await self._start_rta_timer(row, exact_due.isoformat())
         except Exception:
             logger.exception("bump/up reminder worker failed")
 
