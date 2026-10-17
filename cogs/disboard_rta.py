@@ -179,18 +179,37 @@ class BumpRta(commands.Cog):
         self._claimed_reminders = set()
         self._ntp_offset_seconds = 0.0
         self._last_ntp_sync = 0.0
+        self._ntp_sync_monotonic = time.monotonic()
+        self._ntp_sync_utc = datetime.now(timezone.utc)
+        self._ntp_sync_task = None
+
+    async def _refresh_ntp_clock(self):
+        """Refresh NTP in the background so a slow NTP server cannot delay reminders."""
+        try:
+            sync_started = time.monotonic()
+            offset = await asyncio.to_thread(_query_ntp_offset)
+            sync_finished = time.monotonic()
+            midpoint_adjustment = (sync_finished - sync_started) / 2
+            corrected_utc = datetime.fromtimestamp(
+                time.time() + offset - midpoint_adjustment, tz=timezone.utc
+            )
+            self._ntp_offset_seconds = offset
+            self._ntp_sync_utc = corrected_utc
+            self._ntp_sync_monotonic = sync_finished
+            logger.info("NTP clock offset updated: %+.6f seconds", offset)
+        except Exception as exc:
+            logger.warning("NTP sync unavailable; using last known/system clock: %s", exc)
+        finally:
+            self._ntp_sync_task = None
 
     async def _sync_ntp_if_due(self):
-        """Refresh NTP offset once per minute; keep last/system time on failure."""
+        """Start NTP refresh at most once per minute without awaiting network I/O."""
         monotonic_now = time.monotonic()
         if monotonic_now - self._last_ntp_sync < 60:
             return
         self._last_ntp_sync = monotonic_now
-        try:
-            self._ntp_offset_seconds = await asyncio.to_thread(_query_ntp_offset)
-            logger.info("NTP clock offset updated: %+.6f seconds", self._ntp_offset_seconds)
-        except Exception as exc:
-            logger.warning("NTP sync unavailable; using last known/system clock: %s", exc)
+        if self._ntp_sync_task is None or self._ntp_sync_task.done():
+            self._ntp_sync_task = asyncio.create_task(self._refresh_ntp_clock())
 
     async def cog_load(self):
         if self.db is not None and not self.reminder_worker.is_running():
@@ -340,7 +359,11 @@ class BumpRta(commands.Cog):
             return
         try:
             await self._sync_ntp_if_due()
-            now = _utcnow_with_offset(self._ntp_offset_seconds)
+            # Advance the last NTP-corrected UTC sample with monotonic time.
+            # This avoids system wall-clock jumps between NTP refreshes.
+            now = self._ntp_sync_utc + timedelta(
+                seconds=time.monotonic() - self._ntp_sync_monotonic
+            )
 
             # Recalculate due_at from each persisted message Snowflake on every pass.
             pending_rows = await self._call(lambda: self.db.table("bump_rta_reminders").select(
@@ -369,7 +392,7 @@ class BumpRta(commands.Cog):
                     continue
                 if not await self._is_enabled(row["guild_id"]):
                     await self._call(lambda mid=mid: self.db.table("bump_rta_reminders").update(
-                        {"sent_at": _utcnow_with_offset(self._ntp_offset_seconds).isoformat()}
+                        {"sent_at": now.isoformat()}
                     ).eq("message_id", mid).is_("sent_at", "null").execute())
                     self._claimed_reminders.add(mid)
                     continue
@@ -383,18 +406,31 @@ class BumpRta(commands.Cog):
                         logger.warning("Could not fetch channel %s for reminder", row["channel_id"])
                         self._claimed_reminders.discard(mid)
                         continue
-                try:
-                    original = await channel.fetch_message(int(mid))
-                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                    original = None
+                # Build a reply reference from IDs directly. Fetching the source
+                # message first costs an extra Discord API round trip and can add
+                # several seconds exactly when the reminder is due.
+                original = discord.MessageReference(
+                    message_id=int(mid),
+                    channel_id=int(row["channel_id"]),
+                    guild_id=int(row["guild_id"]),
+                    fail_if_not_exists=False,
+                )
                 noun = "bump" if row["event_type"] == "bump" else "up"
+                # Keep the reminder wording exactly aligned with the supplied
+                # original version; only its scheduling/time source is improved.
                 embed = discord.Embed(
-                    title=f"{noun.upper()} RTA記録開始",
-                    description=f"{noun}の再実行可能時刻になりました。ここからRTA計測を開始します！",
+                    title=f"{noun.upper()} できます",
+                    description=f"{noun}が可能になりました!",
                     color=discord.Color.blurple(),
-                    timestamp=discord.utils.utcnow(),
+                    timestamp=now,
                 )
                 embed.set_footer(text="RTA計測を開始しました")
+                send_started = time.monotonic()
+                lag_seconds = (now - exact_due).total_seconds()
+                logger.info(
+                    "Reminder send starting: message_id=%s kind=%s due_at=%s lag=%.3fs",
+                    mid, noun, exact_due.isoformat(), lag_seconds,
+                )
                 try:
                     await channel.send(
                         embed=embed,
@@ -408,6 +444,10 @@ class BumpRta(commands.Cog):
                     await self._call(lambda mid=mid: self.db.table("bump_rta_reminders").update(
                         {"sent_at": None}).eq("message_id", mid).execute())
                     continue
+                logger.info(
+                    "Reminder sent: message_id=%s kind=%s send_api=%.3fs total_lag=%.3fs",
+                    mid, noun, time.monotonic() - send_started, lag_seconds,
+                )
                 await self._start_rta_timer(row, exact_due.isoformat())
         except Exception:
             logger.exception("bump/up reminder worker failed")
