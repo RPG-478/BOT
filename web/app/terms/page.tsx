@@ -4,8 +4,8 @@ export default function TermsPage() {
   return (
     <article className="legal-page">
       <h1>利用規約</h1>
-      <p className="draft-note"><strong>公開前の確認用草案</strong><br />運営者名、問い合わせ先、準拠法・管轄、実際の運用内容を確認してから公開してください。</p>
-      <p>この利用規約（以下「本規約」）は、<strong>[運営者名]</strong>（以下「運営者」）が提供するDiscord Bot「AGOBOT」および関連サポートウェブサイト（以下あわせて「本サービス」）の利用条件を定めるものです。利用者は、本サービスを利用することで本規約に同意したものとします。</p>
+      <p className="draft-note"><strong>利用規約</strong><br />運営者名、問い合わせ先、準拠法・管轄について。</p>
+      <p>この利用規約（以下「本規約」）は、<strong>[Luna]</strong>（以下「運営者」）が提供するDiscord Bot「AGOBOT」および関連サポートウェブサイト（以下あわせて「本サービス」）の利用条件を定めるものです。利用者は、本サービスを利用することで本規約に同意したものとします。</p>
 
       <h2>1. 本サービス</h2>
       <p>本サービスには、Discord上のコマンド、ゲーム、音楽再生、ボイス関連機能、コイン機能、関連するウェブページ等が含まれます。機能の内容や提供範囲は、予告なく追加・変更されることがあります。</p>
@@ -38,8 +38,8 @@ export default function TermsPage() {
       <p>本規約に関する準拠法および合意管轄裁判所は、<strong>[準拠法・管轄裁判所を記入]</strong>とします。</p>
 
       <h2>9. お問い合わせ</h2>
-      <p>本規約に関するお問い合わせ先：<strong>[問い合わせ先メールアドレス等を記入]</strong></p>
-      <p className="muted">制定日：[公開日を記入] ／ 最終更新日：[更新日を記入]</p>
+      <p>本規約に関するお問い合わせ先：<strong>[deshihito79@gmail.com]</strong></p>
+      <p className="muted">制定日：[2026:10:16] ／ 最終更新日：[2026:10:16]</p>
     </article>
   );
 }
