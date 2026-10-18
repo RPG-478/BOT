@@ -4,8 +4,8 @@ export default function PrivacyPage() {
   return (
     <article className="legal-page">
       <h1>プライバシーポリシー</h1>
-      <p className="draft-note"><strong>公開前の確認用草案</strong><br />運営者の正式名称、問い合わせ先、保存期間、外部サービスへの送信範囲を実際の運用に合わせて確認してください。</p>
-      <p><strong>[運営者名]</strong>（以下「運営者」）は、Discord Bot「AGOBOT」と関連ウェブサイト（以下「本サービス」）における利用者に関する情報を、以下のとおり取り扱います。</p>
+      <p className="draft-note"><strong>プライバシーポリシー</strong><br />運営者の正式名称、問い合わせ先、保存期間、外部サービスについて。</p>
+      <p><strong>[Luna]</strong>（以下「運営者」）は、Discord Bot「AGOBOT」と関連ウェブサイト（以下「本サービス」）における利用者に関する情報を、以下のとおり取り扱います。</p>
 
       <h2>1. 取得する情報</h2>
       <ul>
@@ -48,9 +48,9 @@ export default function PrivacyPage() {
       <p>本ポリシーは、法令やサービス内容の変更に応じて改定することがあります。重要な変更は、本ページまたは本サービス上でお知らせします。</p>
 
       <h2>10. 運営者・お問い合わせ</h2>
-      <p>運営者：[正式名称・所在地等、公開する情報を記入]</p>
-      <p>問い合わせ先：[問い合わせ先メールアドレス等を記入]</p>
-      <p className="muted">制定日：[公開日を記入] ／ 最終更新日：[更新日を記入]</p>
+      <p>運営者：[Lunaまで]</p>
+      <p>問い合わせ先：[deshihito79@gmail.com]</p>
+      <p className="muted">制定日：[2026:10:19] ／ 最終更新日：[2027:10:19]</p>
     </article>
   );
 }
