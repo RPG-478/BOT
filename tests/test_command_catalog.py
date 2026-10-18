@@ -141,7 +141,8 @@ class CommandCatalogTest(unittest.TestCase):
                 self.assertNotIn(key, registered)
                 self.assertNotIn(key, command_meta.COMMAND_META)
                 self.assertNotIn(key, site)
-        self.assertIn('/setup', registered)
+        self.assertNotIn('/setup', registered)
+        self.assertNotIn('/setup', command_meta.COMMAND_META)
 
     @staticmethod
     def site_command_keys():
@@ -208,12 +209,19 @@ class CommandCatalogTest(unittest.TestCase):
                 self.assertTrue(entry['hidden'])
                 self.assertIsNone(command_catalog.find_command(self.catalog, key))
 
+    def test_nation_prefix_commands_are_hidden_from_help(self):
+        for key in ('!nation', '!nation found', '!nation join', '!nation status'):
+            with self.subTest(command=key):
+                self.assertIsNone(command_catalog.find_command(self.catalog, key))
+                self.assertTrue(command_catalog.find_command(self.catalog, key, include_hidden=True)['hidden'])
+
     def test_permissions_and_guild_only_are_discovered(self):
         def get(key):
             return command_catalog.find_command(self.catalog, key, include_hidden=True)
         self.assertIn('manage_messages', get('/clear')['permissions'])
         self.assertTrue(get('/clear')['guild_only'])
-        self.assertIn('manage_guild', get('/setup')['permissions'])
+        self.assertTrue(get('!nation found')['guild_only'])
+        self.assertIn('administrator', get('!nation found')['permissions'])
         self.assertIn('manage_channels', get('!mimic_toggle')['permissions'])
         self.assertTrue(get('/music play')['guild_only'])  # グループの guild_only がサブコマンドにも付く
         self.assertEqual(get('!all_stats')['aliases'], ['stats', 'spec'])

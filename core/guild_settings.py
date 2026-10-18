@@ -1,10 +1,10 @@
-"""サーバーごとの設定（/setup で決めたもの）。
+"""サーバーごとの保存済み設定（以前は /setup で決めていたもの）。
 
 core/storage.py（Supabase の bot_kv、namespace "guild_settings"）に、サーバーごとに 1 件
 ``{"<section>": {...}}`` の形で保存する。Supabase が使えないときはローカルの bot_kv.json に保存される。
 
 読むときはメモリ上の写しから同期的に読む（``get``）。Supabase からの読み直しは、最初に必要になったとき
-（/setup の実行や認証ボタン）に ``await ensure_loaded()`` で 1 回だけ行う。
+必要な処理から ``await ensure_loaded()`` で 1 回だけ読み込む。
 
     store = get_store()
     await store.ensure_loaded()
@@ -92,7 +92,7 @@ def set_store(store: Optional[GuildSettings]) -> None:
     _store = store
 
 
-# ---------------------------------------------------------------- 国づくり（/setup で設定）
+# ---------------------------------------------------------------- 国づくり設定
 NATION_SECTION = "nation"
 NOTIFY_MAJOR = "major"   # 大きな出来事だけ
 NOTIFY_ALL = "all"       # 全部

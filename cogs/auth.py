@@ -10,10 +10,10 @@ from core.guild_settings import get_store
 
 logger = logging.getLogger(__name__)
 
-# 以前から使っている自己紹介チャンネル（/setup で設定されていないときに使う）
+# 以前から使っている自己紹介チャンネル（個別設定がない場合の既定値）
 INTRO_CHANNEL_ID = 1531592567131734056
 WEBHOOK_NAME = "AGOBOT 自己紹介"
-PANEL_SETTINGS_ID = "verify_button:settings"  # /setup から送るパネル（ロールは設定から読む）
+PANEL_SETTINGS_ID = "verify_button:settings"  # 旧設定画面から送られたパネル（ロールは設定から読む）
 
 
 def auth_settings(guild_id: int) -> dict:
@@ -173,7 +173,7 @@ class VerificationCog(commands.Cog):
                 await self.start_verification(interaction, custom_id.split(":", 1)[1])
 
     async def start_verification(self, interaction: discord.Interaction, panel_role: str) -> None:
-        """認証ボタンが押されたとき。パネルに書かれたロール（以前のパネル）か、/setup の設定のロールを使う。"""
+        """認証ボタンが押されたとき。パネルに書かれたロール（以前のパネル）か保存済み設定のロールを使う。"""
         await get_store().ensure_loaded()
         settings = auth_settings(interaction.guild_id)
         if not settings["enabled"]:
@@ -183,7 +183,7 @@ class VerificationCog(commands.Cog):
         role = interaction.guild.get_role(role_id) if role_id else None
         if role is None:
             await interaction.response.send_message(
-                "認証で付けるロールが見つかりません。管理者に `/setup` で設定してもらってください。", ephemeral=True,
+                "認証で付けるロールが見つかりません。サーバー管理者にお問い合わせください。", ephemeral=True,
             )
             return
         if role in getattr(interaction.user, "roles", []):
@@ -194,7 +194,7 @@ class VerificationCog(commands.Cog):
 async def sync_category_perms(category, role) -> int:
     """カテゴリを「@everyone には見えない・role には見える」にして、中のチャンネルを同期する。同期した数を返す。
 
-    もとは /sync_category_perms。いまは /setup の認証ステップから使う。
+    もとは /sync_category_perms。旧設定ウィザードから使われていた。
     """
     everyone_role = category.guild.default_role
     overwrites = {
