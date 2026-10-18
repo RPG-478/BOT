@@ -35,7 +35,7 @@ export default function TermsPage() {
       <p>運営者は、必要に応じて本規約を変更できます。変更後の規約は、本ページに掲載した時点またはページに記載する発効日から効力を生じます。</p>
 
       <h2>8. 準拠法・管轄</h2>
-      <p>本規約に関する準拠法および合意管轄裁判所は、<strong>[準拠法・管轄裁判所を記入]</strong>とします。</p>
+      <p>本規約に関する準拠法および合意管轄裁はLunaおよびdeshihitoが所属している企業と関連はございません。<strong>[lunamOOn]</strong>とします。</p>
 
       <h2>9. お問い合わせ</h2>
       <p>本規約に関するお問い合わせ先：<strong>[deshihito79@gmail.com]</strong></p>
