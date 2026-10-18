@@ -17,7 +17,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </nav>
         </header>
         <main>{children}</main>
-        <footer>AGOBOT サポート</footer>
+        <footer>
+          <div>AGOBOT サポート</div>
+          <nav className="footer-links" aria-label="ポリシー">
+            <Link href="/terms">利用規約</Link>
+            <Link href="/privacy">プライバシーポリシー</Link>
+          </nav>
+        </footer>
       </body>
     </html>
   );

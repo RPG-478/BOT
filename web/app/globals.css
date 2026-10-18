@@ -10,6 +10,12 @@ header .brand img { width:34px; height:34px; } header nav a:not(.brand) { color:
 header nav a:not(.brand):hover { background:var(--accent-soft); text-decoration:none; }
 main { max-width:880px; margin:0 auto; padding:36px 20px 60px; }
 footer { text-align:center; color:var(--muted); font-size:13px; padding:20px; border-top:1px solid var(--line); }
+.footer-links { display:flex; justify-content:center; gap:18px; flex-wrap:wrap; margin-top:8px; }
+.legal-page { max-width:760px; margin:0 auto; }
+.legal-page h1 { margin-top:0; }
+.legal-page h2 { margin-top:28px; }
+.legal-page p, .legal-page li { line-height:1.9; }
+.draft-note { padding:14px 16px; border:1px solid #e8d9a8; border-radius:10px; background:#fffaf0; }
 .card { display:block; background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:16px 18px; margin:10px 0; color:var(--text); }
 a.card:hover { text-decoration:none; box-shadow:0 3px 12px rgba(0,0,0,.05); }
 .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:12px; } .muted { color:var(--muted); }
