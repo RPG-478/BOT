@@ -215,6 +215,13 @@ class CommandCatalogTest(unittest.TestCase):
                 self.assertIsNone(command_catalog.find_command(self.catalog, key))
                 self.assertTrue(command_catalog.find_command(self.catalog, key, include_hidden=True)['hidden'])
 
+    def test_all_prefix_commands_are_hidden_from_help(self):
+        for entry in self.catalog['commands']:
+            if entry['kind'] == 'prefix':
+                with self.subTest(command=command_key(entry['kind'], entry['name'])):
+                    self.assertTrue(entry['hidden'])
+                    self.assertIsNone(command_catalog.find_command(self.catalog, command_key(entry['kind'], entry['name'])))
+
     def test_permissions_and_guild_only_are_discovered(self):
         def get(key):
             return command_catalog.find_command(self.catalog, key, include_hidden=True)
@@ -232,11 +239,11 @@ class CommandCatalogTest(unittest.TestCase):
         fake = {'doubt': {'guide': '## 遊び方\nカードを出します。'}}
         with patch.object(command_meta, 'game_guides', return_value=fake):
             catalog = build_catalog(self.bot)
-        doubt = command_catalog.find_command(catalog, '!doubt')
+        doubt = command_catalog.find_command(catalog, '!doubt', include_hidden=True)
         self.assertEqual(doubt['guide'], fake['doubt']['guide'])
         with patch.object(command_meta, 'game_guides', return_value={}):
             catalog = build_catalog(self.bot)
-        self.assertIsNone(command_catalog.find_command(catalog, '!doubt')['guide'])
+        self.assertIsNone(command_catalog.find_command(catalog, '!doubt', include_hidden=True)['guide'])
 
     def test_guide_keys_exist_in_game_guides(self):
         guides = command_meta.game_guides()
@@ -324,7 +331,7 @@ class CommandCatalogTest(unittest.TestCase):
         for choice in everything:
             self.assertLessEqual(len(choice.name), 100)
             self.assertLessEqual(len(choice.value), 100)
-        self.assertIn('!gvc create', [c.value for c in self.run_async(complete(interaction, '!gvc cr'))])
+        self.assertEqual(self.run_async(complete(interaction, '!gvc cr')), [])
         self.assertIn('/pay', [c.value for c in self.run_async(complete(interaction, '送金'))])
         self.assertEqual(self.run_async(complete(interaction, 'terminal')), [])
 
@@ -340,7 +347,7 @@ class CommandCatalogTest(unittest.TestCase):
         self.run_async(callback(self.cog, interaction, command='/wallet'))
         self.assertEqual(interaction.response.calls[-1][2]['embed'].title, '/wallet')
         self.run_async(callback(self.cog, interaction, command='gvc create'))
-        self.assertEqual(interaction.response.calls[-1][2]['embed'].title, '!gvc create')
+        self.assertIn('見つかりませんでした', interaction.response.calls[-1][1])
         self.run_async(callback(self.cog, interaction, command='存在しない'))
         self.assertIn('見つかりませんでした', interaction.response.calls[-1][1])
         self.run_async(callback(self.cog, interaction, command='!terminal'))
