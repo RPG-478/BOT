@@ -8,7 +8,7 @@ AGOBOT の紹介・コマンド一覧・ゲームのルール・ランキング�
 
 ```bash
 # リポジトリのルートで（Bot 側の書き出し）
-python -m tools.export_commands --out web/data/commands.json
+python -m tools.export_commands -o web/data/commands.json
 ```
 
 `data/commands.json` が無いあいだは `data/commands.sample.json`（サンプル）を表示し、画面にもサンプルであることを出します。
