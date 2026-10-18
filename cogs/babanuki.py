@@ -322,7 +322,7 @@ class Babanuki(commands.Cog):
         if g.loser is not None:
             text += f"\n最後にジョーカーを持っていたのは {g.name(g.loser)} さんでした。"
         if BOT_ID in g.players:
-            text += "\n（Bot 戦はランキングに数えません）"
+            text += "\n（Bot戦はランキングに数えません）"
         embed = discord.Embed(title="ババ抜き 終了", description=text, color=COLOR)
         embed.add_field(name="上がった順", value=order[:1024], inline=False)
         await channel.send(embed=embed)
