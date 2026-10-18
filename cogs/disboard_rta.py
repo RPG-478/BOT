@@ -216,11 +216,16 @@ def detect_event(message):
     looks_like_app = bool(
         getattr(author, "bot", False) or getattr(message, "webhook_id", None) or application_id
     )
+    # The visible success embed does not consistently include the literal "/up"
+    # (the command may be rendered as a button, link, or omitted from embed text).
+    # Use the Dis速 brand + success wording, while still requiring an app/bot author.
+    disoku_success = any(
+        phrase in text
+        for phrase in ("アップしたよ", "をアップ", "アップしました", "アップ完了", "up done", "bump done")
+    )
     is_disoku = (
         author_id == DISOKU_BOT_ID
-        or (looks_like_app and has_embeds
-            and "ディス速" in text and ("アップしたよ" in text or "をアップ" in text)
-            and "/up" in folded)
+        or (looks_like_app and has_embeds and "ディス速" in text and disoku_success)
     )
     is_disboard = author_id == DISBOARD_BOT_ID
     if not (is_disboard or is_disoku):
@@ -243,12 +248,15 @@ def detect_event(message):
             return None
         kind = "bump"
     else:
-        if "アップ" not in text and "up" not in folded:
-            logger.info("Disoku message ignored (no up keyword): %s", text[:1000])
-            return None
-        # Require an explicit success phrase to avoid matching unrelated chat.
-        if not any(phrase in text for phrase in ("アップしたよ", "をアップ", "アップしました")):
-            logger.info("Disoku message ignored (no success phrase): %s", text[:1000])
+        # Dis速 may describe a successful bump without including "/up" in the
+        # embed text.  The brand/app check above scopes these phrases to its response.
+        if not any(phrase in folded for phrase in (
+            "アップしたよ", "をアップ", "アップしました", "アップ完了", "up done", "bump done"
+        )):
+            logger.info(
+                "Disoku message ignored (no recognized success phrase): message=%s text=%r",
+                getattr(message, "id", None), text[:1500],
+            )
             return None
         kind = "up"
 
@@ -1050,11 +1058,22 @@ class BumpRta(commands.Cog):
         pending = await self._call(lambda: self.db.table("bump_rta_pending").select(
             "user_id,bump_message_id,bump_at").eq("guild_id", gid).eq("event_type", kind).limit(1).execute())
         if not pending.data:
+            logger.info(
+                "RTA completion detected but no pending start marker: kind=%s guild=%s message=%s user=%s",
+                kind, gid, getattr(message, "id", None), user_id,
+            )
             return
         start = pending.data[0]
-        record_user_id = str(user_id or "")
+        # Interaction metadata is not exposed on every application response.
+        # Prefer the user on the completion event, then fall back to the user who
+        # triggered the pending RTA cycle.
+        record_user_id = str(user_id or start.get("user_id") or "")
         if not record_user_id:
-            logger.warning("Cannot attribute %s RTA completion: guild=%s", kind, gid)
+            logger.warning(
+                "Cannot attribute %s RTA completion: guild=%s message=%s "
+                "completion_user=%r pending_user=%r",
+                kind, gid, getattr(message, "id", None), user_id, start.get("user_id"),
+            )
             return
         start_time = _parse_dt(start.get("bump_at"))
         if start_time is None:
@@ -1102,8 +1121,11 @@ class BumpRta(commands.Cog):
                 embed=embed,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
-        except discord.HTTPException as e:
-            logger.warning("Failed to send RTA result embed: %s", e)
+        except Exception:
+            logger.exception(
+                "Failed to send RTA result embed: guild=%s kind=%s message=%s elapsed_ms=%s",
+                gid, kind, getattr(message, "id", None), elapsed,
+            )
 
 
 async def setup(bot):
