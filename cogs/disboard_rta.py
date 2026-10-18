@@ -109,6 +109,11 @@ def _collect_embed_text(message):
     return " ".join(str(part) for part in parts if part)
 
 
+def _white_embed(description=None, *, title=None):
+    """Build the white embeds used by the bump/RTA feature."""
+    return discord.Embed(title=title, description=description, color=0xFFFFFF)
+
+
 def _snowflake_ts(snowflake_id):
     """Decode a Discord Snowflake ID into a UTC epoch timestamp (seconds, ms precision)."""
     return ((int(snowflake_id) >> 22) + DISCORD_EPOCH_MS) / 1000
@@ -560,15 +565,19 @@ class BumpRta(commands.Cog):
         scope: app_commands.Choice[str] | None = None,
     ):
         if interaction.guild_id is None:
-            return await interaction.response.send_message("このコマンドはサーバー内でのみ使えます。", ephemeral=True)
+            return await interaction.response.send_message(
+                embed=_white_embed("このコマンドはサーバー内でのみ使えます。"), ephemeral=True)
         selected_action = action.value
         if selected_action == "status":
             enabled = await self._is_enabled(interaction.guild_id)
             return await interaction.response.send_message(
-                f"bump/up通知とRTA計測: **{'オン' if enabled else 'オフ'}**（初期状態: オン）", ephemeral=True)
+                embed=_white_embed(
+                    f"bump/up通知とRTA計測: **{'オン' if enabled else 'オフ'}**（初期状態: オン）"),
+                ephemeral=True)
         if selected_action in {"on", "off"}:
             if not getattr(getattr(interaction.user, "guild_permissions", None), "manage_guild", False):
-                return await interaction.response.send_message("この操作にはサーバー管理権限が必要です。", ephemeral=True)
+                return await interaction.response.send_message(
+                    embed=_white_embed("この操作にはサーバー管理権限が必要です。"), ephemeral=True)
             enabled = selected_action == "on"
             gid = str(interaction.guild_id)
             await interaction.response.defer(ephemeral=True)
@@ -585,14 +594,18 @@ class BumpRta(commands.Cog):
                 except Exception:
                     logger.exception("bump_rta settings update failed: guild=%s", gid)
                     return await interaction.followup.send(
-                        "❌ 設定の保存に失敗しました。時間をおいて再度お試しください。", ephemeral=True)
+                        embed=_white_embed("設定の保存に失敗しました。時間をおいて再度お試しください。"),
+                        ephemeral=True)
             self._enabled_cache[gid] = enabled
             if not enabled:
                 self._cancel_guild(interaction.guild_id)
             return await interaction.followup.send(
-                f"bump/up通知とRTA計測を **{'オン' if enabled else 'オフ'}** にしました。", ephemeral=True)
+                embed=_white_embed(
+                    f"bump/up通知とRTA計測を **{'オン' if enabled else 'オフ'}** にしました。"),
+                ephemeral=True)
         if self.db is None:
-            return await interaction.response.send_message("Supabase未接続のため順位を取得できません。", ephemeral=True)
+            return await interaction.response.send_message(
+                embed=_white_embed("Supabase未接続のため順位を取得できません。"), ephemeral=True)
         kind = event_type.value if event_type else "bump"
         selected_scope = scope.value if scope else "local"
         # The database round trips can exceed Discord's 3 second acknowledgement window.
@@ -607,7 +620,9 @@ class BumpRta(commands.Cog):
                 local_text = f"{local.data[0]['elapsed_ms'] / 1000:.2f}秒" if local.data else "記録なし"
                 global_text = f"{global_best.data[0]['elapsed_ms'] / 1000:.2f}秒" if global_best.data else "記録なし"
                 return await interaction.followup.send(
-                    f"🏁 <@{uid}> の**{kind}自己ベスト**\nこのサーバー: **{local_text}**\n全サーバー: **{global_text}**")
+                    embed=_white_embed(
+                        f"<@{uid}> の**{kind}自己ベスト**\n"
+                        f"このサーバー: **{local_text}**\n全サーバー: **{global_text}**"))
             if selected_scope == "global":
                 rows = await self._call(lambda: self.db.rpc("get_bump_rta_global_ranking", {
                     "p_event_type": kind, "p_limit": 10}).execute())
@@ -622,11 +637,11 @@ class BumpRta(commands.Cog):
                 lines = [f"**{i}.** <@{r['user_id']}> — **{r['elapsed_ms'] / 1000:.2f}秒**" for i, r in enumerate(data, 1)]
                 title = f"このサーバー {kind} RTAランキング"
             return await interaction.followup.send(
-                f"🏁 **{title}**\n" + ("\n".join(lines) if lines else "まだ記録がありません。"))
+                embed=_white_embed(f"**{title}**\n" + ("\n".join(lines) if lines else "まだ記録がありません。")))
         except Exception as e:
             logger.exception("bump/up leaderboard query failed: scope=%s kind=%s", selected_scope, kind)
             return await interaction.followup.send(
-                f"❌ ランキングの取得に失敗しました。\n（{type(e).__name__}: {e}）")
+                embed=_white_embed(f"ランキングの取得に失敗しました。\n（{type(e).__name__}: {e}）"))
 
     # ---- send-lead calibration -------------------------------------------
     def _send_lead(self):
@@ -808,7 +823,7 @@ class BumpRta(commands.Cog):
         embed = discord.Embed(
             title=f"{noun.upper()} できます",
             description=f"{noun}が可能になりました!",
-            color=discord.Color.blurple(),
+            color=0xFFFFFF,
             timestamp=datetime.fromtimestamp(rem.due_ts, tz=timezone.utc),
         )
         embed.set_footer(text="RTA計測を開始しました")
@@ -1084,8 +1099,8 @@ class BumpRta(commands.Cog):
             "event_type", kind).execute())
         embed = discord.Embed(
             title="RTA記録",
-            description=f"🏁 {kind} **{elapsed / 1000:.2f}秒**",
-            color=discord.Color.gold(),
+            description=f"{kind} **{elapsed / 1000:.2f}秒**",
+            color=0xFFFFFF,
         )
         try:
             await self._send_timed(
