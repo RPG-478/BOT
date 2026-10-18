@@ -229,6 +229,8 @@ def _prefix_summary(command: commands.Command) -> str:
 
 
 def _prefix_entry(command: commands.Command) -> dict:
+    # プレフィックスコマンドは互換性・管理用に残すが、公開ヘルプには載せない。
+    # hidden は /help の一覧・候補・通常の詳細検索すべてで共通して使われる。
     permissions: list[str] = []
     guild_only = False
     node = command
@@ -257,7 +259,7 @@ def _prefix_entry(command: commands.Command) -> dict:
         "permissions": permissions,
         "guild_only": guild_only,
         "aliases": list(command.aliases),
-        "hidden": bool(command.hidden),
+        "hidden": True,
     }
 
 
