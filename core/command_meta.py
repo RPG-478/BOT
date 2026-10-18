@@ -17,15 +17,15 @@
 from __future__ import annotations
 
 # ---------------------------------------------------------------- 国づくりの初回ガイド
-# /nation を初めて使った人に出す 3 ステップのチュートリアル（cogs/nation_onboarding.py）。
+# !nation を初めて使った人に出す 3 ステップのチュートリアル（cogs/nation_onboarding.py）。
 # 同じ文章を /help と Web サイトのガイド（NATION_GUIDE）でも使う。
 NATION_TUTORIAL = [
     {
         "title": "1. 国に入る・国をつくる",
         "body": (
             "国づくりは、サーバーごとに 1 つの国を育てる遊びです。\n"
-            "- このサーバーに国があれば `/nation join` で国民になれます（入れるのは 1 人 1 か国）。\n"
-            "- まだ国がなければ、サーバーの管理者かオーナーが `/nation found` で建国します。"
+            "- このサーバーに国があれば、参加機能から国民になれます（入れるのは 1 人 1 か国）。\n"
+            "- まだ国がなければ、サーバーの管理者かオーナーが建国できます。"
             "建国した人が国王になり、首都が共有マップに置かれます。"
         ),
     },
@@ -34,16 +34,16 @@ NATION_TUTORIAL = [
         "body": (
             "- **空腹度**: 参加したときは 100 です。これから時間とともに減っていくしくみが入る予定です。\n"
             "- **コイン（AGO）**: 所持金は `/wallet` と共通です。ほかのゲームで稼いだコインも国づくりで使えます。\n"
-            "`/nation status` で、所属国・役職・所持金・空腹度をいつでも確認できます。"
+            "所属国・役職・所持金・空腹度は、状態確認機能で確認できます。"
         ),
     },
     {
         "title": "3. まずやること",
         "body": (
-            "1. `/nation join`（または `/nation found`）で国に入る\n"
-            "2. `/nation status` で自分の状態を確認する\n"
+            "1. 国民参加または建国の機能を使う\n"
+            "2. 状態確認機能で自分の情報を見る\n"
             "3. Web サイトの共有マップで、自分の国の場所と広さを見てみる\n"
-            "このガイドは `/help` の「/nation join」からもう一度読めます。"
+            "操作方法はサーバー管理者に確認してください。"
         ),
     },
 ]
@@ -61,8 +61,7 @@ CATEGORIES = [
             "`/help` でカテゴリごとのコマンド一覧を見られます。`/help command:` にコマンド名を入れると、"
             "そのコマンドの使い方だけを表示します。\n\n"
             "## グローバルチャット\n"
-            "`/setup` のグローバルチャットのステップでつないだチャンネルの発言が、ほかのサーバーのつないだチャンネルへ届きます"
-            "（`/setup` には「サーバー管理」権限が必要です）。部屋を分けたいときは `!gvc` のルームを使います。"
+            "グローバルチャットは、設定済みチャンネルの発言がほかのサーバーの接続先へ届きます。部屋を分けたいときは `!gvc` のルームを使います。"
         ),
     },
     {
@@ -116,11 +115,10 @@ CATEGORIES = [
     {
         "id": "admin",
         "label": "サーバー管理",
-        "description": "初期設定（/setup）、認証パネル、メッセージの一括削除、ミュートなど、管理者向けの機能です。多くは管理用の権限が必要です。",
+        "description": "認証パネル、メッセージの一括削除、ミュートなど、管理者向けの機能です。多くは管理用の権限が必要です。",
         "guide": (
             "## はじめに\n"
-            "Bot を入れたら、まず `/setup` を実行してください（「サーバー管理」権限が必要です）。"
-            "認証・グローバルチャットの設定と、Bot に足りない権限の確認が 1 か所でできます。"
+            "サーバー設定ウィザード（`/setup`）は廃止されました。認証・グローバルチャット等は、既存の設定がある場合に限り引き続き動作します。"
         ),
     },
 ]
@@ -172,9 +170,14 @@ COMMAND_META: dict[str, dict] = {
     "/wallet": {"category": "economy"},
     "/pay": {"category": "economy"},
     "/leaderboard": {"category": "economy"},
-    "/nation join": {"category": "economy", "guide": NATION_GUIDE},
-    "/nation found": {"category": "economy", "guide": NATION_GUIDE, "permissions": ["administrator"]},
-    "/nation status": {"category": "economy", "guide": NATION_GUIDE},
+    "!nation": {"category": "economy", "summary": "国づくり機能", "guild_only": True, "hidden": True},
+    "!nation join": {"category": "economy", "guide": NATION_GUIDE, "guild_only": True,
+                      "summary": "このサーバーの国に国民として参加します", "hidden": True},
+    "!nation found": {"category": "economy", "guide": NATION_GUIDE, "guild_only": True,
+                       "summary": "このサーバーの国を建国します（管理者かオーナーのみ）",
+                       "permissions": ["administrator"], "hidden": True},
+    "!nation status": {"category": "economy", "guide": NATION_GUIDE, "guild_only": True,
+                       "summary": "所属国・役職・所持金・空腹度を表示します", "hidden": True},
     "!coin": {"category": "economy", "summary": "管理者が自分の残高を直接設定します", "permissions": ["bot_admin"],
               "hidden": True},
 
@@ -207,24 +210,6 @@ COMMAND_META: dict[str, dict] = {
     "!ggrks": {"category": "fun", "options": {"keyword": "検索する言葉"}},
 
     # ---------------------------------------------------------------- サーバー管理
-    "/setup": {
-        "category": "admin",
-        "summary": "このサーバーでの Bot の初期設定（認証・グローバルチャット・権限の確認）をします",
-        "usage": "/setup",
-        "permissions": ["manage_guild"],
-        "guide": (
-            "## 使い方\n"
-            "`/setup` を実行すると、自分にだけ見える設定画面が開きます。ステップごとにメニューやボタンで設定し、"
-            "選んだ内容はすぐ保存されます。使わない機能は「次へ（スキップ）」で飛ばせます。"
-            "もう一度実行すると、今の設定が表示されます。\n\n"
-            "## ステップ\n"
-            "1. 認証: 付けるロール、自己紹介チャンネル、フォームの有効/停止。このチャンネルに認証パネルを送ることや、"
-            "カテゴリを認証ロールの人だけに見せることもできます\n"
-            "2. グローバルチャット: このチャンネルをつなぐ / 外す\n"
-            "3. ミュート管理ロール（対応している場合）\n"
-            "4. まとめ: 設定内容と、機能ごとに Bot に足りない権限の一覧"
-        ),
-    },
     "/clear": {"category": "admin", "permissions": ["manage_messages"]},
     "/muted": {"category": "admin"},
     "!dungeon_reset": {"category": "admin", "summary": "ダンジョンのマップを全サーバー分リセットします", "permissions": ["bot_admin"],

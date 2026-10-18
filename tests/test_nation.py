@@ -1,4 +1,4 @@
-"""/nation（参加・建国・状態表示）のテスト。Discord・Supabase には接続しない。"""
+"""!nation（参加・建国・状態表示）のテスト。Discord・Supabase には接続しない。"""
 
 import asyncio
 import sys
@@ -41,18 +41,27 @@ class NationTest(unittest.TestCase):
         self.bot.supabase = self.db
         self.cog = nation_module.NationCog(self.bot)
 
+    def test_nation_commands_are_prefix_only(self):
+        async def register():
+            await self.bot.add_cog(self.cog)
+        run(register())
+        for qualified_name in ("nation", "nation found", "nation join", "nation status"):
+            with self.subTest(command=qualified_name):
+                self.assertIsNotNone(self.bot.get_command(qualified_name))
+        self.assertIsNone(self.bot.tree.get_command("nation"))
+
     def call(self, name, admin=True, owner=False, user_id=USER_ID):
         interaction, _, _ = fake_interaction(self.bot)
         sent = []
 
         async def send(*args, **kwargs):
             sent.append(kwargs)
-        interaction.response.send_message = send
-        interaction.followup.send = send
         interaction.user.id = user_id
+        interaction.user.send = send
         interaction.user.guild_permissions = discord.Permissions.all() if admin else discord.Permissions.none()
         interaction.guild.owner_id = user_id if owner else 1
-        run(getattr(self.cog, name).callback(self.cog, interaction))
+        ctx = types.SimpleNamespace(guild=interaction.guild, author=interaction.user, send=send, bot=self.bot)
+        run(getattr(self.cog, name).callback(self.cog, ctx))
         return sent
 
     def rows(self, table):
@@ -95,7 +104,6 @@ class NationTest(unittest.TestCase):
             self.cog.supabase = Failing()
             sent = self.call('found')
             self.assertEqual(sent[0]['embed'].title, title, code)
-            self.assertTrue(sent[0]['ephemeral'])
 
     def test_found_refuses_member_of_other_nation(self):
         self.db.table('nation_players').insert({'user_id': str(USER_ID), 'guild_id': '999', 'role': 'citizen', 'hunger': 50}).execute()
@@ -122,7 +130,6 @@ class NationTest(unittest.TestCase):
 
     def test_found_requires_admin_or_owner(self):
         sent = self.call('found', admin=False)
-        self.assertTrue(sent[0]['ephemeral'])
         self.assertEqual(self.rows('nation_guilds'), [])
         self.call('found', admin=False, owner=True)
         self.assertEqual(len(self.rows('nation_guilds')), 1)
@@ -168,7 +175,7 @@ class NationTest(unittest.TestCase):
         sent = self.call('status')
         self.assertEqual(sent[0]['embed'].title, '未参加')
 
-    def test_db_error_gives_private_reply(self):
+    def test_db_error_gives_context_reply(self):
         class Broken(FakeSupabase):
             def table(self, name):
                 raise RuntimeError('down')
@@ -178,9 +185,10 @@ class NationTest(unittest.TestCase):
 
         async def send(*args, **kwargs):
             sent.append(kwargs)
-        interaction.response.send_message = send
-        run(self.cog.cog_app_command_error(interaction, discord.app_commands.AppCommandError('x')))
-        self.assertTrue(sent[0]['ephemeral'])
+        interaction.user.send = send
+        ctx = types.SimpleNamespace(guild=interaction.guild, author=interaction.user, send=send, bot=self.bot)
+        run(self.cog.cog_command_error(ctx, commands.CommandError('x')))
+        self.assertEqual(sent[0]['embed'].title, 'エラー')
 
 
 if __name__ == '__main__':

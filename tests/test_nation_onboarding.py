@@ -1,4 +1,4 @@
-"""/nation の初回ガイドのテスト。Discord・Supabase には接続しない。"""
+"""!nation の初回ガイドのテスト。Discord・Supabase には接続しない。"""
 
 import asyncio
 import os
@@ -51,6 +51,20 @@ def command(name):
     return types.SimpleNamespace(qualified_name=name)
 
 
+def fake_context(user_id=42, name="nation status"):
+    sent, channel_sent = [], []
+
+    async def dm_send(**kwargs):
+        sent.append(kwargs)
+
+    async def channel_send(**kwargs):
+        channel_sent.append(kwargs)
+
+    author = types.SimpleNamespace(id=user_id, send=dm_send)
+    return types.SimpleNamespace(author=author, command=command(name), send=channel_send,
+                                 sent=sent, channel_sent=channel_sent)
+
+
 class NationOnboardingTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -61,38 +75,43 @@ class NationOnboardingTest(unittest.TestCase):
     def cog(self):
         return onboarding.NationOnboardingCog(self.bot, store=KVStore("nation_onboarding", client=None, path=self.path))
 
-    def test_first_nation_command_shows_private_guide_once(self):
+    def test_first_nation_command_sends_dm_guide_once(self):
         cog = self.cog()
-        first = fake_interaction()
-        run(cog.on_app_command_completion(first, command("nation status")))
+        first = fake_context()
+        run(cog.on_command_completion(first))
         self.assertEqual(len(first.sent), 1)
-        self.assertTrue(first.sent[0]["ephemeral"])
         self.assertIn(command_meta.NATION_TUTORIAL[0]["title"], first.sent[0]["embed"].title)
-        again = fake_interaction()
-        run(cog.on_app_command_completion(again, command("nation join")))
+        again = fake_context(name="nation join")
+        run(cog.on_command_completion(again))
         self.assertEqual(again.sent, [])
 
     def test_seen_is_remembered_across_restart(self):
-        run(self.cog().on_app_command_completion(fake_interaction(), command("nation found")))
-        later = fake_interaction()
-        run(self.cog().on_app_command_completion(later, command("nation status")))
+        run(self.cog().on_command_completion(fake_context(name="nation found")))
+        later = fake_context()
+        run(self.cog().on_command_completion(later))
         self.assertEqual(later.sent, [])
-        other = fake_interaction(user_id=7)
-        run(self.cog().on_app_command_completion(other, command("nation status")))
+        other = fake_context(user_id=7)
+        run(self.cog().on_command_completion(other))
         self.assertEqual(len(other.sent), 1)
 
     def test_other_commands_are_ignored(self):
         cog = self.cog()
         for name in ("wallet", "nationx", "help"):
-            i = fake_interaction()
-            run(cog.on_app_command_completion(i, command(name)))
+            i = fake_context(name=name)
+            run(cog.on_command_completion(i))
             self.assertEqual(i.sent, [])
         self.assertEqual(cog.store.load_local(), {})
 
-    def test_uses_response_when_not_done(self):
-        i = fake_interaction(done=False)
-        run(self.cog().on_app_command_completion(i, command("nation join")))
-        self.assertEqual(len(i.response.sent), 1)
+    def test_dm_forbidden_falls_back_to_channel(self):
+        i = fake_context(name="nation join")
+
+        async def forbidden(**kwargs):
+            raise discord.Forbidden(response=types.SimpleNamespace(status=403, reason="Forbidden"),
+                                    message="DM disabled")
+        i.author.send = forbidden
+        run(self.cog().on_command_completion(i))
+        self.assertEqual(len(i.channel_sent), 1)
+        self.assertIn("DMを送れなかった", i.channel_sent[0]["embed"].description)
 
     def test_view_steps_through_three_pages(self):
         async def go():
@@ -116,7 +135,7 @@ class NationOnboardingTest(unittest.TestCase):
 
     def test_guide_text_is_shared_with_help(self):
         self.assertEqual(len(command_meta.NATION_TUTORIAL), 3)
-        for key in ("/nation join", "/nation found", "/nation status"):
+        for key in ("!nation join", "!nation found", "!nation status"):
             self.assertEqual(command_meta.resolve_guide(command_meta.COMMAND_META[key]), command_meta.NATION_GUIDE)
         for step in range(3):
             embed = onboarding.tutorial_embed(step)

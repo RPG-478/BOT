@@ -31,7 +31,7 @@ export default async function MapPage() {
       <h1>マップ</h1>
       <p className="muted">国づくりの共有マップです。色は国（サーバー）ごと、★ は首都です。1 分ごとに更新されます。</p>
       {(!data.ok || tiles.length === 0) && (
-        <div className="card notice">まだデータがありません / 準備中です。<code>/nation</code> で国ができると、ここに表示されます。</div>
+        <div className="card notice">まだデータがありません / 準備中です。国が建国されると、ここに表示されます。</div>
       )}
       <div className="map-wrap card">
         <svg className="nation-map" viewBox={`0 0 ${b.width * CELL} ${b.height * CELL}`} role="img" aria-label="国づくりマップ">

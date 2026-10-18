@@ -1,11 +1,11 @@
-"""国づくり MMO（/nation）のフェーズ 2：参加・建国・状態表示。
+"""国づくり MMO（!nation）のフェーズ 2：参加・建国・状態表示。
 
 テーブルは ``docs/sql/nation.sql`` を参照。所持金は /wallet と共通の ``users.balance``。
 
 - Supabase のクライアントは同期なので、呼び出しはすべて ``asyncio.to_thread`` で行う。
 - 1 サーバーにつき 1 国（``nation_guilds.guild_id`` が主キー）。1 人が入れる国は 1 つだけ。
 - 空腹度は、国民がサーバーで発言すると 5 分に 1 回だけ 1 減る（0 で止まる）。
-- /setup で国づくりをオフにしたサーバーでは、建国・参加・空腹の減少をしない。
+- 国づくりをオフにしたサーバーでは、建国・参加・空腹の減少をしない。
 """
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ import os
 import time
 
 import discord
-from discord import app_commands
 from discord.ext import commands
 
 from core.emojis import COIN
@@ -33,14 +32,14 @@ SEARCH_RADIUS = 50  # 首都を置く空きマスを原点からこの距離ま�
 ROLE_NAMES = {"king": "国王", "minister": "大臣", "citizen": "国民"}
 # nation_found（SQL）が投げるエラーの目印 → 返信のタイトルと本文
 FOUND_ERRORS = {
-    "NATION_EXISTS": ("建国済み", "このサーバーの国はもうあります。`/nation status` で確認できます。"),
+    "NATION_EXISTS": ("建国済み", "このサーバーの国はすでにあります。"),
     "ALREADY_IN_NATION": ("建国できません", "あなたはすでに別の国に所属しています。"),
     "NO_FREE_TILE": ("建国できません", "首都を置ける空き地が見つかりませんでした。"),
 }
 HUNGER_INTERVAL = 300  # 発言で空腹が減る間隔（秒）。1 人につきこの間隔で 1 回だけ
 HUNGER_PER_MESSAGE = 1
 COIN_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Assets", "COIN.png")
-DISABLED_TEXT = "このサーバーは国づくりに参加しない設定です。管理者が `/setup` で変えられます。"
+DISABLED_TEXT = "このサーバーは国づくりに参加しない設定です。"
 COLOR_OK, COLOR_INFO, COLOR_ERROR = 0x2ecc71, 0x3498db, 0xe74c3c
 
 
@@ -70,8 +69,10 @@ class NationCog(commands.Cog):
             self.supabase = create_client_from_env()
         self._last_drain: dict[str, float] = {}  # user_id -> 最後に空腹を減らした time.monotonic()
 
-    nation_group = app_commands.Group(name="nation", description="国づくり（共有マップの国家経営）のコマンド一覧",
-                                      guild_only=True)
+    @commands.group(name="nation", invoke_without_command=True)
+    @commands.guild_only()
+    async def nation_group(self, ctx: commands.Context):
+        await ctx.send("国づくり機能です。操作方法はサーバー管理者に確認してください。")
 
     # --- DB ヘルパー ---
 
@@ -144,35 +145,41 @@ class NationCog(commands.Cog):
     def _embed(title, text, color=COLOR_INFO):
         return discord.Embed(title=title, description=text, color=color)
 
-    async def _reply(self, interaction, embed, ephemeral=False, file=None):
-        kwargs = {"embed": embed, "ephemeral": ephemeral}
+    async def _reply(self, ctx, embed, ephemeral=False, file=None):
+        kwargs = {"embed": embed}
         if file is not None:
             kwargs["file"] = file
-        if interaction.response.is_done():
-            await interaction.followup.send(**kwargs)
-        else:
-            await interaction.response.send_message(**kwargs)
+        if ephemeral:
+            try:
+                await ctx.author.send(**kwargs)
+                return
+            except discord.Forbidden:
+                await ctx.send("DMを送れないため、このチャンネルに返信します。", **kwargs)
+                return
+        await ctx.send(**kwargs)
 
-    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        log.exception("nation command failed", exc_info=error)
+    async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        if isinstance(error, commands.CommandNotFound):
+            return
+        log.error("nation command failed", exc_info=(type(error), error, error.__traceback__))
         try:
-            await self._reply(interaction, self._embed(
+            await self._reply(ctx, self._embed(
                 "エラー", "国づくりのデータを読み書きできませんでした。少し待ってからもう一度試してください。", COLOR_ERROR),
                 ephemeral=True)
-        except discord.HTTPException:
+        except (discord.HTTPException, commands.CommandError):
             pass
 
     # --- コマンド ---
 
-    @nation_group.command(name="found", description="このサーバーの国を建国します（管理者かオーナーのみ）")
-    async def found(self, interaction: discord.Interaction):
-        guild, user = interaction.guild, interaction.user
+    @nation_group.command(name="found", help="このサーバーの国を建国します（管理者かオーナーのみ）")
+    async def found(self, ctx: commands.Context):
+        guild, user = ctx.guild, ctx.author
         perms = getattr(user, "guild_permissions", None)
         if not ((perms is not None and perms.administrator) or getattr(guild, "owner_id", None) == user.id):
-            await self._reply(interaction, self._embed("建国できません", "建国できるのはサーバーの管理者かオーナーだけです。", COLOR_ERROR), ephemeral=True)
+            await self._reply(ctx, self._embed("建国できません", "建国できるのはサーバーの管理者かオーナーだけです。", COLOR_ERROR), ephemeral=True)
             return
         if not self._enabled(guild):
-            await self._reply(interaction, self._embed("建国できません", DISABLED_TEXT, COLOR_ERROR), ephemeral=True)
+            await self._reply(ctx, self._embed("建国できません", DISABLED_TEXT, COLOR_ERROR), ephemeral=True)
             return
         gid, uid = str(guild.id), str(user.id)
         try:
@@ -181,45 +188,45 @@ class NationCog(commands.Cog):
             msg = str(e)
             for code, (title, text) in FOUND_ERRORS.items():
                 if code in msg:
-                    await self._reply(interaction, self._embed(title, text, COLOR_INFO if code == "NATION_EXISTS" else COLOR_ERROR), ephemeral=True)
+                    await self._reply(ctx, self._embed(title, text, COLOR_INFO if code == "NATION_EXISTS" else COLOR_ERROR), ephemeral=True)
                     return
             raise
-        await self._reply(interaction, self._embed(
+        await self._reply(ctx, self._embed(
             "建国しました", f"**{guild.name}** が建国されました！\n首都: ({x}, {y})\n国王: {user.mention}\n"
-            "サーバーのみんなは `/nation join` で国民になれます。", COLOR_OK))
+            "このサーバーのメンバーも国民として参加できます。", COLOR_OK))
 
-    @nation_group.command(name="join", description="このサーバーの国に国民として参加します")
-    async def join(self, interaction: discord.Interaction):
-        if not self._enabled(interaction.guild):
-            await self._reply(interaction, self._embed("参加できません", DISABLED_TEXT, COLOR_ERROR), ephemeral=True)
+    @nation_group.command(name="join", help="このサーバーの国に国民として参加します")
+    async def join(self, ctx: commands.Context):
+        if not self._enabled(ctx.guild):
+            await self._reply(ctx, self._embed("参加できません", DISABLED_TEXT, COLOR_ERROR), ephemeral=True)
             return
-        gid, uid = str(interaction.guild.id), str(interaction.user.id)
+        gid, uid = str(ctx.guild.id), str(ctx.author.id)
         if not await self._nation(gid):
-            await self._reply(interaction, self._embed("国がありません", "このサーバーにはまだ国がありません。管理者が `/nation found` で建国できます。"), ephemeral=True)
+            await self._reply(ctx, self._embed("国がありません", "このサーバーにはまだ国がありません。サーバー管理者にご相談ください。"), ephemeral=True)
             return
         player = await self._player(uid)
         if player and player.get("guild_id"):
             text = "あなたはもうこの国の国民です。" if player["guild_id"] == gid else "あなたはすでに別の国に所属しています。"
-            await self._reply(interaction, self._embed("参加できません", text), ephemeral=True)
+            await self._reply(ctx, self._embed("参加できません", text), ephemeral=True)
             return
         await self._run(lambda: self.supabase.table("nation_players").upsert(
             {"user_id": uid, "guild_id": gid, "role": "citizen", "hunger": MAX_HUNGER}, on_conflict="user_id"))
-        await self._reply(interaction, self._embed(
-            "参加しました", f"{interaction.user.mention} が **{interaction.guild.name}** の国民になりました！\n空腹度: {MAX_HUNGER}/{MAX_HUNGER}", COLOR_OK))
+        await self._reply(ctx, self._embed(
+            "参加しました", f"{ctx.author.mention} が **{ctx.guild.name}** の国民になりました！\n空腹度: {MAX_HUNGER}/{MAX_HUNGER}", COLOR_OK))
 
-    @nation_group.command(name="status", description="自分の所属国・役職・所持金・空腹度を表示します")
-    async def status(self, interaction: discord.Interaction):
-        uid = str(interaction.user.id)
+    @nation_group.command(name="status", help="自分の所属国・役職・所持金・空腹度を表示します")
+    async def status(self, ctx: commands.Context):
+        uid = str(ctx.author.id)
         player = await self._player(uid)
         if not player or not player.get("guild_id"):
-            await self._reply(interaction, self._embed("未参加", "まだどの国にも参加していません。`/nation join` で参加できます。"), ephemeral=True)
+            await self._reply(ctx, self._embed("未参加", "まだどの国にも参加していません。サーバー管理者にご相談ください。"), ephemeral=True)
             return
         balance = await self._balance(uid)
         gid = player["guild_id"]
         g = self.bot.get_guild(int(gid)) if gid.isdigit() else None
-        nation_name = g.name if g else (interaction.guild.name if str(interaction.guild.id) == gid else f"サーバー {gid}")
+        nation_name = g.name if g else (ctx.guild.name if str(ctx.guild.id) == gid else f"サーバー {gid}")
         hunger = player.get("hunger", 0)
-        embed = discord.Embed(title=f"{interaction.user.display_name} の国づくり", color=COLOR_INFO)
+        embed = discord.Embed(title=f"{ctx.author.display_name} の国づくり", color=COLOR_INFO)
         embed.add_field(name="所属国", value=nation_name, inline=True)
         embed.add_field(name="役職", value=ROLE_NAMES.get(player.get("role"), player.get("role") or "-"), inline=True)
         embed.add_field(name="所持金", value=f"{COIN} {balance if balance is not None else 0:,} AGO", inline=True)
@@ -229,7 +236,7 @@ class NationCog(commands.Cog):
         if os.path.exists(COIN_PATH):
             file = discord.File(COIN_PATH, filename="COIN.png")
             embed.set_thumbnail(url="attachment://COIN.png")
-        await self._reply(interaction, embed, ephemeral=True, file=file)
+        await self._reply(ctx, embed, ephemeral=True, file=file)
 
 
 async def setup(bot: commands.Bot):

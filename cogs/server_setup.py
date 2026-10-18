@@ -1,6 +1,6 @@
-"""サーバーに入ったときのあいさつと、管理者向けの初期設定ウィザード（/setup）。
+"""サーバーに入ったときのあいさつと、旧管理者向け初期設定画面の表示部品。
 
-/setup は 1 ステップずつ設定する（どのステップも飛ばせる。もう一度実行すると今の設定が表示される）。
+Slash の /setup コマンド登録は廃止済み。
   1. 認証: 付けるロール・自己紹介チャンネル・フォームの有効/無効（cogs/auth.py が使う）
   2. グローバルチャット: このチャンネルをつなぐ / 外す（cogs/globalchat.py の保存先をそのまま使う）
   3. ミュート管理ロール: muted.py が設定を保存できる場合だけ表示する
@@ -14,7 +14,6 @@ import logging
 from typing import Optional
 
 import discord
-from discord import app_commands
 from discord.ext import commands
 
 from core.command_catalog import permission_label
@@ -51,8 +50,7 @@ def welcome_embed(bot_name: str = "AGOBOT") -> discord.Embed:
         description=(
             "ゲーム・音楽・録音・グローバルチャットなど、サーバーをにぎやかにする Bot です。\n\n"
             "📖 `/help` … できることの一覧と使い方\n"
-            "🎮 `/game` … みんなで遊べるゲーム\n"
-            "🛠️ `/setup` … 管理者向けの初期設定（認証・グローバルチャット・権限の確認）"
+            "🎮 `/game` … みんなで遊べるゲーム"
         ),
         color=EMBED_COLOR,
     )
@@ -285,7 +283,7 @@ class SetupWizard(discord.ui.View):
         elif self.step == "nation":
             n = self.nation()
             embed = discord.Embed(title=f"🛠️ 初期設定 {number}: 国づくり", color=EMBED_COLOR, description=(
-                "`/nation` の国づくりゲームに、このサーバーで参加するかと、お知らせの送り先を決めます。"
+                "国づくりゲームにこのサーバーが参加するかと、お知らせの送り先を決めます。"
             ))
             embed.add_field(name="参加", value="する" if n["enabled"] else "しない")
             embed.add_field(name="お知らせチャンネル", value=self._channel_text(n["channel_id"]))
@@ -392,7 +390,7 @@ class SetupWizard(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("この設定画面は `/setup` を実行した人だけが操作できます。", ephemeral=True)
+            await interaction.response.send_message("この旧設定画面は現在利用できません。", ephemeral=True)
             return False
         return True
 
@@ -518,16 +516,6 @@ class ServerSetup(commands.Cog):
             await channel.send(embed=welcome_embed(getattr(self.bot.user, "name", None) or "AGOBOT"))
         except discord.HTTPException:
             logger.warning("あいさつを送れませんでした: guild=%s", guild.id, exc_info=True)
-
-    @app_commands.command(name="setup", description="このサーバーでの Bot の初期設定（認証・グローバルチャット・国づくり・権限の確認）")
-    @app_commands.guild_only()
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def setup_command(self, interaction: discord.Interaction):
-        await get_store().ensure_loaded()
-        view = SetupWizard(self, interaction.guild, interaction.channel, interaction.user.id)
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ServerSetup(bot))

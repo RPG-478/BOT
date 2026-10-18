@@ -145,7 +145,7 @@ class WizardAuthTest(Base):
 
         os.remove(self.path)  # ローカルのファイルが消えて再起動しても
         guild_settings.set_store(self.new_store())
-        await self.cog.setup_command.callback(self.cog, fake_interaction(self.guild))  # /setup が Supabase から読み直す
+        await guild_settings.get_store().ensure_loaded()  # 旧/setup画面なしでも保存済み設定を読み直せる
         again = self.wizard()
         fields = {f.name: f.value for f in again.embed().fields}
         self.assertEqual(fields, {"フォーム": "停止中", "付けるロール": "<@&501>", "自己紹介チャンネル": "<#602>"})
@@ -365,8 +365,9 @@ class WelcomeTest(Base):
     async def test_on_guild_join_posts_welcome(self):
         await self.cog.on_guild_join(self.guild)
         embed = self.guild.general.send.await_args.kwargs["embed"]
-        for text in ("/help", "/game", "/setup"):
+        for text in ("/help", "/game"):
             self.assertIn(text, embed.description)
+        self.assertNotIn("/setup", embed.description)
 
 
 class AuthTest(Base):
@@ -403,7 +404,7 @@ class AuthTest(Base):
         cog = self.cogs_auth()
         interaction = fake_interaction(self.guild)
         await cog.start_verification(interaction, "settings")
-        self.assertIn("/setup", interaction.response.send_message.await_args.args[0])  # ロール未設定
+        self.assertIn("サーバー管理者にお問い合わせ", interaction.response.send_message.await_args.args[0])  # ロール未設定
 
         await guild_settings.get_store().update(self.guild.id, "auth", role_id=501, intro_channel_id=602)
         interaction = fake_interaction(self.guild)

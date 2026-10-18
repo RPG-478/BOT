@@ -1,9 +1,8 @@
-"""/nation を初めて使った人に、自分にだけ見える 3 ステップのガイドを出す。
+"""!nation を初めて使った人に、DMで 3 ステップのガイドを出す。
 
-- 文章は ``core/command_meta.NATION_TUTORIAL``（/help と Web サイトと共通）。
+- 文章は ``core/command_meta.NATION_TUTORIAL``（!help と Web サイトと共通）。
 - 「もう見た」かどうかは ``core/storage.KVStore``（Supabase の ``bot_kv``、namespace ``nation_onboarding``）に保存する。
-- cogs/nation.py には手を入れず、``on_app_command_completion`` で /nation のコマンドが終わったあとに
-  フォローアップとして送る。新しいコマンドは追加しない。
+- ``on_command_completion`` で !nation のコマンドが終わったあとにDMで送る。新しいコマンドは追加しない。
 """
 from __future__ import annotations
 
@@ -56,7 +55,7 @@ class TutorialView(discord.ui.View):
         if self.step >= len(NATION_TUTORIAL) - 1:
             self.stop()
             await interaction.response.edit_message(
-                content="ガイドをとじました。`/help` の「/nation join」からもう一度読めます。", embed=None, view=None)
+                content="ガイドをとじました。`!help nation join` からもう一度読めます。", embed=None, view=None)
             return
         self.step += 1
         self._refresh()
@@ -87,18 +86,23 @@ class NationOnboardingCog(commands.Cog):
         return True
 
     @commands.Cog.listener()
-    async def on_app_command_completion(self, interaction: discord.Interaction, command):
-        name = getattr(command, "qualified_name", "") or ""
+    async def on_command_completion(self, ctx: commands.Context):
+        name = getattr(ctx.command, "qualified_name", "") or ""
         if name.split(" ")[0] != "nation":
             return
         try:
-            if not await self._first_time(str(interaction.user.id)):
+            if not await self._first_time(str(ctx.author.id)):
                 return
-            kwargs = dict(embed=tutorial_embed(0), view=TutorialView(interaction.user.id), ephemeral=True)
-            if interaction.response.is_done():
-                await interaction.followup.send(**kwargs)
-            else:
-                await interaction.response.send_message(**kwargs)
+            await ctx.author.send(embed=tutorial_embed(0), view=TutorialView(ctx.author.id))
+        except discord.Forbidden:
+            try:
+                await ctx.send(embed=discord.Embed(
+                    title="国づくりのはじめかた",
+                    description="DMを送れなかったため、ガイドをここに表示します。操作方法はサーバー管理者に確認してください。",
+                    color=COLOR,
+                ))
+            except discord.HTTPException:
+                log.exception("国づくりガイドをDM・チャンネルのどちらにも送れませんでした")
         except Exception:  # noqa: BLE001 - ガイドが出せなくても本体のコマンドには影響させない
             log.exception("国づくりのガイドを送れませんでした")
 
