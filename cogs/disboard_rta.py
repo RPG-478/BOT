@@ -19,6 +19,7 @@ Timing design
 """
 import asyncio
 import logging
+import json
 import re
 import socket
 import struct
@@ -1005,24 +1006,37 @@ class BumpRta(commands.Cog):
         if author_id not in (DISBOARD_BOT_ID, DISOKU_BOT_ID) and not getattr(message, "embeds", None):
             return
         if author_id == DISOKU_BOT_ID or "ディス速" in _collect_embed_text(message):
-            # Diagnostic logging for Disoku's application embed.
+            # Post the diagnostic payload to Discord so it can be inspected without
+            # access to the hosting console. Send it in the same channel as the
+            # service message; split safely below Discord's 2000-character limit.
             try:
                 metadata = getattr(message, "interaction_metadata", None)
-                logger.info(
-                    "Disoku debug: message_id=%s author_id=%s application_id=%s "
-                    "channel_type=%s content=%r metadata_type=%s metadata_user=%s",
-                    message.id,
-                    author_id,
-                    getattr(message, "application_id", None),
-                    getattr(getattr(message, "channel", None), "type", None),
-                    getattr(message, "content", "") or "",
-                    getattr(metadata, "type", None),
-                    getattr(getattr(metadata, "user", None), "id", None),
-                )
-                for index, embed in enumerate(getattr(message, "embeds", ()) or ()):
-                    logger.info("Disoku embed[%s] raw=%s", index, embed.to_dict())
+                diagnostic = {
+                    "type": "Disoku debug",
+                    "message_id": str(getattr(message, "id", "")),
+                    "guild_id": str(getattr(getattr(message, "guild", None), "id", "")),
+                    "channel_id": str(getattr(getattr(message, "channel", None), "id", "")),
+                    "author_id": str(author_id),
+                    "application_id": str(getattr(message, "application_id", None)),
+                    "webhook_id": str(getattr(message, "webhook_id", None)),
+                    "channel_type": str(getattr(getattr(message, "channel", None), "type", None)),
+                    "content": getattr(message, "content", "") or "",
+                    "metadata_type": str(getattr(metadata, "type", None)),
+                    "metadata_user_id": str(getattr(getattr(metadata, "user", None), "id", None)),
+                    "embeds": [embed.to_dict() for embed in (getattr(message, "embeds", ()) or ())],
+                }
+                payload = json.dumps(diagnostic, ensure_ascii=False, indent=2, default=str)
+                chunks = [payload[i:i + 1800] for i in range(0, len(payload), 1800)] or ["{}"]
+                channel = getattr(message, "channel", None)
+                for index, chunk in enumerate(chunks, start=1):
+                    await channel.send(
+                        f"**Dis速 debug ({index}/{len(chunks)})**\n```json\n{chunk}```",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
             except Exception:
-                logger.exception("Failed to log Disoku embed details")
+                # Keep a fallback in host logs if Discord cannot accept the debug post
+                # (for example, missing Send Messages permission).
+                logger.exception("Failed to post Disoku debug details to Discord")
 
         if message.id in self._processed_messages:
             return
