@@ -2,6 +2,7 @@ import Link from "next/link";
 import { commandId, displayName, loadCatalog, permissionLabel } from "@/lib/catalog";
 import SampleNotice from "../SampleNotice";
 import CommandSearch from "./CommandSearch";
+import MusicGuide from "./MusicGuide";
 
 export const metadata = { title: "コマンド一覧 | AGOBOT" };
 
@@ -45,6 +46,13 @@ export default function CommandsPage() {
     <>
       <h1>コマンド一覧</h1>
       <SampleNotice show={catalog.isSample} />
+      <section className="guide-section" id="game-guide">
+        <h2><code>/game</code> ゲームで遊ぶ</h2>
+        <p>パーティーゲームの入口です。実行すると選択パネルが自分にだけ表示され、ゲームを選ぶとルールや人数の目安を確認できます。「募集する」からこのチャンネルで参加者を募り、集まった人がボタンで参加します。募集条件や開始方法はゲームごとに異なります。</p>
+        <p className="muted">人狼・ワードウルフ・UNO・ダウトなどを遊べます。各ゲームのルールはコマンドカードの「ルールを見る」から確認できます。</p>
+        <div className="card"><strong>使い方</strong><ol><li><code>/game</code>を入力してゲームを選ぶ</li><li>ルール・人数の目安を確認する</li><li>「募集する」を押し、参加者を募る</li><li>参加者は募集メッセージの参加ボタンから入る</li></ol></div>
+      </section>
+      <MusicGuide />
       <CommandSearch groups={groups} />
       {catalog.generated_at && <p className="muted">最終更新：{catalog.generated_at}</p>}
     </>

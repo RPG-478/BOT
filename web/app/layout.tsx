@@ -1,34 +1,23 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import "./globals.css";
-
 export const metadata: Metadata = {
-  title: "AGOBOT",
-  description: "パーティーゲームとサポート機能の Discord Bot、AGOBOT の使い方",
+  title: "AGOBOT サポート",
+  description: "AGOBOTのコマンド一覧と使い方。分かりやすく、幅広く。",
   icons: { icon: "/img/nomal.png" },
 };
-
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ja">
       <body>
         <header>
           <nav>
-            <Link href="/" className="brand">
-              <img src="/img/nomal.png" alt="" />
-              AGOBOT
-            </Link>
-            <Link href="/">ホーム</Link>
-            <Link href="/commands">コマンド</Link>
-            <Link href="/games">ゲーム</Link>
-            <Link href="/jinrou/roles">人狼図鑑</Link>
-            <Link href="/ranking">ランキング</Link>
-            <Link href="/nation">国づくり</Link>
-            <Link href="/map">マップ</Link>
+            <Link href="/" className="brand"><img src="/img/nomal.png" alt="" />AGOBOT サポート</Link>
+            <Link href="/commands">コマンド一覧</Link>
           </nav>
         </header>
         <main>{children}</main>
-        <footer>AGOBOT</footer>
+        <footer>AGOBOT サポート</footer>
       </body>
     </html>
   );
