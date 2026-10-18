@@ -19,7 +19,6 @@ Timing design
 """
 import asyncio
 import logging
-import json
 import re
 import socket
 import struct
@@ -209,40 +208,31 @@ def detect_event(message):
 
     text = _collect_embed_text(message)
     folded = text.casefold()
-    # Some application-generated messages may expose an application/integration
-    # author differently across discord.py/API versions.  Recognize the visible
-    # Disoku success embed as well as its known bot ID, but only for messages that
-    # really come from an application/bot/webhook: otherwise any member could type
-    # the success phrase and start a fake "up" cycle.
-    looks_like_app = bool(
-        getattr(author, "bot", False) or getattr(message, "webhook_id", None) or application_id
+    # Dis速-specific signature from the real response: application/webhook ID,
+    # the official embed title/URL, and the server-name field ending in
+    # 「をアップしたよ!」. Do not depend on message.content or /up being present.
+    embeds = getattr(message, "embeds", ()) or ()
+    disoku_signature = any(
+        getattr(embed, "title", "") == "ディス速 | Discordサーバー・友達募集・ボット掲示板"
+        and getattr(embed, "url", "") == "https://dissoku.net/ja"
+        and any(
+            "をアップしたよ" in (getattr(field, "name", "") or "")
+            for field in (getattr(embed, "fields", ()) or ())
+        )
+        for embed in embeds
     )
-    # The visible success embed does not consistently include the literal "/up"
-    # (the command may be rendered as a button, link, or omitted from embed text).
-    # Use the Dis速 brand + success wording, while still requiring an app/bot author.
-    disoku_success = any(
-        phrase in text
-        for phrase in ("アップしたよ", "をアップ", "アップしました", "アップ完了", "up done", "bump done")
-    )
-    is_disoku = (
-        author_id == DISOKU_BOT_ID
-        or (looks_like_app and has_embeds and "ディス速" in text and disoku_success)
-    )
+    app_ids = {
+        str(value) for value in (
+            author_id,
+            getattr(message, "application_id", None),
+            getattr(message, "webhook_id", None),
+        ) if value is not None
+    }
+    is_disoku = DISOKU_BOT_ID in {int(value) for value in app_ids if value.isdigit()} and disoku_signature
     is_disboard = author_id == DISBOARD_BOT_ID
     if not (is_disboard or is_disoku):
         return None
 
-    if is_disoku:
-        metadata = getattr(message, "interaction_metadata", None)
-        logger.info(
-            "Disoku message seen: author_id=%s app_id=%s meta_type=%s content=%r embed_count=%s text=%s",
-            author_id,
-            application_id,
-            getattr(metadata, "type", None),
-            getattr(message, "content", "") or "",
-            len(getattr(message, "embeds", ()) or ()),
-            text[:1000],
-        )
 
     if is_disboard:
         if "表示順をアップしたよ" not in text and "bump done" not in folded:
@@ -1005,38 +995,6 @@ class BumpRta(commands.Cog):
         author_id = getattr(getattr(message, "author", None), "id", None)
         if author_id not in (DISBOARD_BOT_ID, DISOKU_BOT_ID) and not getattr(message, "embeds", None):
             return
-        if author_id == DISOKU_BOT_ID or "ディス速" in _collect_embed_text(message):
-            # Post the diagnostic payload to Discord so it can be inspected without
-            # access to the hosting console. Send it in the same channel as the
-            # service message; split safely below Discord's 2000-character limit.
-            try:
-                metadata = getattr(message, "interaction_metadata", None)
-                diagnostic = {
-                    "type": "Disoku debug",
-                    "message_id": str(getattr(message, "id", "")),
-                    "guild_id": str(getattr(getattr(message, "guild", None), "id", "")),
-                    "channel_id": str(getattr(getattr(message, "channel", None), "id", "")),
-                    "author_id": str(author_id),
-                    "application_id": str(getattr(message, "application_id", None)),
-                    "webhook_id": str(getattr(message, "webhook_id", None)),
-                    "channel_type": str(getattr(getattr(message, "channel", None), "type", None)),
-                    "content": getattr(message, "content", "") or "",
-                    "metadata_type": str(getattr(metadata, "type", None)),
-                    "metadata_user_id": str(getattr(getattr(metadata, "user", None), "id", None)),
-                    "embeds": [embed.to_dict() for embed in (getattr(message, "embeds", ()) or ())],
-                }
-                payload = json.dumps(diagnostic, ensure_ascii=False, indent=2, default=str)
-                chunks = [payload[i:i + 1800] for i in range(0, len(payload), 1800)] or ["{}"]
-                channel = getattr(message, "channel", None)
-                for index, chunk in enumerate(chunks, start=1):
-                    await channel.send(
-                        f"**Dis速 debug ({index}/{len(chunks)})**\n```json\n{chunk}```",
-                        allowed_mentions=discord.AllowedMentions.none(),
-                    )
-            except Exception:
-                # Keep a fallback in host logs if Discord cannot accept the debug post
-                # (for example, missing Send Messages permission).
-                logger.exception("Failed to post Disoku debug details to Discord")
 
         if message.id in self._processed_messages:
             return
