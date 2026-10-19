@@ -26,7 +26,7 @@ REACTION_PAGE_SIZE = 16
 NEXT_PAGE = discord.PartialEmoji(name="Right", id=1561698129655373845)
 PREV_PAGE = discord.PartialEmoji(name="Left", id=1561698207757500537)
 HAND_EMOJI = "✋"
-CANCEL_EMOJI = "↩️"
+CANCEL_EMOJI = "<:Back:1561700549236097034>"
 
 
 SHOGI_VALUES = {
@@ -450,7 +450,7 @@ class Shogi(commands.Cog):
                         return
                     s.state = "select_dest"
                     dest_labels = list(zip(MOVE_LABELS, dests))[:REACTION_PAGE_SIZE]
-                    desc = f"移動先を選択してください（{len(dests)}箇所）。↩️でキャンセル。"
+                    desc = f"移動先を選択してください（{len(dests)}箇所）。<:Back:1561700549236097034>でキャンセル。"
                     await self._update_board_msg(s, reaction.message.channel, desc, labels=dest_labels, selected=pos, extra_emojis=[CANCEL_EMOJI])
                 elif s.state == "select_dest":
                     # Execute move
@@ -467,7 +467,7 @@ class Shogi(commands.Cog):
                         return
                     s.state = "select_drop_dest"
                     drop_labels = list(zip(MOVE_LABELS, drops))[:REACTION_PAGE_SIZE]
-                    desc = f"打ち場所を選択してください。↩️でキャンセル。"
+                    desc = f"打ち場所を選択してください。<:Back:1561700549236097034>でキャンセル。"
                     await self._update_board_msg(s, reaction.message.channel, desc, labels=drop_labels, extra_emojis=[CANCEL_EMOJI])
                 elif s.state == "select_drop_dest":
                     success = s.game.make_move(None, pos, drop_type=s.selected_drop)

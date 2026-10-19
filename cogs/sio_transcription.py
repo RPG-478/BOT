@@ -377,7 +377,7 @@ class TranscriptionCog(commands.Cog):
                 f"停止コマンド: `/voice のパネルから文字起こし停止`"
             ))
         else:
-            await r.send(embed=we("⏸️ 文字起こし停止中 (`/voice のパネルから文字起こし開始` で開始)"))
+            await r.send(embed=we("<:Pause:1561700510447312916> 文字起こし停止中 (`/voice のパネルから文字起こし開始` で開始)"))
 
     async def _start(self, r: Responder, target_channel: discord.TextChannel | None):
         # モデルが無いときは VC に入る前に断る。

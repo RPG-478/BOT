@@ -359,7 +359,7 @@ class KaraokeCog(commands.Cog):
             async with aiohttp.ClientSession() as session:
                 wh_obj = discord.Webhook.from_url(webhook.url, session=session)
                 try:
-                    await wh_obj.send(content=f"🎵 {text}", username=f"🎤 {display_name}", avatar_url=avatar_url)
+                    await wh_obj.send(content=f"<:music:1561710964238450809> {text}", username=f"🎤 {display_name}", avatar_url=avatar_url)
                 except Exception as ex:
                     logger.error(f"[Webhook Error] {ex}")
 

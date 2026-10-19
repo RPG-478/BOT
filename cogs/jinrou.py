@@ -980,7 +980,7 @@ class JinrouCog(commands.Cog):
                             dead_ids.add(victim_id)
                             victim_m = game.game_channel.guild.get_member(victim_id)
                             if victim_m:
-                                await send_log(f"🎵 パーティに人狼が紛れ込んでいた！ {victim_m.display_name} が犠牲になりました...")
+                                await send_log(f"<:music:1561710964238450809> パーティに人狼が紛れ込んでいた！ {victim_m.display_name} が犠牲になりました...")
                 break
 
         # 陽キャのアクション処理
@@ -1886,7 +1886,7 @@ class NightActionView(discord.ui.View):
                 embed = discord.Embed(description="パーティは既に開催済みです。今夜は待機してください。", color=0xFFFFFF)
                 return await interaction.response.send_message(embed=embed, ephemeral=True)
             self.game.night_actions[p_id] = 0
-            embed = discord.Embed(description="🎵 パーティを開催します！ランダムに4人を招待します。", color=0xFFFFFF)
+            embed = discord.Embed(description="<:music:1561710964238450809> パーティを開催します！ランダムに4人を招待します。", color=0xFFFFFF)
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         passive_roles = [

@@ -600,7 +600,7 @@ class RecordingCog(commands.Cog):
         sink: RecordingSink = session["sink"]
         audio_snapshot = sink.snapshot()
         if not audio_snapshot:
-            return await r.send(embed=we("🎵 音声データがまだ蓄積されていません。話してから実行してください。"), ephemeral=True)
+            return await r.send(embed=we("<:music:1561710964238450809> 音声データがまだ蓄積されていません。話してから実行してください。"), ephemeral=True)
 
         embed = discord.Embed(title="🎹 リアルタイム音階解析 (Pitch Detection)", color=0x3498DB)
         found_any = False
@@ -645,7 +645,7 @@ class RecordingCog(commands.Cog):
                 f"停止: `/voice のパネルからやまびこ停止`"
             ))
         else:
-            await r.send(embed=we("⏸️ やまびこ停止中 (`/voice のパネルからやまびこ開始` で開始)"))
+            await r.send(embed=we("<:Pause:1561700510447312916> やまびこ停止中 (`/voice のパネルからやまびこ開始` で開始)"))
 
     async def _echo_start(self, r: Responder, delay: float):
         voice = getattr(r.user, "voice", None)
@@ -920,7 +920,7 @@ class RecordingCog(commands.Cog):
         for i in range(0, len(files), 10):
             chunk = files[i:i + 10]
             await ctx.send(
-                content=f"🎵 **録音データ出力 ({i + 1}〜{i + len(chunk)}件 / 全{len(files)}件)**",
+                content=f"<:music:1561710964238450809> **録音データ出力 ({i + 1}〜{i + len(chunk)}件 / 全{len(files)}件)**",
                 files=chunk,
             )
 
@@ -949,7 +949,7 @@ class RecordingCog(commands.Cog):
             )
         else:
             embed = discord.Embed(
-                title="⏸️ 待機中",
+                title="<:Pause:1561700510447312916> 待機中",
                 description=(
                     "現在このサーバーで録音は行われていません。\n"
                     "`/voice のパネルから録音開始` で開始できます。"

@@ -256,7 +256,7 @@ class Shinkei(commands.Cog):
                 await self.refresh(g)
                 return "timeout"
             await channel.send(embed=discord.Embed(
-                description=result.notice.lstrip("⏰").strip(), color=COLOR))   # 絵文字を外して自分で送る
+                description=result.notice.lstrip("<:crock:1561710960387956757>").strip(), color=COLOR))   # 絵文字を外して自分で送る
             outcome = g.flip(uid, int(result.action) - 1)
             await self.refresh(g)
             if outcome == "miss":

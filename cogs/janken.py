@@ -193,7 +193,7 @@ class Janken(commands.Cog):
         missing = [u for u in g.alive if u not in g.choices]
         shown = "\n".join(f"{g.name(u)}: {HAND_LABELS[h]}" for u, h in g.choices.items()) or "（だれも出しませんでした）"
         if missing:
-            shown += "\n" + "\n".join(f"{g.name(u)}: ⏰ 時間切れ（負け）" for u in missing)
+            shown += "\n" + "\n".join(f"{g.name(u)}: <:crock:1561710960387956757> 時間切れ（負け）" for u in missing)
         if not g.choices:
             g.alive = []
             result = "全員時間切れのため終了です。"

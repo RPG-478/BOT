@@ -784,7 +784,7 @@ class SpatialControlView(discord.ui.View):
         # 💡 [修正点] 参照するボタン名を実際のメソッド名 (toggle_rot_mode または toggle_rotate) に合わせます
         rot_mode = state.get('spatial_rot_mode', 'standard')
         rot_labels = {
-            'off': '⏸️ 回転: OFF',
+            'off': '<:Pause:1561700510447312916> 回転: OFF',
             'standard': '🌀 回転: 通常',
             '3d': '🪐 回転: 3D'
         }
@@ -794,7 +794,7 @@ class SpatialControlView(discord.ui.View):
         # もし toggle_rotate のまま使用している場合：
         elif hasattr(self, 'toggle_rotate'):
             is_rotating = state.get('is_rotating', True)
-            self.toggle_rotate.label = "🌀 回転: ON" if is_rotating else "⏸️ 回転: OFF"
+            self.toggle_rotate.label = "🌀 回転: ON" if is_rotating else "<:Pause:1561700510447312916> 回転: OFF"
 
     # 💡 ボタンの定義（デコレータで定義されたメソッド）
     @discord.ui.button(label="🔄 回転モード切替", style=discord.ButtonStyle.primary, row=0)
@@ -1106,7 +1106,7 @@ class VoiceControlView(discord.ui.View):
         modal = CustomEQModal(self.cog, self.guild_id)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="⏸️", style=discord.ButtonStyle.primary, row=3)
+    @discord.ui.button(label="<:Pause:1561700510447312916>", style=discord.ButtonStyle.primary, row=3)
     async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         state = self.cog.get_state(self.guild_id)
@@ -1115,7 +1115,7 @@ class VoiceControlView(discord.ui.View):
             state['elapsed_offset'] += actual_played
             state['is_paused'] = True
             vc.stop()
-            await interaction.response.send_message(embed=we(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)"), ephemeral=True)
+            await interaction.response.send_message(embed=we(f"<:Pause:1561700510447312916> 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)"), ephemeral=True)
             await self.cog.update_panel(self.guild_id)
         else:
             await interaction.response.send_message(embed=we("❌ 現在再生中ではないか、既に一時停止されています。"), ephemeral=True)
@@ -1747,7 +1747,7 @@ class VoiceCog(commands.Cog):
         msg = state['panel_message']
         if not msg: return
 
-        if state['is_paused']: status_icon = "⏸️ 一時停止中"
+        if state['is_paused']: status_icon = "<:Pause:1561700510447312916> 一時停止中"
         elif state['current_track']: status_icon = "▶️ 再生中"
         else: status_icon = "⏹️ 停止中"
 
@@ -2602,7 +2602,7 @@ class VoiceCog(commands.Cog):
             vc.stop()
             
             await interaction.response.send_message(
-                embed=we(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)\nもう一度 `/music` の操作パネルから再開できます。")
+                embed=we(f"<:Pause:1561700510447312916> 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)\nもう一度 `/music` の操作パネルから再開できます。")
             )
             await self.update_panel(interaction.guild_id)
 
@@ -2859,7 +2859,7 @@ class VoiceCog(commands.Cog):
         # 💡 モード判定（3軸回転 / 通常回転 / 回転OFF）
         rot_mode = state.get('spatial_rot_mode', 'standard')  # 'off', 'standard', '3d'
         rot_labels = {
-            'off': '⏸️ 静止 (OFF)',
+            'off': '<:Pause:1561700510447312916> 静止 (OFF)',
             'standard': '🌀 通常水平回転 (Azimuth)',
             '3d': '🪐 3軸立体回転 (3D Pitch/Yaw/Roll)'
         }

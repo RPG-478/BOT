@@ -285,7 +285,7 @@ class OdaiShiritori(commands.Cog):
         if g.answer is None:
             g.eliminate(uid)
             return await channel.send(embed=discord.Embed(
-                description=f"⏰ {member.mention} さんは時間切れで脱落です。（残り {len(g.alive)}人）", color=COLOR))
+                description=f"<:crock:1561710960387956757> {member.mention} さんは時間切れで脱落です。（残り {len(g.alive)}人）", color=COLOR))
         word = g.answer
         result, reason = check_answer(g.last_word, word, g.used)
         if result == "out":

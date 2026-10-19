@@ -425,12 +425,12 @@ class VoiceChangerCog(commands.Cog):
             lines.append(f"📦 バッファ: 目標 `{target:.0f} ms` / 上限 `{resolved_max:.0f} ms`")
         if pitch is not None:
             sink.set_semitones(pitch)
-            lines.append(f"🎵 ピッチ: `{pitch:+.1f}` 半音")
+            lines.append(f"<:music:1561710964238450809> ピッチ: `{pitch:+.1f}` 半音")
         await r.send(embed=we("🔧 ボイスチェンジャーの設定を変更しました。\n" + "\n".join(lines)))
 
     async def _send_status(self, r: Responder, session: dict | None):
         if session is None:
-            return await r.send(embed=we("⏸️ ボイスチェンジャー停止中 (`/voice のパネルからボイスチェンジャー開始` で開始)"))
+            return await r.send(embed=we("<:Pause:1561700510447312916> ボイスチェンジャー停止中 (`/voice のパネルからボイスチェンジャー開始` で開始)"))
         sink: VoiceChangerSink = session["sink"]
         src = sink.audio_source
 
@@ -441,7 +441,7 @@ class VoiceChangerCog(commands.Cog):
 
         await r.send(embed=we(
             f"🎙️ **ボイスチェンジャー動作中 (20ms低遅延・無音待機再同期モード)**\n"
-            f"🎵 設定ピッチ: `{sink.semitones:+.1f}` 半音\n\n"
+            f"<:music:1561710964238450809> 設定ピッチ: `{sink.semitones:+.1f}` 半音\n\n"
             f"📊 **遅延ステータス (数値)**\n"
             f"├ ⚡ 変換処理時間: `{proc_ms:.2f} ms` (平均: `{avg_ms:.2f} ms`)\n"
             f"├ 📦 バッファ滞留量: `{buf_ms:.1f} ms`\n"
@@ -488,7 +488,7 @@ class VoiceChangerCog(commands.Cog):
         self.vc_sessions[guild_id] = {"sink": sink, "vc": vc}
         await r.send(embed=we(
             f"🎙️ **{target_channel.name}** でボイスチェンジャーを開始しました！\n"
-            f"🎵 ピッチ: `{pitch:+.1f}` 半音\n"
+            f"<:music:1561710964238450809> ピッチ: `{pitch:+.1f}` 半音\n"
             f"📦 プリバッファ: `{(buffer[0] if buffer else DEFAULT_TARGET_BUFFER_MS):.0f} ms` (超低遅延モード)\n"
             f"📊 `/voice のパネルからボイスチェンジャー状態` で遅延数値を確認できます。"
         ))

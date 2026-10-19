@@ -273,7 +273,7 @@ class Babanuki(commands.Cog):
             describe=lambda a: f"{a}番目のカードを引きま")
         if result is not None and result.action is not None:
             position = int(result.action) - 1
-            notice = result.notice.lstrip("⏰").strip()      # 絵文字を外して自分で送る
+            notice = result.notice.lstrip("<:crock:1561710960387956757>").strip()      # 絵文字を外して自分で送る
         else:
             position = rng.randrange(count)
             notice = f"{member.display_name}さんが時間切れのため、ランダムに{position + 1}番目のカードを引きました"

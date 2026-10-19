@@ -141,11 +141,11 @@ class EmojiBinjouView(discord.ui.View):
         self.settings[key] = enabled
         await interaction.response.edit_message(embed=self.cog.binjou_embed(self.settings), view=self)
 
-    @discord.ui.button(label="🤔 オン", style=discord.ButtonStyle.success, row=0)
+    @discord.ui.button(label="<:thinking:1561695212814995596> オン", style=discord.ButtonStyle.success, row=0)
     async def thinking_on(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.set_enabled(interaction, "thinking", True)
 
-    @discord.ui.button(label="🤔 オフ", style=discord.ButtonStyle.secondary, row=0)
+    @discord.ui.button(label="<:thinking:1561695212814995596> オフ", style=discord.ButtonStyle.secondary, row=0)
     async def thinking_off(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.set_enabled(interaction, "thinking", False)
 
@@ -394,7 +394,7 @@ class SupportCog(commands.Cog):
         return discord.Embed(
             title="絵文字便乗設定（binjou）",
             description=(
-                f"🤔 → {THINKING_EMOJI}: **{'オン' if settings['thinking'] else 'オフ'}**\n"
+                f"<:thinking:1561695212814995596> → {THINKING_EMOJI}: **{'オン' if settings['thinking'] else 'オフ'}**\n"
                 f"👍 → 👍: **{'オン' if settings['thumbsup'] else 'オフ'}**\n\n"
                 "各ボタンで個別に切り替えられます。初期設定はどちらもオンです。"
             ),
@@ -411,12 +411,12 @@ class SupportCog(commands.Cog):
         if payload.guild_id is None or payload.user_id == getattr(self.bot.user, "id", None):
             return
         source_emoji = str(payload.emoji)
-        if source_emoji not in {"🤔", "👍", "👍️"}:
+        if source_emoji not in {"<:thinking:1561695212814995596>", "👍", "👍️"}:
             return
         store = guild_settings.get_store()
         await store.ensure_loaded()
         settings = get_binjou_settings(store, payload.guild_id)
-        key = "thinking" if source_emoji == "🤔" else "thumbsup"
+        key = "thinking" if source_emoji == "<:thinking:1561695212814995596>" else "thumbsup"
         if not settings[key]:
             return
         member = getattr(payload, "member", None)
