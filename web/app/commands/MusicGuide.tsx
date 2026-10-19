@@ -2,8 +2,8 @@
 const musicCommands = [
   {
     name: "/music",
-    text: "actionから再生、操作パネル、一時停止、スキップ、キュー、ループ、音響設定、検索、プレイリストなどを選びます。URL・検索語・音声ファイルもこのコマンドだけで指定できます。",
-    example: "/music action: 再生 query: 作曲者 曲名",
+    text: "コマンドを送信すると音楽操作パネルが表示されます。パネルから再生、検索、一時停止、スキップ、キュー、ループ、音響設定、プレイリストなどを操作できます。",
+    example: "/music",
   },
 ];
 
@@ -11,7 +11,7 @@ export default function MusicGuide() {
   return (
     <section className="guide-section" id="music-guide">
       <h2>音楽を聴く：<code>/music</code></h2>
-      <p className="muted">先にボイスチャンネルへ参加してから使います。再生系の操作でBotがVCに参加します。必要な操作を選び、表示される項目を入力してください。</p>
+      <p className="muted">ボイスチャンネルで <code>/music</code> を送信し、表示されたパネルから操作します。再生操作ではBotがVCに参加します。</p>
       <div className="guide-list">
         {musicCommands.map((command) => (
           <article className="card" key={command.name}>

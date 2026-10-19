@@ -231,6 +231,8 @@ class CommandCatalogTest(unittest.TestCase):
         self.assertIn('administrator', get('!nation found')['permissions'])
         self.assertIn('manage_channels', get('!mimic_toggle')['permissions'])
         self.assertTrue(get('/music')['guild_only'])
+        self.assertEqual(get('/music')['options'], [])
+        self.assertEqual(get('/voice')['options'], [])
         self.assertEqual(get('!all_stats')['aliases'], ['stats', 'spec'])
         action = next(o for o in get('/support')['options'] if o['name'] == 'action')
         self.assertEqual((action['type'], action['required']), ('string', True))
