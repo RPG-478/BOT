@@ -17,18 +17,7 @@ DIRECTIONS = [(dr, dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if (dr, dc) != 
 ASSET_DIR = Path(__file__).resolve().parents[1] / "Assets" / "reversi"
 BOARD_SIZE = 800
 MOVE_LABELS = tuple("123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-REACTION_PAGE_SIZE = 17  # 前後ページ用リアクションを含め、上限20に余裕を持たせる
-NEXT_PAGE_EMOJI = discord.PartialEmoji(name="Right", id=1561698129655373845)
-PREVIOUS_PAGE_EMOJI = discord.PartialEmoji(name="Left", id=1561698207757500537)
-
-
-def reaction_emoji(label):
-    """盤面に印字するラベルとDiscordリアクションを対応させる。"""
-    if label in "123456789" and len(label) == 1:
-        return f"{label}\ufe0f\u20e3"
-    if label in MOVE_LABELS[9:] and len(label) == 1:
-        return chr(0x1F1E6 + ord(label) - ord("A"))
-    raise ValueError(f"不明な手ラベル: {label}")
+SELECT_PAGE_SIZE = 25  # Discord のセレクトメニューの選択肢上限
 
 
 def labelled_moves(moves):
@@ -222,101 +211,38 @@ class OthelloMoveSelect(discord.ui.Select):
     def __init__(self, cog, game, moves):
         self.cog, self.game, self.moves = cog, game, moves
         options = [discord.SelectOption(label=f"{label}番", value=label)
-                   for label, _ in labelled_moves(moves)[:REACTION_PAGE_SIZE]]
+                   for label, _ in labelled_moves(moves)[:SELECT_PAGE_SIZE]]
         super().__init__(placeholder="置き場所の番号を選んでください", options=options)
 
     async def callback(self, interaction):
+        if (self.game.phase != "playing" or self.game.acted or
+                self.game.current_user().id != interaction.user.id):
+            return await interaction.response.send_message(
+                "現在の手番のプレイヤーだけが選択できます。", ephemeral=True
+            )
         await interaction.response.defer()
         label = self.values[0]
         move = dict(labelled_moves(self.moves)).get(label)
-        if (self.game.phase == "playing" and not self.game.acted and
-                move in legal_moves(self.game.board, self.game.turn)):
+        if move in legal_moves(self.game.board, self.game.turn):
             self.game.acted = play_move(self.game.board, self.game.turn, *move)
 
 
 class OthelloMoveView(discord.ui.View):
     def __init__(self, cog, game, moves):
         super().__init__(timeout=TURN_SECONDS)
-        self.add_item(OthelloMoveSelect(cog, game, moves))
+        for start in range(0, len(moves), SELECT_PAGE_SIZE):
+            self.add_item(OthelloMoveSelect(cog, game, moves[start:start + SELECT_PAGE_SIZE]))
 
 
 class Othello(commands.Cog):
     def __init__(self, bot):
         self.bot, self.games = bot, {}
-        self.reaction_sessions = {}
 
     @staticmethod
     def player_label(game, color):
         """プレイヤーまたはCPUの表示名を返す。"""
         player = game.players[color]
         return "CPU" if player is None else player.mention
-
-    async def _add_reactions(self, message, emojis):
-        await asyncio.gather(
-            *(message.add_reaction(emoji) for emoji in emojis),
-            return_exceptions=True,
-        )
-
-    async def add_move_reactions(self, message, game, moves, description, offset=0):
-        page_moves = labelled_moves(moves)[offset:offset + REACTION_PAGE_SIZE]
-        active = [reaction_emoji(label) for label, _ in page_moves]
-        if offset + REACTION_PAGE_SIZE < len(moves):
-            active.append(NEXT_PAGE_EMOJI)
-        if offset > 0:
-            active.append(PREVIOUS_PAGE_EMOJI)
-        self.reaction_sessions[message.id] = {
-            "game": game, "moves": moves, "offset": offset, "active": active,
-            "description": description,
-        }
-        emojis = [reaction_emoji(label) for label, _ in page_moves]
-        if offset + REACTION_PAGE_SIZE < len(moves):
-            emojis.append(NEXT_PAGE_EMOJI)
-        if offset > 0:
-            emojis.append(PREVIOUS_PAGE_EMOJI)
-        await self._add_reactions(message, emojis)
-
-    @commands.Cog.listener()
-    async def on_reaction_add(self, reaction, user):
-        if user.bot:
-            return
-        message = reaction.message
-        session = self.reaction_sessions.get(message.id)
-        if not session:
-            return
-        game = session["game"]
-        if game.phase != "playing" or game.acted or game.current_user().id != user.id:
-            return
-        emoji = reaction.emoji
-        try:
-            await message.remove_reaction(reaction.emoji, user)
-        except discord.HTTPException:
-            pass
-        if emoji in (NEXT_PAGE_EMOJI, PREVIOUS_PAGE_EMOJI):
-            new_offset = session["offset"] + (REACTION_PAGE_SIZE if emoji == NEXT_PAGE_EMOJI else -REACTION_PAGE_SIZE)
-            if 0 <= new_offset < len(session["moves"]):
-                moves = session["moves"]
-                start, end = new_offset + 1, min(new_offset + REACTION_PAGE_SIZE, len(moves))
-                description = f"{session['description']}\n候補 {start}〜{end} / {len(moves)}"
-                file, image_url = board_attachment(game.board, moves)
-                embed = discord.Embed(description=description, color=COLOR)
-                embed.set_image(url=image_url)
-                try:
-                    await message.delete()
-                    replacement = await game_panels.replace(
-                        message.channel, "party", embed=embed, file=file
-                    )
-                except discord.HTTPException:
-                    return
-                self.reaction_sessions.pop(message.id, None)
-                await self.add_move_reactions(replacement, game, moves, session["description"], new_offset)
-            return
-        offset = session["offset"]
-        page_moves = labelled_moves(session["moves"])[offset:offset + REACTION_PAGE_SIZE]
-        chosen = next((move for label, move in page_moves if reaction_emoji(label) == emoji), None)
-        if chosen is None:
-            return
-        if game.phase == "playing" and not game.acted and game.current_user().id == user.id:
-            game.acted = play_move(game.board, game.turn, *chosen)
 
     async def start_recruit(self, interaction, mode="human", difficulty=5):
         channel = interaction.channel
@@ -386,17 +312,13 @@ class Othello(commands.Cog):
             file, image_url = board_attachment(g.board, moves)
             turn_embed = discord.Embed(
                 description=(f"{g.players[color].mention} さんの番（{ '黒 ●' if color == BLACK else '白 ○'}）。\n"
-                             "画像の番号・アルファベットと同じリアクションを押してください。"), color=COLOR)
+                             "盤面画像の番号をセレクトメニューから選んでください。"), color=COLOR)
             turn_embed.set_image(url=image_url)
             turn_message = await game_panels.replace(channel, "party", embed=turn_embed, file=file,
                                                      view=OthelloMoveView(self, g, moves))
-            await self.add_move_reactions(turn_message, g, moves, turn_embed.description)
             for _ in range(TURN_SECONDS):
                 if g.acted or g.phase != "playing": break
                 await asyncio.sleep(1)
-            for message_id, session in list(self.reaction_sessions.items()):
-                if session["game"] is g:
-                    self.reaction_sessions.pop(message_id, None)
             if g.acted:
                 idle = 0
                 g.pass_count = 0
