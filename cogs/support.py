@@ -20,12 +20,99 @@ SUPPORT_ACTIONS = [
     app_commands.Choice(name="bump/up通知・RTAオフ", value="bumprta_off"),
     app_commands.Choice(name="絵文字便乗設定（binjou）", value="binjou"),
     app_commands.Choice(name="抽選（giveaway）", value="giveaway"),
+    app_commands.Choice(name="VC入退室履歴", value="vc_log"),
 ]
 
 THINKING_SECTION = "thinking_reaction"
 BINJOU_SECTION = "binjou"
+VC_LOG_SECTION = "vc_log"
 THINKING_EMOJI = discord.PartialEmoji(name="thinking", id=1561695212814995596)
 BINJOU_DEFAULTS = {"thinking": True, "thumbsup": True}
+
+
+def get_vc_log_settings(store, guild_id: int) -> dict[str, int | bool | None]:
+    """VC入退室ログ設定。未設定時はオフ・送信先なし。"""
+    raw = store.get(guild_id, VC_LOG_SECTION)
+    if not isinstance(raw, dict):
+        raw = {}
+    enabled = raw.get("enabled") if isinstance(raw.get("enabled"), bool) else False
+    channel_id = raw.get("channel_id")
+    if not isinstance(channel_id, int) or isinstance(channel_id, bool):
+        channel_id = None
+    return {"enabled": enabled, "channel_id": channel_id}
+
+
+def vc_log_embed(member: discord.Member, channel: discord.VoiceChannel, joined: bool) -> discord.Embed:
+    action = "入りました" if joined else "退出しました"
+    embed = discord.Embed(
+        title="VC入室" if joined else "VC退出",
+        description=f"{member.mention} が **{discord.utils.escape_markdown(channel.name)}** に{action}。",
+        color=0x2ECC71 if joined else 0xE74C3C,
+        timestamp=discord.utils.utcnow(),
+    )
+    avatar = getattr(member, "display_avatar", None)
+    if avatar is not None:
+        embed.set_author(name=member.display_name, icon_url=avatar.url)
+    return embed
+
+
+class VCLogChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, parent: "VCLogSettingsView"):
+        self.parent_view = parent
+        super().__init__(
+            placeholder="履歴を送るテキストチャンネルを選択",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
+        channel = self.values[0]
+        await guild_settings.get_store().update(interaction.guild_id, VC_LOG_SECTION, channel_id=channel.id)
+        await self.parent_view.refresh(interaction, "送信先を設定しました。")
+
+
+class VCLogSettingsView(discord.ui.View):
+    def __init__(self, cog: "SupportCog", settings: dict):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.settings = settings
+        self.add_item(VCLogChannelSelect(self))
+
+    @staticmethod
+    def can_manage(interaction: discord.Interaction) -> bool:
+        return bool(getattr(getattr(interaction.user, "guild_permissions", None), "manage_guild", False))
+
+    def embed(self, notice: str | None = None) -> discord.Embed:
+        channel_id = self.settings.get("channel_id")
+        channel_label = f"<#{channel_id}>" if channel_id else "未設定"
+        description = f"状態: **{'オン' if self.settings['enabled'] else 'オフ'}**\n送信先: {channel_label}"
+        if notice:
+            description = f"{notice}\n\n{description}"
+        description += "\n\nオンにすると、VC入室・退出・VC間の移動を記録します。初期状態はオフです。"
+        return discord.Embed(title="VC入退室履歴の設定", description=description, color=0x3498DB)
+
+    async def refresh(self, interaction: discord.Interaction, notice: str | None = None):
+        self.settings = get_vc_log_settings(guild_settings.get_store(), interaction.guild_id)
+        await interaction.response.edit_message(embed=self.embed(notice), view=self)
+
+    async def set_enabled(self, interaction: discord.Interaction, enabled: bool):
+        if not self.can_manage(interaction):
+            return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
+        if enabled and self.settings.get("channel_id") is None:
+            return await interaction.response.send_message("先に履歴を送るテキストチャンネルを選択してください。", ephemeral=True)
+        await guild_settings.get_store().update(interaction.guild_id, VC_LOG_SECTION, enabled=enabled)
+        await self.refresh(interaction, f"履歴を{'オン' if enabled else 'オフ'}にしました。")
+
+    @discord.ui.button(label="オン", style=discord.ButtonStyle.success, row=1)
+    async def turn_on(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.set_enabled(interaction, True)
+
+    @discord.ui.button(label="オフ", style=discord.ButtonStyle.secondary, row=1)
+    async def turn_off(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.set_enabled(interaction, False)
 
 
 def get_binjou_settings(store, guild_id: int) -> dict[str, bool]:
@@ -254,6 +341,54 @@ class SupportCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    async def show_vc_log_settings(self, interaction: discord.Interaction):
+        if interaction.guild_id is None:
+            return await interaction.response.send_message("この設定はサーバー内で利用できます。", ephemeral=True)
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        settings = get_vc_log_settings(store, interaction.guild_id)
+        view = VCLogSettingsView(self, settings)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(
+        self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
+    ):
+        if member.bot or member.guild is None:
+            return
+        old_channel = getattr(before, "channel", None)
+        new_channel = getattr(after, "channel", None)
+        old_id = getattr(old_channel, "id", None)
+        new_id = getattr(new_channel, "id", None)
+        if old_id == new_id:
+            return
+
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        settings = get_vc_log_settings(store, member.guild.id)
+        channel_id = settings["channel_id"]
+        if not settings["enabled"] or channel_id is None:
+            return
+
+        target = self.bot.get_channel(channel_id)
+        if target is None:
+            try:
+                target = await self.bot.fetch_channel(channel_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                logger.warning("VC入退室ログの送信先を取得できません (guild=%s channel=%s)", member.guild.id, channel_id)
+                return
+        if getattr(getattr(target, "guild", None), "id", member.guild.id) != member.guild.id:
+            logger.warning("VC入退室ログの送信先が別サーバーです (guild=%s channel=%s)", member.guild.id, channel_id)
+            return
+
+        try:
+            if old_channel is not None:
+                await target.send(embed=vc_log_embed(member, old_channel, joined=False))
+            if new_channel is not None:
+                await target.send(embed=vc_log_embed(member, new_channel, joined=True))
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception("VC入退室ログを送信できません (guild=%s channel=%s)", member.guild.id, channel_id)
+
     @staticmethod
     def binjou_embed(settings: dict[str, bool]) -> discord.Embed:
         return discord.Embed(
@@ -372,6 +507,8 @@ class SupportCog(commands.Cog):
     async def dispatch(self, interaction: discord.Interaction, selected: str):
         if selected == "giveaway":
             return await interaction.response.send_modal(GiveawayModal(self))
+        if selected == "vc_log":
+            return await self.show_vc_log_settings(interaction)
         if selected == "binjou":
             store = guild_settings.get_store()
             await store.ensure_loaded()

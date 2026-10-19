@@ -4,7 +4,8 @@ from unittest.mock import AsyncMock, patch
 
 from cogs.support import (
     BINJOU_SECTION, EmojiBinjouView, RoleBulkView, RoleTargetSelect, SupportCog,
-    SUPPORT_ACTIONS, THINKING_EMOJI, THINKING_SECTION, get_binjou_settings,
+    SUPPORT_ACTIONS, THINKING_EMOJI, THINKING_SECTION, VC_LOG_SECTION,
+    get_binjou_settings, get_vc_log_settings,
 )
 
 
@@ -194,6 +195,58 @@ class SupportThinkingReactionTest(unittest.IsolatedAsyncioTestCase):
             await cog.on_raw_reaction_add(payload)
         channel.fetch_message.assert_not_awaited()
         message.add_reaction.assert_not_awaited()
+
+
+class SupportVCLogTest(unittest.IsolatedAsyncioTestCase):
+    def make_event(self, enabled=True, channel_id=90):
+        guild = types.SimpleNamespace(id=1)
+        target = types.SimpleNamespace(guild=guild, send=AsyncMock())
+        bot = types.SimpleNamespace(
+            get_channel=lambda _channel_id: target if _channel_id == channel_id else None,
+            fetch_channel=AsyncMock(return_value=target),
+        )
+        cog = SupportCog(bot)
+        store = types.SimpleNamespace(
+            ensure_loaded=AsyncMock(),
+            get=lambda _guild_id, section: (
+                {"enabled": enabled, "channel_id": channel_id} if section == VC_LOG_SECTION else {}
+            ),
+        )
+        member = types.SimpleNamespace(bot=False, guild=guild, mention="<@5>")
+        return cog, store, member, target
+
+    def test_vc_log_defaults_to_off_without_destination(self):
+        store = types.SimpleNamespace(get=lambda _guild_id, _section: {})
+        self.assertEqual(get_vc_log_settings(store, 1), {"enabled": False, "channel_id": None})
+        self.assertIn("vc_log", [choice.value for choice in SUPPORT_ACTIONS])
+
+    async def test_join_and_leave_send_embeds_when_enabled(self):
+        cog, store, member, target = self.make_event()
+        voice = types.SimpleNamespace(id=20, name="ゲームVC")
+        with patch("cogs.support.guild_settings.get_store", return_value=store):
+            await cog.on_voice_state_update(member, types.SimpleNamespace(channel=None), types.SimpleNamespace(channel=voice))
+            await cog.on_voice_state_update(member, types.SimpleNamespace(channel=voice), types.SimpleNamespace(channel=None))
+        self.assertEqual(target.send.await_count, 2)
+        sent = [call.kwargs["embed"] for call in target.send.await_args_list]
+        self.assertEqual([embed.title for embed in sent], ["VC入室", "VC退出"])
+        self.assertIn("<@5>", sent[0].description)
+        self.assertIn("ゲームVC", sent[1].description)
+
+    async def test_switching_voice_channels_sends_exit_then_join(self):
+        cog, store, member, target = self.make_event()
+        before = types.SimpleNamespace(channel=types.SimpleNamespace(id=20, name="旧VC"))
+        after = types.SimpleNamespace(channel=types.SimpleNamespace(id=21, name="新VC"))
+        with patch("cogs.support.guild_settings.get_store", return_value=store):
+            await cog.on_voice_state_update(member, before, after)
+        sent = [call.kwargs["embed"] for call in target.send.await_args_list]
+        self.assertEqual([embed.title for embed in sent], ["VC退出", "VC入室"])
+
+    async def test_disabled_vc_log_sends_nothing(self):
+        cog, store, member, target = self.make_event(enabled=False)
+        voice = types.SimpleNamespace(id=20, name="ゲームVC")
+        with patch("cogs.support.guild_settings.get_store", return_value=store):
+            await cog.on_voice_state_update(member, types.SimpleNamespace(channel=None), types.SimpleNamespace(channel=voice))
+        target.send.assert_not_awaited()
 
 
 if __name__ == "__main__":
