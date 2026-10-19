@@ -59,7 +59,7 @@ def vc_log_embed(member: discord.Member, channel: discord.VoiceChannel, joined: 
     action = "入りました" if joined else "退出しました"
     embed = discord.Embed(
         title="VC入室" if joined else "VC退出",
-        description=f"{member.mention} が **{discord.utils.escape_markdown(channel.name)}** に{action}。",
+        description=f"{member.mention} が **{discord.utils.escape_markdown(channel.name)}** が{action}。",
         color=0x2ECC71 if joined else 0xE74C3C,
         timestamp=discord.utils.utcnow(),
     )
