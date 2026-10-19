@@ -245,6 +245,12 @@ class Othello(commands.Cog):
         self.bot, self.games = bot, {}
         self.reaction_sessions = {}
 
+    @staticmethod
+    def player_label(game, color):
+        """プレイヤーまたはCPUの表示名を返す。"""
+        player = game.players[color]
+        return "CPU" if player is None else player.mention
+
     async def _add_reactions(self, message, emojis):
         await asyncio.gather(
             *(message.add_reaction(emoji) for emoji in emojis),
@@ -360,13 +366,18 @@ class Othello(commands.Cog):
                     break
                 g.turn = WHITE if g.turn == BLACK else BLACK
                 file, image_url = board_attachment(g.board)
-                pass_embed = discord.Embed(description=f"{g.players[BLACK if g.turn == WHITE else WHITE].mention} さんは置ける場所がないためパス。", color=COLOR)
+                passed_color = BLACK if g.turn == WHITE else WHITE
+                pass_embed = discord.Embed(
+                    description=f"{self.player_label(g, passed_color)} さんは置ける場所がないためパス。",
+                    color=COLOR,
+                )
                 pass_embed.set_image(url=image_url)
                 await channel.send(embed=pass_embed, file=file)
                 continue
             if g.mode == "cpu" and g.turn == WHITE:
                 move = await asyncio.to_thread(choose_ai_move, g.board, WHITE, g.difficulty)
                 play_move(g.board, WHITE, *move)
+                g.pass_count = 0
                 g.turn = BLACK
                 continue
             g.acted = False
@@ -392,13 +403,14 @@ class Othello(commands.Cog):
                 g.turn = WHITE if color == BLACK else BLACK
             else:
                 idle += 1
-                await channel.send(f"{g.players[color].mention} さんは時間切れのためパスしました。")
+                await channel.send(f"{self.player_label(g, color)} さんは時間切れのためパスしました。")
                 g.pass_count += 1
                 g.turn = WHITE if color == BLACK else BLACK
                 if idle >= 2: break
         g.phase = "done"
         black, white = g.score()
-        outcome = "引き分け" if black == white else f"勝者: {g.players[BLACK if black > white else WHITE].mention}"
+        winner = BLACK if black > white else WHITE
+        outcome = "引き分け" if black == white else f"勝者: {self.player_label(g, winner)}"
         file, image_url = board_attachment(g.board)
         result_embed = discord.Embed(title="オセロ 終了", description=f"{outcome}\n黒: {black} / 白: {white}", color=COLOR)
         result_embed.set_image(url=image_url)
