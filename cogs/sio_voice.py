@@ -72,7 +72,26 @@ def format_elapsed(seconds: float) -> str:
 
 
 class VoiceHub(commands.Cog):
-    voice_group = app_commands.Group(name="voice", description="ボイスチャンネルの機能（参加・録音・文字起こしなど）", guild_only=True)
+    VOICE_ACTIONS = [
+        app_commands.Choice(name="VC参加", value="join"), app_commands.Choice(name="VC退出", value="leave"),
+        app_commands.Choice(name="VC状態", value="status"),
+        *[app_commands.Choice(name=f"録音: {label}", value=f"record_{value}") for label, value in
+          (("開始", "start"), ("停止", "stop"), ("状態", "status"), ("音程解析", "pitch"))],
+        *[app_commands.Choice(name=f"やまびこ: {label}", value=f"echo_{value}") for label, value in
+          (("開始", "start"), ("停止", "stop"), ("遅延変更", "delay"))],
+        app_commands.Choice(name="文字起こし: 開始", value="transcribe_start"),
+        app_commands.Choice(name="文字起こし: 停止", value="transcribe_stop"),
+        app_commands.Choice(name="カラオケ: 開始", value="karaoke_start"),
+        app_commands.Choice(name="カラオケ: 停止", value="karaoke_stop"),
+        app_commands.Choice(name="カラオケ: 採点", value="karaoke_score"),
+        app_commands.Choice(name="ボイスチェンジャー: 開始", value="changer_start"),
+        app_commands.Choice(name="ボイスチェンジャー: 停止", value="changer_stop"),
+        app_commands.Choice(name="ボイスチェンジャー: 状態/設定", value="changer_status"),
+        app_commands.Choice(name="ランダム通話: 開始/参加", value="match_start"),
+        app_commands.Choice(name="ランダム通話: 終了/退出", value="match_stop"),
+        app_commands.Choice(name="グローバルVC: 開始/参加", value="global_start"),
+        app_commands.Choice(name="グローバルVC: 終了/退出", value="global_stop"),
+    ]
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -104,18 +123,15 @@ class VoiceHub(commands.Cog):
         voice_client = getattr(guild, "voice_client", None)
         if voice_client is not None:
             name = getattr(getattr(voice_client, "channel", None), "name", "不明")
-            embed.description = f"Bot は **{name}** に接続していますが、使っている機能の記録がありません。`/voice connection action:退出` で退出できます。"
+            embed.description = f"Bot は **{name}** に接続していますが、使っている機能の記録がありません。`/voice action:VC退出` で退出できます。"
         else:
             embed.description = "いまはどの機能も使っていません。"
         saito = self.bot.get_cog(COGS["match"])
         if saito is not None and any(getattr(r.guild, "id", None) == guild.id for r in getattr(saito, "matching_queue", [])):
-            embed.description += "\nランダム通話の相手を探しています（`/voice community network:ランダム通話 action:終了/退出` で取り消し）。"
+            embed.description += "\nランダム通話の相手を探しています（`/voice action:ランダム通話終了/退出` で取り消し）。"
         return embed
 
     # ------------------------------------------------------------ 統合サブコマンド
-    @voice_group.command(name="connection", description="BotのVC参加・退出・利用状況")
-    @app_commands.choices(action=CONNECTION_ACTIONS)
-    @app_commands.describe(action="参加・退出・状態確認")
     async def voice_connection(self, interaction: discord.Interaction, action: app_commands.Choice[str]):
         if action.value == "status":
             return await Responder(interaction).send(embed=self.status_embed(interaction.guild), ephemeral=True)
@@ -126,10 +142,6 @@ class VoiceHub(commands.Cog):
             else:
                 await cog._leave_impl(Responder(interaction))
 
-    @voice_group.command(name="studio", description="録音・やまびこ・文字起こし・カラオケを操作")
-    @app_commands.choices(feature=STUDIO_FEATURES, action=STUDIO_ACTIONS)
-    @app_commands.describe(feature="操作する機能", action="実行する操作", delay="やまびこの遅延秒数",
-                           channel="文字起こしの送り先（省略時は現在のチャンネル）", lyrics="カラオケ開始時のお題歌詞")
     async def voice_studio(self, interaction: discord.Interaction, feature: app_commands.Choice[str],
                            action: app_commands.Choice[str],
                            delay: app_commands.Range[float, 0.1, 30.0] | None = None,
@@ -157,9 +169,6 @@ class VoiceHub(commands.Cog):
         else:
             await cog._karaoke_impl(responder, action.value, lyrics)
 
-    @voice_group.command(name="effects", description="ボイスチェンジャーの開始・停止・設定")
-    @app_commands.choices(action=EFFECT_ACTIONS)
-    @app_commands.describe(action="実行する操作", pitch="ピッチ（半音）", buffer_ms="目標プリバッファms", max_ms="上限バッファms")
     async def voice_effects(self, interaction: discord.Interaction, action: app_commands.Choice[str],
                             pitch: app_commands.Range[float, -24.0, 24.0] | None = None,
                             buffer_ms: app_commands.Range[float, 20.0, 2000.0] | None = None,
@@ -168,9 +177,6 @@ class VoiceHub(commands.Cog):
         if cog:
             await cog._changer_impl(Responder(interaction), action.value, pitch=pitch, buffer_ms=buffer_ms, max_ms=max_ms)
 
-    @voice_group.command(name="community", description="ランダム通話・グローバルVCを操作")
-    @app_commands.choices(network=COMMUNITY_NETWORKS, action=COMMUNITY_ACTIONS)
-    @app_commands.describe(network="接続する機能", action="開始/参加または終了/退出", room="グローバルVCのルーム名", password="非公開ルームのパスワード")
     async def voice_community(self, interaction: discord.Interaction, network: app_commands.Choice[str],
                               action: app_commands.Choice[str], room: str | None = None,
                               password: str | None = None):
@@ -184,6 +190,36 @@ class VoiceHub(commands.Cog):
             mapped = "join" if action.value == "start" else "leave"
             if cog:
                 await cog._global_impl(Responder(interaction), mapped, room, password)
+
+    @app_commands.command(name="voice", description="VC参加・録音・文字起こし・音声加工・通話をまとめて実行します")
+    @app_commands.choices(action=VOICE_ACTIONS)
+    @app_commands.describe(action="実行する操作", delay="やまびこの遅延秒数",
+                           channel="文字起こしの送り先", lyrics="カラオケのお題歌詞",
+                           pitch="ピッチ（半音）", buffer_ms="目標プリバッファms", max_ms="上限バッファms",
+                           room="グローバルVCのルーム名", password="非公開ルームのパスワード")
+    async def voice(self, interaction: discord.Interaction, action: app_commands.Choice[str],
+                    delay: app_commands.Range[float, 0.1, 30.0] | None = None,
+                    channel: discord.TextChannel | None = None, lyrics: str | None = None,
+                    pitch: app_commands.Range[float, -24.0, 24.0] | None = None,
+                    buffer_ms: app_commands.Range[float, 20.0, 2000.0] | None = None,
+                    max_ms: app_commands.Range[float, 20.0, 4000.0] | None = None,
+                    room: str | None = None, password: str | None = None):
+        value = action.value
+        if value in {"join", "leave", "status"}:
+            return await self.voice_connection(interaction, app_commands.Choice(name=value, value=value))
+        if "_" not in value:
+            return await Responder(interaction).send("操作を選択してください。", ephemeral=True)
+        key, operation = value.rsplit("_", 1)
+        if key in {"record", "echo", "transcribe", "karaoke"}:
+            return await self.voice_studio(
+                interaction, app_commands.Choice(name=key, value=key),
+                app_commands.Choice(name=operation, value=operation), delay, channel, lyrics)
+        if key == "changer":
+            return await self.voice_effects(
+                interaction, app_commands.Choice(name=operation, value=operation), pitch, buffer_ms, max_ms)
+        return await self.voice_community(
+            interaction, app_commands.Choice(name=key, value=key),
+            app_commands.Choice(name=operation, value=operation), room, password)
 
 
 async def setup(bot: commands.Bot):

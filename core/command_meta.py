@@ -95,13 +95,12 @@ CATEGORIES = [
         "description": "ボイスチャンネルでの音楽再生（`/music`）と、録音・文字起こし・ボイスチェンジャー・他サーバーとの通話など（`/voice`）です。",
         "guide": (
             "## はじめに\n"
-            "先に自分がボイスチャンネルに入ってから実行してください。音楽は `/music play` に URL・検索語・音声ファイルを渡すと"
-            "Bot が VC に入って再生します。`/music panel` の操作パネルからまとめて操作できます。"
-            "録音・やまびこ・文字起こし・カラオケは `/voice studio`、ボイスチェンジャーは `/voice effects`、"
-            "ランダム通話・グローバルVCは `/voice community` から操作できます。\n\n"
+            "先に自分がボイスチャンネルに入ってから実行してください。`/music` の操作で URL・検索語・音声ファイルの再生、"
+            "一時停止・キュー・音響設定・プレイリスト操作まで実行できます。録音・やまびこ・文字起こし・カラオケ、"
+            "ボイスチェンジャー、ランダム通話・グローバルVCはすべて `/voice` の操作から選べます。\n\n"
             "## 注意\n"
             "音楽と `/voice` の機能は、どれも Bot の接続を 1 つ使います。ほかの機能が使用中のときは断られるので、"
-            "`/voice connection action:状態` で何が使っているかを確かめ、終わってから（または `/voice connection action:退出` してから）実行してください。"
+            "`/voice action:VC状態` で何が使っているかを確かめ、終わってから（または `/voice action:VC退出` してから）実行してください。"
             "録音を始めると、チャンネルに「録音を開始しました」と表示されます。"
             "誰もいない状態が 3 分続くと Bot は自動で退出します。"
         ),
@@ -187,16 +186,9 @@ COMMAND_META: dict[str, dict] = {
                "guide_key": "doubt"},
 
     # ---------------------------------------------------------------- ボイス・音楽
-    "/music play": {"category": "voice", "usage": "/music play query:<URL・検索語・ID> [file:<音声ファイル>] [start_at:<秒>]"},
-    "/music control": {"category": "voice", "usage": "/music control action:<操作> [seconds:<秒>] [loop_mode:<種類>]"},
-    "/music sound": {"category": "voice", "usage": "/music sound action:<音量|速度|EQ|立体音響> [value|preset|feedback|wet|resolution]"},
-    "/music library": {"category": "voice", "usage": "/music library action:<検索|プレイリスト|音声ID> [query|playlist_action|name|scope|file|limit]"},
-    "/music panel": {"category": "voice", "usage": "/music panel"},
+    "/music": {"category": "voice", "usage": "/music action:<再生|操作|音響|ライブラリ> [query|file|value|preset|playlist_action|scope]"},
     "/bumprta": {"category": "voice", "usage": "/bumprta action:<状態|通知オン|通知オフ>"},
-    "/voice connection": {"category": "voice", "usage": "/voice connection action:<参加|退出|状態>"},
-    "/voice studio": {"category": "voice", "usage": "/voice studio feature:<録音|やまびこ|文字起こし|カラオケ> action:<操作> [delay|channel|lyrics]"},
-    "/voice effects": {"category": "voice", "usage": "/voice effects action:<開始|停止|状態/設定変更> [pitch|buffer_ms|max_ms]"},
-    "/voice community": {"category": "voice", "usage": "/voice community network:<ランダム通話|グローバルVC> action:<開始/参加|終了/退出> [room|password]"},
+    "/voice": {"category": "voice", "usage": "/voice action:<VC|録音|やまびこ|文字起こし|カラオケ|通話> [delay|channel|lyrics|pitch|room|password]"},
     "!ffversion": {"category": "voice", "hidden": True},
 
     # ---------------------------------------------------------------- おたのしみ・AI

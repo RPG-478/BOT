@@ -128,7 +128,7 @@ class CommandCatalogTest(unittest.TestCase):
                 self.assertNotIn(key, command_meta.COMMAND_META)
                 self.assertIsNone(command_catalog.find_command(self.catalog, key, include_hidden=True))
         self.assertFalse([k for k in registered if k.split(' ')[0] in ('!rec', '!echo', '!stt', '!karaoke', '!vc')])
-        for key in ('/music play', '/voice studio', '!gvc create', '!gvc chat connect', '!ffversion'):
+        for key in ('/music', '/voice', '!gvc create', '!gvc chat connect', '!ffversion'):
             with self.subTest(kept=key):
                 self.assertIn(key, registered)
 
@@ -230,7 +230,7 @@ class CommandCatalogTest(unittest.TestCase):
         self.assertTrue(get('!nation found')['guild_only'])
         self.assertIn('administrator', get('!nation found')['permissions'])
         self.assertIn('manage_channels', get('!mimic_toggle')['permissions'])
-        self.assertTrue(get('/music play')['guild_only'])  # グループの guild_only がサブコマンドにも付く
+        self.assertTrue(get('/music')['guild_only'])
         self.assertEqual(get('!all_stats')['aliases'], ['stats', 'spec'])
         amount = next(o for o in get('/clear')['options'] if o['name'] == 'amount')
         self.assertEqual((amount['type'], amount['required']), ('integer', True))

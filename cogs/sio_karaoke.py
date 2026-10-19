@@ -320,9 +320,9 @@ class KaraokeCog(commands.Cog):
             return await r.send(embed=we("🛑 カラオケモードを終了しました！"))
         await r.send(embed=we(
             "🎤 **カラオケ機能の使い方**\n"
-            "1. `/voice studio feature:カラオケ action:開始 lyrics:<お題の歌詞>` : 歌詞をセットして採点＆字幕開始\n"
-            "2. `/voice studio feature:カラオケ action:採点` : 現在の歌唱スコアを表示\n"
-            "3. `/voice studio feature:カラオケ action:終了` : カラオケを終了"
+            "1. `/voice action:カラオケ開始 lyrics:<お題の歌詞>` : 歌詞をセットして採点＆字幕開始\n"
+            "2. `/voice action:カラオケ採点` : 現在の歌唱スコアを表示\n"
+            "3. `/voice action:カラオケ終了` : カラオケを終了"
         ))
 
     async def _start(self, r: Responder, target_lyrics: str | None):
@@ -376,7 +376,7 @@ class KaraokeCog(commands.Cog):
         await r.send(embed=we(
             f"🎤 **{vc_channel.name}** でカラオケを開始しました！\n\n"
             f"📜 **お題の歌詞:**\n```\n{target_lyrics}\n```\n"
-            "歌った声がリアルタイムで字幕表示されます。終わったら `/voice studio feature:カラオケ action:採点` で採点！"
+            "歌った声がリアルタイムで字幕表示されます。終わったら `/voice action:カラオケ採点` で採点！"
         ))
 
     async def _score(self, r: Responder):

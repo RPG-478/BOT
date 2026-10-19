@@ -384,11 +384,11 @@ class GlobalVCCog(commands.Cog):
         embed.description = (
             f"`{ctx.prefix}gvc create <ルーム名> [--max 5] [--private] [--password xxxx] [--desc 説明]` "
             f": 新しいルームを作成\n"
-            f"`/voice community network:グローバルVC action:参加 room:<ルーム名> [password]` : 指定したルームに参加 (要ボイスチャンネル在室)\n"
+            f"`/voice action:グローバルVC開始/参加 room:<ルーム名> [password]` : 指定したルームに参加 (要ボイスチャンネル在室)\n"
             f"`{ctx.prefix}gvc list` : ルーム一覧を表示\n"
             f"`{ctx.prefix}gvc info <ルーム名>` : ルームの詳細設定を表示\n"
             f"`{ctx.prefix}gvc delete <ルーム名>` : ルームを削除 (作成者か、作成したサーバーの管理者のみ)\n"
-            f"`/voice community network:グローバルVC action:退出` : グローバルVCから離脱 (ルーム自体は残ります)\n"
+            f"`/voice action:グローバルVC終了/退出` : グローバルVCから離脱 (ルーム自体は残ります)\n"
             f"`{ctx.prefix}gvc chat connect <ルーム名> [パスワード]` : このチャンネルをグロチャに接続\n"
             f"`{ctx.prefix}gvc chat disconnect` : このチャンネルのグロチャ接続を解除\n\n"
             f"ルーム名にスペースを含める場合は `\"\"` で囲んでください。"
@@ -429,7 +429,7 @@ class GlobalVCCog(commands.Cog):
         embed.add_field(name="公開設定", value="🔒 非公開" if private else "🌍 公開")
         if description:
             embed.add_field(name="説明", value=description, inline=False)
-        embed.set_footer(text=f"/voice community network:グローバルVC action:参加 room:{room_name} で参加できます")
+        embed.set_footer(text=f"/voice action:グローバルVC開始/参加 room:{room_name} で参加できます")
         await ctx.send(embed=embed)
 
     @gvc_group.command(name="list")
@@ -549,7 +549,7 @@ class GlobalVCCog(commands.Cog):
                            if any(c.guild and c.guild.id == r.guild.id for c in clients)), None)
             return await r.send(
                 f"⚠️ このサーバーはすでにルーム **{joined or '不明'}** に参加しています。"
-                "先に `/voice community network:グローバルVC action:退出` してください。"
+                "先に `/voice action:グローバルVC終了/退出` してください。"
             )
 
         # 別の機能（音楽・録音など）が VC を使っているときは追い出さずに断る。

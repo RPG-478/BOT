@@ -195,8 +195,8 @@ class ManagerTest(unittest.IsolatedAsyncioTestCase):
         message = str(caught.exception)
         self.assertIn('録音', message)
         self.assertIn('alice', message)
-        self.assertIn('/voice studio feature:録音 action:停止', message)
-        self.assertIn('/voice connection action:退出', message)
+        self.assertIn('/voice action:録音停止', message)
+        self.assertIn('/voice action:VC退出', message)
         self.assertTrue(vc.is_connected())
         self.assertEqual(vc.disconnect_calls, 0)
         self.assertEqual(cleanup.reasons, [])
@@ -570,7 +570,7 @@ class MusicTest(unittest.IsolatedAsyncioTestCase):
         if task is not None:
             await task
         self.assertIsNone(self.manager.get(self.w.guild.id))
-        self.assertIn('/voice connection action:退出 で退出したため録音を停止しました', self.w.text.text())
+        self.assertIn('/voice action:VC退出 で退出したため録音を停止しました', self.w.text.text())
 
     async def test_join_hints_point_to_slash_join(self):
         source = (ROOT / 'cogs' / 'sio_music.py').read_text(encoding='utf-8')
