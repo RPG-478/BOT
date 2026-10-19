@@ -7,6 +7,7 @@ from discord.ext import commands
 
 from cogs.clear import MAX_CLEAR
 from core import guild_settings
+from core.panel_v2 import as_panel_v2
 logger = logging.getLogger(__name__)
 
 
@@ -98,7 +99,7 @@ def get_activity_log_settings(store, guild_id: int, section: str) -> dict[str, i
     if section == MODERATION_LOG_SECTION:
         for action in ("timeout", "kick", "ban"):
             key = f"{action}_enabled"
-            settings[key] = raw.get(key) if isinstance(raw.get(key), bool) else True
+            settings[key] = raw.get(key) if isinstance(raw.get(key), bool) else False
     return settings
 
 
@@ -128,8 +129,9 @@ class ModerationActionToggle(discord.ui.Button):
         super().__init__(label=self.button_label(), style=discord.ButtonStyle.secondary, row=row)
 
     def button_label(self) -> str:
-        enabled = self.parent_view.settings.get(f"{self.action}_enabled", True)
-        return f"{self.action_label}: {'送信する' if enabled else '送信しない'}"
+        enabled = self.parent_view.settings.get(f"{self.action}_enabled", False)
+        next_state = "オフにする" if enabled else "オンにする"
+        return f"{self.action_label}履歴を{next_state}"
 
     async def callback(self, interaction: discord.Interaction):
         await self.parent_view.toggle_action(interaction, self.action)
@@ -157,7 +159,7 @@ class ActivityLogSettingsView(discord.ui.View):
         description = f"状態: **{'オン' if self.settings['enabled'] else 'オフ'}**\n送信先: {channel_label}"
         if notice:
             description = f"{notice}\n\n{description}"
-        description += f"\n\n{self.log_description}初期状態はオフです。"
+        description += f"\n\n{self.log_description}"
         if self.section == MODERATION_LOG_SECTION:
             description += (
                 "\n\n個別設定: "
@@ -190,11 +192,11 @@ class ActivityLogSettingsView(discord.ui.View):
         await guild_settings.get_store().update(interaction.guild_id, self.section, **{key: enabled})
         await self.refresh(interaction, f"{action.upper()}履歴を{'オン' if enabled else 'オフ'}にしました。")
 
-    @discord.ui.button(label="オン", style=discord.ButtonStyle.success, row=1)
+    @discord.ui.button(label="履歴をオンにする", style=discord.ButtonStyle.success, row=1)
     async def turn_on(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.set_enabled(interaction, True)
 
-    @discord.ui.button(label="オフ", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="履歴をオフにする", style=discord.ButtonStyle.secondary, row=1)
     async def turn_off(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.set_enabled(interaction, False)
 
@@ -234,7 +236,7 @@ class VCLogSettingsView(discord.ui.View):
         description = f"状態: **{'オン' if self.settings['enabled'] else 'オフ'}**\n送信先: {channel_label}"
         if notice:
             description = f"{notice}\n\n{description}"
-        description += "\n\nオンにすると、VC入室・退出・VC間の移動を記録します。初期状態はオフです。"
+        description += "\n\nVC入室・退出・VC間の移動を記録します。"
         return discord.Embed(title="VC入退室履歴の設定", description=description, color=0x3498DB)
 
     async def refresh(self, interaction: discord.Interaction, notice: str | None = None):
@@ -548,7 +550,7 @@ class SupportCog(commands.Cog):
         store = guild_settings.get_store()
         await store.ensure_loaded()
         settings = get_activity_log_settings(store, guild.id, MODERATION_LOG_SECTION)
-        return bool(settings["enabled"] and settings.get(f"{action}_enabled", True))
+        return bool(settings["enabled"] and settings.get(f"{action}_enabled", False))
 
     async def _send_activity(self, guild: discord.Guild, section: str, embed: discord.Embed):
         target = await self._activity_target(guild, section)
@@ -580,7 +582,7 @@ class SupportCog(commands.Cog):
             async for entry in guild.audit_logs(limit=10, action=action):
                 if getattr(getattr(entry, "target", None), "id", None) == target_id:
                     age = (discord.utils.utcnow() - entry.created_at).total_seconds()
-                    if age <= 20:
+                    if -5 <= age <= 60:
                         return entry
         except (discord.Forbidden, discord.HTTPException):
             logger.info("監査ログを取得できません (guild=%s action=%s)", guild.id, action)
@@ -798,7 +800,7 @@ class SupportCog(commands.Cog):
     async def support(self, interaction: discord.Interaction):
         view = SupportPanelView(self)
         await interaction.response.send_message(
-            embed=view.embed(), view=view, ephemeral=True,
+            view=as_panel_v2(view), ephemeral=True,
         )
 
     async def dispatch(self, interaction: discord.Interaction, selected: str):

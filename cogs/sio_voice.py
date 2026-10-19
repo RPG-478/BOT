@@ -14,6 +14,7 @@ from discord.ext import commands
 
 from core.legacy import Responder
 from core.voice_session import get_manager, stop_hint
+from core.panel_v2 import as_panel_v2
 
 CONNECTION_ACTIONS = [
     app_commands.Choice(name="参加", value="join"),
@@ -217,7 +218,7 @@ class VoiceHub(commands.Cog):
     @app_commands.command(name="vc", description="音楽・ボイス機能の操作パネルを表示します")
     async def vc(self, interaction: discord.Interaction):
         view = VoicePanelView(self)
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        await interaction.response.send_message(view=as_panel_v2(view), ephemeral=True)
 
     async def dispatch_voice_action(self, interaction: discord.Interaction, value: str,
                     delay: app_commands.Range[float, 0.1, 30.0] | None = None,

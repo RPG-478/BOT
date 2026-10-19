@@ -4,6 +4,7 @@ from __future__ import annotations
 import discord
 from discord import app_commands
 from discord.ext import commands
+from core.panel_v2 import as_panel_v2
 
 
 GENERAL_GENRES = {
@@ -105,7 +106,7 @@ class GeneralCog(commands.Cog):
     @app_commands.command(name="general", description="一般機能の操作パネルを表示します")
     async def general(self, interaction: discord.Interaction):
         view = GeneralPanel(self)
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        await interaction.response.send_message(view=as_panel_v2(view), ephemeral=True)
 
     async def dispatch_general(self, interaction: discord.Interaction, value: str):
         wallet = self.bot.get_cog("WalletCog")
