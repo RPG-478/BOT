@@ -21,17 +21,19 @@ SUPPORT_ACTIONS = [
     app_commands.Choice(name="絵文字便乗設定（binjou）", value="binjou"),
     app_commands.Choice(name="抽選（giveaway）", value="giveaway"),
     app_commands.Choice(name="VC入退室履歴", value="vc_log"),
+    app_commands.Choice(name="メッセージ編集履歴", value="message_log"),
+    app_commands.Choice(name="モデレート履歴（TO/KICK/BAN）", value="moderation_log"),
 ]
 
 SUPPORT_GENRES = {
-    "moderation": ("モデレーション", "Muted、匿名つぶやき、メッセージ削除"),
-    "server": ("サーバー管理", "ロール操作、絵文字便乗、VC履歴"),
+    "moderation": ("モデレーション", "Muted、匿名つぶやき、メッセージ削除、モデレート履歴"),
+    "server": ("サーバー管理", "ロール操作、絵文字便乗、VC履歴、メッセージ編集履歴"),
     "bumprta": ("bump/up・RTA", "通知設定と RTA 状態・ランキング"),
     "event": ("イベント", "抽選の作成"),
 }
 SUPPORT_ACTIONS_BY_GENRE = {
-    "moderation": [(c.name, c.value) for c in SUPPORT_ACTIONS[:3]],
-    "server": [(c.name, c.value) for c in (SUPPORT_ACTIONS[3], SUPPORT_ACTIONS[7], SUPPORT_ACTIONS[9])],
+    "moderation": [(c.name, c.value) for c in (*SUPPORT_ACTIONS[:3], SUPPORT_ACTIONS[11])],
+    "server": [(c.name, c.value) for c in (SUPPORT_ACTIONS[3], SUPPORT_ACTIONS[7], SUPPORT_ACTIONS[9], SUPPORT_ACTIONS[10])],
     "bumprta": [(c.name, c.value) for c in SUPPORT_ACTIONS[4:7]],
     "event": [(SUPPORT_ACTIONS[8].name, SUPPORT_ACTIONS[8].value)],
 }
@@ -39,8 +41,22 @@ SUPPORT_ACTIONS_BY_GENRE = {
 THINKING_SECTION = "thinking_reaction"
 BINJOU_SECTION = "binjou"
 VC_LOG_SECTION = "vc_log"
+MESSAGE_LOG_SECTION = "message_log"
+MODERATION_LOG_SECTION = "moderation_log"
 THINKING_EMOJI = discord.PartialEmoji(name="thinking", id=1561695212814995596)
 BINJOU_DEFAULTS = {"thinking": True, "thumbsup": True}
+
+
+def self_clip(value, limit=1024):
+    text = str(value or "(内容なし)")
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def mention_with_id(user) -> str:
+    if user is None:
+        return "不明"
+    mention = getattr(user, "mention", None) or getattr(user, "name", None) or str(user)
+    return f"{mention} (`{getattr(user, 'id', '不明')}`)"
 
 
 def get_vc_log_settings(store, guild_id: int) -> dict[str, int | bool | None]:
@@ -67,6 +83,80 @@ def vc_log_embed(member: discord.Member, channel: discord.VoiceChannel, joined: 
     if avatar is not None:
         embed.set_author(name=member.display_name, icon_url=avatar.url)
     return embed
+
+
+def get_activity_log_settings(store, guild_id: int, section: str) -> dict[str, int | bool | None]:
+    """メッセージ・モデレート履歴の共通設定を返す。未設定時はオフ。"""
+    raw = store.get(guild_id, section)
+    if not isinstance(raw, dict):
+        raw = {}
+    enabled = raw.get("enabled") if isinstance(raw.get("enabled"), bool) else False
+    channel_id = raw.get("channel_id")
+    if not isinstance(channel_id, int) or isinstance(channel_id, bool):
+        channel_id = None
+    return {"enabled": enabled, "channel_id": channel_id}
+
+
+class ActivityLogChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, parent: "ActivityLogSettingsView"):
+        self.parent_view = parent
+        super().__init__(
+            placeholder="履歴を送るテキストチャンネルを選択",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
+        channel = self.values[0]
+        await guild_settings.get_store().update(
+            interaction.guild_id, self.parent_view.section, channel_id=channel.id
+        )
+        await self.parent_view.refresh(interaction, "送信先を設定しました。")
+
+
+class ActivityLogSettingsView(discord.ui.View):
+    def __init__(self, cog: "SupportCog", section: str, title: str, description: str, settings: dict):
+        super().__init__(timeout=300)
+        self.cog, self.section, self.title, self.log_description = cog, section, title, description
+        self.settings = settings
+        self.add_item(ActivityLogChannelSelect(self))
+
+    @staticmethod
+    def can_manage(interaction: discord.Interaction) -> bool:
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        return bool(getattr(permissions, "manage_guild", False) or getattr(permissions, "administrator", False))
+
+    def embed(self, notice: str | None = None) -> discord.Embed:
+        channel_id = self.settings.get("channel_id")
+        channel_label = f"<#{channel_id}>" if channel_id else "未設定"
+        description = f"状態: **{'オン' if self.settings['enabled'] else 'オフ'}**\n送信先: {channel_label}"
+        if notice:
+            description = f"{notice}\n\n{description}"
+        description += f"\n\n{self.log_description}初期状態はオフです。"
+        return discord.Embed(title=self.title, description=description, color=0x3498DB)
+
+    async def refresh(self, interaction: discord.Interaction, notice: str | None = None):
+        self.settings = get_activity_log_settings(guild_settings.get_store(), interaction.guild_id, self.section)
+        await interaction.response.edit_message(embed=self.embed(notice), view=self)
+
+    async def set_enabled(self, interaction: discord.Interaction, enabled: bool):
+        if not self.can_manage(interaction):
+            return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
+        if enabled and self.settings.get("channel_id") is None:
+            return await interaction.response.send_message("先に履歴を送るテキストチャンネルを選択してください。", ephemeral=True)
+        await guild_settings.get_store().update(interaction.guild_id, self.section, enabled=enabled)
+        await self.refresh(interaction, f"履歴を{'オン' if enabled else 'オフ'}にしました。")
+
+    @discord.ui.button(label="オン", style=discord.ButtonStyle.success, row=1)
+    async def turn_on(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.set_enabled(interaction, True)
+
+    @discord.ui.button(label="オフ", style=discord.ButtonStyle.secondary, row=1)
+    async def turn_off(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.set_enabled(interaction, False)
 
 
 class VCLogChannelSelect(discord.ui.ChannelSelect):
@@ -385,6 +475,117 @@ class SupportCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    async def show_activity_log_settings(
+        self, interaction: discord.Interaction, section: str, title: str, description: str
+    ):
+        if interaction.guild_id is None:
+            return await interaction.response.send_message("この設定はサーバー内で利用できます。", ephemeral=True)
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        settings = get_activity_log_settings(store, interaction.guild_id, section)
+        view = ActivityLogSettingsView(self, section, title, description, settings)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+    async def _activity_target(self, guild: discord.Guild, section: str):
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        settings = get_activity_log_settings(store, guild.id, section)
+        if not settings["enabled"] or settings["channel_id"] is None:
+            return None
+        target = self.bot.get_channel(settings["channel_id"])
+        if target is None:
+            try:
+                target = await self.bot.fetch_channel(settings["channel_id"])
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                logger.warning("履歴の送信先を取得できません (guild=%s section=%s)", guild.id, section)
+                return None
+        if getattr(getattr(target, "guild", None), "id", guild.id) != guild.id:
+            logger.warning("履歴の送信先が別サーバーです (guild=%s section=%s)", guild.id, section)
+            return None
+        return target
+
+    async def _send_activity(self, guild: discord.Guild, section: str, embed: discord.Embed):
+        target = await self._activity_target(guild, section)
+        if target is None:
+            return
+        try:
+            await target.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception("履歴を送信できません (guild=%s section=%s)", guild.id, section)
+
+    @staticmethod
+    def _clip(value, limit=1024):
+        text = str(value or "(内容なし)")
+        return text if len(text) <= limit else text[:limit - 1] + "…"
+
+    @staticmethod
+    def message_edit_embed(before: discord.Message, after: discord.Message) -> discord.Embed:
+        embed = discord.Embed(title="メッセージ編集", color=0xF1C40F, timestamp=discord.utils.utcnow())
+        embed.set_author(name=before.author.display_name, icon_url=before.author.display_avatar.url)
+        embed.add_field(name="ユーザー", value=f"{before.author.mention} (`{before.author.id}`)", inline=False)
+        embed.add_field(name="チャンネル", value=f"{before.channel.mention} (`{before.channel.id}`)", inline=False)
+        embed.add_field(name="編集前", value=self_clip(before.content), inline=False)
+        embed.add_field(name="編集後", value=self_clip(after.content), inline=False)
+        embed.add_field(name="メッセージ", value=f"[元のメッセージへ]({after.jump_url})", inline=False)
+        return embed
+
+    async def _recent_audit_entry(self, guild: discord.Guild, action, target_id: int):
+        try:
+            async for entry in guild.audit_logs(limit=10, action=action):
+                if getattr(getattr(entry, "target", None), "id", None) == target_id:
+                    age = (discord.utils.utcnow() - entry.created_at).total_seconds()
+                    if age <= 20:
+                        return entry
+        except (discord.Forbidden, discord.HTTPException):
+            logger.info("監査ログを取得できません (guild=%s action=%s)", guild.id, action)
+        return None
+
+    @staticmethod
+    def moderation_embed(title: str, target, entry, detail: str) -> discord.Embed:
+        executor = getattr(entry, "user", None) if entry else None
+        reason = getattr(entry, "reason", None) if entry else None
+        embed = discord.Embed(title=title, color=0xE74C3C, timestamp=discord.utils.utcnow())
+        embed.add_field(name="対処したユーザー", value=mention_with_id(executor), inline=True)
+        embed.add_field(name="適用されたユーザー", value=mention_with_id(target), inline=True)
+        embed.add_field(name="対処詳細", value=SupportCog._clip(detail), inline=False)
+        embed.add_field(name="理由", value=SupportCog._clip(reason or "理由なし"), inline=False)
+        if executor is not None:
+            avatar = getattr(getattr(executor, "display_avatar", None), "url", None)
+            embed.set_author(name=getattr(executor, "display_name", str(executor)), icon_url=avatar)
+        return embed
+
+    @commands.Cog.listener()
+    async def on_message_edit(self, before: discord.Message, after: discord.Message):
+        if before.guild is None or before.author.bot or before.content == after.content:
+            return
+        await self._send_activity(before.guild, MESSAGE_LOG_SECTION, self.message_edit_embed(before, after))
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        old_until = getattr(before, "communication_disabled_until", None)
+        new_until = getattr(after, "communication_disabled_until", None)
+        if before.guild is None or old_until == new_until or new_until is None:
+            return
+        entry = await self._recent_audit_entry(before.guild, discord.AuditLogAction.member_update, after.id)
+        detail = f"タイムアウト期限: {new_until.isoformat()}"
+        await self._send_activity(before.guild, MODERATION_LOG_SECTION, self.moderation_embed("タイムアウト（TO）", after, entry, detail))
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member):
+        if member.guild is None or member.bot:
+            return
+        ban_entry = await self._recent_audit_entry(member.guild, discord.AuditLogAction.ban, member.id)
+        if ban_entry is not None:
+            return
+        entry = await self._recent_audit_entry(member.guild, discord.AuditLogAction.kick, member.id)
+        if entry is not None:
+            await self._send_activity(member.guild, MODERATION_LOG_SECTION, self.moderation_embed("KICK", member, entry, "サーバーからキック"))
+
+    @commands.Cog.listener()
+    async def on_member_ban(self, guild: discord.Guild, user: discord.User):
+        entry = await self._recent_audit_entry(guild, discord.AuditLogAction.ban, user.id)
+        await self._send_activity(guild, MODERATION_LOG_SECTION, self.moderation_embed("BAN", user, entry, "サーバーからBAN"))
+
     async def show_vc_log_settings(self, interaction: discord.Interaction):
         if interaction.guild_id is None:
             return await interaction.response.send_message("この設定はサーバー内で利用できます。", ephemeral=True)
@@ -553,6 +754,16 @@ class SupportCog(commands.Cog):
             return await interaction.response.send_modal(GiveawayModal(self))
         if selected == "vc_log":
             return await self.show_vc_log_settings(interaction)
+        if selected == "message_log":
+            return await self.show_activity_log_settings(
+                interaction, MESSAGE_LOG_SECTION, "メッセージ編集履歴の設定",
+                "オンにすると、ユーザーのメッセージ編集前後をEmbedで記録します。",
+            )
+        if selected == "moderation_log":
+            return await self.show_activity_log_settings(
+                interaction, MODERATION_LOG_SECTION, "モデレート履歴の設定",
+                "オンにすると、TO・KICK・BANの実行者、対象者、詳細をEmbedで記録します。",
+            )
         if selected == "binjou":
             store = guild_settings.get_store()
             await store.ensure_loaded()
