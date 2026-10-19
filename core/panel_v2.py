@@ -66,7 +66,11 @@ class PanelLayoutView(discord.ui.LayoutView):
         """/help のページ遷移をV2ビューのまま行う。"""
         if self.panel.__class__.__name__ != "HelpView":
             return await self.panel.show(interaction, category_id, page)
-        next_panel = self.panel.__class__(self.panel.catalog, category_id, page)
+        next_panel = self.panel.__class__(
+            self.panel.catalog, category_id, page,
+            getattr(self.panel, "shortcut_mode", False),
+            getattr(self.panel, "shortcut_item", None),
+        )
         self.stop()
         await interaction.response.edit_message(view=PanelLayoutView(next_panel))
 

@@ -1,7 +1,7 @@
 import types
 import unittest
 
-from cogs.general import GENERAL_ACTIONS, GENERAL_GENRES, ShortcutBuilderView
+from cogs.general import GENERAL_ACTIONS, GENERAL_GENRES, ShortcutRootPanel
 from core import shortcuts
 
 
@@ -20,7 +20,7 @@ class ShortcutTest(unittest.IsolatedAsyncioTestCase):
     async def test_custom_genre_and_two_step_builder(self):
         self.assertIn("custom", GENERAL_GENRES)
         self.assertEqual(GENERAL_ACTIONS["custom"], [("ショートカットを管理", "shortcut_manage")])
-        view = ShortcutBuilderView(None)
+        view = ShortcutRootPanel()
         self.assertEqual(len(view.children[0].options), 5)
         self.assertEqual(view.children[0].options[0].value, "general")
 

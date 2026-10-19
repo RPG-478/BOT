@@ -259,7 +259,9 @@ class VoiceGenreSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         view: VoicePanelView = self.view
+        view = getattr(view, "panel", view)
         view.genre = self.values[0]
+        view.action = None
         view.refresh()
         await interaction.response.edit_message(embed=view.embed(), view=view)
 
@@ -274,6 +276,7 @@ class VoiceActionSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         value = self.values[0]
+        getattr(self.view, "panel", self.view).action = value
         if value == "global_start":
             return await interaction.response.send_modal(GlobalRoomModal(self.hub))
         await self.hub.dispatch_voice_action(interaction, value)
@@ -282,10 +285,15 @@ class VoiceActionSelect(discord.ui.Select):
 class VoicePanelView(discord.ui.View):
     """引数を覚えなくてもボイス機能を選べるジャンル別操作パネル。"""
 
-    def __init__(self, hub: VoiceHub, genre: str | None = None):
+    def __init__(self, hub: VoiceHub, genre: str | None = None, shortcut_mode: bool = False,
+                 shortcut_item: dict | None = None):
         super().__init__(timeout=900)
         self.hub = hub
-        self.genre = genre
+        saved = (shortcut_item or {}).get("action", {})
+        self.genre = genre or saved.get("genre")
+        self.action = saved.get("value")
+        self.shortcut_mode = shortcut_mode
+        self.shortcut_item = shortcut_item
         self.refresh()
 
     def refresh(self):
@@ -293,6 +301,14 @@ class VoicePanelView(discord.ui.View):
         self.add_item(VoiceGenreSelect(self.hub, self.genre))
         if self.genre:
             self.add_item(VoiceActionSelect(self.hub, self.genre))
+        if self.shortcut_mode:
+            from cogs.general import ShortcutCommitButton
+            self.add_item(ShortcutCommitButton())
+
+    def shortcut_action(self):
+        if not self.genre or not self.action:
+            return None
+        return {"root": "vc", "genre": self.genre, "value": self.action}
 
     def embed(self):
         description = "ジャンルを選ぶと、その中の機能を選択できます。"

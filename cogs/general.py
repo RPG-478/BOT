@@ -81,7 +81,9 @@ class GeneralGenreSelect(discord.ui.Select):
 
     async def callback(self, interaction):
         view: GeneralPanel = self.view
+        view = getattr(view, "panel", view)
         view.genre = self.values[0]
+        view.action = None
         view.refresh()
         await interaction.response.edit_message(embed=view.embed(), view=view)
 
@@ -98,14 +100,19 @@ class GeneralActionSelect(discord.ui.Select):
 
     async def callback(self, interaction):
         view: GeneralPanel = self.view
+        getattr(view, "panel", view).action = self.values[0]
         await self.cog.dispatch_general(interaction, self.values[0])
 
 
 class GeneralPanel(discord.ui.View):
-    def __init__(self, cog, genre: str | None = None):
+    def __init__(self, cog, genre: str | None = None, shortcut_mode: bool = False, shortcut_item: dict | None = None):
         super().__init__(timeout=300)
         self.cog = cog
-        self.genre = genre
+        saved = (shortcut_item or {}).get("action", {})
+        self.genre = genre or saved.get("genre")
+        self.action = saved.get("value")
+        self.shortcut_mode = shortcut_mode
+        self.shortcut_item = shortcut_item
         self.refresh()
 
     def refresh(self):
@@ -113,6 +120,13 @@ class GeneralPanel(discord.ui.View):
         self.add_item(GeneralGenreSelect(self.cog, self.genre))
         if self.genre:
             self.add_item(GeneralActionSelect(self.cog, self.genre))
+        if self.shortcut_mode:
+            self.add_item(ShortcutCommitButton())
+
+    def shortcut_action(self):
+        if not self.genre or not self.action:
+            return None
+        return {"root": "general", "genre": self.genre, "value": self.action}
 
     def embed(self):
         description = "ジャンルを選ぶと、その中の機能を選択できます。"
@@ -161,60 +175,63 @@ class ShortcutRootSelect(discord.ui.Select):
         ], row=0)
 
     async def callback(self, interaction: discord.Interaction):
+        if isinstance(self.parent_view, ShortcutRootPanel):
+            return await self.parent_view.open_existing_panel(interaction, self.values[0])
         self.parent_view.root = self.values[0]
         self.parent_view.selected = None
         self.parent_view.refresh()
         await interaction.response.edit_message(embed=self.parent_view.embed(), view=self.parent_view)
 
 
-class ShortcutActionSelect(discord.ui.Select):
-    def __init__(self, parent: "ShortcutBuilderView", selected: str | None = None):
-        self.parent_view = parent
-        options = []
-        label, actions = SHORTCUT_ROOTS[parent.root]
-        for action_label, value in actions:
-            options.append(discord.SelectOption(label=action_label[:100], value=value,
-                                                default=value == selected))
-        super().__init__(placeholder="実行するコマンドと機能を選択", options=options[:25], row=1)
-
-    async def callback(self, interaction: discord.Interaction):
-        self.parent_view.selected = self.values[0]
-        await interaction.response.edit_message(embed=self.parent_view.embed(), view=self.parent_view)
-
-
-class ShortcutBuilderView(discord.ui.View):
-    def __init__(self, cog: "GeneralCog", selected: str | None = None, item: dict | None = None):
+class ShortcutRootPanel(discord.ui.View):
+    """ショートカット登録の入口。選択後は各コマンドの既存パネルを使う。"""
+    def __init__(self, item: dict | None = None):
         super().__init__(timeout=300)
-        self.cog, self.item = cog, item
+        self.item = item
         action = item.get("action", {}) if item else {}
-        self.root = action.get("root", "general")
-        self.selected = selected.removeprefix(f"{self.root}|") if selected and "|" in selected else selected
-        self.refresh()
-
-    def refresh(self):
-        self.clear_items()
+        self.root = action.get("root")
         self.add_item(ShortcutRootSelect(self, self.root))
-        self.add_item(ShortcutActionSelect(self, self.selected))
-
-    def action(self) -> dict | None:
-        if not self.selected:
-            return None
-        return {"root": self.root, "value": self.selected}
 
     def embed(self):
-        action = self.action()
-        text = "下のセレクトで5コマンドから実行内容を選び、「この内容で決定」を押してください。"
-        if action:
-            label = next((al for al, v in SHORTCUT_ROOTS[self.root][1] if v == self.selected), self.selected)
-            text = f"実行内容: **{SHORTCUT_ROOTS[self.root][0]} / {label}**\nこの内容で決定すると、トリガー名の入力へ進みます。"
-        return discord.Embed(title="ショートカット登録・編集", description=text, color=0x3498DB)
+        return discord.Embed(title="ショートカット登録",
+                             description="大区分を選ぶと、そのコマンドの通常パネルで機能・オプションを選択できます。",
+                             color=0x3498DB)
 
-    @discord.ui.button(label="この内容で決定", style=discord.ButtonStyle.success, row=2)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        action = self.action()
+    async def open_existing_panel(self, interaction, root: str):
+        from core.panel_v2 import as_panel_v2
+        bot = interaction.client
+        if root == "general":
+            panel = GeneralPanel(bot.get_cog("GeneralCog"), shortcut_mode=True, shortcut_item=self.item)
+        elif root == "vc":
+            from cogs.sio_voice import VoicePanelView
+            panel = VoicePanelView(bot.get_cog("VoiceHub"), shortcut_mode=True, shortcut_item=self.item)
+        elif root == "game":
+            from cogs.game import GameHubView
+            panel = GameHubView(bot.get_cog("GameHub"), shortcut_mode=True, shortcut_item=self.item)
+        elif root == "support":
+            from cogs.support import SupportPanelView
+            panel = SupportPanelView(bot.get_cog("SupportCog"), shortcut_mode=True, shortcut_item=self.item)
+        else:
+            from cogs.help import HelpView
+            help_cog = bot.get_cog("HelpCog")
+            panel = HelpView(help_cog.catalog(), shortcut_mode=True, shortcut_item=self.item)
+        if panel is None:
+            return await interaction.response.send_message("対象のパネルが読み込まれていません。", ephemeral=True)
+        await interaction.response.edit_message(view=as_panel_v2(panel))
+
+
+class ShortcutCommitButton(discord.ui.Button):
+    """既存パネルの現在の選択状態をショートカットとして確定する。"""
+    def __init__(self):
+        super().__init__(label="この内容で決定", style=discord.ButtonStyle.success, row=4)
+
+    async def callback(self, interaction: discord.Interaction):
+        panel = getattr(self.view, "panel", self.view)
+        action = panel.shortcut_action()
         if action is None:
-            return await interaction.response.send_message("先に実行内容を選択してください。", ephemeral=True)
-        await interaction.response.send_modal(ShortcutNameModal(self.cog, action, self.item))
+            return await interaction.response.send_message("機能を選択してから決定してください。", ephemeral=True)
+        cog = interaction.client.get_cog("GeneralCog")
+        await interaction.response.send_modal(ShortcutNameModal(cog, action, getattr(panel, "shortcut_item", None)))
 
 
 class ShortcutManageSelect(discord.ui.Select):
@@ -238,9 +255,8 @@ class ShortcutManageSelect(discord.ui.Select):
         if self.mode == "delete":
             await shortcuts.remove(guild_settings.get_store(), interaction.guild_id, interaction.user.id, item["id"])
             return await interaction.response.edit_message(embed=self.parent_view.embed("削除しました。"), view=self.parent_view)
-        action = item.get("action") or {}
-        builder = ShortcutBuilderView(self.parent_view.cog, f"{action.get('root')}|{action.get('value')}", item)
-        await interaction.response.edit_message(embed=builder.embed(), view=builder)
+        view = ShortcutRootPanel(item)
+        await interaction.response.edit_message(embed=view.embed(), view=view)
 
 
 class ShortcutManagerView(discord.ui.View):
@@ -318,7 +334,8 @@ class GeneralCog(commands.Cog):
             if root == "game":
                 cog = self.bot.get_cog("GameHub")
                 if cog and value.startswith("game:"):
-                    return await cog.start_game(source, value.removeprefix("game:"))
+                    options = action.get("options") or {}
+                    return await cog.start_game(source, value.removeprefix("game:"), **options)
             if root == "support":
                 cog = self.bot.get_cog("SupportCog")
                 if cog:
