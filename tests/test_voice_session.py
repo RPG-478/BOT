@@ -540,12 +540,20 @@ class MusicTest(unittest.IsolatedAsyncioTestCase):
             user=user, guild=self.w.guild, guild_id=self.w.guild.id, channel=self.w.text,
             response=response, followup=types.SimpleNamespace(send=send)), sent
 
+    @staticmethod
+    def sent_text(sent):
+        content, kwargs = sent[-1]
+        if content is not None:
+            return content
+        embed = kwargs.get('embed')
+        return getattr(embed, 'description', '') or ''
+
     async def test_join_refused_while_recording(self):
         await self.rec.start_command(Responder(fake_ctx(self.w, self.w.alice, self.bot)))
         vc = self.w.guild.voice_client
         interaction, sent = self.interaction(self.w.bob)
         await self.music._join_impl(Responder(interaction))
-        self.assertIn('録音', sent[-1][0])
+        self.assertIn('録音', self.sent_text(sent))
         self.assertTrue(vc.is_connected())
         self.assertEqual(self.manager.owner(self.w.guild.id), 'record')
 
@@ -563,14 +571,14 @@ class MusicTest(unittest.IsolatedAsyncioTestCase):
         interaction, sent = self.interaction(self.w.bob)
         await self.music._leave_impl(Responder(interaction))
         self.assertEqual(self.manager.owner(self.w.guild.id), 'record')
-        self.assertIn('開始した人か管理者', sent[-1][0])
+        self.assertIn('開始した人か管理者', self.sent_text(sent))
         interaction, sent = self.interaction(self.w.admin)
         await self.music._leave_impl(Responder(interaction))
         task = self.rec._deliveries.get(self.w.guild.id)
         if task is not None:
             await task
         self.assertIsNone(self.manager.get(self.w.guild.id))
-        self.assertIn('/voice action:VC退出 で退出したため録音を停止しました', self.w.text.text())
+        self.assertIn('/voice のパネルからVC退出 で退出したため録音を停止しました', self.w.text.text())
 
     async def test_join_hints_point_to_slash_join(self):
         source = (ROOT / 'cogs' / 'sio_music.py').read_text(encoding='utf-8')

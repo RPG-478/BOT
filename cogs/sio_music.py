@@ -948,11 +948,11 @@ class SearchModal(discord.ui.Modal, title="🎵 YouTube 楽曲検索"):
             state['current_ctx'] = interaction
             if not await self.cog.enqueue_track(self.guild_id, (url, filename, None, is_yt)):
                 await interaction.followup.send(
-                    f"❌ キューの上限（{MAX_QUEUE_SIZE}件）に達しています。",
+                    embed=we(f"❌ キューの上限（{MAX_QUEUE_SIZE}件）に達しています。"),
                     ephemeral=True,
                 )
                 return
-            await interaction.followup.send(f"✅ **{filename}** をキューに追加しました！", ephemeral=True)
+            await interaction.followup.send(embed=we(f"✅ **{filename}** をキューに追加しました！"), ephemeral=True)
 
             # バグ修正: interaction.guild から voice_client を取得するように修正
             vc = interaction.guild.voice_client if interaction.guild else None
@@ -962,7 +962,7 @@ class SearchModal(discord.ui.Modal, title="🎵 YouTube 楽曲検索"):
                 await self.cog.update_panel(self.guild_id)
 
         except Exception as e:
-            await interaction.followup.send(f"❌ 検索中にエラーが発生しました: {e}", ephemeral=True)
+            await interaction.followup.send(embed=we(f"❌ 検索中にエラーが発生しました: {e}"), ephemeral=True)
 
 
 class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルター入力)"):
@@ -987,18 +987,18 @@ class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルタ�
         if not user_filter:
             state['eq'] = "flat"
             state['custom_eq_filter'] = None
-            await interaction.response.send_message("⚙️ カスタムEQを解除しました（Flatに戻します）。", ephemeral=True)
+            await interaction.response.send_message(embed=we("⚙️ カスタムEQを解除しました（Flatに戻します）。"), ephemeral=True)
         else:
             if not is_safe_custom_audio_filter(user_filter):
                 await interaction.response.send_message(
-                    "❌ 使用できないフィルターです。equalizer、bass、treble、volume、vibrato、tremoloなどの"
-                    "音声フィルターだけをカンマ区切りで指定してください。",
+                    embed=we("❌ 使用できないフィルターです。equalizer、bass、treble、volume、vibrato、tremoloなどの"
+                              "音声フィルターだけをカンマ区切りで指定してください。"),
                     ephemeral=True,
                 )
                 return
             state['eq'] = "custom"
             state['custom_eq_filter'] = user_filter
-            await interaction.response.send_message(f"⚙️ カスタムEQを設定しました:\n`{user_filter}`\n即時反映します。", ephemeral=True)
+            await interaction.response.send_message(embed=we(f"⚙️ カスタムEQを設定しました:\n`{user_filter}`\n即時反映します。"), ephemeral=True)
 
         ctx = state['current_ctx'] or interaction
         await self.cog.apply_immediate_setting(ctx)
@@ -1043,7 +1043,7 @@ class VoiceControlView(discord.ui.View):
             state = self.cog.get_state(self.guild_id)
             previous_speed = state.get('speed', 1.0)
             state['speed'] = float(self.values[0])
-            await interaction.response.send_message(f"⚡ 再生速度を `{state['speed']}` 倍に設定しました（現在位置から即時反映）。", ephemeral=True)
+            await interaction.response.send_message(embed=we(f"⚡ 再生速度を `{state['speed']}` 倍に設定しました（現在位置から即時反映）。"), ephemeral=True)
             ctx = state['current_ctx'] or interaction
             await self.cog.apply_immediate_setting(ctx, elapsed_speed=previous_speed)
 
@@ -1065,7 +1065,7 @@ class VoiceControlView(discord.ui.View):
         async def callback(self, interaction: discord.Interaction):
             state = self.cog.get_state(self.guild_id)
             state['volume'] = float(self.values[0])
-            await interaction.response.send_message(f"🔊 音量を `{int(state['volume']*100)}%` に設定しました（即時反映）。", ephemeral=True)
+            await interaction.response.send_message(embed=we(f"🔊 音量を `{int(state['volume']*100)}%` に設定しました（即時反映）。"), ephemeral=True)
             ctx = state['current_ctx'] or interaction
             await self.cog.apply_immediate_setting(ctx)
 
@@ -1092,21 +1092,21 @@ class VoiceControlView(discord.ui.View):
             state = self.cog.get_state(self.guild_id)
             state['eq'] = self.values[0]
             state['custom_eq_filter'] = None
-            await interaction.response.send_message(f"🎬 エフェクトを `{state['eq']}` に変更しました（即時反映）。", ephemeral=True)
+            await interaction.response.send_message(embed=we(f"🎬 エフェクトを `{state['eq']}` に変更しました（即時反映）。"), ephemeral=True)
             ctx = state['current_ctx'] or interaction
             await self.cog.apply_immediate_setting(ctx)
 
-    @discord.ui.button(label="🔎 楽曲検索", style=discord.ButtonStyle.success, row=3)
+    @discord.ui.button(label="🔎", style=discord.ButtonStyle.success, row=3)
     async def search_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = SearchModal(self.cog, self.guild_id)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="⚙️ カスタムEQ", style=discord.ButtonStyle.secondary, row=3)
+    @discord.ui.button(label="⚙️", style=discord.ButtonStyle.secondary, row=3)
     async def custom_eq_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = CustomEQModal(self.cog, self.guild_id)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="⏸️ 一時停止", style=discord.ButtonStyle.primary, row=3)
+    @discord.ui.button(label="⏸️", style=discord.ButtonStyle.primary, row=3)
     async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         state = self.cog.get_state(self.guild_id)
@@ -1115,23 +1115,23 @@ class VoiceControlView(discord.ui.View):
             state['elapsed_offset'] += actual_played
             state['is_paused'] = True
             vc.stop()
-            await interaction.response.send_message(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)", ephemeral=True)
+            await interaction.response.send_message(embed=we(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)"), ephemeral=True)
             await self.cog.update_panel(self.guild_id)
         else:
-            await interaction.response.send_message("❌ 現在再生中ではないか、既に一時停止されています。", ephemeral=True)
+            await interaction.response.send_message(embed=we("❌ 現在再生中ではないか、既に一時停止されています。"), ephemeral=True)
 
-    @discord.ui.button(label="▶️ 再開", style=discord.ButtonStyle.success, row=4)
+    @discord.ui.button(label="▶️", style=discord.ButtonStyle.success, row=4)
     async def resume_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         state = self.cog.get_state(self.guild_id)
         if vc and state['is_paused'] and state['current_track']:
             state['is_paused'] = False
-            await interaction.response.send_message("▶️ 再生を再開します。", ephemeral=True)
+            await interaction.response.send_message(embed=we("▶️ 再生を再開します。"), ephemeral=True)
             await self.cog.check_queue(self.guild_id)
         else:
-            await interaction.response.send_message("❌ 再開できる一時停止中のトラックがありません。", ephemeral=True)
+            await interaction.response.send_message(embed=we("❌ 再開できる一時停止中のトラックがありません。"), ephemeral=True)
 
-    @discord.ui.button(label="⏭️ スキップ", style=discord.ButtonStyle.secondary, row=4)
+    @discord.ui.button(label="⏭️", style=discord.ButtonStyle.secondary, row=4)
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         state = self.cog.get_state(self.guild_id)
@@ -1140,39 +1140,45 @@ class VoiceControlView(discord.ui.View):
             state['elapsed_offset'] = 0
             state['is_paused'] = False
             vc.stop()
-            await interaction.response.send_message("⏭️ トラックをスキップしました。", ephemeral=True)
+            await interaction.response.send_message(embed=we("⏭️ トラックをスキップしました。"), ephemeral=True)
         else:
-            await interaction.response.send_message("❌ 現在再生中の楽曲がありません。", ephemeral=True)
+            await interaction.response.send_message(embed=we("❌ 現在再生中の楽曲がありません。"), ephemeral=True)
 
-    @discord.ui.button(label="🔀 シャッフル", style=discord.ButtonStyle.secondary, row=3)
+    @discord.ui.button(label="🔀", style=discord.ButtonStyle.secondary, row=3)
     async def shuffle_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         state = self.cog.get_state(self.guild_id)
         state['shuffle_enabled'] = not state.get('shuffle_enabled', False)
         label = 'ON' if state['shuffle_enabled'] else 'OFF'
-        await interaction.response.send_message(f"🔀 シャッフルを `{label}` に設定しました。", ephemeral=True)
+        await interaction.response.send_message(embed=we(f"🔀 シャッフルを `{label}` に設定しました。"), ephemeral=True)
         await self.cog.update_panel(self.guild_id)
 
-    @discord.ui.button(label="🔁 ループ", style=discord.ButtonStyle.secondary, row=3)
+    @discord.ui.button(label="🔁", style=discord.ButtonStyle.secondary, row=3)
     async def loop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         state = self.cog.get_state(self.guild_id)
         next_mode = {'off': 'track', 'track': 'queue', 'queue': 'off'}[state.get('loop_mode', 'off')]
         state['loop_mode'] = next_mode
         labels = {'off': 'OFF', 'track': '1曲', 'queue': 'キュー'}
-        await interaction.response.send_message(f"🔁 ループを `{labels[next_mode]}` に設定しました。", ephemeral=True)
+        await interaction.response.send_message(embed=we(f"🔁 ループを `{labels[next_mode]}` に設定しました。"), ephemeral=True)
         await self.cog.update_panel(self.guild_id)
 
-    @discord.ui.button(label="📋 キュー", style=discord.ButtonStyle.secondary, row=4)
+    @discord.ui.button(label="📋", style=discord.ButtonStyle.secondary, row=4)
     async def queue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(embed=self.cog.build_queue_embed(self.guild_id), ephemeral=True)
 
-    @discord.ui.button(label="📚 ライブラリ", style=discord.ButtonStyle.secondary, row=4)
+    @discord.ui.button(label="📚", style=discord.ButtonStyle.secondary, row=4)
     async def library_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await interaction.response.send_message(
-                "個人プレイリストやSpotifyの公開プレイリストは `/music` の操作パネルから再生できます。",
+        embed = discord.Embed(
+            title="📚 ライブラリ",
+            description="プレイリストを保存・一覧表示・再生できます。対象範囲を選択してください。",
+            color=0x9B59B6,
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=PlaylistLibraryView(self.cog),
             ephemeral=True,
         )
 
-    @discord.ui.button(label="⏹️ 全停止", style=discord.ButtonStyle.danger, row=4)
+    @discord.ui.button(label="⏹️", style=discord.ButtonStyle.danger, row=4)
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         state = self.cog.get_state(self.guild_id)
@@ -1183,15 +1189,70 @@ class VoiceControlView(discord.ui.View):
             while not state['queue'].empty():
                 state['queue'].get_nowait()
             vc.stop()
-            await interaction.response.send_message("⏹️ 再生を完全に停止し、キューをクリアしました。", ephemeral=True)
+            await interaction.response.send_message(embed=we("⏹️ 再生を完全に停止し、キューをクリアしました。"), ephemeral=True)
             await self.cog.update_panel(self.guild_id)
         else:
-            await interaction.response.send_message("❌ ボイスチャンネルに接続していません。", ephemeral=True)
+            await interaction.response.send_message(embed=we("❌ ボイスチャンネルに接続していません。"), ephemeral=True)
 
 
 # 録音経路は開始・停止・保存のコマンドが未実装のため、誤って有効化しない。
 # 受信音声を保存する機能を実装する際は、同意・保持期間・アクセス制御を含めて
 # 専用Cogとして設計し直すこと。
+class PlaylistNameModal(discord.ui.Modal, title="プレイリスト名"):
+    name = discord.ui.TextInput(label="プレイリスト名", placeholder="保存名または再生名", max_length=100)
+
+    def __init__(self, cog, action: str, scope: str):
+        super().__init__()
+        self.cog = cog
+        self.action = action
+        self.scope = scope
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog._playlist_impl(
+            Responder(interaction), self.action, self.name.value.strip(), self.scope
+        )
+
+
+class PlaylistLibraryView(discord.ui.View):
+    """ライブラリボタンからプレイリスト操作を実行するUI。"""
+
+    def __init__(self, cog):
+        super().__init__(timeout=PANEL_TIMEOUT_SECONDS)
+        self.cog = cog
+        self.scope = "me"
+        self.add_item(self.ScopeSelect(self))
+
+    class ScopeSelect(discord.ui.Select):
+        def __init__(self, view):
+            self.library_view = view
+            super().__init__(
+                placeholder="📁 保存先・参照先を選択",
+                options=[
+                    discord.SelectOption(label="個人", value="me", emoji="👤", default=True),
+                    discord.SelectOption(label="サーバー共有", value="server", emoji="🌐"),
+                ],
+            )
+
+        async def callback(self, interaction: discord.Interaction):
+            self.library_view.scope = self.values[0]
+            await interaction.response.send_message(
+                f"対象を **{'個人' if self.values[0] == 'me' else 'サーバー共有'}** に変更しました。",
+                ephemeral=True,
+            )
+
+    @discord.ui.button(label="💾", style=discord.ButtonStyle.success)
+    async def save_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(PlaylistNameModal(self.cog, "save", self.scope))
+
+    @discord.ui.button(label="📋", style=discord.ButtonStyle.secondary)
+    async def list_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog._playlist_impl(Responder(interaction), "list", scope=self.scope)
+
+    @discord.ui.button(label="▶️", style=discord.ButtonStyle.primary)
+    async def play_button(self, interaction: discord.Interaction, button: discord.Button):
+        await interaction.response.send_modal(PlaylistNameModal(self.cog, "play", self.scope))
+
+
 RECORDING_ENABLED = False
 BYTES_PER_SECOND = 48_000 * 2 * 2
 FRAME_SIZE = 960 * 2 * 2
@@ -1521,7 +1582,7 @@ class VoiceCog(commands.Cog):
         """ctx / interaction のどちらからでも呼べる。"""
         r = Responder(ctx)
         if not tracks:
-            return await r.send("有効な曲が見つかりませんでした。")
+            return await r.send(embed=we("有効な曲が見つかりませんでした。"))
         state = self.get_state(r.guild.id)
         state['current_ctx'] = ctx
         task = state.get('playlist_load_task')
@@ -1584,7 +1645,7 @@ class VoiceCog(commands.Cog):
     async def _join_impl(self, r: Responder):
         voice = getattr(r.user, "voice", None)
         if not voice or not voice.channel:
-            return await r.send("先にボイスチャンネルに入ってください。", ephemeral=True)
+            return await r.send(embed=we("先にボイスチャンネルに入ってください。"), ephemeral=True)
 
         # 接続処理が長引く可能性があるため defer（応答保留）を実行
         await r.defer()
@@ -1597,13 +1658,13 @@ class VoiceCog(commands.Cog):
                 self._acquire_music(r.guild, channel, r.user, r.channel),
                 timeout=TIMEOUT_SECONDS,
             )
-            await r.send(f"🔊 **{channel.name}** に参加しました。")
+            await r.send(embed=we(f"🔊 **{channel.name}** に参加しました。"))
         except VoiceBusy as busy:
-            await r.send(str(busy), ephemeral=True)
+            await r.send(embed=we(str(busy)), ephemeral=True)
         except asyncio.TimeoutError:
-            await r.send("⏱️ タイムアウト: ボイスチャンネルへの接続応答時間が超過しました。Botの権限やネットワーク状態をご確認ください。")
+            await r.send(embed=we("⏱️ タイムアウト: ボイスチャンネルへの接続応答時間が超過しました。Botの権限やネットワーク状態をご確認ください。"))
         except Exception as e:
-            await r.send(f"❌ 接続失敗: {e}")
+            await r.send(embed=we(f"❌ 接続失敗: {e}"))
 
     async def _leave_impl(self, r: Responder):
         guild_id = r.guild_id
@@ -1613,22 +1674,22 @@ class VoiceCog(commands.Cog):
             # 音楽は今までどおり誰でも止められる。録音などは開始した人・管理者（または開始した人が不在）のみ。
             if not self.voice_sessions.can_leave(session, r.user):
                 return await r.send(
-                    f"⚠️ いまは **{session.label}**（{session.user_name} さんが開始）で使用中です。"
-                    f"止められるのは開始した人か管理者だけです（`{self._stop_hint(session.feature)}`）。",
+                    embed=we(f"⚠️ いまは **{session.label}**（{session.user_name} さんが開始）で使用中です。"
+                              f"止められるのは開始した人か管理者だけです（`{self._stop_hint(session.feature)}`）。"),
                     ephemeral=True,
                 )
             await r.defer()
             await self.voice_sessions.release(
                 guild_id, reason='stop' if session.feature == 'music' else 'leave', by=r.user,
             )
-            await r.send("👋 退出しました。")
+            await r.send(embed=we("👋 退出しました。"))
         elif voice_client:
             # 持ち主の記録がない古い接続
             self._reset_playback(guild_id)
             await voice_client.disconnect(force=True)
-            await r.send("👋 退出しました。")
+            await r.send(embed=we("👋 退出しました。"))
         else:
-            await r.send("ボットはボイスチャンネルに参加していません。", ephemeral=True)
+            await r.send(embed=we("ボットはボイスチャンネルに参加していません。"), ephemeral=True)
 
     @staticmethod
     def _stop_hint(feature: str) -> str:
@@ -1994,23 +2055,23 @@ class VoiceCog(commands.Cog):
 
         async def select_callback(self, interaction: discord.Interaction):
             owner = Responder(self.ctx).user
-            if interaction.user.id != getattr(owner, 'id', None): return await interaction.response.send_message("❌ この検索結果は他のユーザーのものです。", ephemeral=True)
+            if interaction.user.id != getattr(owner, 'id', None): return await interaction.response.send_message(embed=we("❌ この検索結果は他のユーザーのものです。"), ephemeral=True)
             idx = int(self.select_menu.values[0])
             selected_track = self.tracks[idx]
             state = self.cog.get_state(self.guild_id)
             state['current_ctx'] = self.ctx
             if not await self.cog.enqueue_track(self.guild_id, (selected_track['url'], selected_track['title'], None, True)):
                 return await interaction.response.send_message(
-                    f"❌ キューの上限（{MAX_QUEUE_SIZE}件）に達しています。",
+                    embed=we(f"❌ キューの上限（{MAX_QUEUE_SIZE}件）に達しています。"),
                     ephemeral=True,
                 )
 
             vc = Responder(self.ctx).voice_client
             if vc and not vc.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
                 await self.cog.check_queue(self.guild_id)
-                await interaction.response.send_message(f"🎵 **{selected_track['title']}** を再生します！")
+                await interaction.response.send_message(embed=we(f"🎵 **{selected_track['title']}** を再生します！"))
             else:
-                await interaction.response.send_message(f"✅ キューに追加しました: **{selected_track['title']}**")
+                await interaction.response.send_message(embed=we(f"✅ キューに追加しました: **{selected_track['title']}**"))
                 await self.cog.update_panel(self.guild_id)
             await self.disable_all_items()
 
@@ -2025,16 +2086,16 @@ class VoiceCog(commands.Cog):
     async def _search_impl(self, r: Responder, keyword: str | None):
         """YouTube の上位10件を表示し、選んだ曲を再生・キューに追加する。"""
         if not keyword:
-            return await r.send("検索キーワードを入力してください。", ephemeral=True)
+            return await r.send(embed=we("検索キーワードを入力してください。"), ephemeral=True)
         await r.defer()
         if error := await self._ensure_music_connection(r):
-            return await r.send(error, ephemeral=True)
+            return await r.send(embed=we(error), ephemeral=True)
         if self._spotify_playlist_id(keyword.strip()):
             try:
                 title, tracks = await self.get_spotify_playlist_entries(keyword.strip())
                 return await self.start_playlist_load(r.source, tracks, title)
             except Exception as exc:
-                return await r.send(f"Spotifyプレイリストの取得に失敗しました: {exc}")
+                return await r.send(embed=we(f"Spotifyプレイリストの取得に失敗しました: {exc}"))
         await r.send(f"🔎 YouTubeで「{keyword}」の上位10件を検索中...")
         search_options = YTDL_OPTIONS.copy()
         search_options['default_search'] = 'ytsearch10'
@@ -2042,7 +2103,7 @@ class VoiceCog(commands.Cog):
         try:
             with yt_dlp.YoutubeDL(search_options) as ydl:
                 data = await loop.run_in_executor(None, lambda: ydl.extract_info(keyword, download=False))
-                if 'entries' not in data or not data['entries']: return await r.send("❌ 検索結果が見つかりませんでした。")
+                if 'entries' not in data or not data['entries']: return await r.send(embed=we("❌ 検索結果が見つかりませんでした。"))
                 tracks, description_lines = [], []
                 for idx, entry in enumerate(data['entries'][:10]):
                     title = entry.get('title', '不明なタイトル')
@@ -2057,7 +2118,7 @@ class VoiceCog(commands.Cog):
                 view.message = await r.send(embed=embed, view=view, want_message=True)
         except Exception as e:
             logging.error(f"Search command error: {e}")
-            await r.send(f"❌ 検索中にエラーが発生しました: {e}")
+            await r.send(embed=we(f"❌ 検索中にエラーが発生しました: {e}"))
 
     async def _panel_impl(self, r: Responder):
         """操作パネルを出す。Bot が VC にいなければ、実行した人の VC に入る。"""
@@ -2343,15 +2404,15 @@ class VoiceCog(commands.Cog):
 
         # 💡 2. ボイスチャンネル接続（入っていなければ自動で参加。別機能が使用中なら断る）
         if error := await self._ensure_music_connection(Responder(interaction)):
-            return await interaction.followup.send(error, ephemeral=True)
+            return await interaction.followup.send(embed=we(error), ephemeral=True)
 
         state = self.get_state(interaction.guild_id)
         state['current_interaction'] = interaction
         if start_at is not None and start_at < 0:
-            return await interaction.followup.send("開始位置は0秒以上で指定してください。", ephemeral=True)
+            return await interaction.followup.send(embed=we("開始位置は0秒以上で指定してください。"), ephemeral=True)
         can_apply_start_at = not state.get('current_track') and state['queue'].empty() and not state.get('is_processing_queue')
         if start_at is not None and not can_apply_start_at:
-            return await interaction.followup.send("開始位置の指定は、再生中の曲と待機キューがない場合のみ使えます。再生中の曲は `/music` の操作パネルから操作してください。", ephemeral=True)
+            return await interaction.followup.send(embed=we("開始位置の指定は、再生中の曲と待機キューがない場合のみ使えます。再生中の曲は `/music` の操作パネルから操作してください。"), ephemeral=True)
 
         is_yt = False
         url, filename, final_id = None, None, None
@@ -2386,7 +2447,7 @@ class VoiceCog(commands.Cog):
             except asyncio.TimeoutError:
                 return await interaction.followup.send("⏱️ タイムアウト: YouTube情報の解析に時間がかかりすぎたため中断しました。")
             except Exception as e:
-                return await interaction.followup.send(f"❌ 解析失敗: {e}")
+                return await interaction.followup.send(embed=we(f"❌ 解析失敗: {e}"))
 
         # 2. ファイルが添付されている場合
         elif file:
@@ -2418,7 +2479,7 @@ class VoiceCog(commands.Cog):
                 except asyncio.TimeoutError:
                     return await interaction.followup.send("⏱️ タイムアウト: YouTube検索応答時間が超過しました。")
                 except Exception as e:
-                    return await interaction.followup.send(f"❌ 検索失敗: {e}")
+                    return await interaction.followup.send(embed=we(f"❌ 検索失敗: {e}"))
 
         # 4. 検索キーワード指定
         elif input_str:
@@ -2429,7 +2490,7 @@ class VoiceCog(commands.Cog):
             except asyncio.TimeoutError:
                 return await interaction.followup.send("⏱️ タイムアウト: YouTube検索応答時間が超過しました。")
             except Exception as e:
-                return await interaction.followup.send(f"❌ 検索失敗: {e}")
+                return await interaction.followup.send(embed=we(f"❌ 検索失敗: {e}"))
 
         # 5. 引数が何もない場合
         else:
@@ -2447,7 +2508,7 @@ class VoiceCog(commands.Cog):
             state['elapsed_offset'] = start_at
         if not await self.enqueue_track(interaction.guild_id, (url, filename, final_id, is_yt)):
             return await interaction.followup.send(
-                f"❌ キューの上限（{MAX_QUEUE_SIZE}件）に達しています。再生完了または停止後に追加してください。",
+                embed=we(f"❌ キューの上限（{MAX_QUEUE_SIZE}件）に達しています。再生完了または停止後に追加してください。"),
                 ephemeral=True,
             )
 
@@ -2460,13 +2521,13 @@ class VoiceCog(commands.Cog):
         # 💡 再生処理呼び出しとレスポンスの明確化
         try:
             if not is_playing and not is_processing and not is_paused:
-                await interaction.followup.send(f"▶️ 再生を開始します: **{filename}**")
+                await interaction.followup.send(embed=we(f"▶️ 再生を開始します: **{filename}**"))
                 await self.check_queue(interaction.guild_id)
             else:
-                await interaction.followup.send(f"✅ キューに追加: **{filename}**")
+                await interaction.followup.send(embed=we(f"✅ キューに追加: **{filename}**"))
                 await self.update_panel(interaction.guild_id)
         except Exception as e:
-            await interaction.followup.send(f"❌ 再生開始処理でエラーが発生しました: `{e}`")
+            await interaction.followup.send(embed=we(f"❌ 再生開始処理でエラーが発生しました: `{e}`"))
             
     async def _stop_impl(self, r: Responder):
         """今流れている音楽をすべて停止しキューをクリアする（VC には残る）。"""
@@ -2485,14 +2546,14 @@ class VoiceCog(commands.Cog):
 
     async def _seek_impl(self, interaction: discord.Interaction, seconds: float):
         if seconds < 0:
-            return await interaction.response.send_message("移動先は0秒以上で指定してください。", ephemeral=True)
+            return await interaction.response.send_message(embed=we("移動先は0秒以上で指定してください。"), ephemeral=True)
         state = self.get_state(interaction.guild_id)
         vc = interaction.guild.voice_client
         if not vc or not state.get('current_track'):
-            return await interaction.response.send_message("現在再生中の曲がありません。", ephemeral=True)
+            return await interaction.response.send_message(embed=we("現在再生中の曲がありません。"), ephemeral=True)
         duration = state['current_track'][2] or 0
         if duration and seconds >= duration:
-            return await interaction.response.send_message(f"移動先は曲の長さ（{int(duration)}秒）未満にしてください。", ephemeral=True)
+            return await interaction.response.send_message(embed=we(f"移動先は曲の長さ（{int(duration)}秒）未満にしてください。"), ephemeral=True)
         state['elapsed_offset'] = seconds
         state['is_changing_setting'] = True
         vc.stop()
@@ -2502,7 +2563,7 @@ class VoiceCog(commands.Cog):
             await asyncio.sleep(0.05)
         state['is_changing_setting'] = False
         await self.check_queue(interaction.guild_id)
-        await interaction.response.send_message(f"再生位置を `{int(seconds)}秒` に移動しました。", ephemeral=True)
+        await interaction.response.send_message(embed=we(f"再生位置を `{int(seconds)}秒` に移動しました。"), ephemeral=True)
 
     async def _pause_impl(self, interaction: discord.Interaction):
         vc = interaction.guild.voice_client
@@ -2627,51 +2688,51 @@ class VoiceCog(commands.Cog):
         if action == 'play':
             await r.defer()
             if error := await self._ensure_music_connection(r):
-                return await r.send(error, ephemeral=True)
+                return await r.send(embed=we(error), ephemeral=True)
             if scope == 'server':
                 return await self._play_server_playlist(r, name, file)
             if not db:
-                return await r.send("個人プレイリストを使うにはSupabaseを設定してください。", ephemeral=True)
+                return await r.send(embed=we("個人プレイリストを使うにはSupabaseを設定してください。"), ephemeral=True)
             if not name:
-                return await r.send("再生するプレイリスト名を指定してください。", ephemeral=True)
+                return await r.send(embed=we("再生するプレイリスト名を指定してください。"), ephemeral=True)
             try:
                 result = db.table('user_music_playlists').select('tracks').eq('guild_id', r.guild.id).eq(
                     'owner_user_id', r.user.id
                 ).eq('name', name).limit(1).execute()
                 rows = result.data or []
                 if not rows:
-                    return await r.send(f"個人プレイリスト `{name}` が見つかりません。", ephemeral=True)
+                    return await r.send(embed=we(f"個人プレイリスト `{name}` が見つかりません。"), ephemeral=True)
                 await self.start_playlist_load(r.source, rows[0].get('tracks') or [], name)
             except Exception:
                 logger.exception("Failed to play personal playlist")
-                await r.send("個人プレイリストの読込に失敗しました。", ephemeral=True)
+                await r.send(embed=we("個人プレイリストの読込に失敗しました。"), ephemeral=True)
             return
 
         if not db:
-            return await r.send("プレイリストを使うにはSupabaseを設定してください。", ephemeral=True)
+            return await r.send(embed=we("プレイリストを使うにはSupabaseを設定してください。"), ephemeral=True)
 
         if action == 'save':
             if not name:
-                return await r.send("保存するプレイリスト名を指定してください。", ephemeral=True)
+                return await r.send(embed=we("保存するプレイリスト名を指定してください。"), ephemeral=True)
             if scope == 'server':
                 ids = self._server_playlist_ids(r.guild.id)
                 if not ids:
-                    return await r.send("保存できる曲がありません（サーバー共有に保存できるのは、アップロードした音声だけです）。", ephemeral=True)
+                    return await r.send(embed=we("保存できる曲がありません（サーバー共有に保存できるのは、アップロードした音声だけです）。"), ephemeral=True)
                 try:
                     db.table("playlists").upsert({"name": self._server_playlist_key(r.guild.id, name), "ids": ids}).execute()
-                    return await r.send(f"✅ このサーバー内のキューを `{name}` として保存しました（{len(ids)} 曲・サーバー共有）。")
+                    return await r.send(embed=we(f"✅ このサーバー内のキューを `{name}` として保存しました（{len(ids)} 曲・サーバー共有）。"))
                 except Exception as exc:
                     logger.exception("Failed to save server playlist")
-                    return await r.send(f"保存に失敗しました。({type(exc).__name__})", ephemeral=True)
+                    return await r.send(embed=we(f"保存に失敗しました。({type(exc).__name__})"), ephemeral=True)
             tracks = self._serialize_personal_playlist(r.guild.id)
             if not tracks:
-                return await r.send("保存できる曲がありません。", ephemeral=True)
+                return await r.send(embed=we("保存できる曲がありません。"), ephemeral=True)
             try:
                 db.table('user_music_playlists').upsert(
                     {'guild_id': r.guild.id, 'owner_user_id': r.user.id, 'name': name, 'tracks': tracks},
                     on_conflict='guild_id,owner_user_id,name',
                 ).execute()
-                return await r.send(f"個人プレイリスト `{name}` に {len(tracks)} 曲を保存しました。", ephemeral=True)
+                return await r.send(embed=we(f"個人プレイリスト `{name}` に {len(tracks)} 曲を保存しました。"), ephemeral=True)
             except Exception as exc:
                 logger.exception("Failed to save personal playlist")
                 detail = str(exc).lower()
@@ -2679,7 +2740,7 @@ class VoiceCog(commands.Cog):
                     message = '保存権限がありません。SupabaseのRLSポリシーと、Botに設定したSupabaseキー（SUPABASE_SERVICE_ROLE_KEY / SUPABASE_KEY）の権限を確認してください。'
                 else:
                     message = f'保存に失敗しました。Botログを確認してください。({type(exc).__name__})'
-                return await r.send(message, ephemeral=True)
+                return await r.send(embed=we(message), ephemeral=True)
 
         # 一覧
         try:
@@ -2699,7 +2760,7 @@ class VoiceCog(commands.Cog):
             return await r.send(embed=we(title='あなたの個人プレイリスト', description=description), ephemeral=True)
         except Exception:
             logger.exception("Failed to list playlists")
-            return await r.send("一覧取得に失敗しました。", ephemeral=True)
+            return await r.send(embed=we("一覧取得に失敗しました。"), ephemeral=True)
 
     async def _play_server_playlist(self, r: Responder, name: str, file: discord.Attachment | None):
         """サーバー共有プレイリスト名、ID の並び（空白・カンマ区切り）、または JSON ファイルを再生する。"""
@@ -2714,7 +2775,7 @@ class VoiceCog(commands.Cog):
                 if not isinstance(tokens, list):
                     tokens = [str(tokens)]
             except Exception as e:
-                return await r.send(f"JSON解析エラー: {e}")
+                return await r.send(embed=we(f"JSON解析エラー: {e}"))
         elif name:
             tokens = name.replace(',', ' ').split()
             if self.bot.supabase:
@@ -2726,7 +2787,7 @@ class VoiceCog(commands.Cog):
                 except Exception:
                     pass
         else:
-            return await r.send("プレイリスト名、ID、またはJSONファイルを指定してください。", ephemeral=True)
+            return await r.send(embed=we("プレイリスト名、ID、またはJSONファイルを指定してください。"), ephemeral=True)
 
         tracks = []
         for token in tokens:
