@@ -188,7 +188,7 @@ class ActivityLogSettingsView(discord.ui.View):
         if not self.can_manage(interaction):
             return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
         key = f"{action}_enabled"
-        enabled = not self.settings.get(key, True)
+        enabled = not self.settings.get(key, False)
         await guild_settings.get_store().update(interaction.guild_id, self.section, **{key: enabled})
         await self.refresh(interaction, f"{action.upper()}履歴を{'オン' if enabled else 'オフ'}にしました。")
 
@@ -610,15 +610,25 @@ class SupportCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
-        old_until = getattr(before, "communication_disabled_until", None)
-        new_until = getattr(after, "communication_disabled_until", None)
-        if before.guild is None or old_until == new_until or new_until is None:
+        # discord.py 2.7 は timed_out_until を使用する。旧版互換のため旧名も見る。
+        old_until = getattr(before, "timed_out_until", None)
+        if old_until is None:
+            old_until = getattr(before, "communication_disabled_until", None)
+        new_until = getattr(after, "timed_out_until", None)
+        if new_until is None:
+            new_until = getattr(after, "communication_disabled_until", None)
+        if before.guild is None or old_until == new_until:
             return
         if not await self._moderation_action_enabled(before.guild, "timeout"):
             return
         entry = await self._recent_audit_entry(before.guild, discord.AuditLogAction.member_update, after.id)
-        detail = f"タイムアウト期限: {new_until.isoformat()}"
-        await self._send_activity(before.guild, MODERATION_LOG_SECTION, self.moderation_embed("タイムアウト（TO）", after, entry, detail))
+        if new_until is not None:
+            detail = f"タイムアウト期限: {new_until.isoformat()}"
+            title = "タイムアウト（TO）"
+        else:
+            detail = "タイムアウト解除"
+            title = "タイムアウト解除（TO）"
+        await self._send_activity(before.guild, MODERATION_LOG_SECTION, self.moderation_embed(title, after, entry, detail))
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
