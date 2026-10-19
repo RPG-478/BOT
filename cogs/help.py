@@ -14,6 +14,7 @@ from discord.ext import commands
 
 from core.command_catalog import (build_catalog, command_key, find_command, permission_label, registered_commands,
                                   visible_commands)
+from core.panel_v2 import as_panel_v2
 
 # Discord の上限
 EMBED_TOTAL = 6000
@@ -196,8 +197,7 @@ class FunctionSelect(discord.ui.Select):
         view: HelpView = self.view
         if entry is None:
             return await interaction.response.send_message("コマンドが見つかりませんでした。", ephemeral=True)
-        await interaction.response.edit_message(
-            embed=command_embed(entry, self.catalog), view=CommandView(self.catalog, entry))
+        await interaction.response.edit_message(view=as_panel_v2(CommandView(self.catalog, entry)))
 
 
 CATEGORY_GUIDE = "__category__"
@@ -228,7 +228,8 @@ class GuideSelect(discord.ui.Select):
             embed = guide_embed(f"{value} のガイド", entry["guide"]) if entry and entry["guide"] else \
                 discord.Embed(description="ガイドが見つかりませんでした。", color=COLOR)
         view: HelpView = self.view
-        await interaction.response.edit_message(embed=embed, view=BackView(self.catalog, self.category_id, view.page))
+        await interaction.response.edit_message(
+            view=as_panel_v2(BackView(self.catalog, self.category_id, view.page, embed)))
 
 
 class HelpView(discord.ui.View):
@@ -279,15 +280,18 @@ class HelpView(discord.ui.View):
 class BackView(discord.ui.View):
     """ガイドを読んでいる画面から、カテゴリの一覧へ戻るボタン。"""
 
-    def __init__(self, catalog: dict, category_id: str | None, page: int = 0):
+    def __init__(self, catalog: dict, category_id: str | None, page: int = 0, content=None):
         super().__init__(timeout=VIEW_TIMEOUT)
-        self.catalog, self.category_id, self.page = catalog, category_id, page
+        self.catalog, self.category_id, self.page, self.content = catalog, category_id, page, content
+
+    def embed(self) -> discord.Embed:
+        return self.content or discord.Embed(title="ヘルプ", description="カテゴリの一覧へ戻れます。", color=COLOR)
 
     @discord.ui.button(label="一覧に戻る", emoji="<:Back:1561700549236097034>", style=discord.ButtonStyle.primary)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = HelpView(self.catalog, self.category_id, self.page)
         self.stop()
-        await interaction.response.edit_message(embed=view.embed(), view=view)
+        await interaction.response.edit_message(view=as_panel_v2(view))
 
 
 class CommandView(discord.ui.View):
@@ -299,17 +303,22 @@ class CommandView(discord.ui.View):
         if not entry["guide"]:
             self.remove_item(self.read_guide)
 
+    def embed(self) -> discord.Embed:
+        return command_embed(self.entry, self.catalog)
+
     @discord.ui.button(label="ガイドを読む", emoji="📖", style=discord.ButtonStyle.success)
     async def read_guide(self, interaction: discord.Interaction, button: discord.ui.Button):
         key = command_key(self.entry["kind"], self.entry["name"])
-        await interaction.response.edit_message(embed=guide_embed(f"{key} のガイド", self.entry["guide"]),
-                                                view=BackView(self.catalog, self.entry["category"]))
+        await interaction.response.edit_message(
+            view=as_panel_v2(BackView(
+                self.catalog, self.entry["category"], 0,
+                guide_embed(f"{key} のガイド", self.entry["guide"]))))
 
     @discord.ui.button(label="カテゴリの一覧を見る", style=discord.ButtonStyle.primary)
     async def open_category(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = HelpView(self.catalog, self.entry["category"])
         self.stop()
-        await interaction.response.edit_message(embed=view.embed(), view=view)
+        await interaction.response.edit_message(view=as_panel_v2(view))
 
 
 # ---------------------------------------------------------------- !help
@@ -395,7 +404,7 @@ class HelpCog(commands.Cog):
                                                     view=CommandView(catalog, entry), ephemeral=True)
             return
         view = HelpView(catalog)
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        await interaction.response.send_message(view=as_panel_v2(view), ephemeral=True)
 
     @help.autocomplete("command")
     async def help_command_autocomplete(self, interaction: discord.Interaction, current: str):

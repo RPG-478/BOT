@@ -11,6 +11,7 @@ from discord.ext import commands
 
 from core import party_ranking
 from core.game_guides import GAME_GUIDES, GAME_ORDER, guide_for_discord
+from core.panel_v2 import as_panel_v2
 
 HUB_COLOR = 0xFFFFFF
 
@@ -363,7 +364,7 @@ class GameHub(commands.Cog):
     @app_commands.command(name="game", description="パーティーゲームとダンジョン（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle・神経衰弱・ババ抜き・オセロ・ポーカー・将棋・チェス）のルール確認と開始")
     async def game(self, interaction: discord.Interaction):
         view = GameHubView(self)
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        await interaction.response.send_message(view=as_panel_v2(view), ephemeral=True)
 
     async def start_game(self, interaction: discord.Interaction, game_id: str, **options):
         cog = self.bot.get_cog(GAME_COGS[game_id])
