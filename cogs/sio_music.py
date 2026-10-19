@@ -1096,17 +1096,17 @@ class VoiceControlView(discord.ui.View):
             ctx = state['current_ctx'] or interaction
             await self.cog.apply_immediate_setting(ctx)
 
-    @discord.ui.button(label="🔎 楽曲検索", style=discord.ButtonStyle.success, row=3)
+    @discord.ui.button(label="🔎", style=discord.ButtonStyle.success, row=3)
     async def search_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = SearchModal(self.cog, self.guild_id)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="⚙️ カスタムEQ", style=discord.ButtonStyle.secondary, row=3)
+    @discord.ui.button(label="⚙️", style=discord.ButtonStyle.secondary, row=3)
     async def custom_eq_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = CustomEQModal(self.cog, self.guild_id)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="⏸️ 一時停止", style=discord.ButtonStyle.primary, row=3)
+    @discord.ui.button(label="⏸️", style=discord.ButtonStyle.primary, row=3)
     async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         state = self.cog.get_state(self.guild_id)
@@ -1120,7 +1120,7 @@ class VoiceControlView(discord.ui.View):
         else:
             await interaction.response.send_message("❌ 現在再生中ではないか、既に一時停止されています。", ephemeral=True)
 
-    @discord.ui.button(label="▶️ 再開", style=discord.ButtonStyle.success, row=4)
+    @discord.ui.button(label="▶️", style=discord.ButtonStyle.success, row=4)
     async def resume_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         state = self.cog.get_state(self.guild_id)
@@ -1131,7 +1131,7 @@ class VoiceControlView(discord.ui.View):
         else:
             await interaction.response.send_message("❌ 再開できる一時停止中のトラックがありません。", ephemeral=True)
 
-    @discord.ui.button(label="⏭️ スキップ", style=discord.ButtonStyle.secondary, row=4)
+    @discord.ui.button(label="⏭️", style=discord.ButtonStyle.secondary, row=4)
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         state = self.cog.get_state(self.guild_id)
@@ -1144,7 +1144,7 @@ class VoiceControlView(discord.ui.View):
         else:
             await interaction.response.send_message("❌ 現在再生中の楽曲がありません。", ephemeral=True)
 
-    @discord.ui.button(label="🔀 シャッフル", style=discord.ButtonStyle.secondary, row=3)
+    @discord.ui.button(label="🔀", style=discord.ButtonStyle.secondary, row=3)
     async def shuffle_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         state = self.cog.get_state(self.guild_id)
         state['shuffle_enabled'] = not state.get('shuffle_enabled', False)
@@ -1152,7 +1152,7 @@ class VoiceControlView(discord.ui.View):
         await interaction.response.send_message(f"🔀 シャッフルを `{label}` に設定しました。", ephemeral=True)
         await self.cog.update_panel(self.guild_id)
 
-    @discord.ui.button(label="🔁 ループ", style=discord.ButtonStyle.secondary, row=3)
+    @discord.ui.button(label="🔁", style=discord.ButtonStyle.secondary, row=3)
     async def loop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         state = self.cog.get_state(self.guild_id)
         next_mode = {'off': 'track', 'track': 'queue', 'queue': 'off'}[state.get('loop_mode', 'off')]
@@ -1161,18 +1161,24 @@ class VoiceControlView(discord.ui.View):
         await interaction.response.send_message(f"🔁 ループを `{labels[next_mode]}` に設定しました。", ephemeral=True)
         await self.cog.update_panel(self.guild_id)
 
-    @discord.ui.button(label="📋 キュー", style=discord.ButtonStyle.secondary, row=4)
+    @discord.ui.button(label="📋", style=discord.ButtonStyle.secondary, row=4)
     async def queue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(embed=self.cog.build_queue_embed(self.guild_id), ephemeral=True)
 
-    @discord.ui.button(label="📚 ライブラリ", style=discord.ButtonStyle.secondary, row=4)
+    @discord.ui.button(label="📚", style=discord.ButtonStyle.secondary, row=4)
     async def library_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await interaction.response.send_message(
-                "個人プレイリストやSpotifyの公開プレイリストは `/music` の操作パネルから再生できます。",
+        embed = discord.Embed(
+            title="📚 ライブラリ",
+            description="プレイリストを保存・一覧表示・再生できます。対象範囲を選択してください。",
+            color=0x9B59B6,
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=PlaylistLibraryView(self.cog),
             ephemeral=True,
         )
 
-    @discord.ui.button(label="⏹️ 全停止", style=discord.ButtonStyle.danger, row=4)
+    @discord.ui.button(label="⏹️", style=discord.ButtonStyle.danger, row=4)
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         state = self.cog.get_state(self.guild_id)
@@ -1192,6 +1198,61 @@ class VoiceControlView(discord.ui.View):
 # 録音経路は開始・停止・保存のコマンドが未実装のため、誤って有効化しない。
 # 受信音声を保存する機能を実装する際は、同意・保持期間・アクセス制御を含めて
 # 専用Cogとして設計し直すこと。
+class PlaylistNameModal(discord.ui.Modal, title="プレイリスト名"):
+    name = discord.ui.TextInput(label="プレイリスト名", placeholder="保存名または再生名", max_length=100)
+
+    def __init__(self, cog, action: str, scope: str):
+        super().__init__()
+        self.cog = cog
+        self.action = action
+        self.scope = scope
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog._playlist_impl(
+            Responder(interaction), self.action, self.name.value.strip(), self.scope
+        )
+
+
+class PlaylistLibraryView(discord.ui.View):
+    """ライブラリボタンからプレイリスト操作を実行するUI。"""
+
+    def __init__(self, cog):
+        super().__init__(timeout=PANEL_TIMEOUT_SECONDS)
+        self.cog = cog
+        self.scope = "me"
+        self.add_item(self.ScopeSelect(self))
+
+    class ScopeSelect(discord.ui.Select):
+        def __init__(self, view):
+            self.library_view = view
+            super().__init__(
+                placeholder="📁 保存先・参照先を選択",
+                options=[
+                    discord.SelectOption(label="個人", value="me", emoji="👤", default=True),
+                    discord.SelectOption(label="サーバー共有", value="server", emoji="🌐"),
+                ],
+            )
+
+        async def callback(self, interaction: discord.Interaction):
+            self.library_view.scope = self.values[0]
+            await interaction.response.send_message(
+                f"対象を **{'個人' if self.values[0] == 'me' else 'サーバー共有'}** に変更しました。",
+                ephemeral=True,
+            )
+
+    @discord.ui.button(label="💾", style=discord.ButtonStyle.success)
+    async def save_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(PlaylistNameModal(self.cog, "save", self.scope))
+
+    @discord.ui.button(label="📋", style=discord.ButtonStyle.secondary)
+    async def list_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog._playlist_impl(Responder(interaction), "list", scope=self.scope)
+
+    @discord.ui.button(label="▶️", style=discord.ButtonStyle.primary)
+    async def play_button(self, interaction: discord.Interaction, button: discord.Button):
+        await interaction.response.send_modal(PlaylistNameModal(self.cog, "play", self.scope))
+
+
 RECORDING_ENABLED = False
 BYTES_PER_SECOND = 48_000 * 2 * 2
 FRAME_SIZE = 960 * 2 * 2
