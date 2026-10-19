@@ -237,11 +237,11 @@ class HelpView(discord.ui.View):
         self.stop()
         await interaction.response.edit_message(embed=view.embed(), view=view)
 
-    @discord.ui.button(label="前へ", emoji="◀", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="前へ", emoji="<:Left:1561698207757500537>", style=discord.ButtonStyle.secondary, row=2)
     async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.show(interaction, self.category_id, self.page - 1)
 
-    @discord.ui.button(label="次へ", emoji="▶", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="次へ", emoji="<:Right:1561698129655373845>", style=discord.ButtonStyle.secondary, row=2)
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.show(interaction, self.category_id, self.page + 1)
 
@@ -257,7 +257,7 @@ class BackView(discord.ui.View):
         super().__init__(timeout=VIEW_TIMEOUT)
         self.catalog, self.category_id, self.page = catalog, category_id, page
 
-    @discord.ui.button(label="一覧に戻る", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="一覧に戻る", emoji="<:Back:1561700549236097034>", style=discord.ButtonStyle.primary)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = HelpView(self.catalog, self.category_id, self.page)
         self.stop()

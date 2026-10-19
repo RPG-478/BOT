@@ -908,7 +908,7 @@ class SpatialControlView(discord.ui.View):
 # =====================
 # Search & Custom EQ Modals
 # =====================
-class SearchModal(discord.ui.Modal, title="🎵 YouTube 楽曲検索"):
+class SearchModal(discord.ui.Modal, title="YouTube 楽曲検索"):
     """パネルから直接呼び出せるキーワード検索用モーダル窓"""
     keyword_input = discord.ui.TextInput(
         label="検索キーワードまたはURL",
@@ -1120,7 +1120,7 @@ class VoiceControlView(discord.ui.View):
         else:
             await interaction.response.send_message(embed=we("❌ 現在再生中ではないか、既に一時停止されています。"), ephemeral=True)
 
-    @discord.ui.button(label="▶️", style=discord.ButtonStyle.success, row=4)
+    @discord.ui.button(label="再開", emoji="<:music:1561710964238450809>", style=discord.ButtonStyle.success, row=4)
     async def resume_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         state = self.cog.get_state(self.guild_id)
@@ -1267,7 +1267,7 @@ class PlaylistLibraryView(discord.ui.View):
     async def list_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog._playlist_impl(Responder(interaction), "list", scope=self.scope)
 
-    @discord.ui.button(label="▶️", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="再生", emoji="<:music:1561710964238450809>", style=discord.ButtonStyle.primary)
     async def play_button(self, interaction: discord.Interaction, button: discord.Button):
         await interaction.response.send_modal(PlaylistNameModal(self.cog, "play", self.scope))
 
@@ -1779,7 +1779,7 @@ class VoiceCog(commands.Cog):
         eq_label = f"Custom (`{state['custom_eq_filter']}`)" if current_eq == "custom" else current_eq.capitalize()
 
         panel_text = (
-            "# 🎵 ボイスコントロールパネル\n"
+            "# <:music:1561710964238450809> ボイスコントロールパネル\n"
             f"**状態:** {status_icon}\n"
             f"**オーディオ:** 🔊 `{int(state['volume']*100)}%`　⚡ `{state['speed']}x`　🎬 `{eq_label}`\n"
             f"**再生中:** {track_info}\n"
@@ -2072,7 +2072,7 @@ class VoiceCog(commands.Cog):
                 if len(label) > 100: label = label[:97] + "..."
                 options.append(discord.SelectOption(label=label, value=str(idx), description="この楽曲を再生・キューに追加します"))
 
-            self.select_menu = discord.ui.Select(placeholder="🎵 再生したい楽曲を選んでください...", min_values=1, max_values=1, options=options)
+            self.select_menu = discord.ui.Select(placeholder="再生したい楽曲を選んでください...", min_values=1, max_values=1, options=options)
             self.select_menu.callback = self.select_callback
             self.add_item(self.select_menu)
 
@@ -2092,7 +2092,7 @@ class VoiceCog(commands.Cog):
             vc = Responder(self.ctx).voice_client
             if vc and not vc.is_playing() and not state['is_processing_queue'] and not state['is_paused']:
                 await self.cog.check_queue(self.guild_id)
-                await interaction.response.send_message(embed=we(f"🎵 **{selected_track['title']}** を再生します！"))
+                await interaction.response.send_message(embed=we(f"<:music:1561710964238450809> **{selected_track['title']}** を再生します！"))
             else:
                 await interaction.response.send_message(embed=we(f"✅ キューに追加しました: **{selected_track['title']}**"))
                 await self.cog.update_panel(self.guild_id)
@@ -2150,7 +2150,7 @@ class VoiceCog(commands.Cog):
             return await r.send(embed=we(error), ephemeral=True)
         state = self.get_state(r.guild.id)
         state['current_ctx'] = r.source
-        view = build_music_panel_layout(self, r.guild.id, "# 🎵 ボイスコントロールパネル\nステータスを同期中...")
+        view = build_music_panel_layout(self, r.guild.id, "# <:music:1561710964238450809> ボイスコントロールパネル\nステータスを同期中...")
         state['panel_message'] = await r.send(view=view, want_message=True)
         await self.update_panel(r.guild.id)
 
@@ -2289,7 +2289,7 @@ class VoiceCog(commands.Cog):
                 current_eq_mode = state.get('eq', 'flat')
                 eq_label = "custom" if current_eq_mode == "custom" else current_eq_mode
                 status = f"Speed: {state.get('speed', 1.0)}x / Vol: {state.get('volume', 1.0)} / EQ: {eq_label}"
-                await self._send_message(ctx_or_interaction, embed=we(f"🎵 再生中: **{filename}**\n`{status}`"))
+                await self._send_message(ctx_or_interaction, embed=we(f"<:music:1561710964238450809> 再生中: **{filename}**\n`{status}`"))
         
         except Exception as e:
             logging.error(f"Playback error: {e}")
@@ -2892,7 +2892,7 @@ class VoiceCog(commands.Cog):
         state = self.get_state(guild_id)
         current_track = state.get('current_track')
         queue_items = list(state['queue']._queue)
-        embed = discord.Embed(title="🎶 再生キュー", color=0xFFFFFF)
+        embed = discord.Embed(title="<:music:1561710964238450809> 再生キュー", color=0xFFFFFF)
         embed.add_field(
             name="再生中",
             value=f"**{current_track[1]}**" if current_track else "なし",
