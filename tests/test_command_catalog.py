@@ -120,6 +120,7 @@ class CommandCatalogTest(unittest.TestCase):
             '!panel', '!search', '!list', '!plist', '!save_current', '!plsave', '!pllist', '!plplay', '!volume',
             '!speed', '!stop_all', '!rval', '!rres', '!rec', '!echo', '!stt', '!karaoke', '!vc', '!saito',
             '!saito_stop', '!gvc join', '!gvc leave',
+            '/muted', '/whisper', '/clear', '/bumprta',
         ]
         registered = set(registered_commands(self.bot))
         for key in removed:
@@ -128,7 +129,7 @@ class CommandCatalogTest(unittest.TestCase):
                 self.assertNotIn(key, command_meta.COMMAND_META)
                 self.assertIsNone(command_catalog.find_command(self.catalog, key, include_hidden=True))
         self.assertFalse([k for k in registered if k.split(' ')[0] in ('!rec', '!echo', '!stt', '!karaoke', '!vc')])
-        for key in ('/music', '/voice', '!gvc create', '!gvc chat connect', '!ffversion'):
+        for key in ('/music', '/voice', '/support', '!gvc create', '!gvc chat connect', '!ffversion'):
             with self.subTest(kept=key):
                 self.assertIn(key, registered)
 
@@ -225,15 +226,14 @@ class CommandCatalogTest(unittest.TestCase):
     def test_permissions_and_guild_only_are_discovered(self):
         def get(key):
             return command_catalog.find_command(self.catalog, key, include_hidden=True)
-        self.assertIn('manage_messages', get('/clear')['permissions'])
-        self.assertTrue(get('/clear')['guild_only'])
+        self.assertTrue(get('/support')['guild_only'])
         self.assertTrue(get('!nation found')['guild_only'])
         self.assertIn('administrator', get('!nation found')['permissions'])
         self.assertIn('manage_channels', get('!mimic_toggle')['permissions'])
         self.assertTrue(get('/music')['guild_only'])
         self.assertEqual(get('!all_stats')['aliases'], ['stats', 'spec'])
-        amount = next(o for o in get('/clear')['options'] if o['name'] == 'amount')
-        self.assertEqual((amount['type'], amount['required']), ('integer', True))
+        action = next(o for o in get('/support')['options'] if o['name'] == 'action')
+        self.assertEqual((action['type'], action['required']), ('string', True))
 
     def test_guide_key_reads_game_guides_when_available(self):
         fake = {'doubt': {'guide': '## 遊び方\nカードを出します。'}}

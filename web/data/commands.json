@@ -37,6 +37,26 @@
       "guild_only": true,
       "aliases": [],
       "hidden": false
+    },
+    {
+      "name": "support",
+      "kind": "slash",
+      "category": "support",
+      "summary": "Muted・匿名つぶやき・メッセージ削除・bump/up設定をまとめて操作します",
+      "usage": "/support action:<操作> [target|minutes|amount|member]",
+      "options": [
+        {
+          "name": "action",
+          "type": "string",
+          "required": true,
+          "description": "実行するサポート操作"
+        }
+      ],
+      "permissions": [],
+      "guild_only": true,
+      "aliases": [],
+      "hidden": false,
+      "guide": ""
     }
   ]
 }

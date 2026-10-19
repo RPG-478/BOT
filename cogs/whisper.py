@@ -64,9 +64,6 @@ class WhisperCog(commands.Cog):
     async def cog_load(self):
         self.bot.add_view(WhisperView(self))
 
-    @app_commands.command(name="whisper", description="匿名つぶやきパネルを設置します")
-    @app_commands.default_permissions(manage_channels=True)
-    @app_commands.checks.has_permissions(manage_channels=True)
     async def whisper(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild_id = interaction.guild_id
@@ -88,12 +85,6 @@ class WhisperCog(commands.Cog):
         
         message = await interaction.channel.send(embed=embed, view=WhisperView(self))
         self.active_panels[guild_id] = (interaction.channel_id, message.id)
-
-    @whisper.error
-    async def whisper_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        if isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.defer(ephemeral=True)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(WhisperCog(bot))

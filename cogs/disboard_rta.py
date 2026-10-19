@@ -585,9 +585,6 @@ class BumpRta(commands.Cog):
                 embed=_white_embed(f"ランキングの取得に失敗しました。\n（{type(e).__name__}: {e}）"))
 
     # ---- slash command ---------------------------------------------------
-    @app_commands.command(name="bumprta", description="bump/up通知の設定・状態確認")
-    @app_commands.choices(action=ACTION_CHOICES)
-    @app_commands.describe(action="操作")
     async def bumprta_command(
         self,
         interaction: discord.Interaction,

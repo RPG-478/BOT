@@ -79,22 +79,20 @@
       "guide": "## 遊び方\n\n1. `/uno` で募集を始めます。\n2. 参加ボタンを押した人で対戦します。\n\n（これはサンプルの説明です）"
     },
     {
-      "name": "clear",
+      "name": "support",
       "kind": "slash",
-      "category": "admin",
-      "summary": "メッセージをまとめて削除します（サンプル）",
-      "usage": "/clear 件数:20",
+      "category": "support",
+      "summary": "Muted・匿名つぶやき・メッセージ削除・bump/up設定をまとめて操作します",
+      "usage": "/support action:<操作> [target|minutes|amount|member]",
       "options": [
         {
-          "name": "件数",
-          "type": "integer",
+          "name": "action",
+          "type": "string",
           "required": true,
-          "description": "1〜100"
+          "description": "実行するサポート操作"
         }
       ],
-      "permissions": [
-        "manage_messages"
-      ],
+      "permissions": [],
       "guild_only": true,
       "aliases": [],
       "hidden": false,

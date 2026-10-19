@@ -117,7 +117,7 @@ def check_permissions(guild, channel, *, auth: dict, global_channel_ids=(), mute
 
     # ミュート
     if mute_supported:
-        add("ミュート（/muted）", _missing(guild_perms, ["manage_roles", "manage_channels"]))
+        add("ミュート（/support）", _missing(guild_perms, ["manage_roles", "manage_channels"]))
 
     # 国づくり
     if nation is not None:
@@ -277,7 +277,7 @@ class SetupWizard(discord.ui.View):
         elif self.step == "mute":
             cog = self.cog.mute_cog()
             embed = discord.Embed(title=f"🛠️ 初期設定 {number}: ミュート管理ロール", color=EMBED_COLOR, description=(
-                "`/muted` でメンバーをミュートできるロールです（サーバー管理者はいつでも使えます）。"
+                "`/support action:Muted設定` でメンバーをミュートできるロールです（サーバー管理者はいつでも使えます）。"
             ))
             embed.add_field(name="管理ロール", value=self._role_text(cog.admin_roles.get(self.guild.id) if cog else None))
         elif self.step == "nation":

@@ -107,7 +107,7 @@ class Muted(commands.Cog):
         if allowed_role_id and any(role.id == allowed_role_id for role in interaction.user.roles):
             return True
         
-        embed = discord.Embed(description="管理ロールが設定されていないか、権限がありません。管理者による `/muted admin_role:` の設定が必要です。", color=self.embed_color)
+        embed = discord.Embed(description="管理ロールが設定されていないか、権限がありません。管理者による `/support action:Muted設定 admin_role:` の設定が必要です。", color=self.embed_color)
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return False
 
@@ -227,8 +227,6 @@ class Muted(commands.Cog):
             self.stop() # Viewのループを止める
 
     # --- メインコマンド ---
-    @app_commands.command(name="muted", description="Mutedシステム管理")
-    @app_commands.describe(target="対象者", minutes="時間(分)", admin_role="管理ロール設定", isolation_channel="隔離先設定")
     async def muted_setting(
         self, 
         interaction: discord.Interaction, 

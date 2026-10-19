@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import discord
 from cogs.disboard_rta import BumpRta, DISBOARD_BOT_ID, DISOKU_BOT_ID, detect_event
+from cogs.support import SupportCog
 
 
 class BumpRtaDetectionTest(unittest.TestCase):
@@ -119,9 +120,10 @@ class BumpRtaCogTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-    def test_bumprta_is_one_app_command(self):
-        names = [command.name for command in BumpRta.__cog_app_commands__]
-        self.assertEqual(names, ["bumprta"])
+    def test_support_is_the_single_app_command(self):
+        self.assertEqual(BumpRta.__cog_app_commands__, [])
+        names = [command.name for command in SupportCog.__cog_app_commands__]
+        self.assertEqual(names, ["support"])
 
 
 if __name__ == "__main__":
