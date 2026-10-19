@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 from core.panel_v2 import as_panel_v2
 from core import guild_settings, shortcuts
+from core.game_guides import GAME_GUIDES, GAME_ORDER
 
 
 GENERAL_GENRES = {
@@ -33,9 +34,19 @@ GENERAL_ACTIONS = {
 
 SHORTCUT_ROOTS = {
     "general": ("/general", [(label, value) for values in GENERAL_ACTIONS.values() for label, value in values if value != "shortcut_manage"]),
-    "vc": ("/vc", [("VC参加", "join"), ("VC退出", "leave"), ("VC状態", "status")]),
-    "game": ("/game", [("ゲーム開始: " + game, "game:" + game) for game in ("jinrou", "wordwolf", "uno", "janken", "ngword", "shiritori")]),
-    "support": ("/support", [("bump/up通知状態", "bumprta_status"), ("bump/up通知オン", "bumprta_on"), ("bump/up通知オフ", "bumprta_off")]),
+    "vc": ("/vc", [("VC参加", "join"), ("VC退出", "leave"), ("VC状態", "status"),
+                    ("音楽操作パネル", "music_panel"), ("録音開始", "record_start"), ("録音停止", "record_stop"),
+                    ("やまびこ開始", "echo_start"), ("やまびこ停止", "echo_stop"),
+                    ("文字起こし開始", "transcribe_start"), ("文字起こし停止", "transcribe_stop"),
+                    ("カラオケ開始", "karaoke_start"), ("カラオケ停止", "karaoke_stop"),
+                    ("ランダム通話開始", "match_start"), ("ランダム通話終了", "match_stop"),
+                    ("グローバルVC開始", "global_start"), ("グローバルVC終了", "global_stop")]),
+    "game": ("/game", [("ゲーム開始: " + GAME_GUIDES[game]["name"], "game:" + game) for game in GAME_ORDER]),
+    "support": ("/support", [("Muted設定", "muted"), ("匿名つぶやき", "whisper"), ("メッセージ削除", "clear"),
+                              ("一括ロール操作", "role_bulk"), ("bump/up状態", "bumprta_status"),
+                              ("bump/upオン", "bumprta_on"), ("bump/upオフ", "bumprta_off"),
+                              ("絵文字便乗設定", "binjou"), ("VC入退室履歴", "vc_log"),
+                              ("メッセージ編集履歴", "message_log"), ("モデレート履歴", "moderation_log")]),
     "help": ("/help", [("ヘルプを表示", "overview")]),
 }
 
