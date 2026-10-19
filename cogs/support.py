@@ -18,37 +18,56 @@ SUPPORT_ACTIONS = [
     app_commands.Choice(name="bump/up通知・RTA状態", value="bumprta_status"),
     app_commands.Choice(name="bump/up通知・RTAオン", value="bumprta_on"),
     app_commands.Choice(name="bump/up通知・RTAオフ", value="bumprta_off"),
-    app_commands.Choice(name="🤔リアクション便乗設定", value="thinking_reaction"),
+    app_commands.Choice(name="絵文字便乗設定（binjou）", value="binjou"),
 ]
 
 THINKING_SECTION = "thinking_reaction"
+BINJOU_SECTION = "binjou"
 THINKING_EMOJI = discord.PartialEmoji(name="thinking", id=1561695212814995596)
+BINJOU_DEFAULTS = {"thinking": True, "thumbsup": True}
 
 
-class ThinkingReactionView(discord.ui.View):
-    def __init__(self, cog: "SupportCog", enabled: bool):
+def get_binjou_settings(store, guild_id: int) -> dict[str, bool]:
+    """binjou設定を既定値と旧thinking設定で補完する。"""
+    raw = store.get(guild_id, BINJOU_SECTION)
+    old_thinking = store.get(guild_id, THINKING_SECTION).get("enabled")
+    thinking = raw.get("thinking")
+    if not isinstance(thinking, bool):
+        thinking = old_thinking if isinstance(old_thinking, bool) else BINJOU_DEFAULTS["thinking"]
+    thumbsup = raw.get("thumbsup")
+    if not isinstance(thumbsup, bool):
+        thumbsup = BINJOU_DEFAULTS["thumbsup"]
+    return {"thinking": thinking, "thumbsup": thumbsup}
+
+
+class EmojiBinjouView(discord.ui.View):
+    def __init__(self, cog: "SupportCog", settings: dict[str, bool]):
         super().__init__(timeout=300)
         self.cog = cog
-        self.enabled = enabled
+        self.settings = settings
 
-    async def set_enabled(self, interaction: discord.Interaction, enabled: bool):
+    async def set_enabled(self, interaction: discord.Interaction, key: str, enabled: bool):
         if not getattr(getattr(interaction.user, "guild_permissions", None), "manage_guild", False):
             return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
-        await guild_settings.get_store().update(interaction.guild_id, THINKING_SECTION, enabled=enabled)
-        self.enabled = enabled
-        label = "オン" if enabled else "オフ"
-        await interaction.response.edit_message(
-            embed=discord.Embed(title="🤔リアクション便乗", description=f"現在の設定: **{label}**\n🤔へのリアクションに {THINKING_EMOJI} を追加します。", color=0x3498DB),
-            view=self,
-        )
+        await guild_settings.get_store().update(interaction.guild_id, BINJOU_SECTION, **{key: enabled})
+        self.settings[key] = enabled
+        await interaction.response.edit_message(embed=self.cog.binjou_embed(self.settings), view=self)
 
-    @discord.ui.button(label="オン", style=discord.ButtonStyle.success)
-    async def enable_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.set_enabled(interaction, True)
+    @discord.ui.button(label="🤔 オン", style=discord.ButtonStyle.success, row=0)
+    async def thinking_on(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.set_enabled(interaction, "thinking", True)
 
-    @discord.ui.button(label="オフ", style=discord.ButtonStyle.secondary)
-    async def disable_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.set_enabled(interaction, False)
+    @discord.ui.button(label="🤔 オフ", style=discord.ButtonStyle.secondary, row=0)
+    async def thinking_off(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.set_enabled(interaction, "thinking", False)
+
+    @discord.ui.button(label="👍 オン", style=discord.ButtonStyle.success, row=1)
+    async def thumbsup_on(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.set_enabled(interaction, "thumbsup", True)
+
+    @discord.ui.button(label="👍 オフ", style=discord.ButtonStyle.secondary, row=1)
+    async def thumbsup_off(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.set_enabled(interaction, "thumbsup", False)
 
 
 class RoleBulkConfirmView(discord.ui.View):
@@ -216,6 +235,18 @@ class SupportCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    @staticmethod
+    def binjou_embed(settings: dict[str, bool]) -> discord.Embed:
+        return discord.Embed(
+            title="絵文字便乗設定（binjou）",
+            description=(
+                f"🤔 → {THINKING_EMOJI}: **{'オン' if settings['thinking'] else 'オフ'}**\n"
+                f"👍 → 👍: **{'オン' if settings['thumbsup'] else 'オフ'}**\n\n"
+                "各ボタンで個別に切り替えられます。初期設定はどちらもオンです。"
+            ),
+            color=0x3498DB,
+        )
+
     async def _missing(self, interaction: discord.Interaction, name: str):
         await interaction.response.send_message(
             f"{name}機能が読み込まれていません。", ephemeral=True
@@ -225,11 +256,14 @@ class SupportCog(commands.Cog):
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         if payload.guild_id is None or payload.user_id == getattr(self.bot.user, "id", None):
             return
-        if str(payload.emoji) != "🤔":
+        source_emoji = str(payload.emoji)
+        if source_emoji not in {"🤔", "👍", "👍️"}:
             return
         store = guild_settings.get_store()
         await store.ensure_loaded()
-        if not store.get(payload.guild_id, THINKING_SECTION).get("enabled", True):
+        settings = get_binjou_settings(store, payload.guild_id)
+        key = "thinking" if source_emoji == "🤔" else "thumbsup"
+        if not settings[key]:
             return
         member = getattr(payload, "member", None)
         if member is not None and member.bot:
@@ -242,13 +276,15 @@ class SupportCog(commands.Cog):
                 return
         try:
             message = await channel.fetch_message(payload.message_id)
-            if any(str(reaction.emoji) == str(THINKING_EMOJI) and reaction.me for reaction in message.reactions):
+            mirror_emoji = THINKING_EMOJI if key == "thinking" else "👍"
+            if any(str(reaction.emoji) == str(mirror_emoji) and reaction.me for reaction in message.reactions):
                 return
-            await message.add_reaction(THINKING_EMOJI)
+            await message.add_reaction(mirror_emoji)
         except discord.HTTPException as exc:
             logger.warning(
-                "thinking reaction mirror failed (guild=%s channel=%s message=%s emoji=%s): %s",
-                payload.guild_id, payload.channel_id, payload.message_id, THINKING_EMOJI, exc,
+                "binjou reaction mirror failed (guild=%s channel=%s message=%s emoji=%s): %s",
+                payload.guild_id, payload.channel_id, payload.message_id,
+                THINKING_EMOJI if key == "thinking" else "👍", exc,
             )
             return
 
@@ -315,17 +351,13 @@ class SupportCog(commands.Cog):
         )
 
     async def dispatch(self, interaction: discord.Interaction, selected: str):
-        if selected == "thinking_reaction":
+        if selected == "binjou":
             store = guild_settings.get_store()
             await store.ensure_loaded()
-            enabled = store.get(interaction.guild_id, THINKING_SECTION).get("enabled", True)
+            settings = get_binjou_settings(store, interaction.guild_id)
             return await interaction.response.send_message(
-                embed=discord.Embed(
-                    title="🤔リアクション便乗",
-                    description=f"現在の設定: **{'オン' if enabled else 'オフ'}**\n🤔へのリアクションに {THINKING_EMOJI} を追加します。",
-                    color=0x3498DB,
-                ),
-                view=ThinkingReactionView(self, enabled), ephemeral=True,
+                embed=self.binjou_embed(settings),
+                view=EmojiBinjouView(self, settings), ephemeral=True,
             )
         if selected == "role_bulk":
             return await self._role_bulk(interaction, None)
