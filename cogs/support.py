@@ -19,6 +19,7 @@ SUPPORT_ACTIONS = [
     app_commands.Choice(name="bump/up通知・RTAオン", value="bumprta_on"),
     app_commands.Choice(name="bump/up通知・RTAオフ", value="bumprta_off"),
     app_commands.Choice(name="絵文字便乗設定（binjou）", value="binjou"),
+    app_commands.Choice(name="抽選（giveaway）", value="giveaway"),
 ]
 
 THINKING_SECTION = "thinking_reaction"
@@ -215,6 +216,24 @@ class SupportClearModal(discord.ui.Modal, title="メッセージ削除"):
         await cog.clear(interaction, count, None)
 
 
+class GiveawayModal(discord.ui.Modal, title="抽選を作成"):
+    prize = discord.ui.TextInput(label="賞品", max_length=200)
+    winners = discord.ui.TextInput(label="当選人数", default="1", max_length=2)
+    minutes = discord.ui.TextInput(label="締切までの分数", default="60", max_length=5)
+    def __init__(self, cog):
+        super().__init__(); self.cog = cog
+    async def on_submit(self, interaction):
+        if interaction.guild is None or not getattr(interaction.user.guild_permissions, "manage_guild", False):
+            return await interaction.response.send_message("抽選の作成にはサーバー管理権限が必要です。", ephemeral=True)
+        try:
+            winners, minutes = int(self.winners.value), int(self.minutes.value)
+        except ValueError:
+            return await interaction.response.send_message("当選人数と分数は整数で入力してください。", ephemeral=True)
+        giveaway = self.cog.bot.get_cog("GiveawayCog")
+        if giveaway is None:
+            return await self.cog._missing(interaction, "giveaway")
+        await giveaway.giveaway(interaction, self.prize.value, winners, minutes, None, None, 0, None, None)
+
 class SupportActionSelect(discord.ui.Select):
     def __init__(self, cog: "SupportCog"):
         self.cog = cog
@@ -351,6 +370,8 @@ class SupportCog(commands.Cog):
         )
 
     async def dispatch(self, interaction: discord.Interaction, selected: str):
+        if selected == "giveaway":
+            return await interaction.response.send_modal(GiveawayModal(self))
         if selected == "binjou":
             store = guild_settings.get_store()
             await store.ensure_loaded()

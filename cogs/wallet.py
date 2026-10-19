@@ -78,8 +78,6 @@ class WalletCog(commands.Cog):
             traceback.print_exc()
             await ctx.send("コイン設定中にエラーが発生しました。")
 
-    @app_commands.command(name="user_status", description="プレイヤーのコイン・生存ステータスを表示します。")
-    @app_commands.describe(target="確認するプレイヤー（省略すると自分）")
     async def user_status(self, interaction: discord.Interaction, target: discord.User | None = None):
         await interaction.response.defer()
         target = target or interaction.user
@@ -120,8 +118,6 @@ class WalletCog(commands.Cog):
             print("=== [WALLET COMMAND ERROR END] ===\n")
             await interaction.followup.send(f"データの取得中にエラーが発生しました。\nエラー内容: `{type(e).__name__}`", ephemeral=True)
 
-    @app_commands.command(name="pay", description="他のユーザーにコインを送金します。")
-    @app_commands.describe(receiver="送金先のユーザー", amount="送金するコインの数量")
     async def pay(self, interaction: discord.Interaction, receiver: discord.User, amount: int):
         if amount <= 0:
             await interaction.response.send_message("1コイン以上を指定してください。", ephemeral=True)
@@ -275,9 +271,6 @@ class WalletCog(commands.Cog):
 
         return await asyncio.to_thread(_call)
 
-    @app_commands.command(name="leaderboard", description="コインまたはbump/up RTAのランキングを表示します。")
-    @app_commands.choices(category=LEADERBOARD_TYPES, scope=RTA_SCOPES)
-    @app_commands.describe(category="ランキングの種類", scope="RTAの範囲（RTA選択時）")
     async def leaderboard(self, interaction: discord.Interaction,
                           category: app_commands.Choice[str] | None = None,
                           scope: app_commands.Choice[str] | None = None):

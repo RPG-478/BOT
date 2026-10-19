@@ -371,13 +371,6 @@ class GiveawayCog(commands.Cog):
             await interaction.response.send_message("この抽選の操作を選んでください。", view=ManageView(self, mid, g["status"]),
                                                     ephemeral=True)
 
-    @app_commands.command(name="giveaway", description="抽選（プレゼント企画）を始めます")
-    @app_commands.describe(prize="賞品", winners="当選人数", minutes="締め切りまでの時間（分）",
-                           channel="抽選を出すチャンネル（省略するとこのチャンネル）",
-                           required_role="参加に必要なロール（任意）", cost="参加費 AGO（任意、既定 0）",
-                           winner_dm_message="当選者へのDMコメント（任意）", winner_dm_link="当選者へのDMリンク（任意）")
-    @app_commands.guild_only()
-    @app_commands.default_permissions(manage_guild=True)
     async def giveaway(self, interaction: discord.Interaction, prize: app_commands.Range[str, 1, 200],
                        winners: app_commands.Range[int, 1, MAX_WINNERS], minutes: app_commands.Range[int, 1, MAX_MINUTES],
                        channel: Optional[discord.TextChannel] = None, required_role: Optional[discord.Role] = None,

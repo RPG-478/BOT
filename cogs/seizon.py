@@ -77,15 +77,6 @@ class FujoSurvival(commands.Cog):
         app_commands.Choice(name="失踪警報を解除", value="panic_disable"),
     ]
 
-    @app_commands.command(name="fujo", description="生存確認・ステータス・ランキング・失踪警報をまとめて操作します")
-    @app_commands.choices(action=FUJO_ACTIONS)
-    @app_commands.describe(
-        action="実行する操作",
-        target="確認するユーザー（hindo で使用。省略すると自分）",
-        mode="ranking の並べ方",
-        days="panic_set の発報日数（1〜365）",
-        message="panic_set の発報メッセージ",
-    )
     async def fujo(
         self,
         interaction: discord.Interaction,

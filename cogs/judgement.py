@@ -117,25 +117,6 @@ class JudgeCog(commands.Cog):
             scores.append(LEVEL_SCORES[result.level])
         return scores
 
-    @app_commands.command(
-        name="judge",
-        description="指定したユーザーの発言ログから各種スコアの判定を行います",
-    )
-    @app_commands.describe(
-        target="判定対象のユーザー",
-        type="判定する項目を選択してください",
-    )
-    @app_commands.choices(
-        type=[
-            app_commands.Choice(name="安全度 (Safety)", value="safety"),
-            app_commands.Choice(name="変態度 (Hentai)", value="hentai"),
-            app_commands.Choice(name="知性度 (Intelligent)", value="intelligent"),
-            app_commands.Choice(name="キチガイ度 (Kichigai)", value="kichigai"),
-            app_commands.Choice(name="ハゲ度 (Hage)", value="hage"),
-            app_commands.Choice(name="ボット度 (Bot)", value="bot"),
-            app_commands.Choice(name="キレ度 (Kire)", value="kire"),
-        ]
-    )
     async def judge(
         self,
         interaction: discord.Interaction,
