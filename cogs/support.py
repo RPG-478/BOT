@@ -51,17 +51,18 @@ class ThinkingReactionView(discord.ui.View):
 
 
 class RoleBulkConfirmView(discord.ui.View):
-    def __init__(self, cog: "SupportCog", role: discord.Role, adding: bool):
+    def __init__(self, cog: "SupportCog", role: discord.Role, adding: bool, include_bots: bool = False):
         super().__init__(timeout=60)
         self.cog = cog
         self.role = role
         self.adding = adding
+        self.include_bots = include_bots
 
     @discord.ui.button(label="実行", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         affected, skipped, failed = await self.cog.bulk_role_update(
-            interaction.guild, self.role, self.adding
+            interaction.guild, self.role, self.adding, include_bots=self.include_bots
         )
         action = "付与" if self.adding else "剥奪"
         await interaction.followup.send(
@@ -91,11 +92,13 @@ class RoleBulkView(discord.ui.View):
         self.cog = cog
         self.guild = guild
         self.role = role
+        self.include_bots = False
         self.add_item(RoleBulkSelect(self))
 
     def description(self) -> str:
         selected = self.role.mention if self.role else "未選択"
-        return f"対象ロール: {selected}\n下のボタンから全メンバーへの付与・剥奪を選びます。"
+        bot_scope = "BOTも含める" if self.include_bots else "BOTは除外"
+        return f"対象ロール: {selected}\n対象: 人間メンバー（{bot_scope}）\n下のボタンから付与・剥奪を選びます。"
 
     async def choose_action(self, interaction: discord.Interaction, adding: bool):
         if self.role is None:
@@ -104,10 +107,14 @@ class RoleBulkView(discord.ui.View):
         await interaction.response.send_message(
             embed=discord.Embed(
                 title=f"ロール一括{action}の確認",
-                description=f"{self.role.mention} をサーバーの全メンバーに{action}します。\nこの操作は取り消せません。",
+                description=(
+                    f"{self.role.mention} をサーバーのメンバーに{action}します。\n"
+                    f"BOT: {'対象に含める' if self.include_bots else '対象外'}\n"
+                    "この操作は取り消せません。"
+                ),
                 color=0xE74C3C,
             ),
-            view=RoleBulkConfirmView(self.cog, self.role, adding),
+            view=RoleBulkConfirmView(self.cog, self.role, adding, self.include_bots),
             ephemeral=True,
         )
 
@@ -118,6 +125,16 @@ class RoleBulkView(discord.ui.View):
     @discord.ui.button(label="剥奪", style=discord.ButtonStyle.danger, row=1)
     async def remove_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.choose_action(interaction, False)
+
+    @discord.ui.button(label="BOTを対象に含める", style=discord.ButtonStyle.secondary, row=2)
+    async def toggle_bots_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.include_bots = not self.include_bots
+        button.label = "BOTを対象から外す" if self.include_bots else "BOTを対象に含める"
+        button.style = discord.ButtonStyle.primary if self.include_bots else discord.ButtonStyle.secondary
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="一括ロール操作", description=self.description(), color=0x3498DB),
+            view=self,
+        )
 
 
 class RoleBulkSelect(discord.ui.RoleSelect):
@@ -208,10 +225,15 @@ class SupportCog(commands.Cog):
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             return
 
-    async def bulk_role_update(self, guild: discord.Guild, role: discord.Role, adding: bool):
-        """管理可能な全メンバーへロールを付与・剥奪し、件数を返す。"""
+    async def bulk_role_update(
+        self, guild: discord.Guild, role: discord.Role, adding: bool, *, include_bots: bool = False
+    ):
+        """BOTを既定で除外し、対象メンバーへロールを付与・剥奪する。"""
         affected = skipped = failed = 0
         for member in guild.members:
+            if getattr(member, "bot", False) and not include_bots:
+                skipped += 1
+                continue
             has_role = role in getattr(member, "roles", [])
             if (adding and has_role) or (not adding and not has_role):
                 skipped += 1

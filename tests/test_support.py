@@ -17,9 +17,10 @@ class FakeRole:
 
 
 class FakeMember:
-    def __init__(self, member_id, roles=()):
+    def __init__(self, member_id, roles=(), *, bot=False):
         self.id = member_id
         self.roles = list(roles)
+        self.bot = bot
         self.add_roles = AsyncMock(side_effect=self._add)
         self.remove_roles = AsyncMock(side_effect=self._remove)
 
@@ -55,10 +56,32 @@ class SupportRoleBulkTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(role, members[2].roles)
         members[1].remove_roles.assert_not_awaited()
 
+    async def test_bots_are_excluded_by_default(self):
+        cog = SupportCog(None)
+        role = FakeRole()
+        human = FakeMember(1)
+        bot = FakeMember(2, bot=True)
+        guild = types.SimpleNamespace(members=[human, bot])
+        affected, skipped, failed = await cog.bulk_role_update(guild, role, True)
+        self.assertEqual((affected, skipped, failed), (1, 1, 0))
+        human.add_roles.assert_awaited_once()
+        bot.add_roles.assert_not_awaited()
+
+    async def test_bots_can_be_included_as_an_explicit_option(self):
+        cog = SupportCog(None)
+        role = FakeRole()
+        bot = FakeMember(2, bot=True)
+        guild = types.SimpleNamespace(members=[bot])
+        affected, skipped, failed = await cog.bulk_role_update(guild, role, True, include_bots=True)
+        self.assertEqual((affected, skipped, failed), (1, 0, 0))
+        bot.add_roles.assert_awaited_once()
+
     def test_support_has_role_bulk_action_and_panel(self):
         self.assertIn("role_bulk", [choice.value for choice in SUPPORT_ACTIONS])
         view = RoleBulkView(SupportCog(None), types.SimpleNamespace(), FakeRole())
-        self.assertEqual(len(view.children), 3)
+        self.assertEqual(len(view.children), 4)
+        self.assertFalse(view.include_bots)
+        self.assertIn("BOTは除外", view.description())
 
 
 class SupportThinkingReactionTest(unittest.IsolatedAsyncioTestCase):
