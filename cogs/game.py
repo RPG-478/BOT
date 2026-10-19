@@ -112,7 +112,7 @@ class GameGenreSelect(discord.ui.Select):
         selected = self.values[0]
         if selected in GAME_GENRE_BY_GAME:
             await interaction.response.edit_message(
-                embed=detail_embed(selected), view=GameDetailView(self.view.cog, selected))
+                embed=detail_embed(selected), view=GameDetailView(self.view.cog, selected, self.view.shortcut_mode, self.view.shortcut_item))
             return
         view = self.view
         view.genre = selected
@@ -135,13 +135,16 @@ class GameSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         game_id = self.values[0]
-        await interaction.response.edit_message(embed=detail_embed(game_id), view=GameDetailView(self.view.cog, game_id))
+        await interaction.response.edit_message(
+            embed=detail_embed(game_id), view=GameDetailView(self.view.cog, game_id, self.view.shortcut_mode, self.view.shortcut_item))
 
 
 class GameHubView(discord.ui.View):
-    def __init__(self, cog):
+    def __init__(self, cog, shortcut_mode: bool = False, shortcut_item: dict | None = None):
         super().__init__(timeout=600)
         self.cog = cog
+        self.shortcut_mode = shortcut_mode
+        self.shortcut_item = shortcut_item
         self.genre = None
         self.refresh()
 
@@ -150,6 +153,12 @@ class GameHubView(discord.ui.View):
         self.add_item(GameGenreSelect(self.genre))
         if self.genre:
             self.add_item(GameSelect(self.genre))
+        if self.shortcut_mode:
+            from cogs.general import ShortcutCommitButton
+            self.add_item(ShortcutCommitButton())
+
+    def shortcut_action(self):
+        return None
 
     def embed(self):
         if self.genre:
@@ -284,17 +293,20 @@ class JankenWagerSelect(discord.ui.Select):
 
 
 class GameDetailView(discord.ui.View):
-    def __init__(self, cog, game_id: str):
+    def __init__(self, cog, game_id: str, shortcut_mode: bool = False, shortcut_item: dict | None = None):
         super().__init__(timeout=600)
         self.cog = cog
         self.game_id = game_id
-        self.wordlist = "standard"
-        self.ng_minutes, self.ng_mode = 3, "word"
-        self.jinrou_mode = "local"
-        self.wordle_mode = "shared"
-        self.wager = 0
-        self.chess_mode = "human"
-        self.chess_difficulty = 5
+        self.shortcut_mode = shortcut_mode
+        self.shortcut_item = shortcut_item
+        saved = (shortcut_item or {}).get("action", {}).get("options", {})
+        self.wordlist = saved.get("wordlist", "standard")
+        self.ng_minutes, self.ng_mode = saved.get("ng_minutes", 3), saved.get("ng_mode", "word")
+        self.jinrou_mode = saved.get("jinrou_mode", "local")
+        self.wordle_mode = saved.get("wordle_mode", "shared")
+        self.wager = saved.get("wager", 0)
+        self.chess_mode = saved.get("chess_mode", "human")
+        self.chess_difficulty = saved.get("chess_difficulty", 5)
         if game_id == "janken":
             self.add_item(JankenWagerSelect(self.wager))
         if game_id == "wordle":
@@ -316,6 +328,16 @@ class GameDetailView(discord.ui.View):
             self.remove_item(self.end_game)
         if game_id not in RANKED_GAMES and not party_ranking.is_ranked(game_id):
             self.remove_item(self.ranking)
+        if self.shortcut_mode:
+            from cogs.general import ShortcutCommitButton
+            self.add_item(ShortcutCommitButton())
+
+    def shortcut_action(self):
+        return {"root": "game", "value": f"game:{self.game_id}",
+                "options": {"wordlist": self.wordlist, "ng_minutes": self.ng_minutes,
+                             "ng_mode": self.ng_mode, "wordle_mode": self.wordle_mode,
+                             "jinrou_mode": self.jinrou_mode, "wager": self.wager,
+                             "chess_mode": self.chess_mode, "chess_difficulty": self.chess_difficulty}}
 
     @discord.ui.button(label="ルール", style=discord.ButtonStyle.secondary, row=3)
     async def rules(self, interaction: discord.Interaction, button: discord.ui.Button):

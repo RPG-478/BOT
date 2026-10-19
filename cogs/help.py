@@ -235,10 +235,19 @@ class GuideSelect(discord.ui.Select):
 class HelpView(discord.ui.View):
     """カテゴリ選択・ページ送り・ガイド選択をまとめた画面。操作のたびに作り直す。"""
 
-    def __init__(self, catalog: dict, category_id: str | None = None, page: int = 0):
+    def __init__(self, catalog: dict, category_id: str | None = None, page: int = 0,
+                 shortcut_mode: bool = False, shortcut_item: dict | None = None):
         super().__init__(timeout=VIEW_TIMEOUT)
         self.catalog = catalog
         self.category_id = category_id
+        self.shortcut_mode = shortcut_mode
+        self.shortcut_item = shortcut_item
+        saved = (shortcut_item or {}).get("action", {}).get("options", {})
+        if category_id is None:
+            self.category_id = saved.get("category_id")
+        if page == 0:
+            page = saved.get("page", page)
+        category_id = self.category_id
         self.pages = category_pages(catalog, category_id) if category_id else []
         self.page = max(0, min(page, len(self.pages) - 1)) if self.pages else 0
         self.add_item(CategorySelect(catalog, category_id))
@@ -255,12 +264,20 @@ class HelpView(discord.ui.View):
             self.remove_item(self.previous_page)
             self.remove_item(self.next_page)
             self.remove_item(self.back_to_top)
+        if self.shortcut_mode:
+            from cogs.general import ShortcutCommitButton
+            self.add_item(ShortcutCommitButton())
+
+    def shortcut_action(self):
+        if self.category_id is None:
+            return None
+        return {"root": "help", "value": "overview", "options": {"category_id": self.category_id, "page": self.page}}
 
     def embed(self) -> discord.Embed:
         return self.pages[self.page] if self.category_id else overview_embed(self.catalog)
 
     async def show(self, interaction: discord.Interaction, category_id: str | None, page: int):
-        view = HelpView(self.catalog, category_id, page)
+        view = HelpView(self.catalog, category_id, page, self.shortcut_mode, self.shortcut_item)
         self.stop()
         await interaction.response.edit_message(embed=view.embed(), view=view)
 

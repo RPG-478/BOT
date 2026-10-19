@@ -476,7 +476,9 @@ class SupportGenreSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         view: SupportPanelView = self.view
+        view = getattr(view, "panel", view)
         view.genre = self.values[0]
+        view.action = None
         view.refresh()
         await interaction.response.edit_message(embed=view.embed(), view=view)
 
@@ -490,14 +492,20 @@ class SupportActionSelect(discord.ui.Select):
         ], row=1)
 
     async def callback(self, interaction: discord.Interaction):
+        getattr(self.view, "panel", self.view).action = self.values[0]
         await self.cog.dispatch(interaction, self.values[0])
 
 
 class SupportPanelView(discord.ui.View):
-    def __init__(self, cog: "SupportCog", genre: str | None = None):
+    def __init__(self, cog: "SupportCog", genre: str | None = None, shortcut_mode: bool = False,
+                 shortcut_item: dict | None = None):
         super().__init__(timeout=300)
         self.cog = cog
-        self.genre = genre
+        saved = (shortcut_item or {}).get("action", {})
+        self.genre = genre or saved.get("genre")
+        self.action = saved.get("value")
+        self.shortcut_mode = shortcut_mode
+        self.shortcut_item = shortcut_item
         self.refresh()
 
     def refresh(self):
@@ -505,6 +513,14 @@ class SupportPanelView(discord.ui.View):
         self.add_item(SupportGenreSelect(self.cog, self.genre))
         if self.genre:
             self.add_item(SupportActionSelect(self.cog, self.genre))
+        if self.shortcut_mode:
+            from cogs.general import ShortcutCommitButton
+            self.add_item(ShortcutCommitButton())
+
+    def shortcut_action(self):
+        if not self.genre or not self.action:
+            return None
+        return {"root": "support", "genre": self.genre, "value": self.action}
 
     def embed(self):
         description = "ジャンルを選ぶと、その中の機能を選択できます。"
