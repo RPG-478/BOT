@@ -307,7 +307,7 @@ class GameDetailView(discord.ui.View):
                 embed=discord.Embed(description=f"{name} は現在利用できません。", color=HUB_COLOR), ephemeral=True)
         await cog.force_end(interaction)
 
-    @discord.ui.button(label="戻る", style=discord.ButtonStyle.secondary, row=3)
+    @discord.ui.button(label="戻る", emoji="<:Back:1561700549236097034>", style=discord.ButtonStyle.secondary, row=3)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(embed=hub_embed(), view=GameHubView(self.cog))
 
