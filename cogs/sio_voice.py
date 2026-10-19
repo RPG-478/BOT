@@ -48,6 +48,28 @@ COMMUNITY_ACTIONS = [
     app_commands.Choice(name="終了/退出", value="stop"),
 ]
 
+VOICE_GENRES = {
+    "connection": ("VC接続", "参加、退出、現在の使用状況"),
+    "music": ("音楽", "音楽操作パネル"),
+    "studio": ("録音・音声制作", "録音、やまびこ、文字起こし、カラオケ"),
+    "effects": ("音声加工", "ボイスチェンジャー"),
+    "community": ("通話ネットワーク", "ランダム通話、グローバルVC"),
+}
+VOICE_ACTIONS_BY_GENRE = {
+    "connection": [("参加", "join"), ("退出", "leave"), ("状態", "status")],
+    "music": [("音楽操作パネル", "music_panel")],
+    "studio": [(f"録音: {label}", f"record_{value}") for label, value in
+                (("開始", "start"), ("停止", "stop"), ("状態", "status"), ("音程解析", "pitch"))] +
+               [(f"やまびこ: {label}", f"echo_{value}") for label, value in
+                (("開始", "start"), ("停止", "stop"), ("遅延変更", "delay"))] +
+               [("文字起こし: 開始", "transcribe_start"), ("文字起こし: 停止", "transcribe_stop"),
+                ("カラオケ: 開始", "karaoke_start"), ("カラオケ: 停止", "karaoke_stop"),
+                ("カラオケ: 採点", "karaoke_score")],
+    "effects": [("開始", "changer_start"), ("停止", "changer_stop"), ("状態/設定", "changer_status")],
+    "community": [("ランダム通話: 開始/参加", "match_start"), ("ランダム通話: 終了/退出", "match_stop"),
+                   ("グローバルVC: 開始/参加", "global_start"), ("グローバルVC: 終了/退出", "global_stop")],
+}
+
 # 各機能の cog の名前（クラス名）
 COGS = {
     "music": "VoiceCog",
@@ -194,12 +216,8 @@ class VoiceHub(commands.Cog):
 
     @app_commands.command(name="vc", description="音楽・ボイス機能の操作パネルを表示します")
     async def vc(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="🔊 VC・音楽機能パネル",
-            description="下のメニューから参加・音楽・録音・文字起こし・音声加工・通話を選択してください。",
-            color=0x3498DB,
-        )
-        await interaction.response.send_message(embed=embed, view=VoicePanelView(self), ephemeral=True)
+        view = VoicePanelView(self)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
     async def dispatch_voice_action(self, interaction: discord.Interaction, value: str,
                     delay: app_commands.Range[float, 0.1, 30.0] | None = None,
@@ -230,27 +248,56 @@ class VoiceHub(commands.Cog):
             app_commands.Choice(name=operation, value=operation), room, password)
 
 
-class VoicePanelView(discord.ui.View):
-    """引数を覚えなくてもボイス機能を選べる操作パネル。"""
+class VoiceGenreSelect(discord.ui.Select):
+    def __init__(self, hub: VoiceHub, selected: str | None = None):
+        self.hub = hub
+        super().__init__(placeholder="ジャンルを選択してください", options=[
+            discord.SelectOption(label=label, description=description, value=value, default=value == selected)
+            for value, (label, description) in VOICE_GENRES.items()
+        ], row=0)
 
-    def __init__(self, hub: VoiceHub):
+    async def callback(self, interaction: discord.Interaction):
+        view: VoicePanelView = self.view
+        view.genre = self.values[0]
+        view.refresh()
+        await interaction.response.edit_message(embed=view.embed(), view=view)
+
+
+class VoiceActionSelect(discord.ui.Select):
+    def __init__(self, hub: VoiceHub, genre: str):
+        self.hub = hub
+        super().__init__(placeholder="機能を選択してください", options=[
+            discord.SelectOption(label=label, value=value)
+            for label, value in VOICE_ACTIONS_BY_GENRE[genre]
+        ], row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        value = self.values[0]
+        if value == "global_start":
+            return await interaction.response.send_modal(GlobalRoomModal(self.hub))
+        await self.hub.dispatch_voice_action(interaction, value)
+
+
+class VoicePanelView(discord.ui.View):
+    """引数を覚えなくてもボイス機能を選べるジャンル別操作パネル。"""
+
+    def __init__(self, hub: VoiceHub, genre: str | None = None):
         super().__init__(timeout=900)
         self.hub = hub
-        self.add_item(self.ActionSelect(hub))
+        self.genre = genre
+        self.refresh()
 
-    class ActionSelect(discord.ui.Select):
-        def __init__(self, hub: VoiceHub):
-            self.hub = hub
-            options = [
-                discord.SelectOption(label=choice.name, value=choice.value)
-                for choice in hub.VOICE_ACTIONS
-            ]
-            super().__init__(placeholder="🔊 ボイス操作を選択してください", options=options)
+    def refresh(self):
+        self.clear_items()
+        self.add_item(VoiceGenreSelect(self.hub, self.genre))
+        if self.genre:
+            self.add_item(VoiceActionSelect(self.hub, self.genre))
 
-        async def callback(self, interaction: discord.Interaction):
-            if self.values[0] == "global_start":
-                return await interaction.response.send_modal(GlobalRoomModal(self.hub))
-            await self.hub.dispatch_voice_action(interaction, self.values[0])
+    def embed(self):
+        description = "ジャンルを選ぶと、その中の機能を選択できます。"
+        if self.genre:
+            description = f"**{VOICE_GENRES[self.genre][0]}** の機能を選択してください。"
+        return discord.Embed(title="🔊 VC・音楽機能パネル", description=description, color=0x3498DB)
 
 
 class GlobalRoomModal(discord.ui.Modal, title="グローバルVCに参加"):
