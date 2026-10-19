@@ -38,6 +38,18 @@ GAME_COGS = {
 RANKED_GAMES = {"ngword", "shiritori"}
 
 WORDWOLF_LISTS = [("standard", "標準"), ("starail", "崩壊：スターレイル"), ("genshin", "原神")]
+GAME_GENRES = {
+    "party": ("パーティーゲーム", "人狼、ワードウルフ、UNO、ダウトなど"),
+    "solo": ("ミニゲーム", "Wordle、神経衰弱、数字当て、フラッシュ暗算など"),
+    "board": ("ボード・カードゲーム", "大富豪、オセロ、ポーカー、将棋、チェス"),
+    "adventure": ("アドベンチャー", "ダンジョンを探索します"),
+}
+GAME_GENRE_BY_GAME = {
+    **{game: "party" for game in ("jinrou", "wordwolf", "uno", "doubt", "ngword", "shiritori", "janken", "babanuki")},
+    **{game: "solo" for game in ("wordle", "shinkei", "guess", "flash")},
+    **{game: "board" for game in ("daifugo", "othello", "poker", "shogi", "chess")},
+    "dungeon": "adventure",
+}
 
 
 def hub_embed() -> discord.Embed:
@@ -88,8 +100,27 @@ async def ranking_embed(guild_id, game_id: str) -> discord.Embed:
     return embed
 
 
-class GameSelect(discord.ui.Select):
+class GameGenreSelect(discord.ui.Select):
     def __init__(self, selected: str = None):
+        super().__init__(placeholder="ジャンルを選ぶ", options=[
+            discord.SelectOption(label=label, description=description, value=value, default=value == selected)
+            for value, (label, description) in GAME_GENRES.items()
+        ], row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        selected = self.values[0]
+        if selected in GAME_GENRE_BY_GAME:
+            await interaction.response.edit_message(
+                embed=detail_embed(selected), view=GameDetailView(self.view.cog, selected))
+            return
+        view = self.view
+        view.genre = selected
+        view.refresh()
+        await interaction.response.edit_message(embed=view.embed(), view=view)
+
+
+class GameSelect(discord.ui.Select):
+    def __init__(self, genre: str | None = None, selected: str = None):
         options = [
             discord.SelectOption(
                 label=GAME_GUIDES[g]["name"],
@@ -97,9 +128,9 @@ class GameSelect(discord.ui.Select):
                 description=f"{GAME_GUIDES[g]['players']}・{GAME_GUIDES[g]['duration']}"[:100],
                 default=(g == selected),
             )
-            for g in GAME_ORDER
+            for g in GAME_ORDER if genre is None or GAME_GENRE_BY_GAME[g] == genre
         ]
-        super().__init__(placeholder="ゲームを選ぶ", options=options, row=0)
+        super().__init__(placeholder="ゲームを選ぶ", options=options, row=1 if genre else 0)
 
     async def callback(self, interaction: discord.Interaction):
         game_id = self.values[0]
@@ -110,7 +141,19 @@ class GameHubView(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=600)
         self.cog = cog
-        self.add_item(GameSelect())
+        self.genre = None
+        self.refresh()
+
+    def refresh(self):
+        self.clear_items()
+        self.add_item(GameGenreSelect(self.genre))
+        if self.genre:
+            self.add_item(GameSelect(self.genre))
+
+    def embed(self):
+        if self.genre:
+            return discord.Embed(title="パーティーゲーム", description=f"**{GAME_GENRES[self.genre][0]}** のゲームを選んでください。", color=HUB_COLOR)
+        return hub_embed()
 
 
 class WordlistSelect(discord.ui.Select):
@@ -147,7 +190,7 @@ class NGModeSelect(discord.ui.Select):
     def __init__(self, selected: str):
         options = [discord.SelectOption(label=label, value=value, default=(value == selected))
                    for value, label in NG_MODES]
-        super().__init__(placeholder="モード", options=options, row=3)
+        super().__init__(placeholder="モード", options=options, row=2)
 
     async def callback(self, interaction: discord.Interaction):
         self.view.ng_mode = self.values[0]
@@ -266,7 +309,7 @@ class GameDetailView(discord.ui.View):
         if game_id in ("chess", "othello", "shogi"):
             self.add_item(ChessModeSelect(self.chess_mode) if game_id == "chess" else BoardGameModeSelect(self.chess_mode))
             self.add_item(ChessDifficultySelect(self.chess_difficulty))
-        else:
+        if game_id != "jinrou":
             self.remove_item(self.rating)
         if game_id not in ENDABLE_GAMES:
             self.remove_item(self.end_game)
@@ -309,7 +352,8 @@ class GameDetailView(discord.ui.View):
 
     @discord.ui.button(label="戻る", emoji="<:Back:1561700549236097034>", style=discord.ButtonStyle.secondary, row=3)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(embed=hub_embed(), view=GameHubView(self.cog))
+        view = GameHubView(self.cog)
+        await interaction.response.edit_message(embed=view.embed(), view=view)
 
 
 class GameHub(commands.Cog):
@@ -318,7 +362,8 @@ class GameHub(commands.Cog):
 
     @app_commands.command(name="game", description="パーティーゲームとダンジョン（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle・神経衰弱・ババ抜き・オセロ・ポーカー・将棋・チェス）のルール確認と開始")
     async def game(self, interaction: discord.Interaction):
-        await interaction.response.send_message(embed=hub_embed(), view=GameHubView(self), ephemeral=True)
+        view = GameHubView(self)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
     async def start_game(self, interaction: discord.Interaction, game_id: str, **options):
         cog = self.bot.get_cog(GAME_COGS[game_id])

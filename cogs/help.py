@@ -177,6 +177,29 @@ class CategorySelect(discord.ui.Select):
         await view.show(interaction, self.values[0], 0)
 
 
+class FunctionSelect(discord.ui.Select):
+    """選択したカテゴリ内のコマンドを、次の機能欄として選ぶ。"""
+
+    def __init__(self, catalog: dict, category_id: str):
+        self.catalog = catalog
+        self.category_id = category_id
+        options = []
+        for entry in visible_commands(catalog, category_id):
+            key = command_key(entry["kind"], entry["name"])
+            options.append(discord.SelectOption(
+                label=clip(key, OPTION_TEXT), value=key[:OPTION_TEXT],
+                description=clip(entry["summary"], OPTION_TEXT)))
+        super().__init__(placeholder="機能（コマンド）を選ぶ", options=options[:SELECT_OPTIONS], row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        entry = find_command(self.catalog, self.values[0])
+        view: HelpView = self.view
+        if entry is None:
+            return await interaction.response.send_message("コマンドが見つかりませんでした。", ephemeral=True)
+        await interaction.response.edit_message(
+            embed=command_embed(entry, self.catalog), view=CommandView(self.catalog, entry))
+
+
 CATEGORY_GUIDE = "__category__"
 
 
@@ -193,7 +216,7 @@ class GuideSelect(discord.ui.Select):
                 key = command_key(entry["kind"], entry["name"])
                 options.append(discord.SelectOption(label=clip(f"{key} のガイド", OPTION_TEXT), value=key[:OPTION_TEXT],
                                                     description=clip(entry["summary"], OPTION_TEXT)))
-        super().__init__(placeholder="ガイド（くわしい説明）を読む", options=options[:SELECT_OPTIONS], row=1)
+        super().__init__(placeholder="ガイド（くわしい説明）を読む", options=options[:SELECT_OPTIONS], row=3)
 
     async def callback(self, interaction: discord.Interaction):
         value = self.values[0]
@@ -219,6 +242,9 @@ class HelpView(discord.ui.View):
         self.page = max(0, min(page, len(self.pages) - 1)) if self.pages else 0
         self.add_item(CategorySelect(catalog, category_id))
         if category_id:
+            function_select = FunctionSelect(catalog, category_id)
+            if function_select.options:
+                self.add_item(function_select)
             guide_select = GuideSelect(catalog, category_id)
             if guide_select.options:
                 self.add_item(guide_select)

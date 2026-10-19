@@ -23,6 +23,19 @@ SUPPORT_ACTIONS = [
     app_commands.Choice(name="VC入退室履歴", value="vc_log"),
 ]
 
+SUPPORT_GENRES = {
+    "moderation": ("モデレーション", "Muted、匿名つぶやき、メッセージ削除"),
+    "server": ("サーバー管理", "ロール操作、絵文字便乗、VC履歴"),
+    "bumprta": ("bump/up・RTA", "通知設定と RTA 状態・ランキング"),
+    "event": ("イベント", "抽選の作成"),
+}
+SUPPORT_ACTIONS_BY_GENRE = {
+    "moderation": [(c.name, c.value) for c in SUPPORT_ACTIONS[:3]],
+    "server": [(c.name, c.value) for c in (SUPPORT_ACTIONS[3], SUPPORT_ACTIONS[7], SUPPORT_ACTIONS[9])],
+    "bumprta": [(c.name, c.value) for c in SUPPORT_ACTIONS[4:7]],
+    "event": [(SUPPORT_ACTIONS[8].name, SUPPORT_ACTIONS[8].value)],
+}
+
 THINKING_SECTION = "thinking_reaction"
 BINJOU_SECTION = "binjou"
 VC_LOG_SECTION = "vc_log"
@@ -321,20 +334,51 @@ class GiveawayModal(discord.ui.Modal, title="抽選を作成"):
             return await self.cog._missing(interaction, "giveaway")
         await giveaway.giveaway(interaction, self.prize.value, winners, minutes, None, None, 0, None, None)
 
-class SupportActionSelect(discord.ui.Select):
-    def __init__(self, cog: "SupportCog"):
+class SupportGenreSelect(discord.ui.Select):
+    def __init__(self, cog: "SupportCog", selected: str | None = None):
         self.cog = cog
-        options = [discord.SelectOption(label=c.name, value=c.value) for c in SUPPORT_ACTIONS]
-        super().__init__(placeholder="操作を選択してください", min_values=1, max_values=1, options=options)
+        super().__init__(placeholder="ジャンルを選択してください", options=[
+            discord.SelectOption(label=label, description=description, value=value, default=value == selected)
+            for value, (label, description) in SUPPORT_GENRES.items()
+        ], row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: SupportPanelView = self.view
+        view.genre = self.values[0]
+        view.refresh()
+        await interaction.response.edit_message(embed=view.embed(), view=view)
+
+
+class SupportActionSelect(discord.ui.Select):
+    def __init__(self, cog: "SupportCog", genre: str):
+        self.cog = cog
+        super().__init__(placeholder="機能を選択してください", options=[
+            discord.SelectOption(label=label, value=value)
+            for label, value in SUPPORT_ACTIONS_BY_GENRE[genre]
+        ], row=1)
 
     async def callback(self, interaction: discord.Interaction):
         await self.cog.dispatch(interaction, self.values[0])
 
 
 class SupportPanelView(discord.ui.View):
-    def __init__(self, cog: "SupportCog"):
+    def __init__(self, cog: "SupportCog", genre: str | None = None):
         super().__init__(timeout=300)
-        self.add_item(SupportActionSelect(cog))
+        self.cog = cog
+        self.genre = genre
+        self.refresh()
+
+    def refresh(self):
+        self.clear_items()
+        self.add_item(SupportGenreSelect(self.cog, self.genre))
+        if self.genre:
+            self.add_item(SupportActionSelect(self.cog, self.genre))
+
+    def embed(self):
+        description = "ジャンルを選ぶと、その中の機能を選択できます。"
+        if self.genre:
+            description = f"**{SUPPORT_GENRES[self.genre][0]}** の機能を選択してください。"
+        return discord.Embed(title="サポート操作", description=description, color=0x3498DB)
 
 
 class SupportCog(commands.Cog):
@@ -499,9 +543,9 @@ class SupportCog(commands.Cog):
     @app_commands.command(name="support", description="サポート機能の操作パネルを表示します")
     @app_commands.guild_only()
     async def support(self, interaction: discord.Interaction):
+        view = SupportPanelView(self)
         await interaction.response.send_message(
-            embed=discord.Embed(title="サポート操作", description="下のメニューから操作を選択してください。", color=0x3498DB),
-            view=SupportPanelView(self), ephemeral=True,
+            embed=view.embed(), view=view, ephemeral=True,
         )
 
     async def dispatch(self, interaction: discord.Interaction, selected: str):
