@@ -227,6 +227,7 @@ class CommandCatalogTest(unittest.TestCase):
         def get(key):
             return command_catalog.find_command(self.catalog, key, include_hidden=True)
         self.assertTrue(get('/support')['guild_only'])
+        self.assertEqual(get('/support')['options'], [])
         self.assertTrue(get('!nation found')['guild_only'])
         self.assertIn('administrator', get('!nation found')['permissions'])
         self.assertIn('manage_channels', get('!mimic_toggle')['permissions'])
@@ -234,8 +235,6 @@ class CommandCatalogTest(unittest.TestCase):
         self.assertEqual(get('/music')['options'], [])
         self.assertEqual(get('/voice')['options'], [])
         self.assertEqual(get('!all_stats')['aliases'], ['stats', 'spec'])
-        action = next(o for o in get('/support')['options'] if o['name'] == 'action')
-        self.assertEqual((action['type'], action['required']), ('string', True))
 
     def test_guide_key_reads_game_guides_when_available(self):
         fake = {'doubt': {'guide': '## 遊び方\nカードを出します。'}}

@@ -47,7 +47,7 @@ OPTIONAL_COGS = {'judgement': 'needle'}
 SLASH_ARGUMENTS = {
     'giveaway': {'prize': 'テスト賞品', 'winners': 1, 'minutes': 5},
     'setup': {},
-    'support': {'action': 'clear', 'amount': 1},
+    'support': {},
     'game': {},
     'help': {},
     'fujo': {'action': 'register'},

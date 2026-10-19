@@ -139,7 +139,7 @@ COMMAND_META: dict[str, dict] = {
         "options": {"command": "使い方を見たいコマンド名"},
     },
     "/support": {"category": "support", "guild_only": True,
-                  "usage": "/support action:<Muted|匿名つぶやき|メッセージ削除|bump/up設定> [target|minutes|amount|member]"},
+                  "usage": "/support（操作パネルを表示）"},
     "/fujo": {"category": "support", "summary": "生存確認の追跡・ランキング・失踪警報を操作します"},
     "/giveaway": {"category": "support", "permissions": ["manage_guild"], "guild_only": True},
     "!gvc": {"category": "support", "summary": "グローバルVC（サーバーをまたぐ通話・チャットのルーム）のコマンド一覧を表示します"},
