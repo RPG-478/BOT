@@ -15,22 +15,23 @@ from cogs.dice import (
 
 class DiceParsingTest(unittest.TestCase):
     def test_parses_count_and_alias(self):
-        self.assertEqual(parse_dice_message("1d100"), (1, "d", 100))
-        self.assertEqual(parse_dice_message("3d8"), (3, "d", 8))
-        self.assertEqual(parse_dice_message("4id7"), (4, "id", 7))
+        self.assertEqual(parse_dice_message("1d100"), (1, "d", 100, False))
+        self.assertEqual(parse_dice_message("3d8"), (3, "d", 8, False))
+        self.assertEqual(parse_dice_message("4id7"), (4, "id", 7, False))
+        self.assertEqual(parse_dice_message("1d8 int8"), (1, "d", 8, True))
 
     def test_parses_any(self):
-        self.assertEqual(parse_dice_message("1dany"), (1, "d", None))
-        self.assertEqual(parse_dice_message("4idany"), (4, "id", None))
+        self.assertEqual(parse_dice_message("1dany"), (1, "d", None, False))
+        self.assertEqual(parse_dice_message("4idany int8"), (4, "id", None, True))
 
     def test_non_matching_messages_are_ignored(self):
         for content in ("d100", "-1d10", "1D100", "1dany please", "hello1d6", "1d"):
             self.assertIsNone(parse_dice_message(content))
 
     def test_invalid_limits_are_marked(self):
-        self.assertEqual(parse_dice_message("0d6"), (0, "d", -1))
-        self.assertEqual(parse_dice_message("1d0"), (1, "d", -1))
-        self.assertEqual(parse_dice_message(f"{MAX_DICE_COUNT + 1}d6"), (MAX_DICE_COUNT + 1, "d", -1))
+        self.assertEqual(parse_dice_message("0d6"), (0, "d", -1, False))
+        self.assertEqual(parse_dice_message("1d0"), (1, "d", -1, False))
+        self.assertEqual(parse_dice_message(f"{MAX_DICE_COUNT + 1}d6"), (MAX_DICE_COUNT + 1, "d", -1, False))
         self.assertEqual(parse_dice_message("1d" + "9" * (MAX_SIDES_DIGITS + 1))[2], -1)
 
     def test_roll_is_inclusive(self):
@@ -78,6 +79,14 @@ class DiceCogTest(unittest.IsolatedAsyncioTestCase):
         text = message.reply.await_args.args[0]
         self.assertIn("4id7", text)
         self.assertIn("内訳", text)
+
+    async def test_int8_replies_in_octal(self):
+        cog = DiceCog(None, rng=random.Random(1))
+        message = self.message("1d8 int8")
+        await cog.on_message(message)
+        text = message.reply.await_args.args[0]
+        self.assertIn("int8", text)
+        self.assertRegex(text, r"\*\*0o[0-7]+\*\*")
 
     async def test_any_selects_sides_and_rolls_within_limit(self):
         cog = DiceCog(None, rng=random.Random(2))

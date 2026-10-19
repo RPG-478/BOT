@@ -12,10 +12,10 @@ from discord.ext import commands
 MAX_SIDES_DIGITS = 1000
 MAX_SIDES = 10**MAX_SIDES_DIGITS
 MAX_DICE_COUNT = 100
-_DICE_PATTERN = re.compile(r"^([0-9]+)(id|d)(any|[0-9]+)$")
+_DICE_PATTERN = re.compile(r"^([0-9]+)(id|d)(any|[0-9]+)(?:\s+(int8))?$")
 
 
-def parse_dice_message(content: str) -> tuple[int, str, int | None] | None:
+def parse_dice_message(content: str) -> tuple[int, str, int | None, bool] | None:
     """ダイス表記を解釈する。
 
     対応形式は ``1d100``、``3d8``、``4id7``、``1dany``。
@@ -25,17 +25,18 @@ def parse_dice_message(content: str) -> tuple[int, str, int | None] | None:
     if not match:
         return None
 
-    count_text, operator, sides_text = match.groups()
+    count_text, operator, sides_text, int8_text = match.groups()
+    int8 = int8_text == "int8"
     count = int(count_text)
     if count < 1 or count > MAX_DICE_COUNT:
-        return count, operator, -1
+        return count, operator, -1, int8
     if sides_text == "any":
-        return count, operator, None
+        return count, operator, None, int8
 
     sides = int(sides_text)
     if sides < 1 or len(sides_text) > MAX_SIDES_DIGITS:
-        return count, operator, -1
-    return count, operator, sides
+        return count, operator, -1, int8
+    return count, operator, sides, int8
 
 
 def roll_dice(sides: int, rng: random.Random | random.SystemRandom = random) -> int:
@@ -59,7 +60,7 @@ class DiceCog(commands.Cog):
         if parsed is None:
             return
 
-        count, operator, sides = parsed
+        count, operator, sides, int8 = parsed
         if sides == -1 or count > MAX_DICE_COUNT:
             await message.reply(
                 f"🎲 ダイス個数は1〜{MAX_DICE_COUNT}個、面数は1以上{MAX_SIDES_DIGITS}桁以内で指定してください。",
@@ -74,7 +75,9 @@ class DiceCog(commands.Cog):
         total = sum(rolls)
         notation = f"{count}{operator}{sides}"
         detail = f"（内訳: {', '.join(map(str, rolls))}）" if count > 1 else ""
-        await message.reply(f"🎲 `{notation}` → **{total}**{detail}", mention_author=False)
+        result = oct(total) if int8 else str(total)
+        modifier = " int8" if int8 else ""
+        await message.reply(f"🎲 `{notation}{modifier}` → **{result}**{detail}", mention_author=False)
 
 
 async def setup(bot: commands.Bot):
