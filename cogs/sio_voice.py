@@ -75,6 +75,7 @@ class VoiceHub(commands.Cog):
     VOICE_ACTIONS = [
         app_commands.Choice(name="VC参加", value="join"), app_commands.Choice(name="VC退出", value="leave"),
         app_commands.Choice(name="VC状態", value="status"),
+        app_commands.Choice(name="音楽操作パネル", value="music_panel"),
         *[app_commands.Choice(name=f"録音: {label}", value=f"record_{value}") for label, value in
           (("開始", "start"), ("停止", "stop"), ("状態", "status"), ("音程解析", "pitch"))],
         *[app_commands.Choice(name=f"やまびこ: {label}", value=f"echo_{value}") for label, value in
@@ -191,11 +192,11 @@ class VoiceHub(commands.Cog):
             if cog:
                 await cog._global_impl(Responder(interaction), mapped, room, password)
 
-    @app_commands.command(name="voice", description="ボイス機能の操作パネルを表示します")
-    async def voice(self, interaction: discord.Interaction):
+    @app_commands.command(name="vc", description="音楽・ボイス機能の操作パネルを表示します")
+    async def vc(self, interaction: discord.Interaction):
         embed = discord.Embed(
-            title="🔊 ボイス機能パネル",
-            description="下のメニューから参加・録音・文字起こし・音声加工・通話を選択してください。",
+            title="🔊 VC・音楽機能パネル",
+            description="下のメニューから参加・音楽・録音・文字起こし・音声加工・通話を選択してください。",
             color=0x3498DB,
         )
         await interaction.response.send_message(embed=embed, view=VoicePanelView(self), ephemeral=True)
@@ -207,6 +208,11 @@ class VoiceHub(commands.Cog):
                     buffer_ms: app_commands.Range[float, 20.0, 2000.0] | None = None,
                     max_ms: app_commands.Range[float, 20.0, 4000.0] | None = None,
                     room: str | None = None, password: str | None = None):
+        if value == "music_panel":
+            cog = await self._cog(interaction, "music")
+            if cog:
+                await cog._panel_impl(Responder(interaction))
+            return
         if value in {"join", "leave", "status"}:
             return await self.voice_connection(interaction, app_commands.Choice(name=value, value=value))
         if "_" not in value:

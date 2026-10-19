@@ -197,12 +197,10 @@ class ZetaModoki(commands.Cog):
         self.active_personas: Dict[int, BotPersona] = {}
         self.chat_histories: Dict[int, List[dict]] = {}
 
-    @app_commands.command(name="zetamodoki", description="Zeta風のシチュエーション対話セッションを開始します")
     async def zetamodoki(self, interaction: discord.Interaction):
         view = CharacterSelectView(self)
         await interaction.response.send_message("対話したいキャラクターとシチュエーションを選択してください：", view=view, ephemeral=True)
 
-    @app_commands.command(name="zeta_reset", description="現在のチャンネルの会話履歴をクリアします")
     async def zeta_reset(self, interaction: discord.Interaction):
         channel_id = interaction.channel_id
         if channel_id in self.chat_histories:

@@ -2932,9 +2932,6 @@ class VoiceCog(commands.Cog):
         app_commands.Choice(name="音声ファイルID一覧", value="files"),
     ]
 
-    @app_commands.command(name="music", description="音楽の操作パネルを表示します")
-    async def music(self, interaction: discord.Interaction):
-        await self._panel_impl(Responder(interaction))
 
 #↓落ちた原因これね
 async def setup(bot):
