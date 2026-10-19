@@ -1,8 +1,10 @@
 import types
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
-from cogs.support import RoleBulkView, SupportCog, SUPPORT_ACTIONS
+from cogs.support import (
+    RoleBulkView, SupportCog, SUPPORT_ACTIONS, THINKING_EMOJI, THINKING_SECTION,
+)
 
 
 class FakeRole:
@@ -57,6 +59,55 @@ class SupportRoleBulkTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("role_bulk", [choice.value for choice in SUPPORT_ACTIONS])
         view = RoleBulkView(SupportCog(None), types.SimpleNamespace(), FakeRole())
         self.assertEqual(len(view.children), 3)
+
+
+class SupportThinkingReactionTest(unittest.IsolatedAsyncioTestCase):
+    def make_cog(self, enabled):
+        message = types.SimpleNamespace(reactions=[], add_reaction=AsyncMock())
+        channel = types.SimpleNamespace(fetch_message=AsyncMock(return_value=message))
+        bot = types.SimpleNamespace(
+            user=types.SimpleNamespace(id=999),
+            get_channel=lambda channel_id: channel,
+        )
+        cog = SupportCog(bot)
+        store = types.SimpleNamespace(
+            ensure_loaded=AsyncMock(),
+            get=lambda guild_id, section: ({"enabled": enabled} if section == THINKING_SECTION else {}),
+        )
+        return cog, store, channel, message
+
+    async def test_adds_custom_reaction_when_enabled(self):
+        cog, store, channel, message = self.make_cog(True)
+        payload = types.SimpleNamespace(
+            guild_id=1, user_id=2, emoji="🤔", member=types.SimpleNamespace(bot=False),
+            channel_id=3, message_id=4,
+        )
+        with patch("cogs.support.guild_settings.get_store", return_value=store):
+            await cog.on_raw_reaction_add(payload)
+        message.add_reaction.assert_awaited_once_with(THINKING_EMOJI)
+        channel.fetch_message.assert_awaited_once_with(4)
+
+    async def test_setting_defaults_to_enabled_for_unconfigured_guild(self):
+        cog, store, channel, message = self.make_cog(None)
+        store.get = lambda guild_id, section: {}
+        payload = types.SimpleNamespace(
+            guild_id=1, user_id=2, emoji="🤔", member=types.SimpleNamespace(bot=False),
+            channel_id=3, message_id=4,
+        )
+        with patch("cogs.support.guild_settings.get_store", return_value=store):
+            await cog.on_raw_reaction_add(payload)
+        message.add_reaction.assert_awaited_once_with(THINKING_EMOJI)
+
+    async def test_explicitly_disabled_setting_does_not_mirror(self):
+        cog, store, channel, message = self.make_cog(False)
+        payload = types.SimpleNamespace(
+            guild_id=1, user_id=2, emoji="🤔", member=types.SimpleNamespace(bot=False),
+            channel_id=3, message_id=4,
+        )
+        with patch("cogs.support.guild_settings.get_store", return_value=store):
+            await cog.on_raw_reaction_add(payload)
+        channel.fetch_message.assert_not_awaited()
+        message.add_reaction.assert_not_awaited()
 
 
 if __name__ == "__main__":

@@ -1195,6 +1195,25 @@ class VoiceControlView(discord.ui.View):
             await interaction.response.send_message(embed=we("❌ ボイスチャンネルに接続していません。"), ephemeral=True)
 
 
+def build_music_panel_layout(cog, guild_id: int, panel_text: str) -> discord.ui.LayoutView:
+    """操作部品とステータスをComponents V2コンテナにまとめる。"""
+    controls = VoiceControlView(cog, guild_id)
+    rows: dict[int, list[discord.ui.Item]] = {}
+    for item in controls.children:
+        row = getattr(item, "row", None)
+        if row is None:
+            row = 0 if isinstance(item, discord.ui.Select) else 3
+        rows.setdefault(row, []).append(item)
+    container = discord.ui.Container(
+        discord.ui.TextDisplay(panel_text[:4000]),
+        *[discord.ui.ActionRow(*items) for _, items in sorted(rows.items())],
+        accent_colour=0xFFFFFF,
+    )
+    layout = discord.ui.LayoutView(timeout=PANEL_TIMEOUT_SECONDS)
+    layout.add_item(container)
+    return layout
+
+
 # 録音経路は開始・停止・保存のコマンドが未実装のため、誤って有効化しない。
 # 受信音声を保存する機能を実装する際は、同意・保持期間・アクセス制御を含めて
 # 専用Cogとして設計し直すこと。
@@ -1759,19 +1778,23 @@ class VoiceCog(commands.Cog):
         current_eq = state['eq']
         eq_label = f"Custom (`{state['custom_eq_filter']}`)" if current_eq == "custom" else current_eq.capitalize()
 
-        embed = discord.Embed(title="🎵 ボイスコントロールパネル", color=0xFFFFFF)
-        embed.add_field(name="現在のステータス", value=f"`{status_icon}`", inline=True)
-        embed.add_field(name="オーディオパラメータ", value=f"🔊 Vol: `{int(state['volume']*100)}%` \n⚡ Speed: `{state['speed']}x` \n🎬 EQ: `{eq_label}`", inline=False)
-        embed.add_field(name="現在ストリーミング中の楽曲", value=track_info, inline=False)
-        embed.add_field(name="再生進捗", value=progress_info, inline=False)
+        panel_text = (
+            "# 🎵 ボイスコントロールパネル\n"
+            f"**状態:** {status_icon}\n"
+            f"**オーディオ:** 🔊 `{int(state['volume']*100)}%`　⚡ `{state['speed']}x`　🎬 `{eq_label}`\n"
+            f"**再生中:** {track_info}\n"
+            f"**進捗:** {progress_info}\n"
+        )
         loop_label = {'off': 'OFF', 'track': '1曲', 'queue': 'キュー'}.get(state.get('loop_mode'), 'OFF')
         shuffle_label = 'ON' if state.get('shuffle_enabled') else 'OFF'
-        embed.add_field(name="再生モード", value=f"ループ: `{loop_label}` / シャッフル: `{shuffle_label}`", inline=False)
-        embed.add_field(name="予約キューリスト", value=queue_info, inline=False)
-        embed.set_footer(text="下のインターフェースからリアルタイムに操作・検索できます。")
+        panel_text += (
+            f"**再生モード:** ループ `{loop_label}` / シャッフル `{shuffle_label}`\n"
+            f"**予約キュー:** {queue_info}\n\n"
+            "速度・音量・EQの選択と再生操作は、このパネル内の各コントロールから行えます。"
+        )
 
         try:
-            await msg.edit(embed=embed)
+            await msg.edit(view=build_music_panel_layout(self, guild_id, panel_text))
         except Exception as e:
             logging.error(f"Panel update failed: {e}")
 
@@ -2127,9 +2150,8 @@ class VoiceCog(commands.Cog):
             return await r.send(embed=we(error), ephemeral=True)
         state = self.get_state(r.guild.id)
         state['current_ctx'] = r.source
-        embed = discord.Embed(title="🎵 ボイスコントロールパネル", description="ステータスを同期中...", color=0xFFFFFF)
-        view = VoiceControlView(self, r.guild.id)
-        state['panel_message'] = await r.send(embed=embed, view=view, want_message=True)
+        view = build_music_panel_layout(self, r.guild.id, "# 🎵 ボイスコントロールパネル\nステータスを同期中...")
+        state['panel_message'] = await r.send(view=view, want_message=True)
         await self.update_panel(r.guild.id)
 
     async def check_queue(self, guild_id: int):
