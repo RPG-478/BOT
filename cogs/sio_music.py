@@ -1167,8 +1167,8 @@ class VoiceControlView(discord.ui.View):
 
     @discord.ui.button(label="📚 ライブラリ", style=discord.ButtonStyle.secondary, row=4)
     async def library_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
-            "個人プレイリストは `/music action:プレイリスト` から再生できます。Spotifyの公開プレイリストURLは `/music action:再生` または検索欄に貼り付けて再生できます。",
+            await interaction.response.send_message(
+                "個人プレイリストやSpotifyの公開プレイリストは `/music` の操作パネルから再生できます。",
             ephemeral=True,
         )
 
@@ -1579,7 +1579,7 @@ class VoiceCog(commands.Cog):
         return True
 
     # --------------------------------------------------
-    # 実装（/voice action:VC参加・/voice action:VC退出）
+    # 実装（/voice のパネルからVC参加・/voice のパネルからVC退出）
     # --------------------------------------------------
     async def _join_impl(self, r: Responder):
         voice = getattr(r.user, "voice", None)
@@ -2118,7 +2118,7 @@ class VoiceCog(commands.Cog):
             if is_yt:
                 try:
                     info = await self.get_yt_info(target_input)
-                    # /music action:再生 では先に取得済みの動画タイトルをキューへ保存している。
+                    # /music のパネルから再生 では先に取得済みの動画タイトルをキューへ保存している。
                     # ストリームURLを再解析すると、汎用エクストラクタのファイル名
                     # （例: "videoplayback"）になる場合があるため、保存済みのタイトルを優先する。
                     video_title = filename or info['title']
@@ -2351,7 +2351,7 @@ class VoiceCog(commands.Cog):
             return await interaction.followup.send("開始位置は0秒以上で指定してください。", ephemeral=True)
         can_apply_start_at = not state.get('current_track') and state['queue'].empty() and not state.get('is_processing_queue')
         if start_at is not None and not can_apply_start_at:
-            return await interaction.followup.send("開始位置の指定は、再生中の曲と待機キューがない場合のみ使えます。再生中の曲は `/music seek` を使ってください。", ephemeral=True)
+            return await interaction.followup.send("開始位置の指定は、再生中の曲と待機キューがない場合のみ使えます。再生中の曲は `/music` の操作パネルから操作してください。", ephemeral=True)
 
         is_yt = False
         url, filename, final_id = None, None, None
@@ -2519,7 +2519,7 @@ class VoiceCog(commands.Cog):
             vc.stop()
             
             await interaction.response.send_message(
-                embed=we(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)\nもう一度 `/music pause` で再開できます。")
+                embed=we(f"⏸️ 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)\nもう一度 `/music` の操作パネルから再開できます。")
             )
             await self.update_panel(interaction.guild_id)
 
@@ -2571,7 +2571,7 @@ class VoiceCog(commands.Cog):
             if msg.attachments:
                 b62 = encode_full_id(r.guild.id, r.channel.id, msg.id)
                 lines.append(f"`{b62}` : **{msg.attachments[0].filename}**")
-        desc = "このサーバー内で再生可能な音声ID（`/music action:再生` に渡せます）\n" + "─" * 20 + "\n"
+        desc = "このサーバー内で再生可能な音声ID（`/music` の操作パネルから再生できます）\n" + "─" * 20 + "\n"
         desc += "\n".join(lines) if lines else "音声ファイルは見つかりませんでした。"
         embed.description = desc[:4000]
         await r.send(embed=embed)
@@ -2828,7 +2828,7 @@ class VoiceCog(commands.Cog):
         await interaction.response.send_message(embed=self.build_queue_embed(interaction.guild_id), ephemeral=True)
 
     # ==================================================================
-    # /music は単一コマンド。action で再生・操作・音響・ライブラリを選ぶ。
+    # /music は引数なしで操作パネルを表示する。
     # ==================================================================
     MUSIC_ACTIONS = [
         app_commands.Choice(name="再生", value="play"),
@@ -2849,58 +2849,9 @@ class VoiceCog(commands.Cog):
         app_commands.Choice(name="音声ファイルID一覧", value="files"),
     ]
 
-    @app_commands.command(name="music", description="音楽の再生・操作・音響設定・ライブラリをまとめて実行します")
-    @app_commands.choices(action=MUSIC_ACTIONS, loop_mode=LOOP_CHOICES,
-                           playlist_action=PLAYLIST_ACTION_CHOICES, scope=PLAYLIST_SCOPE_CHOICES,
-                           resolution=[app_commands.Choice(name="4（軽量）", value=4), app_commands.Choice(name="8（高密度）", value=8)])
-    @app_commands.describe(
-        action="実行する操作", query="URL・検索語・音声ID・検索キーワード",
-        file="音声/動画またはJSONファイル", start_at="開始位置（秒）",
-        seconds="シーク先の秒数", loop_mode="ループの種類", value="音量または再生速度",
-        preset="EQプリセット/フィルター", feedback="残響の長さ", wet="残響の量",
-        resolution="立体音響の解像度", playlist_action="プレイリストの操作",
-        name="プレイリスト名またはID列", scope="自分用かサーバー共有", limit="検索するメッセージ数")
-    async def music(self, interaction: discord.Interaction, action: app_commands.Choice[str],
-                    query: str | None = None, file: discord.Attachment | None = None,
-                    start_at: float | None = None, seconds: app_commands.Range[float, 0.0] | None = None,
-                    loop_mode: app_commands.Choice[str] | None = None, value: float | None = None,
-                    preset: str | None = None, feedback: app_commands.Range[float, 0.0, 0.95] | None = None,
-                    wet: app_commands.Range[float, 0.0, 1.0] | None = None, resolution: int | None = None,
-                    playlist_action: app_commands.Choice[str] | None = None, name: str | None = None,
-                    scope: app_commands.Choice[str] | None = None, limit: app_commands.Range[int, 1, 100] = 20):
-        selected = action.value
-        responder = Responder(interaction)
-        if selected == "play":
-            return await self._play_impl(interaction, query, file, start_at)
-        if selected == "panel":
-            return await self._panel_impl(responder)
-        if selected == "pause": return await self._pause_impl(interaction)
-        if selected == "skip": return await self._skip_impl(interaction)
-        if selected == "stop": return await self._stop_impl(responder)
-        if selected == "seek":
-            if seconds is None: return await interaction.response.send_message("シークには seconds を指定してください。", ephemeral=True)
-            return await self._seek_impl(interaction, seconds)
-        if selected == "queue": return await self._queue_impl(interaction)
-        if selected == "loop":
-            if loop_mode is None: return await interaction.response.send_message("ループには loop_mode を指定してください。", ephemeral=True)
-            return await self._loop_impl(interaction, loop_mode.value)
-        if selected == "shuffle": return await self._shuffle_impl(interaction)
-        if selected in ("volume", "speed"):
-            if value is None: return await interaction.response.send_message("この操作には value が必要です。", ephemeral=True)
-            if selected == "volume" and not 0.1 <= value <= 2.0:
-                return await interaction.response.send_message("音量は0.1〜2.0で指定してください。", ephemeral=True)
-            if selected == "speed" and not MIN_PLAYBACK_SPEED <= value <= MAX_PLAYBACK_SPEED:
-                return await interaction.response.send_message(f"速度は{MIN_PLAYBACK_SPEED}〜{MAX_PLAYBACK_SPEED:g}で指定してください。", ephemeral=True)
-            return await (self._volume_impl(responder, value) if selected == "volume" else self._speed_impl(responder, value))
-        if selected == "eq": return await self._eq_impl(interaction, preset or "flat")
-        if selected == "spatial": return await self._spatial_impl(responder, feedback=feedback, wet=wet, resolution=resolution)
-        if selected == "search":
-            if not query: return await interaction.response.send_message("検索には query が必要です。", ephemeral=True)
-            return await self._search_impl(responder, query)
-        if selected == "files": return await self._files_impl(responder, limit)
-        if playlist_action is None:
-            return await interaction.response.send_message("playlist_action を指定してください。", ephemeral=True)
-        return await self._playlist_impl(responder, playlist_action.value, name, scope.value if scope else "me", file)
+    @app_commands.command(name="music", description="音楽の操作パネルを表示します")
+    async def music(self, interaction: discord.Interaction):
+        await self._panel_impl(Responder(interaction))
 
 #↓落ちた原因これね
 async def setup(bot):

@@ -10,6 +10,11 @@
       "id": "voice",
       "label": "ボイス・音楽",
       "description": "ボイスチャンネルで使う音楽機能"
+    },
+    {
+      "id": "support",
+      "label": "サポート",
+      "description": "サーバー運用・サポート機能"
     }
   ],
   "commands": [
@@ -30,13 +35,26 @@
       "name": "music",
       "kind": "slash",
       "category": "voice",
-      "summary": "音楽の再生・操作・音響設定・ライブラリをまとめて実行します。",
-      "usage": "/music action:<操作> [query|file|value|preset|playlist_action|scope]",
+      "summary": "音楽操作パネルを表示します。",
+      "usage": "/music",
       "options": [],
       "permissions": [],
       "guild_only": true,
       "aliases": [],
       "hidden": false
+    },
+    {
+      "name": "voice",
+      "kind": "slash",
+      "category": "voice",
+      "summary": "ボイス機能の操作パネルを表示します。",
+      "usage": "/voice",
+      "options": [],
+      "permissions": [],
+      "guild_only": true,
+      "aliases": [],
+      "hidden": false,
+      "guide": ""
     },
     {
       "name": "support",

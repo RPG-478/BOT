@@ -100,7 +100,7 @@ CATEGORIES = [
             "ボイスチェンジャー、ランダム通話・グローバルVCはすべて `/voice` の操作から選べます。\n\n"
             "## 注意\n"
             "音楽と `/voice` の機能は、どれも Bot の接続を 1 つ使います。ほかの機能が使用中のときは断られるので、"
-            "`/voice action:VC状態` で何が使っているかを確かめ、終わってから（または `/voice action:VC退出` してから）実行してください。"
+            "`/voice のパネルからVC状態` で何が使っているかを確かめ、終わってから（または `/voice のパネルからVC退出` してから）実行してください。"
             "録音を始めると、チャンネルに「録音を開始しました」と表示されます。"
             "誰もいない状態が 3 分続くと Bot は自動で退出します。"
         ),
@@ -187,8 +187,8 @@ COMMAND_META: dict[str, dict] = {
                "guide_key": "doubt"},
 
     # ---------------------------------------------------------------- ボイス・音楽
-    "/music": {"category": "voice", "usage": "/music action:<再生|操作|音響|ライブラリ> [query|file|value|preset|playlist_action|scope]"},
-    "/voice": {"category": "voice", "usage": "/voice action:<VC|録音|やまびこ|文字起こし|カラオケ|通話> [delay|channel|lyrics|pitch|room|password]"},
+    "/music": {"category": "voice", "usage": "/music（操作パネルを表示）"},
+    "/voice": {"category": "voice", "usage": "/voice（操作パネルを表示）"},
     "!ffversion": {"category": "voice", "hidden": True},
 
     # ---------------------------------------------------------------- おたのしみ・AI
