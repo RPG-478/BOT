@@ -62,6 +62,11 @@ class SupportRoleBulkTest(unittest.IsolatedAsyncioTestCase):
 
 
 class SupportThinkingReactionTest(unittest.IsolatedAsyncioTestCase):
+    def test_raw_reaction_listener_is_registered_on_the_cog(self):
+        listeners = dict(SupportCog.__cog_listeners__)
+        self.assertEqual(listeners.get("on_raw_reaction_add"), "on_raw_reaction_add")
+        self.assertEqual(THINKING_EMOJI._as_reaction(), "thinking:1561695212814995596")
+
     def make_cog(self, enabled):
         message = types.SimpleNamespace(reactions=[], add_reaction=AsyncMock())
         channel = types.SimpleNamespace(fetch_message=AsyncMock(return_value=message))
