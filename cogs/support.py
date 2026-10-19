@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from cogs.clear import MAX_CLEAR
+from core import guild_settings
 
 
 SUPPORT_ACTIONS = [
@@ -16,7 +17,37 @@ SUPPORT_ACTIONS = [
     app_commands.Choice(name="bump/up通知・RTA状態", value="bumprta_status"),
     app_commands.Choice(name="bump/up通知・RTAオン", value="bumprta_on"),
     app_commands.Choice(name="bump/up通知・RTAオフ", value="bumprta_off"),
+    app_commands.Choice(name="🤔リアクション便乗設定", value="thinking_reaction"),
 ]
+
+THINKING_SECTION = "thinking_reaction"
+THINKING_EMOJI = "<:thinking:1561695212814995596>"
+
+
+class ThinkingReactionView(discord.ui.View):
+    def __init__(self, cog: "SupportCog", enabled: bool):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.enabled = enabled
+
+    async def set_enabled(self, interaction: discord.Interaction, enabled: bool):
+        if not getattr(getattr(interaction.user, "guild_permissions", None), "manage_guild", False):
+            return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
+        await guild_settings.get_store().update(interaction.guild_id, THINKING_SECTION, enabled=enabled)
+        self.enabled = enabled
+        label = "オン" if enabled else "オフ"
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="🤔リアクション便乗", description=f"現在の設定: **{label}**\n🤔へのリアクションに {THINKING_EMOJI} を追加します。", color=0x3498DB),
+            view=self,
+        )
+
+    @discord.ui.button(label="オン", style=discord.ButtonStyle.success)
+    async def enable_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.set_enabled(interaction, True)
+
+    @discord.ui.button(label="オフ", style=discord.ButtonStyle.secondary)
+    async def disable_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.set_enabled(interaction, False)
 
 
 class RoleBulkConfirmView(discord.ui.View):
@@ -151,6 +182,32 @@ class SupportCog(commands.Cog):
             f"{name}機能が読み込まれていません。", ephemeral=True
         )
 
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        if payload.guild_id is None or payload.user_id == getattr(self.bot.user, "id", None):
+            return
+        if str(payload.emoji) != "🤔":
+            return
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        if not store.get(payload.guild_id, THINKING_SECTION).get("enabled", True):
+            return
+        member = getattr(payload, "member", None)
+        if member is not None and member.bot:
+            return
+        channel = self.bot.get_channel(payload.channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(payload.channel_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return
+        try:
+            message = await channel.fetch_message(payload.message_id)
+            if any(str(reaction.emoji) == THINKING_EMOJI and reaction.me for reaction in message.reactions):
+                return
+            await message.add_reaction(THINKING_EMOJI)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return
+
     async def bulk_role_update(self, guild: discord.Guild, role: discord.Role, adding: bool):
         """管理可能な全メンバーへロールを付与・剥奪し、件数を返す。"""
         affected = skipped = failed = 0
@@ -206,6 +263,18 @@ class SupportCog(commands.Cog):
         )
 
     async def dispatch(self, interaction: discord.Interaction, selected: str):
+        if selected == "thinking_reaction":
+            store = guild_settings.get_store()
+            await store.ensure_loaded()
+            enabled = store.get(interaction.guild_id, THINKING_SECTION).get("enabled", True)
+            return await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="🤔リアクション便乗",
+                    description=f"現在の設定: **{'オン' if enabled else 'オフ'}**\n🤔へのリアクションに {THINKING_EMOJI} を追加します。",
+                    color=0x3498DB,
+                ),
+                view=ThinkingReactionView(self, enabled), ephemeral=True,
+            )
         if selected == "role_bulk":
             return await self._role_bulk(interaction, None)
         if selected == "muted":
