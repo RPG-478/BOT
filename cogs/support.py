@@ -106,6 +106,42 @@ class RoleBulkSelect(discord.ui.RoleSelect):
         )
 
 
+class SupportClearModal(discord.ui.Modal, title="メッセージ削除"):
+    amount = discord.ui.TextInput(label=f"削除する件数（1〜{MAX_CLEAR}）", placeholder="例: 10", max_length=3)
+
+    def __init__(self, cog: "SupportCog"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            count = int(self.amount.value)
+        except ValueError:
+            return await interaction.response.send_message("件数は整数で入力してください。", ephemeral=True)
+        if not 1 <= count <= MAX_CLEAR:
+            return await interaction.response.send_message(f"件数は1〜{MAX_CLEAR}で指定してください。", ephemeral=True)
+        cog = self.cog.bot.get_cog("ClearCog")
+        if cog is None:
+            return await self.cog._missing(interaction, "メッセージ削除")
+        await cog.clear(interaction, count, None)
+
+
+class SupportActionSelect(discord.ui.Select):
+    def __init__(self, cog: "SupportCog"):
+        self.cog = cog
+        options = [discord.SelectOption(label=c.name, value=c.value) for c in SUPPORT_ACTIONS]
+        super().__init__(placeholder="操作を選択してください", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.cog.dispatch(interaction, self.values[0])
+
+
+class SupportPanelView(discord.ui.View):
+    def __init__(self, cog: "SupportCog"):
+        super().__init__(timeout=300)
+        self.add_item(SupportActionSelect(cog))
+
+
 class SupportCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -161,40 +197,22 @@ class SupportCog(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="support", description="Muted・匿名つぶやき・メッセージ削除・ロール操作・bump/up設定をまとめて操作します")
-    @app_commands.choices(action=SUPPORT_ACTIONS)
-    @app_commands.describe(
-        action="実行するサポート操作",
-        target="Muted対象者",
-        minutes="Mutedする時間（分）",
-        admin_role="Muted管理ロールの設定",
-        isolation_channel="Muted対象者の隔離先チャンネル",
-        amount=f"削除するメッセージ数（1〜{MAX_CLEAR}）",
-        member="削除対象のユーザー（省略可能）",
-        role="一括操作するロール（省略時はパネルで選択）",
-    )
+    @app_commands.command(name="support", description="サポート機能の操作パネルを表示します")
     @app_commands.guild_only()
-    async def support(
-        self,
-        interaction: discord.Interaction,
-        action: app_commands.Choice[str],
-        target: discord.Member | None = None,
-        minutes: int | None = None,
-        admin_role: discord.Role | None = None,
-        isolation_channel: discord.TextChannel | None = None,
-        amount: int | None = None,
-        member: discord.Member | None = None,
-        role: discord.Role | None = None,
-    ):
-        selected = action.value
+    async def support(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            embed=discord.Embed(title="サポート操作", description="下のメニューから操作を選択してください。", color=0x3498DB),
+            view=SupportPanelView(self), ephemeral=True,
+        )
 
+    async def dispatch(self, interaction: discord.Interaction, selected: str):
         if selected == "role_bulk":
-            return await self._role_bulk(interaction, role)
+            return await self._role_bulk(interaction, None)
         if selected == "muted":
             cog = self.bot.get_cog("Muted")
             if cog is None:
                 return await self._missing(interaction, "Muted")
-            return await cog.muted_setting(interaction, target, minutes, admin_role, isolation_channel)
+            return await cog.muted_setting(interaction)
         if selected == "whisper":
             permissions = getattr(interaction, "permissions", None)
             if not getattr(permissions, "manage_channels", False):
@@ -204,12 +222,7 @@ class SupportCog(commands.Cog):
                 return await self._missing(interaction, "匿名つぶやき")
             return await cog.whisper(interaction)
         if selected == "clear":
-            if amount is None:
-                return await interaction.response.send_message("メッセージ削除には amount を指定してください。", ephemeral=True)
-            cog = self.bot.get_cog("ClearCog")
-            if cog is None:
-                return await self._missing(interaction, "メッセージ削除")
-            return await cog.clear(interaction, amount, member)
+            return await interaction.response.send_modal(SupportClearModal(self))
 
         cog = self.bot.get_cog("BumpRta")
         if cog is None:
