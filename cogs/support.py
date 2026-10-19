@@ -51,24 +51,27 @@ class ThinkingReactionView(discord.ui.View):
 
 
 class RoleBulkConfirmView(discord.ui.View):
-    def __init__(self, cog: "SupportCog", role: discord.Role, adding: bool):
+    def __init__(self, cog: "SupportCog", role: discord.Role, adding: bool, target_mode: str = "humans"):
         super().__init__(timeout=60)
         self.cog = cog
         self.role = role
         self.adding = adding
+        self.target_mode = target_mode
 
     @discord.ui.button(label="実行", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         affected, skipped, failed = await self.cog.bulk_role_update(
-            interaction.guild, self.role, self.adding
+            interaction.guild, self.role, self.adding, target_mode=self.target_mode
         )
         action = "付与" if self.adding else "剥奪"
+        target_label = {"humans": "人間のみ", "all": "人間＋BOT", "bots": "BOTのみ"}[self.target_mode]
         await interaction.followup.send(
             embed=discord.Embed(
                 title=f"ロール一括{action} 完了",
                 description=(
                     f"対象ロール: {self.role.mention}\n"
+                    f"対象アカウント: **{target_label}**\n"
                     f"{action}: **{affected}人**\n"
                     f"対象外: **{skipped}人**\n"
                     f"失敗: **{failed}人**"
@@ -91,11 +94,16 @@ class RoleBulkView(discord.ui.View):
         self.cog = cog
         self.guild = guild
         self.role = role
+        self.target_mode = "humans"
         self.add_item(RoleBulkSelect(self))
+        self.add_item(RoleTargetSelect(self))
 
     def description(self) -> str:
         selected = self.role.mention if self.role else "未選択"
-        return f"対象ロール: {selected}\n下のボタンから全メンバーへの付与・剥奪を選びます。"
+        return f"対象ロール: {selected}\n対象アカウント: **{self.target_label()}**\n下のボタンから付与・剥奪を選びます。"
+
+    def target_label(self) -> str:
+        return {"humans": "人間のみ", "all": "人間＋BOT", "bots": "BOTのみ"}[self.target_mode]
 
     async def choose_action(self, interaction: discord.Interaction, adding: bool):
         if self.role is None:
@@ -104,20 +112,50 @@ class RoleBulkView(discord.ui.View):
         await interaction.response.send_message(
             embed=discord.Embed(
                 title=f"ロール一括{action}の確認",
-                description=f"{self.role.mention} をサーバーの全メンバーに{action}します。\nこの操作は取り消せません。",
+                description=(
+                    f"{self.role.mention} をサーバーのメンバーに{action}します。\n"
+                    f"対象アカウント: **{self.target_label()}**\n"
+                    "この操作は取り消せません。"
+                ),
                 color=0xE74C3C,
             ),
-            view=RoleBulkConfirmView(self.cog, self.role, adding),
+            view=RoleBulkConfirmView(self.cog, self.role, adding, self.target_mode),
             ephemeral=True,
         )
 
-    @discord.ui.button(label="付与", style=discord.ButtonStyle.success, row=1)
+    @discord.ui.button(label="付与", style=discord.ButtonStyle.success, row=2)
     async def add_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.choose_action(interaction, True)
 
-    @discord.ui.button(label="剥奪", style=discord.ButtonStyle.danger, row=1)
+    @discord.ui.button(label="剥奪", style=discord.ButtonStyle.danger, row=2)
     async def remove_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.choose_action(interaction, False)
+
+class RoleTargetSelect(discord.ui.Select):
+    def __init__(self, parent: RoleBulkView):
+        self.parent_view = parent
+        super().__init__(
+            placeholder="対象アカウントを選択",
+            min_values=1,
+            max_values=1,
+            row=1,
+            options=[
+                discord.SelectOption(label="人間のみ", value="humans", default=True),
+                discord.SelectOption(label="人間＋BOT", value="all"),
+                discord.SelectOption(label="BOTのみ", value="bots"),
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.target_mode = self.values[0]
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="一括ロール操作",
+                description=self.parent_view.description(),
+                color=0x3498DB,
+            ),
+            view=self.parent_view,
+        )
 
 
 class RoleBulkSelect(discord.ui.RoleSelect):
@@ -208,10 +246,18 @@ class SupportCog(commands.Cog):
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             return
 
-    async def bulk_role_update(self, guild: discord.Guild, role: discord.Role, adding: bool):
-        """管理可能な全メンバーへロールを付与・剥奪し、件数を返す。"""
+    async def bulk_role_update(
+        self, guild: discord.Guild, role: discord.Role, adding: bool, *, target_mode: str = "humans"
+    ):
+        """指定した対象モード（人間のみ・人間＋BOT・BOTのみ）へロールを適用する。"""
+        if target_mode not in {"humans", "all", "bots"}:
+            target_mode = "humans"
         affected = skipped = failed = 0
         for member in guild.members:
+            is_bot = bool(getattr(member, "bot", False))
+            if (target_mode == "humans" and is_bot) or (target_mode == "bots" and not is_bot):
+                skipped += 1
+                continue
             has_role = role in getattr(member, "roles", [])
             if (adding and has_role) or (not adding and not has_role):
                 skipped += 1
