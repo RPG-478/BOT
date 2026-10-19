@@ -310,8 +310,8 @@ class CommandCatalogTest(unittest.TestCase):
 
     def test_long_guide_and_many_commands_are_clipped(self):
         from cogs import help as help_module
-        entry = dict(command_catalog.find_command(self.catalog, '/wallet'), guide='## 見出し\n' + 'あ' * 9000)
-        embed = help_module.guide_embed('/wallet', entry['guide'])
+        entry = dict(command_catalog.find_command(self.catalog, '/user_status'), guide='## 見出し\n' + 'あ' * 9000)
+        embed = help_module.guide_embed('/user_status', entry['guide'])
         self.assertLessEqual(len(embed.description), 4096)
         self.assertTrue(embed.description.startswith('**見出し**'))
         many = dict(self.catalog, commands=[dict(entry, name=f'cmd{i}', category='economy', guide=None)
@@ -324,8 +324,8 @@ class CommandCatalogTest(unittest.TestCase):
     def test_autocomplete(self):
         complete = self.cog.help_command_autocomplete
         interaction = fake_interaction(self.bot)
-        choices = self.run_async(complete(interaction, 'wal'))
-        self.assertEqual(choices[0].value, '/wallet')
+        choices = self.run_async(complete(interaction, 'user'))
+        self.assertEqual(choices[0].value, '/user_status')
         everything = self.run_async(complete(interaction, ''))
         self.assertEqual(len(everything), 25)
         for choice in everything:
@@ -344,8 +344,8 @@ class CommandCatalogTest(unittest.TestCase):
         self.assertEqual(kwargs['embed'].title, 'コマンド一覧')
         self.assertIsNotNone(kwargs['view'])
 
-        self.run_async(callback(self.cog, interaction, command='/wallet'))
-        self.assertEqual(interaction.response.calls[-1][2]['embed'].title, '/wallet')
+        self.run_async(callback(self.cog, interaction, command='/user_status'))
+        self.assertEqual(interaction.response.calls[-1][2]['embed'].title, '/user_status')
         self.run_async(callback(self.cog, interaction, command='gvc create'))
         self.assertIn('見つかりませんでした', interaction.response.calls[-1][1])
         self.run_async(callback(self.cog, interaction, command='存在しない'))
@@ -389,8 +389,8 @@ class CommandCatalogTest(unittest.TestCase):
         help_command.context = ctx
         self.run_async(help_command.send_bot_help({}))
         self.assertIn('/help', sent[-1][1]['embed'].description)
-        self.run_async(help_command.command_callback(ctx, command='wallet'))
-        self.assertEqual(sent[-1][1]['embed'].title, '/wallet')
+        self.run_async(help_command.command_callback(ctx, command='user_status'))
+        self.assertEqual(sent[-1][1]['embed'].title, '/user_status')
         self.assertIn('見つかりませんでした', help_command.command_not_found('xyz'))
         self.assertEqual(self.bot.get_command('help').name, 'help')
 

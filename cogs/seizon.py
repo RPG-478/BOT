@@ -70,7 +70,6 @@ class FujoSurvival(commands.Cog):
 
     FUJO_ACTIONS = [
         app_commands.Choice(name="追跡登録・解除", value="register"),
-        app_commands.Choice(name="生存ステータス", value="status"),
         app_commands.Choice(name="アクティブ頻度", value="hindo"),
         app_commands.Choice(name="ランキング", value="ranking"),
         app_commands.Choice(name="ストリークフリーズ", value="freeze"),
@@ -82,7 +81,7 @@ class FujoSurvival(commands.Cog):
     @app_commands.choices(action=FUJO_ACTIONS)
     @app_commands.describe(
         action="実行する操作",
-        target="確認するユーザー（status / hindo で使用。省略すると自分）",
+        target="確認するユーザー（hindo で使用。省略すると自分）",
         mode="ranking の並べ方",
         days="panic_set の発報日数（1〜365）",
         message="panic_set の発報メッセージ",
@@ -98,8 +97,6 @@ class FujoSurvival(commands.Cog):
     ):
         if action == "register":
             return await self.register(interaction)
-        if action == "status":
-            return await self.status(interaction, target)
         if action == "hindo":
             return await self.hindo(interaction, target)
         if action == "ranking":
@@ -322,12 +319,21 @@ class FujoSurvival(commands.Cog):
 
     async def status(self, interaction: discord.Interaction, target: discord.User | None = None):
         target = target or interaction.user
-        if not await self._require_registered(interaction, target.id, target.id == interaction.user.id):
+        embed = await self.status_embed_for(target)
+        if embed is None:
+            if not await self._require_registered(interaction, target.id, target.id == interaction.user.id):
+                return
             return
+        await self._reply(interaction, embed)
+
+    async def status_embed_for(self, target: discord.User) -> discord.Embed | None:
+        """登録済みユーザーの生存ステータスを埋め込みで返す。"""
+        await self._ensure_users()
+        if target.id not in self.users:
+            return None
         latest = await self._latest_activity(target.id)
         if not latest:
-            await self._reply(interaction, self.create_simple_embed("データなし", f"{target.mention} のアクティブ記録はまだありません。", 0x95a5a6), ephemeral=True)
-            return
+            return self.create_simple_embed("データなし", f"{target.mention} のアクティブ記録はまだありません。", 0x95a5a6)
         records = await self._activities_since(datetime.now(timezone.utc) - timedelta(days=30), target.id, "detected_at, signal_type")
         user = self.users.get(target.id, {})
         streak = user.get("streak_count") or 0
@@ -362,7 +368,7 @@ class FujoSurvival(commands.Cog):
         embed.add_field(name="ゾンビ化率", value=f"{zombie_rate}%", inline=True)
         embed.add_field(name="最後の検知", value=str(latest.get("signal_type") or "-"), inline=True)
         embed.set_footer(text=FOOTER)
-        await self._reply(interaction, embed)
+        return embed
 
     async def hindo(self, interaction: discord.Interaction, target: discord.User | None = None):
         target = target or interaction.user

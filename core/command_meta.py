@@ -33,7 +33,7 @@ NATION_TUTORIAL = [
         "title": "2. 空腹度とコイン",
         "body": (
             "- **空腹度**: 参加したときは 100 です。これから時間とともに減っていくしくみが入る予定です。\n"
-            "- **コイン（AGO）**: 所持金は `/wallet` と共通です。ほかのゲームで稼いだコインも国づくりで使えます。\n"
+            "- **コイン（AGO）**: 所持金は `/user_status` で確認できます。ほかのゲームで稼いだコインも国づくりで使えます。\n"
             "所属国・役職・所持金・空腹度は、状態確認機能で確認できます。"
         ),
     },
@@ -70,7 +70,7 @@ CATEGORIES = [
         "description": "サーバー共通のコイン（AGO）の残高確認・送金・ランキングと、コインを賭けるミニゲームです。",
         "guide": (
             "## コインのしくみ\n"
-            "はじめて `/wallet` を使うと 10 AGO もらえます。`/pay` でほかの人に送金でき、"
+            "はじめて `/user_status` を使うと 10 AGO もらえます。`/pay` でほかの人に送金でき、"
             "`/leaderboard` で保有ランキングを見られます。\n\n"
             "## 数字当て\n"
             "`/game` の「数字当て」は 1〜3 の数字を当てるゲームです。当たると賭け額の 2.8 倍がもらえ、外れると 1.5 倍が引かれます。"
@@ -140,7 +140,7 @@ COMMAND_META: dict[str, dict] = {
         "options": {"command": "使い方を見たいコマンド名"},
     },
     "/whisper": {"category": "support"},
-    "/fujo": {"category": "support", "summary": "生存確認・ステータス・ランキング・失踪警報をまとめて操作します"},
+    "/fujo": {"category": "support", "summary": "生存確認の追跡・ランキング・失踪警報を操作します"},
     "/giveaway": {"category": "support", "permissions": ["manage_guild"], "guild_only": True},
     "!gvc": {"category": "support", "summary": "グローバルVC（サーバーをまたぐ通話・チャットのルーム）のコマンド一覧を表示します"},
     "!gvc create": {
@@ -167,7 +167,7 @@ COMMAND_META: dict[str, dict] = {
     "!gvc chat disconnect": {"category": "support", "summary": "このチャンネルのチャット連携を解除します"},
 
     # ---------------------------------------------------------------- コイン
-    "/wallet": {"category": "economy"},
+    "/user_status": {"category": "economy"},
     "/pay": {"category": "economy"},
     "/leaderboard": {"category": "economy"},
     "!nation": {"category": "economy", "summary": "国づくり機能", "guild_only": True, "hidden": True},
@@ -192,7 +192,7 @@ COMMAND_META: dict[str, dict] = {
     "/music sound": {"category": "voice", "usage": "/music sound action:<音量|速度|EQ|立体音響> [value|preset|feedback|wet|resolution]"},
     "/music library": {"category": "voice", "usage": "/music library action:<検索|プレイリスト|音声ID> [query|playlist_action|name|scope|file|limit]"},
     "/music panel": {"category": "voice", "usage": "/music panel"},
-    "/bumprta": {"category": "voice", "usage": "/bumprta action:<状態|通知オン|通知オフ|ランキング> [event_type:<bump|up>] [scope:<自己ベスト|サーバー内|全体>]"},
+    "/bumprta": {"category": "voice", "usage": "/bumprta action:<状態|通知オン|通知オフ>"},
     "/voice connection": {"category": "voice", "usage": "/voice connection action:<参加|退出|状態>"},
     "/voice studio": {"category": "voice", "usage": "/voice studio feature:<録音|やまびこ|文字起こし|カラオケ> action:<操作> [delay|channel|lyrics]"},
     "/voice effects": {"category": "voice", "usage": "/voice effects action:<開始|停止|状態/設定変更> [pitch|buffer_ms|max_ms]"},
@@ -202,7 +202,6 @@ COMMAND_META: dict[str, dict] = {
     # ---------------------------------------------------------------- おたのしみ・AI
     "/zetamodoki": {"category": "fun"},
     "/zeta_reset": {"category": "fun"},
-    "/dungeon": {"category": "fun"},
     "/judge": {"category": "fun"},
     "!mimic": {"category": "fun", "summary": "過去の発言をもとに、特定のメンバーの口調で AI が返事をします",
                "options": {"prompt": "話しかける内容"}},

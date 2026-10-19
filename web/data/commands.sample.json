@@ -53,11 +53,11 @@
       "guide": ""
     },
     {
-      "name": "wallet",
+      "name": "user_status",
       "kind": "slash",
       "category": "economy",
-      "summary": "自分のコイン残高を確認します（サンプル）",
-      "usage": "/wallet",
+      "summary": "プレイヤーのコイン・生存ステータスを表示します（サンプル）",
+      "usage": "/user_status",
       "options": [],
       "permissions": [],
       "guild_only": false,

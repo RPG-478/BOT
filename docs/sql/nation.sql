@@ -1,5 +1,5 @@
 -- 国づくり MMO フェーズ 1 のテーブルと関数（何度実行しても安全）。
--- 所持金は /wallet と共通で public.users.balance を使います（users.user_id は text）。
+-- 所持金は /user_status と共通で public.users.balance を使います（users.user_id は text）。
 -- RLS は使いません（bot は anon キーで読み書きするため）。
 
 create table if not exists public.nation_guilds (
@@ -52,7 +52,7 @@ create index if not exists nation_players_guild_idx on public.nation_players (gu
 -- #33 の transfer_coins 案と同じく、条件付き UPDATE 1 回で残高チェックと更新を同時に行います。
 -- 残高がマイナスになる場合、空腹度が 0 未満になる場合、プレイヤー未登録の場合は例外。
 -- users.balance は integer で NULL 可のため coalesce で 0 扱い。users.hunger 列は既存の別機能のもので、使いません。
--- 空腹度の上限は 100 で丸めます。users の行がなければ /wallet と同じく残高 10 で作ります。
+-- 空腹度の上限は 100 で丸めます。users の行がなければ /user_status と同じく残高 10 で作ります。
 create or replace function public.nation_adjust(
     p_user_id     text,
     p_coins_delta bigint,

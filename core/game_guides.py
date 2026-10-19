@@ -475,7 +475,33 @@ GAME_GUIDES = {
     },
 }
 
-GAME_ORDER = ["jinrou", "wordwolf", "uno", "doubt", "ngword", "shiritori", "janken", "wordle", "shinkei", "babanuki", "guess", "flash", "daifugo", "othello", "poker", "shogi", "chess"]
+GAME_GUIDES["dungeon"] = {
+    "id": "dungeon",
+    "name": "ダンジョン",
+    "category": "game",
+    "summary": "マップを探索し、戦闘と成長を重ねてダンジョンを攻略します。",
+    "players": "1人",
+    "min_players": 1,
+    "max_players": 1,
+    "duration": "自由にプレイ",
+    "commands": ["/game"],
+    "guide": """## 概要
+ダンジョンを探索し、敵との戦闘やアイテムを通じてプレイヤーを成長させます。
+
+## 人数
+1人で遊べます。
+
+## 所要時間
+好きなときに開始・中断できます。
+
+## 遊び方
+1. `/game` で「ダンジョン」を選び、「募集する」を押します。
+2. 画面の移動・戦闘・ステータスボタンから操作します。
+3. STATUS画面からD1の接続と作戦を設定できます。
+""",
+}
+
+GAME_ORDER = ["jinrou", "wordwolf", "uno", "doubt", "ngword", "shiritori", "janken", "wordle", "shinkei", "babanuki", "guess", "flash", "daifugo", "othello", "poker", "shogi", "chess", "dungeon"]
 
 
 def get_guide(game_id: str) -> dict:

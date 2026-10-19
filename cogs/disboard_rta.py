@@ -65,7 +65,6 @@ ACTION_CHOICES = [
     app_commands.Choice(name="状態", value="status"),
     app_commands.Choice(name="通知オン", value="on"),
     app_commands.Choice(name="通知オフ", value="off"),
-    app_commands.Choice(name="ランキング", value="leaderboard"),
 ]
 EVENT_TYPE_CHOICES = [
     app_commands.Choice(name="bump", value="bump"),
@@ -549,20 +548,50 @@ class BumpRta(commands.Cog):
             logger.exception("bump_rta_settings read failed; using default enabled state: guild=%s", gid)
             return True
 
+    async def leaderboard(self, interaction: discord.Interaction, event_type: str = "bump", scope: str = "local"):
+        """/leaderboard から呼び出す bump/up RTA ランキング。"""
+        if self.db is None:
+            return await interaction.followup.send(
+                embed=_white_embed("Supabase未接続のため順位を取得できません。"), ephemeral=True)
+        try:
+            if scope == "me":
+                uid, gid = str(interaction.user.id), str(interaction.guild_id)
+                local = await self._call(lambda: self.db.table("bump_rta_records").select(
+                    "elapsed_ms,completed_at").eq("guild_id", gid).eq("user_id", uid).eq("event_type", event_type).limit(1).execute())
+                global_best = await self._call(lambda: self.db.table("bump_rta_events").select(
+                    "elapsed_ms,completed_at").eq("user_id", uid).eq("event_type", event_type).order("elapsed_ms").limit(1).execute())
+                local_text = f"{local.data[0]['elapsed_ms'] / 1000:.2f}秒" if local.data else "記録なし"
+                global_text = f"{global_best.data[0]['elapsed_ms'] / 1000:.2f}秒" if global_best.data else "記録なし"
+                return await interaction.followup.send(embed=_white_embed(
+                    f"<@{uid}> の**{event_type}自己ベスト**\nこのサーバー: **{local_text}**\n全サーバー: **{global_text}**"))
+            if scope == "global":
+                rows = await self._call(lambda: self.db.rpc("get_bump_rta_global_ranking", {
+                    "p_event_type": event_type, "p_limit": 10}).execute())
+                data = rows.data or []
+                lines = [f"**{i}.** <@{r['user_id']}> — **{r['elapsed_ms'] / 1000:.2f}秒**（{r['attempts']}回）" for i, r in enumerate(data, 1)]
+                title = f"全サーバー {event_type} RTAランキング"
+            else:
+                rows = await self._call(lambda: self.db.table("bump_rta_records").select(
+                    "user_id,elapsed_ms,completed_at").eq("guild_id", str(interaction.guild_id)).eq(
+                    "event_type", event_type).order("elapsed_ms").limit(10).execute())
+                data = rows.data or []
+                lines = [f"**{i}.** <@{r['user_id']}> — **{r['elapsed_ms'] / 1000:.2f}秒**" for i, r in enumerate(data, 1)]
+                title = f"このサーバー {event_type} RTAランキング"
+            return await interaction.followup.send(
+                embed=_white_embed(f"**{title}**\n" + ("\n".join(lines) if lines else "まだ記録がありません。")))
+        except Exception as e:
+            logger.exception("bump/up leaderboard query failed: scope=%s kind=%s", scope, event_type)
+            return await interaction.followup.send(
+                embed=_white_embed(f"ランキングの取得に失敗しました。\n（{type(e).__name__}: {e}）"))
+
     # ---- slash command ---------------------------------------------------
-    @app_commands.command(name="bumprta", description="bump/up通知設定・状態・個別ランキング")
-    @app_commands.choices(action=ACTION_CHOICES, event_type=EVENT_TYPE_CHOICES, scope=LEADERBOARD_SCOPE_CHOICES)
-    @app_commands.describe(
-        action="操作",
-        event_type="ランキング対象（bumpとupは別集計）",
-        scope="自己ベスト・サーバー内・全体",
-    )
+    @app_commands.command(name="bumprta", description="bump/up通知の設定・状態確認")
+    @app_commands.choices(action=ACTION_CHOICES)
+    @app_commands.describe(action="操作")
     async def bumprta_command(
         self,
         interaction: discord.Interaction,
         action: app_commands.Choice[str],
-        event_type: app_commands.Choice[str] | None = None,
-        scope: app_commands.Choice[str] | None = None,
     ):
         if interaction.guild_id is None:
             return await interaction.response.send_message(
@@ -603,45 +632,8 @@ class BumpRta(commands.Cog):
                 embed=_white_embed(
                     f"bump/up通知とRTA計測を **{'オン' if enabled else 'オフ'}** にしました。"),
                 ephemeral=True)
-        if self.db is None:
-            return await interaction.response.send_message(
-                embed=_white_embed("Supabase未接続のため順位を取得できません。"), ephemeral=True)
-        kind = event_type.value if event_type else "bump"
-        selected_scope = scope.value if scope else "local"
-        # The database round trips can exceed Discord's 3 second acknowledgement window.
-        await interaction.response.defer()
-        try:
-            if selected_scope == "me":
-                uid, gid = str(interaction.user.id), str(interaction.guild_id)
-                local = await self._call(lambda: self.db.table("bump_rta_records").select(
-                    "elapsed_ms,completed_at").eq("guild_id", gid).eq("user_id", uid).eq("event_type", kind).limit(1).execute())
-                global_best = await self._call(lambda: self.db.table("bump_rta_events").select(
-                    "elapsed_ms,completed_at").eq("user_id", uid).eq("event_type", kind).order("elapsed_ms").limit(1).execute())
-                local_text = f"{local.data[0]['elapsed_ms'] / 1000:.2f}秒" if local.data else "記録なし"
-                global_text = f"{global_best.data[0]['elapsed_ms'] / 1000:.2f}秒" if global_best.data else "記録なし"
-                return await interaction.followup.send(
-                    embed=_white_embed(
-                        f"<@{uid}> の**{kind}自己ベスト**\n"
-                        f"このサーバー: **{local_text}**\n全サーバー: **{global_text}**"))
-            if selected_scope == "global":
-                rows = await self._call(lambda: self.db.rpc("get_bump_rta_global_ranking", {
-                    "p_event_type": kind, "p_limit": 10}).execute())
-                data = rows.data or []
-                lines = [f"**{i}.** <@{r['user_id']}> — **{r['elapsed_ms'] / 1000:.2f}秒**（{r['attempts']}回）" for i, r in enumerate(data, 1)]
-                title = f"全サーバー {kind} RTAランキング"
-            else:
-                rows = await self._call(lambda: self.db.table("bump_rta_records").select(
-                    "user_id,elapsed_ms,completed_at").eq("guild_id", str(interaction.guild_id)).eq(
-                    "event_type", kind).order("elapsed_ms").limit(10).execute())
-                data = rows.data or []
-                lines = [f"**{i}.** <@{r['user_id']}> — **{r['elapsed_ms'] / 1000:.2f}秒**" for i, r in enumerate(data, 1)]
-                title = f"このサーバー {kind} RTAランキング"
-            return await interaction.followup.send(
-                embed=_white_embed(f"**{title}**\n" + ("\n".join(lines) if lines else "まだ記録がありません。")))
-        except Exception as e:
-            logger.exception("bump/up leaderboard query failed: scope=%s kind=%s", selected_scope, kind)
-            return await interaction.followup.send(
-                embed=_white_embed(f"ランキングの取得に失敗しました。\n（{type(e).__name__}: {e}）"))
+        return await interaction.response.send_message(
+            embed=_white_embed("ランキングは `/leaderboard` から確認してください。"), ephemeral=True)
 
     # ---- send-lead calibration -------------------------------------------
     def _send_lead(self):
