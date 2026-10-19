@@ -4,7 +4,7 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 from cogs.support import (
-    BINJOU_SECTION, EmojiBinjouView, MESSAGE_LOG_SECTION, MODERATION_LOG_SECTION,
+    ActivityLogSettingsView, BINJOU_SECTION, EmojiBinjouView, MESSAGE_LOG_SECTION, MODERATION_LOG_SECTION,
     RoleBulkView, RoleTargetSelect, SupportCog, SUPPORT_ACTIONS, THINKING_EMOJI,
     THINKING_SECTION, VC_LOG_SECTION, get_activity_log_settings, get_binjou_settings,
     get_vc_log_settings,
@@ -271,8 +271,25 @@ class SupportActivityLogTest(unittest.IsolatedAsyncioTestCase):
     def test_activity_log_defaults_to_off(self):
         store = types.SimpleNamespace(get=lambda _guild_id, _section: {})
         self.assertEqual(get_activity_log_settings(store, 1, MESSAGE_LOG_SECTION), {"enabled": False, "channel_id": None})
+        moderation = get_activity_log_settings(store, 1, MODERATION_LOG_SECTION)
+        self.assertEqual(
+            {moderation[key] for key in ("timeout_enabled", "kick_enabled", "ban_enabled")},
+            {True},
+        )
         self.assertIn("message_log", [choice.value for choice in SUPPORT_ACTIONS])
         self.assertIn("moderation_log", [choice.value for choice in SUPPORT_ACTIONS])
+
+    def test_moderation_view_has_individual_toggles(self):
+        view = ActivityLogSettingsView(
+            SupportCog(None), MODERATION_LOG_SECTION, "モデレート", "説明", {
+                "enabled": True, "channel_id": 90,
+                "timeout_enabled": True, "kick_enabled": False, "ban_enabled": True,
+            },
+        )
+        labels = [item.label for item in view.children if hasattr(item, "label")]
+        self.assertIn("TO: 送信する", labels)
+        self.assertIn("KICK: 送信しない", labels)
+        self.assertIn("BAN: 送信する", labels)
 
     async def test_message_edit_sends_before_and_after_in_embed(self):
         cog, store, guild, target = self.make_cog(MESSAGE_LOG_SECTION)
@@ -327,6 +344,15 @@ class SupportActivityLogTest(unittest.IsolatedAsyncioTestCase):
         with patch("cogs.support.guild_settings.get_store", return_value=store):
             await cog.on_member_ban(guild, user)
         self.assertEqual(target.send.await_args.kwargs["embed"].title, "BAN")
+
+    async def test_disabled_kick_is_not_sent(self):
+        cog, store, guild, target = self.make_cog(MODERATION_LOG_SECTION)
+        store.get = lambda _guild_id, section: (
+            {"enabled": True, "channel_id": 90, "kick_enabled": False} if section == MODERATION_LOG_SECTION else {}
+        )
+        with patch("cogs.support.guild_settings.get_store", return_value=store):
+            await cog.on_member_remove(types.SimpleNamespace(guild=guild, id=5, mention="<@5>", bot=False))
+        target.send.assert_not_awaited()
 
 
 if __name__ == "__main__":

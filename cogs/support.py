@@ -94,7 +94,12 @@ def get_activity_log_settings(store, guild_id: int, section: str) -> dict[str, i
     channel_id = raw.get("channel_id")
     if not isinstance(channel_id, int) or isinstance(channel_id, bool):
         channel_id = None
-    return {"enabled": enabled, "channel_id": channel_id}
+    settings = {"enabled": enabled, "channel_id": channel_id}
+    if section == MODERATION_LOG_SECTION:
+        for action in ("timeout", "kick", "ban"):
+            key = f"{action}_enabled"
+            settings[key] = raw.get(key) if isinstance(raw.get(key), bool) else True
+    return settings
 
 
 class ActivityLogChannelSelect(discord.ui.ChannelSelect):
@@ -117,12 +122,29 @@ class ActivityLogChannelSelect(discord.ui.ChannelSelect):
         await self.parent_view.refresh(interaction, "送信先を設定しました。")
 
 
+class ModerationActionToggle(discord.ui.Button):
+    def __init__(self, parent: "ActivityLogSettingsView", action: str, label: str, row: int = 2):
+        self.parent_view, self.action, self.action_label = parent, action, label
+        super().__init__(label=self.button_label(), style=discord.ButtonStyle.secondary, row=row)
+
+    def button_label(self) -> str:
+        enabled = self.parent_view.settings.get(f"{self.action}_enabled", True)
+        return f"{self.action_label}: {'送信する' if enabled else '送信しない'}"
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.parent_view.toggle_action(interaction, self.action)
+
+
 class ActivityLogSettingsView(discord.ui.View):
     def __init__(self, cog: "SupportCog", section: str, title: str, description: str, settings: dict):
         super().__init__(timeout=300)
         self.cog, self.section, self.title, self.log_description = cog, section, title, description
         self.settings = settings
         self.add_item(ActivityLogChannelSelect(self))
+        if section == MODERATION_LOG_SECTION:
+            self.add_item(ModerationActionToggle(self, "timeout", "TO"))
+            self.add_item(ModerationActionToggle(self, "kick", "KICK"))
+            self.add_item(ModerationActionToggle(self, "ban", "BAN"))
 
     @staticmethod
     def can_manage(interaction: discord.Interaction) -> bool:
@@ -136,10 +158,20 @@ class ActivityLogSettingsView(discord.ui.View):
         if notice:
             description = f"{notice}\n\n{description}"
         description += f"\n\n{self.log_description}初期状態はオフです。"
+        if self.section == MODERATION_LOG_SECTION:
+            description += (
+                "\n\n個別設定: "
+                f"TO {'オン' if self.settings['timeout_enabled'] else 'オフ'} / "
+                f"KICK {'オン' if self.settings['kick_enabled'] else 'オフ'} / "
+                f"BAN {'オン' if self.settings['ban_enabled'] else 'オフ'}"
+            )
         return discord.Embed(title=self.title, description=description, color=0x3498DB)
 
     async def refresh(self, interaction: discord.Interaction, notice: str | None = None):
         self.settings = get_activity_log_settings(guild_settings.get_store(), interaction.guild_id, self.section)
+        for item in self.children:
+            if isinstance(item, ModerationActionToggle):
+                item.label = item.button_label()
         await interaction.response.edit_message(embed=self.embed(notice), view=self)
 
     async def set_enabled(self, interaction: discord.Interaction, enabled: bool):
@@ -149,6 +181,14 @@ class ActivityLogSettingsView(discord.ui.View):
             return await interaction.response.send_message("先に履歴を送るテキストチャンネルを選択してください。", ephemeral=True)
         await guild_settings.get_store().update(interaction.guild_id, self.section, enabled=enabled)
         await self.refresh(interaction, f"履歴を{'オン' if enabled else 'オフ'}にしました。")
+
+    async def toggle_action(self, interaction: discord.Interaction, action: str):
+        if not self.can_manage(interaction):
+            return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
+        key = f"{action}_enabled"
+        enabled = not self.settings.get(key, True)
+        await guild_settings.get_store().update(interaction.guild_id, self.section, **{key: enabled})
+        await self.refresh(interaction, f"{action.upper()}履歴を{'オン' if enabled else 'オフ'}にしました。")
 
     @discord.ui.button(label="オン", style=discord.ButtonStyle.success, row=1)
     async def turn_on(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -504,6 +544,12 @@ class SupportCog(commands.Cog):
             return None
         return target
 
+    async def _moderation_action_enabled(self, guild: discord.Guild, action: str) -> bool:
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        settings = get_activity_log_settings(store, guild.id, MODERATION_LOG_SECTION)
+        return bool(settings["enabled"] and settings.get(f"{action}_enabled", True))
+
     async def _send_activity(self, guild: discord.Guild, section: str, embed: discord.Embed):
         target = await self._activity_target(guild, section)
         if target is None:
@@ -566,6 +612,8 @@ class SupportCog(commands.Cog):
         new_until = getattr(after, "communication_disabled_until", None)
         if before.guild is None or old_until == new_until or new_until is None:
             return
+        if not await self._moderation_action_enabled(before.guild, "timeout"):
+            return
         entry = await self._recent_audit_entry(before.guild, discord.AuditLogAction.member_update, after.id)
         detail = f"タイムアウト期限: {new_until.isoformat()}"
         await self._send_activity(before.guild, MODERATION_LOG_SECTION, self.moderation_embed("タイムアウト（TO）", after, entry, detail))
@@ -573,6 +621,8 @@ class SupportCog(commands.Cog):
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         if member.guild is None or member.bot:
+            return
+        if not await self._moderation_action_enabled(member.guild, "kick"):
             return
         ban_entry = await self._recent_audit_entry(member.guild, discord.AuditLogAction.ban, member.id)
         if ban_entry is not None:
@@ -583,6 +633,8 @@ class SupportCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_ban(self, guild: discord.Guild, user: discord.User):
+        if not await self._moderation_action_enabled(guild, "ban"):
+            return
         entry = await self._recent_audit_entry(guild, discord.AuditLogAction.ban, user.id)
         await self._send_activity(guild, MODERATION_LOG_SECTION, self.moderation_embed("BAN", user, entry, "サーバーからBAN"))
 
