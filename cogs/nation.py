@@ -1,6 +1,6 @@
 """国づくり MMO（!nation）のフェーズ 2：参加・建国・状態表示。
 
-テーブルは ``docs/sql/nation.sql`` を参照。所持金は /wallet と共通の ``users.balance``。
+テーブルは ``docs/sql/nation.sql`` を参照。所持金は /user_status と共通の ``users.balance``。
 
 - Supabase のクライアントは同期なので、呼び出しはすべて ``asyncio.to_thread`` で行う。
 - 1 サーバーにつき 1 国（``nation_guilds.guild_id`` が主キー）。1 人が入れる国は 1 つだけ。

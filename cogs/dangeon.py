@@ -1403,7 +1403,7 @@ def d_choose_reward(uid, choice):
 
 
 def d_begin_run(uid, mode="manual"):
-    """既存の/dungeon状態を引き継いで走行記録だけを開始する。"""
+    """既存のゲームハブから開始したダンジョン状態を引き継いで走行記録だけを開始する。"""
     p = d_get_player(uid)
     p["run_id"] = f"run-{uid}-{int(datetime.datetime.now().timestamp())}"
     p["run_started_at"] = datetime.datetime.now(JST).isoformat()
@@ -1415,7 +1415,7 @@ def d_begin_run(uid, mode="manual"):
 
 
 def d_end_run(uid, reason="ended"):
-    """走行記録だけを閉じる。HP・状態異常・クールダウンは/dungeonと共有のため初期化しない。"""
+    """走行記録だけを閉じる。HP・状態異常・クールダウンはダンジョンと共有のため初期化しない。"""
     p = d_get_player(uid)
     p.setdefault("run_summary", {})["end_reason"] = reason
     p["run_id"] = None
@@ -1632,7 +1632,7 @@ class DungeonStatusView(DungeonViewBase):
         if _D1_PLAYER is None:
             await interaction.response.send_message("自動操作機能が初期化されていません。", ephemeral=True)
             return
-        # 押した時点の現在状態と作戦でD1を開始する（状態は/dungeonと共有）。
+        # 押した時点の現在状態と作戦でD1を開始する（状態はダンジョンと共有）。
         await _D1_PLAYER.start(interaction, self.d1_plan)
 
     @discord.ui.button(label="操作メニュー", style=discord.ButtonStyle.green, row=0)
@@ -2254,7 +2254,7 @@ class DungeonMainView(DungeonViewBase):
         sv = DungeonStatusView(self.uid, p["floor"], p["x"], p["y"], self.supabase)
         await sv._render(i, "")
 class DungeonUnifiedView(DungeonMainView):
-    """/dungeon一つで操作を完結させる圧縮UI。
+    """ゲームハブから起動したダンジョン一つで操作を完結させる圧縮UI。
 
     D1の接続ボタンと作戦選択はSTATUS画面へ集約し、このパネルには移動と終了だけを残す。
     """
@@ -2300,7 +2300,7 @@ class DungeonUnifiedView(DungeonMainView):
         await interaction.response.defer()
         p = self.sync_state()
         map_file, map_url = d_map_attachment(self.uid, p["floor"], p["x"], p["y"])
-        embed = self._embed("ダンジョンを終了しました。再開する場合は `/dungeon` を実行してください。", image_url=map_url)
+        embed = self._embed("ダンジョンを終了しました。再開する場合は `/game` からダンジョンを選んでください。", image_url=map_url)
         await interaction.edit_original_response(embed=embed, view=None, attachments=[map_file])
 
 
@@ -2772,7 +2772,7 @@ class D1DungeonPlayer:
         return "停止中"
 
     async def start(self, interaction, plan=None):
-        """現在の/dungeon状態をそのまま引き継いで自動操作を開始する。"""
+        """現在のダンジョン状態をそのまま引き継いで自動操作を開始する。"""
         uid = str(interaction.user.id)
         plan = plan or self.plan_for(uid)
         if self.is_running(uid):
@@ -2863,7 +2863,7 @@ class D1DungeonPlayer:
         logs = [f"自動操作を開始しました。作戦: {plan} / 終了ボタンで停止できます。"]
         d_begin_run(uid, "d1")
         self._run_stats[uid] = {"turns": 0, "positions": [], "last_result": ""}
-        # 初回判断の前に、/dungeonと完全に同じ現在状態のフレームを表示する。
+        # 初回判断の前に、ゲームハブのダンジョンと同じ現在状態のフレームを表示する。
         await self._edit_screen(message, view, logs)
         try:
             while not stop_event.is_set():
@@ -3177,9 +3177,8 @@ class DungeonCog(Cog):
         if self.dungeon_monthly_task.is_running():
             self.dungeon_monthly_task.cancel()
 
-    @app_commands.command(name="dungeon", description="ダンジョンに入ります")
-    async def dungeon_enter(self, interaction: Interaction):
-        """ダンジョンコマンド"""
+    async def start_recruit(self, interaction: Interaction):
+        """ゲームハブからダンジョンを開始する。"""
         await interaction.response.defer()
         uid = str(interaction.user.id)
 

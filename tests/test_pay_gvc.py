@@ -126,7 +126,7 @@ class PayTest(unittest.TestCase):
     def test_wallet_reply_is_coin_embed(self):
         self.set_balance(SENDER, 1234)
         interaction = make_interaction(self.bot, SENDER)
-        asyncio.run(self.cog.wallet.callback(self.cog, interaction))
+        asyncio.run(self.cog.user_status.callback(self.cog, interaction))
         message = interaction._sent[-1]
         self.assertEqual(message['embed'].fields[0].value, '1,234 AGO')
         self.assertEqual(message['embed'].thumbnail.url, 'attachment://coin.png')

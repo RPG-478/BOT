@@ -32,6 +32,7 @@ GAME_COGS = {
     "poker": "Poker",
     "shogi": "Shogi",
     "chess": "Chess",
+    "dungeon": "DungeonCog",
 }
 
 RANKED_GAMES = {"ngword", "shiritori"}
@@ -315,7 +316,7 @@ class GameHub(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="game", description="パーティーゲーム（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle・神経衰弱・ババ抜き・オセロ・ポーカー・将棋・チェス）のルール確認と募集")
+    @app_commands.command(name="game", description="パーティーゲームとダンジョン（人狼・ワードウルフ・UNO・ダウト・NGワード・お題しりとり・じゃんけん・Wordle・神経衰弱・ババ抜き・オセロ・ポーカー・将棋・チェス）のルール確認と開始")
     async def game(self, interaction: discord.Interaction):
         await interaction.response.send_message(embed=hub_embed(), view=GameHubView(self), ephemeral=True)
 

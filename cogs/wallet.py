@@ -10,7 +10,7 @@ import traceback
 logger = logging.getLogger(__name__)
 
 COIN_SETTER_USER_ID = 1320705325686587408
-NEW_USER_BALANCE = 10  # まだ行がないユーザーに最初に渡す残高（/wallet と同じ）
+NEW_USER_BALANCE = 10  # まだ行がないユーザーに最初に渡す残高
 # 残高を書き換えるときに、ほかの処理と同時に更新されて食い違った場合の再試行回数
 BALANCE_UPDATE_ATTEMPTS = 5
 INSUFFICIENT = object()  # 残高不足を表す目印
@@ -19,6 +19,16 @@ INSUFFICIENT = object()  # 残高不足を表す目印
 COIN_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Assets", "COIN.png")
 COIN_FILENAME = "coin.png"
 COIN_COLOR = 0xf1c40f
+LEADERBOARD_TYPES = [
+    app_commands.Choice(name="コイン", value="coin"),
+    app_commands.Choice(name="bump RTA", value="bump"),
+    app_commands.Choice(name="up RTA", value="up"),
+]
+RTA_SCOPES = [
+    app_commands.Choice(name="自分のベスト", value="me"),
+    app_commands.Choice(name="このサーバー", value="local"),
+    app_commands.Choice(name="全サーバー", value="global"),
+]
 
 
 def coin_embed(title: str, description: str | None = None) -> tuple[discord.Embed, dict]:
@@ -68,10 +78,12 @@ class WalletCog(commands.Cog):
             traceback.print_exc()
             await ctx.send("コイン設定中にエラーが発生しました。")
 
-    @app_commands.command(name="wallet", description="自身のコイン残高を確認します。")
-    async def wallet(self, interaction: discord.Interaction):
+    @app_commands.command(name="user_status", description="プレイヤーのコイン・生存ステータスを表示します。")
+    @app_commands.describe(target="確認するプレイヤー（省略すると自分）")
+    async def user_status(self, interaction: discord.Interaction, target: discord.User | None = None):
         await interaction.response.defer()
-        user_id = str(interaction.user.id)
+        target = target or interaction.user
+        user_id = str(target.id)
 
         try:
             response = config.supabase.table("users").select("balance, debt").eq("user_id", user_id).execute()
@@ -85,9 +97,20 @@ class WalletCog(commands.Cog):
                 balance = data[0]["balance"]
                 debt = data[0].get("debt", 0)
 
-            embed, extra = coin_embed("ウォレット残高確認", f"{interaction.user.mention} さんの現在のステータスです。")
+            embed, extra = coin_embed("プレイヤー情報", f"{target.mention} さんの現在のステータスです。")
             embed.add_field(name="保有コイン", value=f"{int(balance or 0):,} AGO", inline=True)
             embed.add_field(name="借金額", value=f"{int(debt or 0):,} AGO", inline=True)
+
+            fujo = self.bot.get_cog("FujoSurvival")
+            if fujo is not None and hasattr(fujo, "status_embed_for"):
+                try:
+                    survival = await fujo.status_embed_for(target)
+                except Exception:
+                    logger.exception("user_status: failed to load survival status user=%s", target.id)
+                    survival = None
+                if survival is not None:
+                    for field in survival.fields:
+                        embed.add_field(name=field.name, value=field.value, inline=field.inline)
 
             await interaction.followup.send(embed=embed, **extra)
 
@@ -252,9 +275,21 @@ class WalletCog(commands.Cog):
 
         return await asyncio.to_thread(_call)
 
-    @app_commands.command(name="leaderboard", description="コイン保有数のランキングを表示します。")
-    async def leaderboard(self, interaction: discord.Interaction):
+    @app_commands.command(name="leaderboard", description="コインまたはbump/up RTAのランキングを表示します。")
+    @app_commands.choices(category=LEADERBOARD_TYPES, scope=RTA_SCOPES)
+    @app_commands.describe(category="ランキングの種類", scope="RTAの範囲（RTA選択時）")
+    async def leaderboard(self, interaction: discord.Interaction,
+                          category: app_commands.Choice[str] | None = None,
+                          scope: app_commands.Choice[str] | None = None):
         await interaction.response.defer()
+        selected = category.value if category else "coin"
+        if selected in {"bump", "up"}:
+            rta = self.bot.get_cog("BumpRta")
+            if rta is None:
+                await interaction.followup.send("RTAランキング機能は現在利用できません。", ephemeral=True)
+                return
+            await rta.leaderboard(interaction, selected, scope.value if scope else "local")
+            return
         try:
             response = await asyncio.to_thread(
                 lambda: config.supabase.table("users").select("user_id, balance")

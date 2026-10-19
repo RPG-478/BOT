@@ -263,7 +263,7 @@ class GiveawayCog(commands.Cog):
                 if g.get("cost"):
                     paid = await self._coins(uid, -g["cost"], require_funds=True)
                     if paid is INSUFFICIENT:
-                        return f"残高が足りません（参加費 {g['cost']:,} AGO）。`/wallet` で確認してください。"
+                        return f"残高が足りません（参加費 {g['cost']:,} AGO）。`/user_status` で確認してください。"
                     if paid is None:
                         return "参加費の支払いでエラーが起きました。残高は変わっていません。"
                     g["paid"].append(uid)
