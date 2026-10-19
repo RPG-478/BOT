@@ -430,7 +430,7 @@ class VoiceChangerCog(commands.Cog):
 
     async def _send_status(self, r: Responder, session: dict | None):
         if session is None:
-            return await r.send(embed=we("⏸️ ボイスチェンジャー停止中 (`/voice effects action:開始` で開始)"))
+            return await r.send(embed=we("⏸️ ボイスチェンジャー停止中 (`/voice action:ボイスチェンジャー開始` で開始)"))
         sink: VoiceChangerSink = session["sink"]
         src = sink.audio_source
 
@@ -449,8 +449,8 @@ class VoiceChangerCog(commands.Cog):
             f"├ ⚠️ アンダーラン(待機発生)回数: `{src.underrun_count}` 回\n"
             f"├ 🩹 パケットロス補完(PLC): `{sink.concealed_count}` 回 (ロスト検出: `{sink.lost_packet_count}` 回)\n"
             f"└ ⏱️ **推定トータル遅延**: `~{total_est_delay:.1f} ms`\n\n"
-            f"・設定変更: `/voice effects action:状態 pitch:<半音数> buffer_ms:<目標ms> max_ms:<上限ms>`\n"
-            f"・停止: `/voice effects action:停止`"
+            f"・設定変更: `/voice action:ボイスチェンジャー状態 pitch:<半音数> buffer_ms:<目標ms> max_ms:<上限ms>`\n"
+            f"・停止: `/voice action:ボイスチェンジャー停止`"
         ))
 
     async def _start(self, r: Responder, pitch, buffer_ms, max_ms):
@@ -490,7 +490,7 @@ class VoiceChangerCog(commands.Cog):
             f"🎙️ **{target_channel.name}** でボイスチェンジャーを開始しました！\n"
             f"🎵 ピッチ: `{pitch:+.1f}` 半音\n"
             f"📦 プリバッファ: `{(buffer[0] if buffer else DEFAULT_TARGET_BUFFER_MS):.0f} ms` (超低遅延モード)\n"
-            f"📊 `/voice effects action:状態` で遅延数値を確認できます。"
+            f"📊 `/voice action:ボイスチェンジャー状態` で遅延数値を確認できます。"
         ))
 
     def _cleanup(self, guild_id: int):

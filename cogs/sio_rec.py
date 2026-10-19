@@ -595,7 +595,7 @@ class RecordingCog(commands.Cog):
         """直近の音声からピアノ音階（単音/和音/声の倍音層）を解析する。"""
         session = self.sessions.get(r.guild.id)
         if not session:
-            return await r.send(embed=we("⚠️ 現在録音中ではありません。`/voice studio feature:録音 action:開始` で開始してください。"), ephemeral=True)
+            return await r.send(embed=we("⚠️ 現在録音中ではありません。`/voice action:録音開始` で開始してください。"), ephemeral=True)
 
         sink: RecordingSink = session["sink"]
         audio_snapshot = sink.snapshot()
@@ -641,11 +641,11 @@ class RecordingCog(commands.Cog):
             await r.send(embed=we(
                 f"🗣️ **やまびこ動作中**\n"
                 f"⏱️ 遅延時間: `{session['sink'].echo_delay}`秒\n"
-                f"遅延変更: `/voice studio feature:やまびこ action:遅延変更 delay:<秒数>`\n"
-                f"停止: `/voice studio feature:やまびこ action:停止`"
+                f"遅延変更: `/voice action:やまびこ遅延変更 delay:<秒数>`\n"
+                f"停止: `/voice action:やまびこ停止`"
             ))
         else:
-            await r.send(embed=we("⏸️ やまびこ停止中 (`/voice studio feature:やまびこ action:開始` で開始)"))
+            await r.send(embed=we("⏸️ やまびこ停止中 (`/voice action:やまびこ開始` で開始)"))
 
     async def _echo_start(self, r: Responder, delay: float):
         voice = getattr(r.user, "voice", None)
@@ -684,7 +684,7 @@ class RecordingCog(commands.Cog):
         await r.send(embed=we(
             f"🗣️ **{target_channel.name}** でやまびこを開始しました！\n"
             f"⏱️ 遅延時間: `{delay}`秒\n"
-            f"遅延変更: `/voice studio feature:やまびこ action:遅延変更 delay:3.0` | 停止: `/voice studio feature:やまびこ action:停止`"
+            f"遅延変更: `/voice action:やまびこ遅延変更 delay:3.0` | 停止: `/voice action:やまびこ停止`"
         ))
 
     def _echo_cleanup(self, guild_id: int):
@@ -715,7 +715,7 @@ class RecordingCog(commands.Cog):
         guild_id = r.guild.id
         if guild_id in self.sessions:
             return await r.send(embed=we(
-                "⚠️ 既にこのサーバーで録音中です。`/voice studio feature:録音 action:停止` で停止してください。"
+                "⚠️ 既にこのサーバーで録音中です。`/voice action:録音停止` で停止してください。"
             ), ephemeral=True)
 
         if not discord.opus.is_loaded():
@@ -761,7 +761,7 @@ class RecordingCog(commands.Cog):
             f"🔐 暗号化: `{negotiated_mode}` / DAVE(E2EE): `{dave_text}`\n"
             f"📦 受信パケット数: `0` 個\n"
             f"⏱️ 録音は最長 {RECORD_LIMIT_SECONDS // 60} 分です。超えると自動で停止してファイルを送ります。\n"
-            f"停止するには `/voice studio feature:録音 action:停止` を実行してください。"
+            f"停止するには `/voice action:録音停止` を実行してください。"
         ), want_message=True)
 
         # 録音していることを、テキストチャンネルの全員に見える形で知らせる（Discord のポリシー）。
@@ -777,7 +777,7 @@ class RecordingCog(commands.Cog):
                     f"🔴 **リアルタイム音階演奏中...**\n"
                     f"🎙️ チャンネル: **{target_channel.name}**\n"
                     f"🎹 リアルタイム検出音階: {notes_str}\n"
-                    f"📦 パケット数: `{count}` | 停止: `/voice studio feature:録音 action:停止`"
+                    f"📦 パケット数: `{count}` | 停止: `/voice action:録音停止`"
                 ))
             except Exception:
                 pass
@@ -871,7 +871,7 @@ class RecordingCog(commands.Cog):
         "stop": "💾 録音を停止しました",
         "time_limit": f"⏱️ 録音が上限の {RECORD_LIMIT_SECONDS // 60} 分に達したため自動で停止しました",
         "takeover": "💾 別の機能に切り替わったため録音を停止しました",
-        "leave": "💾 /voice connection action:退出 で退出したため録音を停止しました",
+        "leave": "💾 /voice action:VC退出 で退出したため録音を停止しました",
         "idle": "💾 ボイスチャンネルに誰もいなくなったため録音を停止しました",
         "disconnected": "💾 ボイスチャンネルから切断されたため録音を停止しました",
     }
@@ -952,7 +952,7 @@ class RecordingCog(commands.Cog):
                 title="⏸️ 待機中",
                 description=(
                     "現在このサーバーで録音は行われていません。\n"
-                    "`/voice studio feature:録音 action:開始` で開始できます。"
+                    "`/voice action:録音開始` で開始できます。"
                 ),
                 color=0x95A5A6,
             )
