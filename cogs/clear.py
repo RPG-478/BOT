@@ -10,10 +10,6 @@ class ClearCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="clear", description="指定した個数のメッセージを削除します（メッセージの管理権限が必要）")
-    @app_commands.describe(amount=f"削除するメッセージ数（1〜{MAX_CLEAR}）", member="対象のユーザー（省略可能）")
-    @app_commands.guild_only()
-    @app_commands.default_permissions(manage_messages=True)
     async def clear(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, MAX_CLEAR],
                     member: Optional[discord.Member] = None):
         # default_permissions はサーバー側の設定で変えられるので、実行時にも必ず確かめる。

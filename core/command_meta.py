@@ -138,7 +138,8 @@ COMMAND_META: dict[str, dict] = {
         "summary": "コマンドの一覧と使い方を表示します（詳しくは /help）",
         "options": {"command": "使い方を見たいコマンド名"},
     },
-    "/whisper": {"category": "support"},
+    "/support": {"category": "support", "guild_only": True,
+                  "usage": "/support action:<Muted|匿名つぶやき|メッセージ削除|bump/up設定> [target|minutes|amount|member]"},
     "/fujo": {"category": "support", "summary": "生存確認の追跡・ランキング・失踪警報を操作します"},
     "/giveaway": {"category": "support", "permissions": ["manage_guild"], "guild_only": True},
     "!gvc": {"category": "support", "summary": "グローバルVC（サーバーをまたぐ通話・チャットのルーム）のコマンド一覧を表示します"},
@@ -187,7 +188,6 @@ COMMAND_META: dict[str, dict] = {
 
     # ---------------------------------------------------------------- ボイス・音楽
     "/music": {"category": "voice", "usage": "/music action:<再生|操作|音響|ライブラリ> [query|file|value|preset|playlist_action|scope]"},
-    "/bumprta": {"category": "voice", "usage": "/bumprta action:<状態|通知オン|通知オフ>"},
     "/voice": {"category": "voice", "usage": "/voice action:<VC|録音|やまびこ|文字起こし|カラオケ|通話> [delay|channel|lyrics|pitch|room|password]"},
     "!ffversion": {"category": "voice", "hidden": True},
 
@@ -201,8 +201,6 @@ COMMAND_META: dict[str, dict] = {
     "!ggrks": {"category": "fun", "options": {"keyword": "検索する言葉"}},
 
     # ---------------------------------------------------------------- サーバー管理
-    "/clear": {"category": "admin", "permissions": ["manage_messages"]},
-    "/muted": {"category": "admin"},
     "!dungeon_reset": {"category": "admin", "summary": "ダンジョンのマップを全サーバー分リセットします", "permissions": ["bot_admin"],
                        "hidden": True},
     "!mimic_toggle": {"category": "admin", "summary": "このチャンネルでの !mimic の自動返信を切り替えます"},
