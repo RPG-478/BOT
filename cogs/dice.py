@@ -1,4 +1,4 @@
-"""通常メッセージで使える 1d ダイス機能。"""
+"""通常メッセージで使えるダイス機能。"""
 from __future__ import annotations
 
 import random
@@ -11,20 +11,31 @@ from discord.ext import commands
 # Pythonの任意精度整数を利用しつつ、メッセージ長・計算量の暴走を防ぐ。
 MAX_SIDES_DIGITS = 1000
 MAX_SIDES = 10**MAX_SIDES_DIGITS
-_DICE_PATTERN = re.compile(r"^1d(?:(any)|([0-9]+))$")
+MAX_DICE_COUNT = 100
+_DICE_PATTERN = re.compile(r"^([0-9]+)(id|d)(any|[0-9]+)$")
 
 
-def parse_dice_message(content: str) -> tuple[str, int | None] | None:
-    """``1d100`` または ``1dany`` を解釈する。完全一致・前後空白は許可。"""
+def parse_dice_message(content: str) -> tuple[int, str, int | None] | None:
+    """ダイス表記を解釈する。
+
+    対応形式は ``1d100``、``3d8``、``4id7``、``1dany``。
+    ``id`` は ``d`` と同じ計算を行う互換表記として扱う。
+    """
     match = _DICE_PATTERN.fullmatch((content or "").strip())
     if not match:
         return None
-    if match.group(1):
-        return "any", None
-    sides = int(match.group(2))
-    if sides < 1 or len(match.group(2)) > MAX_SIDES_DIGITS:
-        return "invalid", sides
-    return "explicit", sides
+
+    count_text, operator, sides_text = match.groups()
+    count = int(count_text)
+    if count < 1 or count > MAX_DICE_COUNT:
+        return count, operator, -1
+    if sides_text == "any":
+        return count, operator, None
+
+    sides = int(sides_text)
+    if sides < 1 or len(sides_text) > MAX_SIDES_DIGITS:
+        return count, operator, -1
+    return count, operator, sides
 
 
 def roll_dice(sides: int, rng: random.Random | random.SystemRandom = random) -> int:
@@ -48,22 +59,22 @@ class DiceCog(commands.Cog):
         if parsed is None:
             return
 
-        kind, sides = parsed
-        if kind == "invalid":
+        count, operator, sides = parsed
+        if sides == -1 or count > MAX_DICE_COUNT:
             await message.reply(
-                f"🎲 面数は1以上、{MAX_SIDES_DIGITS}桁以内で指定してください。",
+                f"🎲 ダイス個数は1〜{MAX_DICE_COUNT}個、面数は1以上{MAX_SIDES_DIGITS}桁以内で指定してください。",
                 mention_author=False,
             )
             return
 
-        if kind == "any":
+        if sides is None:
             sides = self.rng.randint(1, MAX_SIDES)
-            notation = f"1d{sides}"
-        else:
-            notation = f"1d{sides}"
 
-        result = roll_dice(sides, self.rng)
-        await message.reply(f"🎲 `{notation}` → **{result}**", mention_author=False)
+        rolls = [roll_dice(sides, self.rng) for _ in range(count)]
+        total = sum(rolls)
+        notation = f"{count}{operator}{sides}"
+        detail = f"（内訳: {', '.join(map(str, rolls))}）" if count > 1 else ""
+        await message.reply(f"🎲 `{notation}` → **{total}**{detail}", mention_author=False)
 
 
 async def setup(bot: commands.Bot):
