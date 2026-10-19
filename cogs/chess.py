@@ -16,8 +16,8 @@ TURN_SECONDS = 90
 ASSET = Path(__file__).resolve().parents[1] / "Assets" / "chess" / "IMG_4904.png"
 MOVE_LABELS = tuple("123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
 REACTION_PAGE_SIZE = 20
-NEXT_PAGE = "➡️"
-PREVIOUS_PAGE = "⬅️"
+NEXT_PAGE = discord.PartialEmoji(name="Right", id=1561698129655373845)
+PREVIOUS_PAGE = discord.PartialEmoji(name="Left", id=1561698207757500537)
 
 # board[row][col], row 0 is rank 8. Uppercase = white, lowercase = black.
 BACK_RANK = "RNBQKBNR"

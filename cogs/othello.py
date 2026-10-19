@@ -18,8 +18,8 @@ ASSET_DIR = Path(__file__).resolve().parents[1] / "Assets" / "reversi"
 BOARD_SIZE = 800
 MOVE_LABELS = tuple("123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 REACTION_PAGE_SIZE = 17  # 前後ページ用リアクションを含め、上限20に余裕を持たせる
-NEXT_PAGE_EMOJI = "➡️"
-PREVIOUS_PAGE_EMOJI = "⬅️"
+NEXT_PAGE_EMOJI = discord.PartialEmoji(name="Right", id=1561698129655373845)
+PREVIOUS_PAGE_EMOJI = discord.PartialEmoji(name="Left", id=1561698207757500537)
 
 
 def reaction_emoji(label):
@@ -286,7 +286,7 @@ class Othello(commands.Cog):
         game = session["game"]
         if game.phase != "playing" or game.acted or game.current_user().id != user.id:
             return
-        emoji = str(reaction.emoji)
+        emoji = reaction.emoji
         try:
             await message.remove_reaction(reaction.emoji, user)
         except discord.HTTPException:
