@@ -107,7 +107,7 @@ class ImakitaSummaryCog(commands.Cog):
             # Discordのメッセージ上限に余裕を持たせ、AI出力が長すぎる場合も1通に収める。
             summary_lines = [line.strip() for line in summary.splitlines() if line.strip()]
             summary = "\n".join(summary_lines[:3])[:1700]
-            response = f"**今北産業**\n{summary}\n\n※直近の会話をGroq APIに送信して要約しています。"
+            response = f"**今北産業**\n{summary}"
             await self._reply(trigger_message, response)
         except RateLimitError:
             logger.warning("今北産業 summary was rate limited: model=%s status=429", MODEL)
