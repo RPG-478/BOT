@@ -9,8 +9,8 @@ sys.path.insert(0, str(ROOT))
 
 import game_fakes  # noqa: F401
 from cogs.othello import (
-    BLACK, WHITE, Othello, OthelloGame, labelled_moves, legal_moves, new_board, play_move,
-    reaction_emoji, render_board_image,
+    BLACK, WHITE, OthelloGame, OthelloMoveView, labelled_moves, legal_moves, new_board,
+    play_move, render_board_image,
 )
 from cogs.poker import evaluate
 from PIL import Image, ImageChops
@@ -29,12 +29,9 @@ class OthelloTest(unittest.TestCase):
     def test_reject_illegal_move(self):
         self.assertFalse(play_move(new_board(), BLACK, 0, 0))
 
-    def test_move_labels_and_reaction_mapping(self):
+    def test_move_labels(self):
         moves = legal_moves(new_board(), BLACK)
         self.assertEqual(labelled_moves(moves), list(zip("1234", moves)))
-        self.assertEqual(reaction_emoji("1"), "1️⃣")
-        self.assertEqual(reaction_emoji("A"), "🇦")
-        self.assertEqual(reaction_emoji("Z"), "🇿")
 
     def test_legal_moves_are_drawn_on_board(self):
         board = new_board()
@@ -45,8 +42,8 @@ class OthelloTest(unittest.TestCase):
         self.assertIsNotNone(ImageChops.difference(plain, labelled).getbbox())
 
 
-class OthelloReactionTest(unittest.IsolatedAsyncioTestCase):
-    async def test_reaction_places_the_corresponding_legal_move(self):
+class OthelloSelectTest(unittest.IsolatedAsyncioTestCase):
+    async def test_select_places_the_corresponding_legal_move(self):
         game = OthelloGame(1, 1, 1)
         black = SimpleNamespace(id=1, mention="<@1>", bot=False)
         white = SimpleNamespace(id=2, mention="<@2>", bot=False)
@@ -54,24 +51,23 @@ class OthelloReactionTest(unittest.IsolatedAsyncioTestCase):
         game.phase = "playing"
         moves = legal_moves(game.board, BLACK)
 
-        class Message:
-            id = 99
-
-            async def remove_reaction(self, emoji, user):
+        class Response:
+            async def defer(self):
                 pass
 
-        message = Message()
-        cog = Othello(None)
-        cog.reaction_sessions[message.id] = {
-            "game": game, "moves": moves, "offset": 0, "active": [], "description": "turn"
-        }
-        reaction = SimpleNamespace(message=message, emoji=reaction_emoji("1"))
-        await cog.on_reaction_add(reaction, black)
+            async def send_message(self, *args, **kwargs):
+                raise AssertionError("authorized player should not receive an error")
+
+        interaction = SimpleNamespace(user=black, response=Response())
+        view = OthelloMoveView(None, game, moves)
+        select = view.children[0]
+        select._values = ["1"]
+        await select.callback(interaction)
 
         self.assertTrue(game.acted)
         self.assertEqual(game.board[moves[0][0]][moves[0][1]], BLACK)
 
-    async def test_other_players_reaction_does_not_place_a_piece(self):
+    async def test_other_players_cannot_use_select(self):
         game = OthelloGame(1, 1, 1)
         black = SimpleNamespace(id=1, mention="<@1>", bot=False)
         white = SimpleNamespace(id=2, mention="<@2>", bot=False)
@@ -79,22 +75,26 @@ class OthelloReactionTest(unittest.IsolatedAsyncioTestCase):
         game.phase = "playing"
         moves = legal_moves(game.board, BLACK)
 
-        class Message:
-            id = 100
+        class Response:
+            def __init__(self):
+                self.sent = None
 
-            async def remove_reaction(self, emoji, user):
-                pass
+            async def send_message(self, *args, **kwargs):
+                self.sent = (args, kwargs)
 
-        message = Message()
-        cog = Othello(None)
-        cog.reaction_sessions[message.id] = {
-            "game": game, "moves": moves, "offset": 0, "active": [], "description": "turn"
-        }
-        reaction = SimpleNamespace(message=message, emoji=reaction_emoji("1"))
-        await cog.on_reaction_add(reaction, white)
+            async def defer(self):
+                raise AssertionError("unauthorized player must not defer the interaction")
+
+        response = Response()
+        interaction = SimpleNamespace(user=white, response=response)
+        view = OthelloMoveView(None, game, moves)
+        select = view.children[0]
+        select._values = ["1"]
+        await select.callback(interaction)
 
         self.assertFalse(game.acted)
         self.assertEqual(game.board, new_board())
+        self.assertEqual(response.sent[1], {"ephemeral": True})
 
 
 class PokerTest(unittest.TestCase):

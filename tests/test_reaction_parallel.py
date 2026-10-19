@@ -2,7 +2,6 @@ import asyncio
 import unittest
 
 from cogs.chess import Chess
-from cogs.othello import Othello
 from cogs.shogi import Shogi
 
 
@@ -19,11 +18,6 @@ class ReactionParallelTest(unittest.TestCase):
         message = FakeMessage()
         asyncio.run(Chess(None)._add_reactions(message, ["1️⃣", "🇦", "🇧"]))
         self.assertEqual(message.added, ["1️⃣", "🇦", "🇧"])
-
-    def test_othello_adds_all_reactions(self):
-        message = FakeMessage()
-        asyncio.run(Othello(None)._add_reactions(message, ["1️⃣", "➡️", "⬅️"]))
-        self.assertEqual(message.added, ["1️⃣", "➡️", "⬅️"])
 
     def test_shogi_adds_all_reactions(self):
         message = FakeMessage()
