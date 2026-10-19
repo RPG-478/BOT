@@ -263,7 +263,10 @@ class SupportActivityLogTest(unittest.IsolatedAsyncioTestCase):
         store = types.SimpleNamespace(
             ensure_loaded=AsyncMock(),
             get=lambda _guild_id, requested: (
-                {"enabled": enabled, "channel_id": 90} if requested == section else {}
+                ({"enabled": enabled, "channel_id": 90}
+                 | ({"timeout_enabled": True, "kick_enabled": True, "ban_enabled": True}
+                    if section == MODERATION_LOG_SECTION else {}))
+                if requested == section else {}
             ),
         )
         return cog, store, guild, target
@@ -274,7 +277,7 @@ class SupportActivityLogTest(unittest.IsolatedAsyncioTestCase):
         moderation = get_activity_log_settings(store, 1, MODERATION_LOG_SECTION)
         self.assertEqual(
             {moderation[key] for key in ("timeout_enabled", "kick_enabled", "ban_enabled")},
-            {True},
+            {False},
         )
         self.assertIn("message_log", [choice.value for choice in SUPPORT_ACTIONS])
         self.assertIn("moderation_log", [choice.value for choice in SUPPORT_ACTIONS])
@@ -287,9 +290,9 @@ class SupportActivityLogTest(unittest.IsolatedAsyncioTestCase):
             },
         )
         labels = [item.label for item in view.children if hasattr(item, "label")]
-        self.assertIn("TO: 送信する", labels)
-        self.assertIn("KICK: 送信しない", labels)
-        self.assertIn("BAN: 送信する", labels)
+        self.assertIn("TO履歴をオフにする", labels)
+        self.assertIn("KICK履歴をオンにする", labels)
+        self.assertIn("BAN履歴をオフにする", labels)
 
     async def test_message_edit_sends_before_and_after_in_embed(self):
         cog, store, guild, target = self.make_cog(MESSAGE_LOG_SECTION)
@@ -325,6 +328,21 @@ class SupportActivityLogTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<@7>", values["対処したユーザー"])
         self.assertIn("<@5>", values["適用されたユーザー"])
         self.assertEqual(values["理由"], "迷惑行為")
+
+    async def test_timeout_uses_discord_py_timed_out_until_and_logs_release(self):
+        cog, store, guild, target = self.make_cog(MODERATION_LOG_SECTION)
+        executor = types.SimpleNamespace(id=7, mention="<@7>", display_name="管理者")
+        guild.audit_logs = lambda **kwargs: self._audit_entry(executor)
+        before = types.SimpleNamespace(guild=guild, id=5, timed_out_until=__import__("discord").utils.utcnow())
+        after = types.SimpleNamespace(guild=guild, id=5, mention="<@5>", timed_out_until=None)
+        with patch("cogs.support.guild_settings.get_store", return_value=store):
+            await cog.on_member_update(before, after)
+        self.assertEqual(target.send.await_args.kwargs["embed"].title, "タイムアウト解除（TO）")
+
+    @staticmethod
+    async def _audit_entry(executor):
+        if False:
+            yield None
 
     async def test_kick_and_ban_are_logged(self):
         cog, store, guild, target = self.make_cog(MODERATION_LOG_SECTION)
