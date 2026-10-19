@@ -1,12 +1,13 @@
 """サポート系機能を /support に統合する入口。"""
 from __future__ import annotations
-
+import logging
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from cogs.clear import MAX_CLEAR
 from core import guild_settings
+logger = logging.getLogger(__name__)
 
 
 SUPPORT_ACTIONS = [
@@ -21,7 +22,7 @@ SUPPORT_ACTIONS = [
 ]
 
 THINKING_SECTION = "thinking_reaction"
-THINKING_EMOJI = "<:thinking:1561695212814995596>"
+THINKING_EMOJI = discord.PartialEmoji(name="thinking", id=1561695212814995596)
 
 
 class ThinkingReactionView(discord.ui.View):
@@ -220,6 +221,7 @@ class SupportCog(commands.Cog):
             f"{name}機能が読み込まれていません。", ephemeral=True
         )
 
+    @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         if payload.guild_id is None or payload.user_id == getattr(self.bot.user, "id", None):
             return
@@ -240,10 +242,14 @@ class SupportCog(commands.Cog):
                 return
         try:
             message = await channel.fetch_message(payload.message_id)
-            if any(str(reaction.emoji) == THINKING_EMOJI and reaction.me for reaction in message.reactions):
+            if any(str(reaction.emoji) == str(THINKING_EMOJI) and reaction.me for reaction in message.reactions):
                 return
             await message.add_reaction(THINKING_EMOJI)
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        except discord.HTTPException as exc:
+            logger.warning(
+                "thinking reaction mirror failed (guild=%s channel=%s message=%s emoji=%s): %s",
+                payload.guild_id, payload.channel_id, payload.message_id, THINKING_EMOJI, exc,
+            )
             return
 
     async def bulk_role_update(
