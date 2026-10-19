@@ -5,11 +5,14 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from core.panel_v2 import as_panel_v2
+from core import guild_settings, shortcuts
+from core.game_guides import GAME_GUIDES, GAME_ORDER
 
 
 GENERAL_GENRES = {
     "economy": ("コイン・ランキング", "所持状況、送金、コインや bump/up のランキング"),
     "survival": ("生存確認", "追跡、アクティブ頻度、フリーズ、失踪警報"),
+    "custom": ("custom", "メッセージで実行するショートカットの登録・編集・削除"),
 }
 GENERAL_ACTIONS = {
     "economy": [
@@ -26,6 +29,25 @@ GENERAL_ACTIONS = {
         ("フリーズ", "fujo_freeze"),
         ("失踪警報解除", "fujo_panic_disable"),
     ],
+    "custom": [("ショートカットを管理", "shortcut_manage")],
+}
+
+SHORTCUT_ROOTS = {
+    "general": ("/general", [(label, value) for values in GENERAL_ACTIONS.values() for label, value in values if value != "shortcut_manage"]),
+    "vc": ("/vc", [("VC参加", "join"), ("VC退出", "leave"), ("VC状態", "status"),
+                    ("音楽操作パネル", "music_panel"), ("録音開始", "record_start"), ("録音停止", "record_stop"),
+                    ("やまびこ開始", "echo_start"), ("やまびこ停止", "echo_stop"),
+                    ("文字起こし開始", "transcribe_start"), ("文字起こし停止", "transcribe_stop"),
+                    ("カラオケ開始", "karaoke_start"), ("カラオケ停止", "karaoke_stop"),
+                    ("ランダム通話開始", "match_start"), ("ランダム通話終了", "match_stop"),
+                    ("グローバルVC開始", "global_start"), ("グローバルVC終了", "global_stop")]),
+    "game": ("/game", [("ゲーム開始: " + GAME_GUIDES[game]["name"], "game:" + game) for game in GAME_ORDER]),
+    "support": ("/support", [("Muted設定", "muted"), ("匿名つぶやき", "whisper"), ("メッセージ削除", "clear"),
+                              ("一括ロール操作", "role_bulk"), ("bump/up状態", "bumprta_status"),
+                              ("bump/upオン", "bumprta_on"), ("bump/upオフ", "bumprta_off"),
+                              ("絵文字便乗設定", "binjou"), ("VC入退室履歴", "vc_log"),
+                              ("メッセージ編集履歴", "message_log"), ("モデレート履歴", "moderation_log")]),
+    "help": ("/help", [("ヘルプを表示", "overview")]),
 }
 
 
@@ -99,6 +121,162 @@ class GeneralPanel(discord.ui.View):
         return discord.Embed(title="一般機能", description=description, color=0x3498DB)
 
 
+class ShortcutNameModal(discord.ui.Modal, title="ショートカット名"):
+    trigger = discord.ui.TextInput(
+        label="メッセージで送るトリガー（空白なし）", max_length=80,
+        placeholder="例: VC参加", required=True,
+    )
+
+    def __init__(self, cog: "GeneralCog", action: dict, item: dict | None = None):
+        super().__init__()
+        self.cog, self.action, self.item = cog, action, item
+        if item:
+            self.trigger.default = item.get("trigger", "")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            store = guild_settings.get_store()
+            if self.item:
+                await shortcuts.update(store, interaction.guild_id, interaction.user.id,
+                                       self.item["id"], self.trigger.value, self.action)
+                text = "ショートカットを編集しました。"
+            else:
+                await shortcuts.add(store, interaction.guild_id, interaction.user.id,
+                                    self.trigger.value, self.action)
+                text = "ショートカットを登録しました。"
+        except (ValueError, KeyError) as exc:
+            return await interaction.response.send_message(str(exc), ephemeral=True)
+        await interaction.response.send_message(
+            embed=discord.Embed(title=text, description=f"トリガー: `{self.trigger.value}`", color=0x2ECC71),
+            ephemeral=True,
+        )
+
+
+class ShortcutRootSelect(discord.ui.Select):
+    def __init__(self, parent: "ShortcutBuilderView", selected: str | None = None):
+        self.parent_view = parent
+        super().__init__(placeholder="大区分コマンドを選択", options=[
+            discord.SelectOption(label=label, value=root, default=root == selected)
+            for root, (label, _) in SHORTCUT_ROOTS.items()
+        ], row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.root = self.values[0]
+        self.parent_view.selected = None
+        self.parent_view.refresh()
+        await interaction.response.edit_message(embed=self.parent_view.embed(), view=self.parent_view)
+
+
+class ShortcutActionSelect(discord.ui.Select):
+    def __init__(self, parent: "ShortcutBuilderView", selected: str | None = None):
+        self.parent_view = parent
+        options = []
+        label, actions = SHORTCUT_ROOTS[parent.root]
+        for action_label, value in actions:
+            options.append(discord.SelectOption(label=action_label[:100], value=value,
+                                                default=value == selected))
+        super().__init__(placeholder="実行するコマンドと機能を選択", options=options[:25], row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.selected = self.values[0]
+        await interaction.response.edit_message(embed=self.parent_view.embed(), view=self.parent_view)
+
+
+class ShortcutBuilderView(discord.ui.View):
+    def __init__(self, cog: "GeneralCog", selected: str | None = None, item: dict | None = None):
+        super().__init__(timeout=300)
+        self.cog, self.item = cog, item
+        action = item.get("action", {}) if item else {}
+        self.root = action.get("root", "general")
+        self.selected = selected.removeprefix(f"{self.root}|") if selected and "|" in selected else selected
+        self.refresh()
+
+    def refresh(self):
+        self.clear_items()
+        self.add_item(ShortcutRootSelect(self, self.root))
+        self.add_item(ShortcutActionSelect(self, self.selected))
+
+    def action(self) -> dict | None:
+        if not self.selected:
+            return None
+        return {"root": self.root, "value": self.selected}
+
+    def embed(self):
+        action = self.action()
+        text = "下のセレクトで5コマンドから実行内容を選び、「この内容で決定」を押してください。"
+        if action:
+            label = next((al for al, v in SHORTCUT_ROOTS[self.root][1] if v == self.selected), self.selected)
+            text = f"実行内容: **{SHORTCUT_ROOTS[self.root][0]} / {label}**\nこの内容で決定すると、トリガー名の入力へ進みます。"
+        return discord.Embed(title="ショートカット登録・編集", description=text, color=0x3498DB)
+
+    @discord.ui.button(label="この内容で決定", style=discord.ButtonStyle.success, row=2)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        action = self.action()
+        if action is None:
+            return await interaction.response.send_message("先に実行内容を選択してください。", ephemeral=True)
+        await interaction.response.send_modal(ShortcutNameModal(self.cog, action, self.item))
+
+
+class ShortcutManageSelect(discord.ui.Select):
+    def __init__(self, parent: "ShortcutManagerView", mode: str):
+        self.parent_view, self.mode = parent, mode
+        rows = shortcuts.for_user(guild_settings.get_store(), parent.guild_id, parent.user_id)
+        options = [
+            discord.SelectOption(label=str(x.get("trigger", "不明"))[:100], value=str(x["id"])) for x in rows
+        ][:25]
+        if not options:
+            options = [discord.SelectOption(label="登録されていません", value="__none__")]
+        super().__init__(placeholder="対象のショートカットを選択", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "__none__":
+            return await interaction.response.send_message("ショートカットが登録されていません。", ephemeral=True)
+        rows = shortcuts.for_user(guild_settings.get_store(), interaction.guild_id, interaction.user.id)
+        item = next((x for x in rows if x.get("id") == self.values[0]), None)
+        if item is None:
+            return await interaction.response.send_message("ショートカットが見つかりません。", ephemeral=True)
+        if self.mode == "delete":
+            await shortcuts.remove(guild_settings.get_store(), interaction.guild_id, interaction.user.id, item["id"])
+            return await interaction.response.edit_message(embed=self.parent_view.embed("削除しました。"), view=self.parent_view)
+        action = item.get("action") or {}
+        builder = ShortcutBuilderView(self.parent_view.cog, f"{action.get('root')}|{action.get('value')}", item)
+        await interaction.response.edit_message(embed=builder.embed(), view=builder)
+
+
+class ShortcutManagerView(discord.ui.View):
+    def __init__(self, cog: "GeneralCog", guild_id: int, user_id: int):
+        super().__init__(timeout=300)
+        self.cog, self.guild_id, self.user_id = cog, guild_id, user_id
+
+    def embed(self, notice: str | None = None):
+        rows = shortcuts.for_user(guild_settings.get_store(), self.guild_id, self.user_id)
+        lines = [f"`{x['trigger']}` → {x.get('action', {}).get('root')}/{x.get('action', {}).get('value')}" for x in rows]
+        description = (notice + "\n\n" if notice else "") + ("\n".join(lines) or "登録はありません。")
+        description += f"\n\n登録数: {len(rows)}/{shortcuts.MAX_SHORTCUTS}"
+        return discord.Embed(title="ショートカット管理", description=description, color=0x3498DB)
+
+    @discord.ui.button(label="登録", style=discord.ButtonStyle.success, row=0)
+    async def register(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = ShortcutBuilderView(self.cog)
+        await interaction.response.edit_message(embed=view.embed(), view=view)
+
+    @discord.ui.button(label="編集", style=discord.ButtonStyle.primary, row=0)
+    async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = ShortcutManagerView(self.cog, interaction.guild_id, interaction.user.id)
+        view.add_item(ShortcutManageSelect(view, "edit"))
+        await interaction.response.edit_message(embed=view.embed("編集する項目を選択してください。"), view=view)
+
+    @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, row=0)
+    async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = ShortcutManagerView(self.cog, interaction.guild_id, interaction.user.id)
+        view.add_item(ShortcutManageSelect(view, "delete"))
+        await interaction.response.edit_message(embed=view.embed("削除する項目を選択してください。"), view=view)
+
+    @discord.ui.button(label="一覧更新", style=discord.ButtonStyle.secondary, row=0)
+    async def refresh_list(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+
 class GeneralCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -109,6 +287,9 @@ class GeneralCog(commands.Cog):
         await interaction.response.send_message(view=as_panel_v2(view), ephemeral=True)
 
     async def dispatch_general(self, interaction: discord.Interaction, value: str):
+        if value == "shortcut_manage":
+            view = ShortcutManagerView(self, interaction.guild_id, interaction.user.id)
+            return await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
         wallet = self.bot.get_cog("WalletCog")
         fujo = self.bot.get_cog("FujoSurvival")
         if value == "pay":
@@ -122,6 +303,86 @@ class GeneralCog(commands.Cog):
             return await wallet.leaderboard(interaction, app_commands.Choice(name=event_type, value=event_type))
         action = value.removeprefix("fujo_")
         return await fujo.fujo(interaction, action, None, "active", None, None)
+
+    async def execute_shortcut(self, message: discord.Message, item: dict):
+        action = item.get("action") or {}
+        source = ShortcutMessageInteraction(self.bot, message, int(item.get("user_id", message.author.id)))
+        root, value = action.get("root"), action.get("value")
+        try:
+            if root == "general":
+                return await self.dispatch_general(source, value)
+            if root == "vc":
+                cog = self.bot.get_cog("VoiceHub")
+                if cog:
+                    return await cog.dispatch_voice_action(source, value)
+            if root == "game":
+                cog = self.bot.get_cog("GameHub")
+                if cog and value.startswith("game:"):
+                    return await cog.start_game(source, value.removeprefix("game:"))
+            if root == "support":
+                cog = self.bot.get_cog("SupportCog")
+                if cog:
+                    return await cog.dispatch(source, value)
+            if root == "help":
+                return await message.channel.send("ヘルプは `/help` で確認できます。")
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("shortcut execution failed: %s", item)
+            await message.channel.send("ショートカットの実行中にエラーが発生しました。")
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot or message.guild is None:
+            return
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        for item in shortcuts.matching(store, message.guild.id, message.content.strip()):
+            await self.execute_shortcut(message, item)
+
+
+class _MessageResponse:
+    def __init__(self, source):
+        self.source, self.done = source, False
+
+    def is_done(self):
+        return self.done
+
+    async def defer(self, **kwargs):
+        self.done = True
+
+    async def send_message(self, content=None, **kwargs):
+        self.done = True
+        kwargs.pop("ephemeral", None)
+        kwargs.pop("wait", None)
+        return await self.source.channel.send(content=content, **kwargs)
+
+    async def send_modal(self, modal):
+        self.done = True
+        return await self.source.channel.send("このショートカットは追加入力が必要なため、パネルから実行してください。")
+
+
+class _MessageFollowup:
+    def __init__(self, source):
+        self.source = source
+
+    async def send(self, content=None, **kwargs):
+        kwargs.pop("ephemeral", None)
+        kwargs.pop("wait", None)
+        return await self.source.channel.send(content=content, **kwargs)
+
+
+class ShortcutMessageInteraction:
+    """既存のinteractionベース実装をメッセージトリガーから再利用する薄いアダプター。"""
+    def __init__(self, bot, message, user_id: int):
+        self.client = bot
+        self.bot = bot
+        self.message = message
+        self.channel = message.channel
+        self.guild = message.guild
+        self.guild_id = message.guild.id
+        self.user = bot.get_user(user_id) or message.author
+        self.response = _MessageResponse(self)
+        self.followup = _MessageFollowup(self)
 
 
 async def setup(bot):
