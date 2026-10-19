@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from cogs.support import (
-    RoleBulkView, SupportCog, SUPPORT_ACTIONS, THINKING_EMOJI, THINKING_SECTION,
+    RoleBulkView, RoleTargetSelect, SupportCog, SUPPORT_ACTIONS, THINKING_EMOJI, THINKING_SECTION,
 )
 
 
@@ -67,21 +67,34 @@ class SupportRoleBulkTest(unittest.IsolatedAsyncioTestCase):
         human.add_roles.assert_awaited_once()
         bot.add_roles.assert_not_awaited()
 
-    async def test_bots_can_be_included_as_an_explicit_option(self):
+    async def test_bots_can_be_included_with_all_mode(self):
         cog = SupportCog(None)
         role = FakeRole()
         bot = FakeMember(2, bot=True)
         guild = types.SimpleNamespace(members=[bot])
-        affected, skipped, failed = await cog.bulk_role_update(guild, role, True, include_bots=True)
+        affected, skipped, failed = await cog.bulk_role_update(guild, role, True, target_mode="all")
         self.assertEqual((affected, skipped, failed), (1, 0, 0))
+        bot.add_roles.assert_awaited_once()
+
+    async def test_bots_only_mode_excludes_human_members(self):
+        cog = SupportCog(None)
+        role = FakeRole()
+        human = FakeMember(1)
+        bot = FakeMember(2, bot=True)
+        guild = types.SimpleNamespace(members=[human, bot])
+        affected, skipped, failed = await cog.bulk_role_update(guild, role, True, target_mode="bots")
+        self.assertEqual((affected, skipped, failed), (1, 1, 0))
+        human.add_roles.assert_not_awaited()
         bot.add_roles.assert_awaited_once()
 
     def test_support_has_role_bulk_action_and_panel(self):
         self.assertIn("role_bulk", [choice.value for choice in SUPPORT_ACTIONS])
         view = RoleBulkView(SupportCog(None), types.SimpleNamespace(), FakeRole())
         self.assertEqual(len(view.children), 4)
-        self.assertFalse(view.include_bots)
-        self.assertIn("BOTは除外", view.description())
+        self.assertEqual(view.target_mode, "humans")
+        self.assertIn("人間のみ", view.description())
+        target_select = next(item for item in view.children if isinstance(item, RoleTargetSelect))
+        self.assertIn("bots", [option.value for option in target_select.options])
 
 
 class SupportThinkingReactionTest(unittest.IsolatedAsyncioTestCase):
