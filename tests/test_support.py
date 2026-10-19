@@ -3,7 +3,8 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from cogs.support import (
-    RoleBulkView, RoleTargetSelect, SupportCog, SUPPORT_ACTIONS, THINKING_EMOJI, THINKING_SECTION,
+    BINJOU_SECTION, EmojiBinjouView, RoleBulkView, RoleTargetSelect, SupportCog,
+    SUPPORT_ACTIONS, THINKING_EMOJI, THINKING_SECTION, get_binjou_settings,
 )
 
 
@@ -89,6 +90,7 @@ class SupportRoleBulkTest(unittest.IsolatedAsyncioTestCase):
 
     def test_support_has_role_bulk_action_and_panel(self):
         self.assertIn("role_bulk", [choice.value for choice in SUPPORT_ACTIONS])
+        self.assertIn("binjou", [choice.value for choice in SUPPORT_ACTIONS])
         view = RoleBulkView(SupportCog(None), types.SimpleNamespace(), FakeRole())
         self.assertEqual(len(view.children), 4)
         self.assertEqual(view.target_mode, "humans")
@@ -113,7 +115,9 @@ class SupportThinkingReactionTest(unittest.IsolatedAsyncioTestCase):
         cog = SupportCog(bot)
         store = types.SimpleNamespace(
             ensure_loaded=AsyncMock(),
-            get=lambda guild_id, section: ({"enabled": enabled} if section == THINKING_SECTION else {}),
+            get=lambda guild_id, section: (
+                {"enabled": enabled} if section == THINKING_SECTION and enabled is not None else {}
+            ),
         )
         return cog, store, channel, message
 
@@ -138,6 +142,47 @@ class SupportThinkingReactionTest(unittest.IsolatedAsyncioTestCase):
         with patch("cogs.support.guild_settings.get_store", return_value=store):
             await cog.on_raw_reaction_add(payload)
         message.add_reaction.assert_awaited_once_with(THINKING_EMOJI)
+
+    async def test_thumbsup_reaction_is_mirrored_with_same_emoji(self):
+        cog, store, channel, message = self.make_cog(None)
+        payload = types.SimpleNamespace(
+            guild_id=1, user_id=2, emoji="👍", member=types.SimpleNamespace(bot=False),
+            channel_id=3, message_id=4,
+        )
+        with patch("cogs.support.guild_settings.get_store", return_value=store):
+            await cog.on_raw_reaction_add(payload)
+        message.add_reaction.assert_awaited_once_with("👍")
+
+    async def test_explicitly_disabled_thumbsup_setting_does_not_mirror(self):
+        cog, store, channel, message = self.make_cog(None)
+        store.get = lambda guild_id, section: (
+            {"thumbsup": False} if section == BINJOU_SECTION else {}
+        )
+        payload = types.SimpleNamespace(
+            guild_id=1, user_id=2, emoji="👍", member=types.SimpleNamespace(bot=False),
+            channel_id=3, message_id=4,
+        )
+        with patch("cogs.support.guild_settings.get_store", return_value=store):
+            await cog.on_raw_reaction_add(payload)
+        channel.fetch_message.assert_not_awaited()
+        message.add_reaction.assert_not_awaited()
+
+    def test_binjou_settings_preserve_legacy_thinking_choice_and_default_thumbsup_on(self):
+        store = types.SimpleNamespace(
+            get=lambda guild_id, section: (
+                {"enabled": False} if section == THINKING_SECTION else {}
+            )
+        )
+        self.assertEqual(
+            get_binjou_settings(store, 1),
+            {"thinking": False, "thumbsup": True},
+        )
+
+    def test_binjou_controls_are_separately_configurable(self):
+        view = EmojiBinjouView(SupportCog(None), {"thinking": True, "thumbsup": False})
+        self.assertEqual(len(view.children), 4)
+        self.assertEqual(view.settings, {"thinking": True, "thumbsup": False})
+        self.assertEqual(BINJOU_SECTION, "binjou")
 
     async def test_explicitly_disabled_setting_does_not_mirror(self):
         cog, store, channel, message = self.make_cog(False)
