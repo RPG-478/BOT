@@ -1,4 +1,5 @@
 import discord
+from core.panel_v2 import edit_message_v2
 from discord import app_commands  # ← 追加
 from discord.ext import commands
 import asyncio
@@ -1794,7 +1795,7 @@ class VoiceCog(commands.Cog):
         )
 
         try:
-            await msg.edit(view=build_music_panel_layout(self, guild_id, panel_text))
+            await edit_message_v2(msg, build_music_panel_layout(self, guild_id, panel_text))
         except Exception as e:
             logging.error(f"Panel update failed: {e}")
 

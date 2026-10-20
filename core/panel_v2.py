@@ -93,5 +93,15 @@ async def edit_panel_v2(interaction: discord.Interaction, view: discord.ui.Layou
     )
 
 
+async def edit_message_v2(message: discord.Message, view: discord.ui.LayoutView):
+    """Replace a normal message with a Components V2 view safely."""
+    return await message.edit(
+        content=None,
+        embed=None,
+        attachments=[],
+        view=view,
+    )
+
+
 def as_panel_v2(panel: discord.ui.View) -> PanelLayoutView:
     return PanelLayoutView(panel)
