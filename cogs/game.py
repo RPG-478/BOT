@@ -110,19 +110,19 @@ class GameGenreSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         selected = self.values[0]
+        container = self.view
+        view = getattr(container, "panel", container)
         if selected in GAME_GENRE_BY_GAME:
-            panel = GameDetailView(self.view.cog, selected, self.view.shortcut_mode, self.view.shortcut_item)
-            if hasattr(self.view, "panel"):
+            panel = GameDetailView(view.cog, selected, view.shortcut_mode, view.shortcut_item)
+            if hasattr(container, "panel"):
                 return await interaction.response.edit_message(view=as_panel_v2(panel))
             await interaction.response.edit_message(embed=detail_embed(selected), view=panel)
             return
-        view = self.view
-        if hasattr(view, "panel"):
-            view.panel.genre = selected
-            view.refresh()
-            return await interaction.response.edit_message(view=view)
         view.genre = selected
         view.refresh()
+        if hasattr(container, "_sync"):
+            container._sync()
+            return await interaction.response.edit_message(view=container)
         await interaction.response.edit_message(embed=view.embed(), view=view)
 
 
