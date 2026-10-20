@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 from cogs.general import (GENERAL_ACTIONS, GENERAL_GENRES, GeneralPanel,
                            ShortcutManagerView, ShortcutRootPanel)
+from cogs.game import GameDetailView, GameHubView
 from core import shortcuts
 from core.panel_v2 import as_panel_v2
 
@@ -55,6 +56,29 @@ class ShortcutTest(unittest.IsolatedAsyncioTestCase):
 
         next_view = interaction.response.edit_message.call_args.kwargs["view"]
         self.assertIsInstance(next_view.panel, ShortcutRootPanel)
+
+    async def test_game_selection_keeps_components_v2_wrapper(self):
+        panel = GameHubView(None, shortcut_mode=True)
+        wrapper = as_panel_v2(panel)
+        genre_select = wrapper.children[0].children[1].children[0]
+        genre_select._values = ["party"]
+        genre_interaction = types.SimpleNamespace(
+            response=types.SimpleNamespace(edit_message=AsyncMock())
+        )
+
+        await genre_select.callback(genre_interaction)
+
+        self.assertIs(genre_interaction.response.edit_message.call_args.kwargs["view"], wrapper)
+        self.assertNotIn("embed", genre_interaction.response.edit_message.call_args.kwargs)
+        game_select = wrapper.children[0].children[2].children[0]
+        game_select._values = ["uno"]
+        game_interaction = types.SimpleNamespace(
+            response=types.SimpleNamespace(edit_message=AsyncMock())
+        )
+        await game_select.callback(game_interaction)
+
+        next_view = game_interaction.response.edit_message.call_args.kwargs["view"]
+        self.assertIsInstance(next_view.panel, GameDetailView)
 
     async def test_limit_duplicate_and_remove(self):
         store = MemoryStore()
