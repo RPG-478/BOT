@@ -1,5 +1,6 @@
 """サポート系機能を /support に統合する入口。"""
 from __future__ import annotations
+import asyncio
 import logging
 import discord
 from discord import app_commands
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 SUPPORT_ACTIONS = [
     app_commands.Choice(name="Muted設定", value="muted"),
     app_commands.Choice(name="匿名つぶやきパネル", value="whisper"),
+    app_commands.Choice(name="Stickyパネル", value="sticky"),
     app_commands.Choice(name="メッセージ削除", value="clear"),
     app_commands.Choice(name="一括ロール付与・剥奪", value="role_bulk"),
     app_commands.Choice(name="bump/up通知・RTA状態", value="bumprta_status"),
@@ -27,16 +29,16 @@ SUPPORT_ACTIONS = [
 ]
 
 SUPPORT_GENRES = {
-    "moderation": ("モデレーション", "Muted、匿名つぶやき、メッセージ削除、モデレート履歴"),
+    "moderation": ("モデレーション", "Muted、匿名つぶやき、Stickyパネル、メッセージ削除、モデレート履歴"),
     "server": ("サーバー管理", "ロール操作、絵文字便乗、VC履歴、メッセージ編集履歴"),
     "bumprta": ("bump/up・RTA", "通知設定と RTA 状態・ランキング"),
     "event": ("イベント", "抽選の作成"),
 }
 SUPPORT_ACTIONS_BY_GENRE = {
-    "moderation": [(c.name, c.value) for c in (*SUPPORT_ACTIONS[:3], SUPPORT_ACTIONS[11])],
-    "server": [(c.name, c.value) for c in (SUPPORT_ACTIONS[3], SUPPORT_ACTIONS[7], SUPPORT_ACTIONS[9], SUPPORT_ACTIONS[10])],
-    "bumprta": [(c.name, c.value) for c in SUPPORT_ACTIONS[4:7]],
-    "event": [(SUPPORT_ACTIONS[8].name, SUPPORT_ACTIONS[8].value)],
+    "moderation": [(c.name, c.value) for c in (SUPPORT_ACTIONS[0], SUPPORT_ACTIONS[1], SUPPORT_ACTIONS[2], SUPPORT_ACTIONS[3], SUPPORT_ACTIONS[12])],
+    "server": [(c.name, c.value) for c in (SUPPORT_ACTIONS[4], SUPPORT_ACTIONS[8], SUPPORT_ACTIONS[10], SUPPORT_ACTIONS[11])],
+    "bumprta": [(c.name, c.value) for c in SUPPORT_ACTIONS[5:8]],
+    "event": [(SUPPORT_ACTIONS[9].name, SUPPORT_ACTIONS[9].value)],
 }
 
 THINKING_SECTION = "thinking_reaction"
@@ -44,8 +46,25 @@ BINJOU_SECTION = "binjou"
 VC_LOG_SECTION = "vc_log"
 MESSAGE_LOG_SECTION = "message_log"
 MODERATION_LOG_SECTION = "moderation_log"
+STICKY_SECTION = "sticky"
 THINKING_EMOJI = discord.PartialEmoji(name="thinking", id=1561695212814995596)
 BINJOU_DEFAULTS = {"thinking": True, "thumbsup": True}
+
+
+def get_sticky_settings(store, guild_id: int) -> dict[str, int | str | bool | None]:
+    """Stickyパネル設定。未設定時はオフ・送信先なし・文言なし。"""
+    raw = store.get(guild_id, STICKY_SECTION)
+    if not isinstance(raw, dict):
+        raw = {}
+    channel_id = raw.get("channel_id")
+    if not isinstance(channel_id, int) or isinstance(channel_id, bool):
+        channel_id = None
+    message_id = raw.get("message_id")
+    if not isinstance(message_id, int) or isinstance(message_id, bool):
+        message_id = None
+    enabled = raw.get("enabled") if isinstance(raw.get("enabled"), bool) else False
+    content = raw.get("content") if isinstance(raw.get("content"), str) else ""
+    return {"enabled": enabled, "channel_id": channel_id, "message_id": message_id, "content": content}
 
 
 def self_clip(value, limit=1024):
@@ -250,6 +269,128 @@ class VCLogSettingsView(discord.ui.View):
             return await interaction.response.send_message("先に履歴を送るテキストチャンネルを選択してください。", ephemeral=True)
         await guild_settings.get_store().update(interaction.guild_id, VC_LOG_SECTION, enabled=enabled)
         await self.refresh(interaction, f"履歴を{'オン' if enabled else 'オフ'}にしました。")
+
+    @discord.ui.button(label="オン", style=discord.ButtonStyle.success, row=1)
+    async def turn_on(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.set_enabled(interaction, True)
+
+    @discord.ui.button(label="オフ", style=discord.ButtonStyle.secondary, row=1)
+    async def turn_off(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.set_enabled(interaction, False)
+
+
+class StickyChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, parent: "StickySettingsView"):
+        self.parent_view = parent
+        super().__init__(
+            placeholder="Stickyパネルを置くテキストチャンネルを選択",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
+        channel = self.values[0]
+        old_channel_id = self.parent_view.settings.get("channel_id")
+        old_message_id = self.parent_view.settings.get("message_id")
+        if old_channel_id and old_message_id and old_channel_id != channel.id:
+            old_channel = await self.parent_view.cog._sticky_channel(interaction.guild, old_channel_id)
+            if old_channel is not None:
+                try:
+                    await (await old_channel.fetch_message(old_message_id)).delete()
+                except discord.NotFound:
+                    pass
+                except (discord.Forbidden, discord.HTTPException):
+                    logger.warning("旧Stickyパネルを削除できません (guild=%s message=%s)", interaction.guild_id, old_message_id)
+        await guild_settings.get_store().update(
+            interaction.guild_id, STICKY_SECTION, channel_id=channel.id, message_id=None,
+        )
+        self.parent_view.settings["channel_id"] = channel.id
+        self.parent_view.settings["message_id"] = None
+        await self.parent_view.refresh(interaction, "Stickyパネルの設置先を設定しました。")
+        if self.parent_view.settings.get("enabled") and self.parent_view.settings.get("content"):
+            await self.parent_view.cog.send_sticky_panel(interaction.guild, force=True)
+
+
+class StickyTextModal(discord.ui.Modal, title="Stickyパネルの文言"):
+    def __init__(self, view: "StickySettingsView"):
+        super().__init__()
+        self.parent_view = view
+        self.text = discord.ui.TextInput(
+            label="パネルに表示する文言",
+            style=discord.TextStyle.paragraph,
+            placeholder="例: お問い合わせはこのチャンネルに送信してください。",
+            default=view.settings.get("content", "")[:2000],
+            max_length=2000,
+            required=True,
+        )
+        self.add_item(self.text)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
+        if self.parent_view.settings.get("channel_id") is None:
+            return await interaction.response.send_message("先にStickyパネルを置くチャンネルを選択してください。", ephemeral=True)
+        await guild_settings.get_store().update(
+            interaction.guild_id, STICKY_SECTION, content=self.text.value, enabled=True,
+        )
+        self.parent_view.settings["content"] = self.text.value
+        self.parent_view.settings["enabled"] = True
+        await interaction.response.send_message("文言を保存し、Stickyパネルを送信しました。", ephemeral=True)
+        await self.parent_view.cog.send_sticky_panel(interaction.guild, force=True)
+
+
+class StickySettingsView(discord.ui.View):
+    def __init__(self, cog: "SupportCog", settings: dict):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.settings = settings
+        self.add_item(StickyChannelSelect(self))
+
+    @staticmethod
+    def can_manage(interaction: discord.Interaction) -> bool:
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        return bool(getattr(permissions, "manage_guild", False) or getattr(permissions, "administrator", False))
+
+    def embed(self, notice: str | None = None) -> discord.Embed:
+        channel_id = self.settings.get("channel_id")
+        channel_label = f"<#{channel_id}>" if channel_id else "未設定"
+        content = self.settings.get("content") or "未設定"
+        if len(content) > 200:
+            content = content[:199] + "…"
+        description = (
+            f"状態: **{'オン' if self.settings.get('enabled') else 'オフ'}**\n"
+            f"設置先: {channel_label}\n文言: {content}\n\n"
+            "設置先のチャンネルに誰かが投稿すると、直前のStickyパネルを削除して再送信します。"
+        )
+        if notice:
+            description = f"{notice}\n\n{description}"
+        return discord.Embed(title="Stickyパネルの設定", description=description, color=0x3498DB)
+
+    async def refresh(self, interaction: discord.Interaction, notice: str | None = None):
+        self.settings = get_sticky_settings(guild_settings.get_store(), interaction.guild_id)
+        await interaction.response.edit_message(embed=self.embed(notice), view=self)
+
+    async def set_enabled(self, interaction: discord.Interaction, enabled: bool):
+        if not self.can_manage(interaction):
+            return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
+        if enabled and (self.settings.get("channel_id") is None or not self.settings.get("content")):
+            return await interaction.response.send_message("先に設置先と文言を設定してください。", ephemeral=True)
+        await guild_settings.get_store().update(interaction.guild_id, STICKY_SECTION, enabled=enabled)
+        self.settings["enabled"] = enabled
+        if enabled:
+            await interaction.response.send_message("Stickyパネルをオンにしました。", ephemeral=True)
+            await self.cog.send_sticky_panel(interaction.guild, force=True)
+        else:
+            await interaction.response.edit_message(embed=self.embed("Stickyパネルをオフにしました。"), view=self)
+
+    @discord.ui.button(label="文言を設定・更新", style=discord.ButtonStyle.primary, row=1)
+    async def edit_text(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.can_manage(interaction):
+            return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
+        await interaction.response.send_modal(StickyTextModal(self))
 
     @discord.ui.button(label="オン", style=discord.ButtonStyle.success, row=1)
     async def turn_on(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -475,11 +616,16 @@ class SupportGenreSelect(discord.ui.Select):
         ], row=0)
 
     async def callback(self, interaction: discord.Interaction):
-        view: SupportPanelView = self.view
-        view = getattr(view, "panel", view)
+        container = self.view
+        view: SupportPanelView = getattr(container, "panel", container)
         view.genre = self.values[0]
         view.action = None
         view.refresh()
+        # Components V2では通常のViewを返すとInteractionが失敗するため、
+        # 元のPanelLayoutViewを同期してそのまま返す。
+        if hasattr(container, "_sync"):
+            container._sync()
+            return await interaction.response.edit_message(view=container)
         await interaction.response.edit_message(embed=view.embed(), view=view)
 
 
@@ -530,8 +676,43 @@ class SupportPanelView(discord.ui.View):
 
 
 class SupportCog(commands.Cog):
+    SUPPORT_REQUIRED_PERMISSIONS = {
+        "muted": "manage_roles",
+        "whisper": "manage_channels",
+        "sticky": "manage_guild",
+        "clear": "manage_messages",
+        "role_bulk": "manage_roles",
+        "binjou": "manage_guild",
+        "giveaway": "manage_guild",
+        "vc_log": "manage_guild",
+        "message_log": "manage_guild",
+        "moderation_log": "manage_guild",
+    }
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._sticky_locks: dict[int, asyncio.Lock] = {}
+
+    @staticmethod
+    def has_support_permission(interaction: discord.Interaction, permission: str) -> bool:
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        return bool(getattr(permissions, "administrator", False) or getattr(permissions, permission, False))
+
+    async def check_support_permission(self, interaction: discord.Interaction, selected: str) -> bool:
+        permission = self.SUPPORT_REQUIRED_PERMISSIONS.get(selected)
+        if permission is None or self.has_support_permission(interaction, permission):
+            return True
+        labels = {
+            "manage_guild": "サーバーの管理",
+            "manage_roles": "ロールの管理",
+            "manage_channels": "チャンネルの管理",
+            "manage_messages": "メッセージの管理",
+        }
+        await interaction.response.send_message(
+            f"この機能を使うには「{labels.get(permission, permission)}」権限が必要です。",
+            ephemeral=True,
+        )
+        return False
 
     async def show_activity_log_settings(
         self, interaction: discord.Interaction, section: str, title: str, description: str
@@ -675,6 +856,72 @@ class SupportCog(commands.Cog):
         view = VCLogSettingsView(self, settings)
         await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
 
+    async def show_sticky_settings(self, interaction: discord.Interaction):
+        if interaction.guild_id is None:
+            return await interaction.response.send_message("この設定はサーバー内で利用できます。", ephemeral=True)
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        settings = get_sticky_settings(store, interaction.guild_id)
+        view = StickySettingsView(self, settings)
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+    async def _sticky_channel(self, guild: discord.Guild, channel_id: int):
+        target = self.bot.get_channel(channel_id)
+        if target is None:
+            try:
+                target = await self.bot.fetch_channel(channel_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                logger.warning("Stickyパネルの送信先を取得できません (guild=%s channel=%s)", guild.id, channel_id)
+                return None
+        if getattr(getattr(target, "guild", None), "id", guild.id) != guild.id:
+            logger.warning("Stickyパネルの送信先が別サーバーです (guild=%s channel=%s)", guild.id, channel_id)
+            return None
+        return target
+
+    async def send_sticky_panel(self, guild: discord.Guild, *, force: bool = False):
+        """現在のStickyパネルを削除して、設定された文言を同じチャンネルへ送る。"""
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        settings = get_sticky_settings(store, guild.id)
+        if not settings["enabled"] or settings["channel_id"] is None or not settings["content"]:
+            return None
+        lock = self._sticky_locks.setdefault(guild.id, asyncio.Lock())
+        async with lock:
+            # 競合中に設定が変わっていないか、ロック取得後に読み直す。
+            settings = get_sticky_settings(store, guild.id)
+            if not settings["enabled"] or settings["channel_id"] is None or not settings["content"]:
+                return None
+            target = await self._sticky_channel(guild, settings["channel_id"])
+            if target is None:
+                return None
+            old_id = settings.get("message_id")
+            if old_id:
+                try:
+                    old_message = await target.fetch_message(old_id)
+                    await old_message.delete()
+                except discord.NotFound:
+                    pass
+                except (discord.Forbidden, discord.HTTPException):
+                    logger.warning("Stickyパネルを削除できません (guild=%s message=%s)", guild.id, old_id)
+            try:
+                panel = await target.send(settings["content"])
+            except (discord.Forbidden, discord.HTTPException):
+                logger.exception("Stickyパネルを送信できません (guild=%s channel=%s)", guild.id, target.id)
+                return None
+            await store.update(guild.id, STICKY_SECTION, message_id=panel.id)
+            return panel
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        # Botの再送メッセージを無視しないと、Sticky自身が無限に再送される。
+        if message.guild is None or getattr(message.author, "bot", False):
+            return
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        settings = get_sticky_settings(store, message.guild.id)
+        if settings["enabled"] and settings["channel_id"] == message.channel.id:
+            await self.send_sticky_panel(message.guild)
+
     @commands.Cog.listener()
     async def on_voice_state_update(
         self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
@@ -736,12 +983,12 @@ class SupportCog(commands.Cog):
         if payload.guild_id is None or payload.user_id == getattr(self.bot.user, "id", None):
             return
         source_emoji = str(payload.emoji)
-        if source_emoji not in {"<:thinking:1561695212814995596>", "👍", "👍️"}:
+        if source_emoji not in {"<:thinking:1561695212814995596>", "🤔", "👍", "👍️"}:
             return
         store = guild_settings.get_store()
         await store.ensure_loaded()
         settings = get_binjou_settings(store, payload.guild_id)
-        key = "thinking" if source_emoji == "<:thinking:1561695212814995596>" else "thumbsup"
+        key = "thinking" if source_emoji in {"<:thinking:1561695212814995596>", "🤔"} else "thumbsup"
         if not settings[key]:
             return
         member = getattr(payload, "member", None)
@@ -830,6 +1077,10 @@ class SupportCog(commands.Cog):
         )
 
     async def dispatch(self, interaction: discord.Interaction, selected: str):
+        if not await self.check_support_permission(interaction, selected):
+            return
+        if selected == "sticky":
+            return await self.show_sticky_settings(interaction)
         if selected == "giveaway":
             return await interaction.response.send_modal(GiveawayModal(self))
         if selected == "vc_log":
