@@ -6,6 +6,11 @@ from core.shogi_engine import Color, Piece, PieceType, ShogiGame
 
 
 class BoardAiTest(unittest.TestCase):
+    def empty_shogi(self):
+        game = ShogiGame()
+        game.board = [[None for _ in range(9)] for _ in range(9)]
+        return game
+
     def test_othello_difficulties_return_legal_moves(self):
         board = new_board()
         for difficulty in range(1, 11):
@@ -51,6 +56,23 @@ class BoardAiTest(unittest.TestCase):
         self.assertTrue(game.make_move(None, (4, 4), drop_type=PieceType.ROOK))
         self.assertEqual(game.board[4][4].type, PieceType.ROOK)
         self.assertEqual(game.hands[Color.SENTE][PieceType.ROOK], 0)
+
+    def test_shogi_rejects_a_move_that_leaves_own_king_in_check(self):
+        game = self.empty_shogi()
+        game.board[8][4] = Piece(PieceType.KING, Color.SENTE)
+        game.board[7][4] = Piece(PieceType.ROOK, Color.SENTE)
+        game.board[0][4] = Piece(PieceType.ROOK, Color.GOTE)
+        self.assertFalse(game.make_move((7, 4), (7, 3)))
+        self.assertIsNotNone(game.board[7][4])
+
+    def test_shogi_detects_checkmate(self):
+        game = self.empty_shogi()
+        game.board[8][8] = Piece(PieceType.KING, Color.SENTE)
+        game.board[0][8] = Piece(PieceType.ROOK, Color.GOTE)
+        game.board[8][0] = Piece(PieceType.ROOK, Color.GOTE)
+        game.board[6][6] = Piece(PieceType.BISHOP, Color.GOTE)
+        self.assertTrue(game.is_in_check(Color.SENTE))
+        self.assertTrue(game.is_checkmate(Color.SENTE))
 
 
 if __name__ == "__main__":

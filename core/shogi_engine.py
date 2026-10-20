@@ -226,25 +226,15 @@ class ShogiGame:
                 squares.append((r, f))
         return squares
 
-    def make_move(self, from_pos: Optional[Tuple[int,int]], to_pos: Tuple[int,int], promote: bool = False, drop_type: Optional[PieceType] = None) -> bool:
-        """Execute move. from_pos None means drop."""
+    def _apply_move_unchecked(self, from_pos, to_pos, promote=False, drop_type=None):
+        """Apply a move after validation and switch the turn."""
         tr, tf = to_pos
         if drop_type:
-            if self.hands[self.turn][drop_type] <= 0:
-                return False
-            if self.board[tr][tf] is not None:
-                return False
-            if (tr, tf) not in self.get_drop_squares(drop_type):
-                return False
             self.board[tr][tf] = Piece(drop_type, self.turn)
             self.hands[self.turn][drop_type] -= 1
         else:
             fr, ff = from_pos
             piece = self.board[fr][ff]
-            if not piece or piece.color != self.turn:
-                return False
-            if (tr, tf) not in self._generate_moves(fr, ff):
-                return False
             captured = self.board[tr][tf]
             if captured:
                 # Add to hand, unpromoted
@@ -268,7 +258,97 @@ class ShogiGame:
             if force or (promote and self.can_promote(piece, fr, tr)):
                 piece.promoted = True
         self.turn = Color.GOTE if self.turn == Color.SENTE else Color.SENTE
+
+    def _move_is_legal(self, from_pos, to_pos, promote=False, drop_type=None,
+                       validate_uchifuzume=True) -> bool:
+        tr, tf = to_pos
+        if not (0 <= tr < 9 and 0 <= tf < 9):
+            return False
+        if drop_type:
+            if not isinstance(drop_type, PieceType) or self.hands[self.turn][drop_type] <= 0:
+                return False
+            if self.board[tr][tf] is not None or (tr, tf) not in self.get_drop_squares(drop_type):
+                return False
+        else:
+            if from_pos is None:
+                return False
+            fr, ff = from_pos
+            if not (0 <= fr < 9 and 0 <= ff < 9):
+                return False
+            piece = self.board[fr][ff]
+            target = self.board[tr][tf]
+            if not piece or piece.color != self.turn or target and target.type == PieceType.KING:
+                return False
+            if (tr, tf) not in self._generate_moves(fr, ff):
+                return False
+            if promote and not self.can_promote(piece, fr, tr):
+                return False
+
+        mover = self.turn
+        trial = deepcopy(self)
+        trial._apply_move_unchecked(from_pos, to_pos, promote=promote, drop_type=drop_type)
+        if trial.is_in_check(mover):
+            return False
+        # A pawn drop that immediately checkmates is illegal (uchi-fuzume).
+        if (drop_type == PieceType.PAWN and validate_uchifuzume
+                and trial.is_in_check(trial.turn)
+                and trial.is_checkmate(trial.turn, validate_uchifuzume=False)):
+            return False
         return True
+
+    def make_move(self, from_pos: Optional[Tuple[int,int]], to_pos: Tuple[int,int], promote: bool = False, drop_type: Optional[PieceType] = None) -> bool:
+        """Execute a legal move. ``from_pos`` None means a drop."""
+        if not self._move_is_legal(from_pos, to_pos, promote, drop_type):
+            return False
+        self._apply_move_unchecked(from_pos, to_pos, promote=promote, drop_type=drop_type)
+        return True
+
+    def is_square_attacked(self, position: Tuple[int, int], by_color: Color) -> bool:
+        """Return whether a square is attacked by a side's pseudo-legal moves."""
+        for r in range(9):
+            for f in range(9):
+                piece = self.board[r][f]
+                if piece and piece.color == by_color and position in self._generate_moves(r, f):
+                    return True
+        return False
+
+    def is_in_check(self, color: Color) -> bool:
+        king = next(
+            ((r, f) for r in range(9) for f in range(9)
+             if self.board[r][f] and self.board[r][f].color == color
+             and self.board[r][f].type == PieceType.KING),
+            None,
+        )
+        return king is not None and self.is_square_attacked(king, Color.GOTE if color == Color.SENTE else Color.SENTE)
+
+    def has_legal_move(self, color: Optional[Color] = None, validate_uchifuzume=True) -> bool:
+        color = color or self.turn
+        original_turn = self.turn
+        self.turn = color
+        try:
+            for r in range(9):
+                for f in range(9):
+                    piece = self.board[r][f]
+                    if not piece or piece.color != color:
+                        continue
+                    for dest in self._generate_moves(r, f):
+                        if self._move_is_legal((r, f), dest, validate_uchifuzume=validate_uchifuzume):
+                            return True
+                        if self.can_promote(piece, r, dest[0]) and self._move_is_legal(
+                                (r, f), dest, promote=True, validate_uchifuzume=validate_uchifuzume):
+                            return True
+            for piece_type in self.get_hand_pieces():
+                for dest in self.get_drop_squares(piece_type):
+                    if self._move_is_legal(None, dest, drop_type=piece_type,
+                                           validate_uchifuzume=validate_uchifuzume):
+                        return True
+            return False
+        finally:
+            self.turn = original_turn
+
+    def is_checkmate(self, color: Optional[Color] = None, validate_uchifuzume=True) -> bool:
+        color = color or self.turn
+        return self.is_in_check(color) and not self.has_legal_move(color, validate_uchifuzume)
 
     def get_selectable_pieces(self) -> List[Tuple[int, int]]:
         """Positions of own pieces that have at least one move."""
