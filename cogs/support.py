@@ -8,7 +8,7 @@ from discord.ext import commands
 
 from cogs.clear import MAX_CLEAR
 from core import guild_settings
-from core.panel_v2 import as_panel_v2
+from core.panel_v2 import as_embed_v2, as_panel_v2, edit_panel_v2
 logger = logging.getLogger(__name__)
 
 
@@ -228,7 +228,7 @@ class ActivityLogSettingsView(discord.ui.View):
         for item in self.children:
             if isinstance(item, ModerationActionToggle):
                 item.label = item.button_label()
-        await edit_interaction_message(interaction, embed=self.embed(notice), view=self)
+        await edit_panel_v2(interaction, as_panel_v2(self))
 
     async def set_enabled(self, interaction: discord.Interaction, enabled: bool):
         if not self.can_manage(interaction):
@@ -312,7 +312,7 @@ class VCLogSettingsView(discord.ui.View):
 
     async def refresh(self, interaction: discord.Interaction, notice: str | None = None):
         self.settings = get_vc_log_settings(guild_settings.get_store(), interaction.guild_id)
-        await edit_interaction_message(interaction, embed=self.embed(notice), view=self)
+        await edit_panel_v2(interaction, as_panel_v2(self))
 
     async def set_enabled(self, interaction: discord.Interaction, enabled: bool):
         if not self.can_manage(interaction):
@@ -451,7 +451,7 @@ class StickySettingsView(discord.ui.View):
 
     async def refresh(self, interaction: discord.Interaction, notice: str | None = None):
         self.settings = get_sticky_settings(guild_settings.get_store(), interaction.guild_id)
-        await edit_interaction_message(interaction, embed=self.embed(notice), view=self)
+        await edit_panel_v2(interaction, as_panel_v2(self))
 
     async def set_enabled(self, interaction: discord.Interaction, enabled: bool):
         if not self.can_manage(interaction):
@@ -463,7 +463,7 @@ class StickySettingsView(discord.ui.View):
             await guild_settings.get_store().update(interaction.guild_id, STICKY_SECTION, enabled=enabled)
             self.settings["enabled"] = enabled
             notice = "Stickyパネルをオンにしました。" if enabled else "Stickyパネルをオフにしました。"
-            await interaction.edit_original_response(embed=self.embed(notice), view=self)
+            await edit_panel_v2(interaction, as_panel_v2(self))
             if enabled:
                 await self.cog.send_sticky_panel(interaction.guild, force=True)
         except Exception:
@@ -504,6 +504,9 @@ class EmojiBinjouView(discord.ui.View):
         self.cog = cog
         self.settings = settings
 
+    def embed(self):
+        return self.cog.binjou_embed(self.settings)
+
     async def set_enabled(self, interaction: discord.Interaction, key: str, enabled: bool):
         if not getattr(getattr(interaction.user, "guild_permissions", None), "manage_guild", False):
             return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
@@ -511,7 +514,7 @@ class EmojiBinjouView(discord.ui.View):
         try:
             await guild_settings.get_store().update(interaction.guild_id, BINJOU_SECTION, **{key: enabled})
             self.settings[key] = enabled
-            await interaction.edit_original_response(embed=self.cog.binjou_embed(self.settings), view=self)
+            await edit_panel_v2(interaction, as_panel_v2(self))
         except Exception:
             logger.exception("binjou設定の更新に失敗しました (key=%s)", key)
             await interaction.followup.send("設定の更新に失敗しました。Botのログを確認してください。", ephemeral=True)
@@ -541,6 +544,18 @@ class RoleBulkConfirmView(discord.ui.View):
         self.adding = adding
         self.target_mode = target_mode
 
+    def embed(self):
+        action = "付与" if self.adding else "剥奪"
+        target_label = {"humans": "人間のみ", "all": "人間＋BOT", "bots": "BOTのみ"}[self.target_mode]
+        return discord.Embed(
+            title=f"ロール一括{action}の確認",
+            description=(
+                f"{self.role.mention} をサーバーのメンバーに{action}します。\n"
+                f"対象アカウント: **{target_label}**\nこの操作は取り消せません。"
+            ),
+            color=0xE74C3C,
+        )
+
     @discord.ui.button(label="実行", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
@@ -550,7 +565,7 @@ class RoleBulkConfirmView(discord.ui.View):
         action = "付与" if self.adding else "剥奪"
         target_label = {"humans": "人間のみ", "all": "人間＋BOT", "bots": "BOTのみ"}[self.target_mode]
         await interaction.followup.send(
-            embed=discord.Embed(
+            view=as_embed_v2(discord.Embed(
                 title=f"ロール一括{action} 完了",
                 description=(
                     f"対象ロール: {self.role.mention}\n"
@@ -560,14 +575,17 @@ class RoleBulkConfirmView(discord.ui.View):
                     f"失敗: **{failed}人**"
                 ),
                 color=0x2ECC71 if failed == 0 else 0xE67E22,
-            ),
+            )),
             ephemeral=True,
         )
         self.stop()
 
     @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content="キャンセルしました。", embed=None, view=None)
+        await edit_panel_v2(
+            interaction,
+            as_embed_v2(discord.Embed(description="キャンセルしました。", color=0x95A5A6)),
+        )
         self.stop()
 
 
@@ -584,6 +602,9 @@ class RoleBulkView(discord.ui.View):
     def description(self) -> str:
         selected = self.role.mention if self.role else "未選択"
         return f"対象ロール: {selected}\n対象アカウント: **{self.target_label()}**\n下のボタンから付与・剥奪を選びます。"
+
+    def embed(self):
+        return discord.Embed(title="一括ロール操作", description=self.description(), color=0x3498DB)
 
     def target_label(self) -> str:
         return {"humans": "人間のみ", "all": "人間＋BOT", "bots": "BOTのみ"}[self.target_mode]
@@ -608,19 +629,8 @@ class RoleBulkView(discord.ui.View):
         if error := self.role_error():
             return await interaction.response.send_message(error, ephemeral=True)
         action = "付与" if adding else "剥奪"
-        await interaction.response.send_message(
-            embed=discord.Embed(
-                title=f"ロール一括{action}の確認",
-                description=(
-                    f"{self.role.mention} をサーバーのメンバーに{action}します。\n"
-                    f"対象アカウント: **{self.target_label()}**\n"
-                    "この操作は取り消せません。"
-                ),
-                color=0xE74C3C,
-            ),
-            view=RoleBulkConfirmView(self.cog, self.role, adding, self.target_mode),
-            ephemeral=True,
-        )
+        confirm = RoleBulkConfirmView(self.cog, self.role, adding, self.target_mode)
+        await interaction.response.send_message(view=as_panel_v2(confirm), ephemeral=True)
 
     @discord.ui.button(label="付与", style=discord.ButtonStyle.success, row=2)
     async def add_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -647,14 +657,11 @@ class RoleTargetSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         self.parent_view.target_mode = self.values[0]
-        await interaction.response.edit_message(
-            embed=discord.Embed(
-                title="一括ロール操作",
-                description=self.parent_view.description(),
-                color=0x3498DB,
-            ),
-            view=self.parent_view,
-        )
+        owner = getattr(self, "view", None)
+        if hasattr(owner, "_sync"):
+            owner._sync()
+            return await edit_panel_v2(interaction, owner)
+        return await edit_panel_v2(interaction, as_panel_v2(self.parent_view))
 
 
 class RoleBulkSelect(discord.ui.RoleSelect):
@@ -667,14 +674,11 @@ class RoleBulkSelect(discord.ui.RoleSelect):
         if error := self.parent_view.role_error():
             self.parent_view.role = None
             return await interaction.response.send_message(error, ephemeral=True)
-        await interaction.response.edit_message(
-            embed=discord.Embed(
-                title="一括ロール操作",
-                description=self.parent_view.description(),
-                color=0x3498DB,
-            ),
-            view=self.parent_view,
-        )
+        owner = getattr(self, "view", None)
+        if hasattr(owner, "_sync"):
+            owner._sync()
+            return await edit_panel_v2(interaction, owner)
+        return await edit_panel_v2(interaction, as_panel_v2(self.parent_view))
 
 
 class SupportClearModal(discord.ui.Modal, title="メッセージ削除"):
@@ -733,13 +737,12 @@ class SupportGenreSelect(discord.ui.Select):
             view.genre = self.values[0]
             view.action = None
             view.refresh()
-
-            # V2ではLayoutViewを維持して編集する。通常Viewに置き換えない。
+            # V2ではLayoutViewを維持し、旧 content/embed/attachments を明示的に消す。
             if hasattr(container, "_sync"):
                 container._sync()
-                await interaction.edit_original_response(view=container)
+                await edit_panel_v2(interaction, container)
             else:
-                await interaction.edit_original_response(embed=view.embed(), view=view)
+                await edit_panel_v2(interaction, as_panel_v2(view))
         except Exception:
             logger.exception("サポート操作パネルのジャンル更新に失敗しました")
             try:
@@ -760,8 +763,16 @@ class SupportActionSelect(discord.ui.Select):
         ], row=1)
 
     async def callback(self, interaction: discord.Interaction):
-        getattr(self.view, "panel", self.view).action = self.values[0]
-        await self.cog.dispatch(interaction, self.values[0])
+        value = self.values[0]
+        container = self.view
+        panel = getattr(container, "panel", container)
+        panel.action = value
+        if getattr(panel, "shortcut_mode", False):
+            if hasattr(container, "_sync"):
+                container._sync()
+                return await edit_panel_v2(interaction, container)
+            return await edit_panel_v2(interaction, as_panel_v2(panel))
+        await self.cog.dispatch(interaction, value)
 
 
 class SupportPanelView(discord.ui.View):
@@ -845,7 +856,7 @@ class SupportCog(commands.Cog):
         await store.ensure_loaded()
         settings = get_activity_log_settings(store, interaction.guild_id, section)
         view = ActivityLogSettingsView(self, section, title, description, settings)
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        await interaction.response.send_message(view=as_panel_v2(view), ephemeral=True)
 
     async def _activity_target(self, guild: discord.Guild, section: str):
         store = guild_settings.get_store()
@@ -976,7 +987,7 @@ class SupportCog(commands.Cog):
         await store.ensure_loaded()
         settings = get_vc_log_settings(store, interaction.guild_id)
         view = VCLogSettingsView(self, settings)
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        await interaction.response.send_message(view=as_panel_v2(view), ephemeral=True)
 
     async def show_sticky_settings(self, interaction: discord.Interaction):
         if interaction.guild_id is None:
@@ -985,7 +996,7 @@ class SupportCog(commands.Cog):
         await store.ensure_loaded()
         settings = get_sticky_settings(store, interaction.guild_id)
         view = StickySettingsView(self, settings)
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        await interaction.response.send_message(view=as_panel_v2(view), ephemeral=True)
 
     async def _sticky_channel(self, guild: discord.Guild, channel_id: int):
         target = self.bot.get_channel(channel_id)
@@ -1190,15 +1201,7 @@ class SupportCog(commands.Cog):
                 "Botより上位のロール、または@everyoneは操作できません。", ephemeral=True
             )
         view = RoleBulkView(self, interaction.guild, role)
-        await interaction.response.send_message(
-            embed=discord.Embed(
-                title="一括ロール操作",
-                description=view.description(),
-                color=0x3498DB,
-            ),
-            view=view,
-            ephemeral=True,
-        )
+        await interaction.response.send_message(view=as_panel_v2(view), ephemeral=True)
 
     @app_commands.command(name="support", description="サポート機能の操作パネルを表示します")
     @app_commands.guild_only()
@@ -1231,9 +1234,9 @@ class SupportCog(commands.Cog):
             store = guild_settings.get_store()
             await store.ensure_loaded()
             settings = get_binjou_settings(store, interaction.guild_id)
+            view = EmojiBinjouView(self, settings)
             return await interaction.response.send_message(
-                embed=self.binjou_embed(settings),
-                view=EmojiBinjouView(self, settings), ephemeral=True,
+                view=as_panel_v2(view), ephemeral=True,
             )
         if selected == "role_bulk":
             return await self._role_bulk(interaction, None)
