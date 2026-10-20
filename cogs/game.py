@@ -111,10 +111,16 @@ class GameGenreSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         selected = self.values[0]
         if selected in GAME_GENRE_BY_GAME:
-            await interaction.response.edit_message(
-                embed=detail_embed(selected), view=GameDetailView(self.view.cog, selected, self.view.shortcut_mode, self.view.shortcut_item))
+            panel = GameDetailView(self.view.cog, selected, self.view.shortcut_mode, self.view.shortcut_item)
+            if hasattr(self.view, "panel"):
+                return await interaction.response.edit_message(view=as_panel_v2(panel))
+            await interaction.response.edit_message(embed=detail_embed(selected), view=panel)
             return
         view = self.view
+        if hasattr(view, "panel"):
+            view.panel.genre = selected
+            view.refresh()
+            return await interaction.response.edit_message(view=view)
         view.genre = selected
         view.refresh()
         await interaction.response.edit_message(embed=view.embed(), view=view)
@@ -135,8 +141,10 @@ class GameSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         game_id = self.values[0]
-        await interaction.response.edit_message(
-            embed=detail_embed(game_id), view=GameDetailView(self.view.cog, game_id, self.view.shortcut_mode, self.view.shortcut_item))
+        panel = GameDetailView(self.view.cog, game_id, self.view.shortcut_mode, self.view.shortcut_item)
+        if hasattr(self.view, "panel"):
+            return await interaction.response.edit_message(view=as_panel_v2(panel))
+        await interaction.response.edit_message(embed=detail_embed(game_id), view=panel)
 
 
 class GameHubView(discord.ui.View):
@@ -331,6 +339,9 @@ class GameDetailView(discord.ui.View):
         if self.shortcut_mode:
             from cogs.general import ShortcutCommitButton
             self.add_item(ShortcutCommitButton())
+
+    def embed(self):
+        return detail_embed(self.game_id)
 
     def shortcut_action(self):
         return {"root": "game", "value": f"game:{self.game_id}",
