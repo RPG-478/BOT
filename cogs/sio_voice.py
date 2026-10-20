@@ -258,11 +258,14 @@ class VoiceGenreSelect(discord.ui.Select):
         ], row=0)
 
     async def callback(self, interaction: discord.Interaction):
-        view: VoicePanelView = self.view
-        view = getattr(view, "panel", view)
+        container = self.view
+        view: VoicePanelView = getattr(container, "panel", container)
         view.genre = self.values[0]
         view.action = None
         view.refresh()
+        if hasattr(container, "_sync"):
+            container._sync()
+            return await interaction.response.edit_message(view=container)
         await interaction.response.edit_message(embed=view.embed(), view=view)
 
 
