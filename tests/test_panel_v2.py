@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 from cogs.game import GameDetailView
 from cogs.sio_voice import VoicePanelView
+from cogs.support import SupportPanelView
 from core.panel_v2 import as_panel_v2
 
 
@@ -30,6 +31,34 @@ class PanelV2StateTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(panel.genre, "connection")
         self.assertIs(interaction.response.edit_message.call_args.kwargs["view"], wrapped)
         self.assertNotIn("embed", interaction.response.edit_message.call_args.kwargs)
+
+    async def test_voice_action_dropdown_keeps_shortcut_builder_open(self):
+        panel = VoicePanelView(None, genre="connection", shortcut_mode=True)
+        wrapped = as_panel_v2(panel)
+        select = wrapped.children[0].children[2].children[0]
+        select._values = [select.options[0].value]
+        interaction = types.SimpleNamespace(
+            response=types.SimpleNamespace(edit_message=AsyncMock())
+        )
+
+        await select.callback(interaction)
+
+        self.assertEqual(panel.action, select.options[0].value)
+        self.assertIs(interaction.response.edit_message.call_args.kwargs["view"], wrapped)
+
+    async def test_support_action_dropdown_keeps_shortcut_builder_open(self):
+        panel = SupportPanelView(None, genre="moderation", shortcut_mode=True)
+        wrapped = as_panel_v2(panel)
+        select = wrapped.children[0].children[2].children[0]
+        select._values = [select.options[0].value]
+        interaction = types.SimpleNamespace(
+            response=types.SimpleNamespace(edit_message=AsyncMock())
+        )
+
+        await select.callback(interaction)
+
+        self.assertEqual(panel.action, select.options[0].value)
+        self.assertIs(interaction.response.edit_message.call_args.kwargs["view"], wrapped)
 
 
 if __name__ == "__main__":

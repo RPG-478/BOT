@@ -81,6 +81,23 @@ class ShortcutTest(unittest.IsolatedAsyncioTestCase):
         next_view = game_interaction.response.edit_message.call_args.kwargs["view"]
         self.assertIsInstance(next_view.panel, GameDetailView)
 
+    async def test_game_detail_back_keeps_components_v2_wrapper(self):
+        panel = GameDetailView(None, "othello")
+        wrapper = as_panel_v2(panel)
+        back = next(
+            item for row in wrapper.children[0].children
+            for item in getattr(row, "children", [])
+            if getattr(item, "label", None) == "戻る"
+        )
+        interaction = types.SimpleNamespace(
+            response=types.SimpleNamespace(edit_message=AsyncMock())
+        )
+
+        await back.callback(interaction)
+
+        next_view = interaction.response.edit_message.call_args.kwargs["view"]
+        self.assertIsInstance(next_view.panel, GameHubView)
+
     async def test_limit_duplicate_and_remove(self):
         store = MemoryStore()
         for index in range(shortcuts.MAX_SHORTCUTS):

@@ -631,7 +631,14 @@ class SupportActionSelect(discord.ui.Select):
         ], row=1)
 
     async def callback(self, interaction: discord.Interaction):
-        getattr(self.view, "panel", self.view).action = self.values[0]
+        container = self.view
+        panel = getattr(container, "panel", container)
+        panel.action = self.values[0]
+        if getattr(panel, "shortcut_mode", False):
+            if hasattr(container, "_sync"):
+                container._sync()
+                return await interaction.response.edit_message(view=container)
+            return await interaction.response.edit_message(embed=panel.embed(), view=panel)
         await self.cog.dispatch(interaction, self.values[0])
 
 
