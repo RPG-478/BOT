@@ -588,9 +588,25 @@ class RoleBulkView(discord.ui.View):
     def target_label(self) -> str:
         return {"humans": "人間のみ", "all": "人間＋BOT", "bots": "BOTのみ"}[self.target_mode]
 
-    async def choose_action(self, interaction: discord.Interaction, adding: bool):
+    def role_error(self) -> str | None:
+        """Return a user-facing reason why the selected role cannot be changed."""
         if self.role is None:
-            return await interaction.response.send_message("先に対象ロールを選択してください。", ephemeral=True)
+            return "先に対象ロールを選択してください。"
+        if self.role.is_default():
+            return "@everyone ロールは操作できません。"
+        if getattr(self.role, "managed", False):
+            return "連携サービスが管理するロールは操作できません。"
+        me = getattr(self.guild, "me", None)
+        permissions = getattr(getattr(me, "guild_permissions", None), "manage_roles", False)
+        if me is None or not permissions:
+            return "Botに「ロールの管理」権限がありません。"
+        if self.role >= me.top_role:
+            return "Botより上位、または同順位のロールは操作できません。"
+        return None
+
+    async def choose_action(self, interaction: discord.Interaction, adding: bool):
+        if error := self.role_error():
+            return await interaction.response.send_message(error, ephemeral=True)
         action = "付与" if adding else "剥奪"
         await interaction.response.send_message(
             embed=discord.Embed(
@@ -648,6 +664,9 @@ class RoleBulkSelect(discord.ui.RoleSelect):
 
     async def callback(self, interaction: discord.Interaction):
         self.parent_view.role = self.values[0]
+        if error := self.parent_view.role_error():
+            self.parent_view.role = None
+            return await interaction.response.send_message(error, ephemeral=True)
         await interaction.response.edit_message(
             embed=discord.Embed(
                 title="一括ロール操作",
@@ -1121,6 +1140,16 @@ class SupportCog(commands.Cog):
         self, guild: discord.Guild, role: discord.Role, adding: bool, *, target_mode: str = "humans"
     ):
         """指定した対象モード（人間のみ・人間＋BOT・BOTのみ）へロールを適用する。"""
+        me = getattr(guild, "me", None)
+        if (
+            role is None
+            or role.is_default()
+            or getattr(role, "managed", False)
+            or me is None
+            or not getattr(getattr(me, "guild_permissions", None), "manage_roles", False)
+            or role >= me.top_role
+        ):
+            return 0, 0, len(getattr(guild, "members", []))
         if target_mode not in {"humans", "all", "bots"}:
             target_mode = "humans"
         affected = skipped = failed = 0
@@ -1156,7 +1185,7 @@ class SupportCog(commands.Cog):
             return await interaction.response.send_message(
                 "Botに「ロールの管理」権限がありません。", ephemeral=True
             )
-        if role is not None and (role.is_default() or role >= me.top_role):
+        if role is not None and (role.is_default() or getattr(role, "managed", False) or role >= me.top_role):
             return await interaction.response.send_message(
                 "Botより上位のロール、または@everyoneは操作できません。", ephemeral=True
             )
