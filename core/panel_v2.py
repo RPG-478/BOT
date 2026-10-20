@@ -5,6 +5,14 @@ import asyncio
 
 import discord
 
+__all__ = [
+    "embed_text",
+    "PanelLayoutView",
+    "edit_panel_v2",
+    "edit_message_v2",
+    "as_panel_v2",
+]
+
 
 def embed_text(embed: discord.Embed | None) -> str:
     """Embed相当の内容をComponents V2のTextDisplay用Markdownへ変換する。"""
@@ -68,17 +76,33 @@ class PanelLayoutView(discord.ui.LayoutView):
         )
         self.add_item(container)
 
-    async def refresh(self, interaction: discord.Interaction | None = None):
-        """状態を更新し、interactionが渡された場合はV2メッセージへ反映する。"""
+    def refresh(self, interaction: discord.Interaction | None = None):
+        """状態を更新する。interactionを渡した場合のみawait可能なオブジェクトを返す。
+
+        - ``view.refresh()``             : 同期呼び出し（旧コード互換）。状態とV2表示のみ更新。
+        - ``await view.refresh(interaction)`` : メッセージ編集まで行ってタイムアウトを防止。
+        """
         self.panel.genre = getattr(self, "genre", getattr(self.panel, "genre", None))
-        # panel側のrefreshがasync defだった場合にも正しく待機する
-        result = self.panel.refresh()
-        if asyncio.iscoroutine(result):
-            await result
+        pending = self.panel.refresh()
+
+        if asyncio.iscoroutine(pending):
+            if interaction is None:
+                # 同期コンテキストでは待機できないため、破棄して警告を回避する
+                pending.close()
+                self._sync()
+                return None
+
+            async def _apply_pending():
+                await pending
+                self._sync()
+                return await edit_panel_v2(interaction, self)
+
+            return _apply_pending()
+
         self._sync()
-        # レスポンスを確実に返し、タイムアウトエラーを防ぐ
-        if interaction is not None:
-            await edit_panel_v2(interaction, self)
+        if interaction is None:
+            return None
+        return edit_panel_v2(interaction, self)
 
     def embed(self):
         # V2メッセージはEmbedを持てないため、callback互換の空値を返す。
