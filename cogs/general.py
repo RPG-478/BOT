@@ -342,8 +342,18 @@ class GeneralCog(commands.Cog):
         return await fujo.fujo(interaction, action, None, "active", None, None)
 
     async def execute_shortcut(self, message: discord.Message, item: dict):
+        # Message shortcuts are personal settings.  Keep this guard here as well
+        # as in ``on_message`` so callers cannot accidentally bypass ownership
+        # validation by invoking the executor directly.
+        try:
+            owner_id = int(item.get("user_id"))
+            author_id = int(message.author.id)
+        except (AttributeError, TypeError, ValueError):
+            return False
+        if author_id != owner_id:
+            return False
         action = item.get("action") or {}
-        source = ShortcutMessageInteraction(self.bot, message, int(item.get("user_id", message.author.id)))
+        source = ShortcutMessageInteraction(self.bot, message, author_id)
         root, value = action.get("root"), action.get("value")
         try:
             if root == "general":
@@ -374,7 +384,9 @@ class GeneralCog(commands.Cog):
             return
         store = guild_settings.get_store()
         await store.ensure_loaded()
-        for item in shortcuts.matching(store, message.guild.id, message.content.strip()):
+        for item in shortcuts.matching(
+            store, message.guild.id, message.content.strip(), user_id=message.author.id
+        ):
             await self.execute_shortcut(message, item)
 
 
