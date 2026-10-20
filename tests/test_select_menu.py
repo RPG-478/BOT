@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 
 from cogs.chess import ChessMoveView
 from cogs.othello import OthelloMoveView, WHITE, legal_moves, new_board
@@ -17,6 +18,14 @@ class SelectMenuTest(unittest.TestCase):
     def test_shogi_uses_numbered_select(self):
         view = ShogiMoveView(None, object(), [("1", (0, 0))])
         self.assertEqual(view.children[0].options[0].label, "1番")
+
+    def test_shogi_long_move_list_has_coordinate_input_instead_of_reactions(self):
+        session = SimpleNamespace(state="select_piece")
+        labels = [(str(index), (index % 9, index % 9)) for index in range(35)]
+        view = ShogiMoveView(None, session, labels)
+        self.assertEqual(len(view.children[0].options), 25)
+        self.assertIn("座標を入力", [item.label for item in view.children[1:]])
+        self.assertNotIn("リアクション", [getattr(item, "label", "") for item in view.children])
 
 
 if __name__ == "__main__":
