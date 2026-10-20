@@ -215,8 +215,9 @@ class OthelloMoveSelect(discord.ui.Select):
         super().__init__(placeholder="置き場所の番号を選んでください", options=options)
 
     async def callback(self, interaction):
-        if (self.game.phase != "playing" or self.game.acted or
-                self.game.current_user().id != interaction.user.id):
+        current_user = self.game.current_user()
+        if (self.game.phase != "playing" or self.game.acted or current_user is None or
+                current_user.id != interaction.user.id):
             return await interaction.response.send_message(
                 "現在の手番のプレイヤーだけが選択できます。", ephemeral=True
             )

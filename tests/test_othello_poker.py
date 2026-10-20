@@ -96,6 +96,34 @@ class OthelloSelectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(game.board, new_board())
         self.assertEqual(response.sent[1], {"ephemeral": True})
 
+    async def test_stale_select_during_cpu_turn_is_rejected_without_exception(self):
+        game = OthelloGame(1, 1, 1, mode="cpu")
+        black = SimpleNamespace(id=1, mention="<@1>", bot=False)
+        game.players = {BLACK: black, WHITE: None}
+        game.phase = "playing"
+        moves = legal_moves(game.board, BLACK)
+
+        class Response:
+            def __init__(self):
+                self.sent = None
+
+            async def send_message(self, *args, **kwargs):
+                self.sent = (args, kwargs)
+
+            async def defer(self):
+                raise AssertionError("CPU turn must not defer a stale player interaction")
+
+        response = Response()
+        interaction = SimpleNamespace(user=black, response=response)
+        view = OthelloMoveView(None, game, moves)
+        select = view.children[0]
+        select._values = ["1"]
+        game.turn = WHITE
+
+        await select.callback(interaction)
+
+        self.assertEqual(response.sent[1], {"ephemeral": True})
+
 
 class PokerTest(unittest.TestCase):
     def test_hand_rank_order(self):

@@ -361,7 +361,8 @@ class Shogi(commands.Cog):
         elif s.state == "select_dest" and s.selected:
             if not isinstance(pos, tuple):
                 return
-            if s.game.make_move(s.selected, pos, promote=True):
+            # 昇格 UI がないため通常手では昇格を強制しない。
+            if s.game.make_move(s.selected, pos, promote=False):
                 s.acted = True
         elif s.state == "select_hand" and isinstance(pos, PieceType):
             drops = s.game.get_drop_squares(pos)
@@ -394,7 +395,7 @@ class Shogi(commands.Cog):
             s.state = "select_dest"
             await self._update_board_msg(s, interaction.channel, f"移動先を選択してください（{len(dests)}箇所）。", labels=list(zip(MOVE_LABELS, dests)), selected=pos)
         elif s.state == "select_dest" and s.selected:
-            if s.game.make_move(s.selected, pos, promote=True):
+            if s.game.make_move(s.selected, pos, promote=False):
                 s.acted = True
         elif s.state == "select_drop_dest" and s.selected_drop:
             if s.game.make_move(None, pos, drop_type=s.selected_drop):
