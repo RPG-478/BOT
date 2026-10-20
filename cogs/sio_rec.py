@@ -672,7 +672,7 @@ class RecordingCog(commands.Cog):
             return await r.send(embed=we(str(busy)), ephemeral=True)
         except Exception as e:
             logger.error(f"VC Connection Error: {e}", exc_info=True)
-            return await r.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
+            return await r.send(embed=we(f"<:failed:1490986584676368535> ボイス接続に失敗しました: `{e}`"))
 
         # 統合 RecordingSink を is_echo=True でインスタンス化
         sink = RecordingSink(bot=self.bot, vc=vc, is_echo=True, echo_delay=delay)
@@ -720,7 +720,7 @@ class RecordingCog(commands.Cog):
 
         if not discord.opus.is_loaded():
             return await r.send(embed=we(
-                "❌ Opus ライブラリがロードされていません。サーバーに libopus をインストールしてください。"
+                "<:failed:1490986584676368535> Opus ライブラリがロードされていません。サーバーに libopus をインストールしてください。"
             ))
 
         target_channel = voice.channel
@@ -737,7 +737,7 @@ class RecordingCog(commands.Cog):
             return await r.send(embed=we(str(busy)))
         except Exception as e:
             logger.error(f"VC Connection Error: {e}", exc_info=True)
-            return await r.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
+            return await r.send(embed=we(f"<:failed:1490986584676368535> ボイス接続に失敗しました: `{e}`"))
 
         try:
             if vc.is_listening():
@@ -788,7 +788,7 @@ class RecordingCog(commands.Cog):
             vc.listen(sink)
         except Exception as e:
             await self.voice_sessions.release(guild_id, "record", reason="stop")
-            return await r.send(embed=we(f"❌ 録音の開始に失敗しました: `{e}`"))
+            return await r.send(embed=we(f"<:failed:1490986584676368535> 録音の開始に失敗しました: `{e}`"))
 
         self.sessions[guild_id] = {
             "sink": sink,
@@ -900,7 +900,7 @@ class RecordingCog(commands.Cog):
 
         if not audio:
             return await ctx.send(embed=we(
-                "❌ 音声バッファが空でした。（発言が検知されなかったか、パケットが届いていません）"
+                "<:failed:1490986584676368535> 音声バッファが空でした。（発言が検知されなかったか、パケットが届いていません）"
             ))
 
         limit = getattr(guild, "filesize_limit", 8 * 1024 * 1024)

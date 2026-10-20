@@ -134,7 +134,7 @@ class CogTest(unittest.IsolatedAsyncioTestCase):
         m = self.msg("死ね")
         m.author.send.side_effect = RuntimeError("closed")
         await self.cog.on_message(m)
-        m.add_reaction.assert_awaited_with("❌")
+        m.add_reaction.assert_awaited_with("<:failed:1490986584676368535>")
         self.assertEqual(m.reply.await_args.kwargs["delete_after"], 10)
 
     async def test_block_user_and_guild(self):

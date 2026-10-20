@@ -278,7 +278,7 @@ class NationSetupTest(Base):
         view.index = len(view.steps) - 1
         fields = {f.name: f.value for f in view.embed().fields}
         self.assertIn("<#602>", fields["国づくり"])
-        self.assertIn("❌ **国づくり**", fields["Bot の権限チェック"])
+        self.assertIn("<:failed:1490986584676368535> **国づくり**", fields["Bot の権限チェック"])
         await view.set_nation(enabled=False)
         fields = {f.name: f.value for f in view.embed().fields}
         self.assertEqual(fields["国づくり"], "参加しない")
@@ -326,8 +326,8 @@ class PermissionCheckTest(Base):
         self.assertTrue(results["グローバルチャット"]["skipped"])
 
         report = server_setup.format_permission_report(list(results.values()))
-        self.assertIn("❌ **認証**: 足りない権限: ロールの管理、ウェブフックの管理", report)
-        self.assertIn("✅ **基本（このチャンネル）**: OK", report)
+        self.assertIn("<:failed:1490986584676368535> **認証**: 足りない権限: ロールの管理、ウェブフックの管理", report)
+        self.assertIn("<:success:1490985168100659322> **基本（このチャンネル）**: OK", report)
         self.assertIn("➖ **グローバルチャット**", report)
 
     async def test_summary_all_ok(self):
@@ -335,8 +335,8 @@ class PermissionCheckTest(Base):
         view = self.wizard()
         view.index = len(view.steps) - 1
         report = next(f.value for f in view.embed().fields if f.name == "Bot の権限チェック")
-        self.assertNotIn("❌", report)
-        self.assertIn("✅ **認証**: OK", report)
+        self.assertNotIn("<:failed:1490986584676368535>", report)
+        self.assertIn("<:success:1490985168100659322> **認証**: OK", report)
 
     async def test_disabled_auth_not_checked(self):
         await guild_settings.get_store().update(self.guild.id, "auth", enabled=False)

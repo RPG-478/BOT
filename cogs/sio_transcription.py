@@ -399,9 +399,9 @@ class TranscriptionCog(commands.Cog):
         try:
             webhook = await self._get_or_create_webhook(send_channel)
         except discord.Forbidden:
-            return await r.send(embed=we(f"❌ Botに {send_channel.mention} の `ウェブフックの管理 (Manage Webhooks)` 権限がありません。"))
+            return await r.send(embed=we(f"<:failed:1490986584676368535> Botに {send_channel.mention} の `ウェブフックの管理 (Manage Webhooks)` 権限がありません。"))
         except Exception as e:
-            return await r.send(embed=we(f"❌ Webhookの取得に失敗しました: `{e}`"))
+            return await r.send(embed=we(f"<:failed:1490986584676368535> Webhookの取得に失敗しました: `{e}`"))
 
         # 別の機能が VC を使っているときは追い出さずに断る。
         try:
@@ -412,7 +412,7 @@ class TranscriptionCog(commands.Cog):
         except VoiceBusy as busy:
             return await r.send(embed=we(str(busy)))
         except Exception as e:
-            return await r.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
+            return await r.send(embed=we(f"<:failed:1490986584676368535> ボイス接続に失敗しました: `{e}`"))
 
         async def send_webhook(display_name: str, avatar_url: str | None, text: str):
             async with aiohttp.ClientSession() as session:

@@ -34,14 +34,14 @@ class GlobalChatCog(commands.Cog):
             print(f"データの保存に失敗しました: {e}")
 
     async def notify_sender(self, message: discord.Message, text: str):
-        """送信者だけに知らせる（DM。送れなければ ❌ リアクションと、すぐ消える返信）。"""
+        """送信者だけに知らせる（DM。送れなければ <:failed:1490986584676368535> リアクションと、すぐ消える返信）。"""
         try:
             await message.author.send(text)
             return
         except Exception:
             pass
         try:
-            await message.add_reaction("❌")
+            await message.add_reaction("<:failed:1490986584676368535>")
             await message.reply(text, delete_after=10, mention_author=False)
         except Exception:
             pass
@@ -61,7 +61,7 @@ class GlobalChatCog(commands.Cog):
         if "@" in message.content:
             try:
                 # 警告としてメッセージにバツ印のリアクションを付ける
-                await message.add_reaction("❌")
+                await message.add_reaction("<:failed:1490986584676368535>")
             except discord.Forbidden:
                 pass
             return
@@ -79,7 +79,7 @@ class GlobalChatCog(commands.Cog):
         allowed, wait, first = self.rate_limiter.check(message.author.id)
         if not allowed:
             if first:
-                await self.notify_sender(message, f"⏳ 連投が多いため、約 {int(wait)} 秒間グローバルチャットに転送しません。")
+                await self.notify_sender(message, f"<:crock:1561710960387956757> 連投が多いため、約 {int(wait)} 秒間グローバルチャットに転送しません。")
             return
 
         # 自分以外の、登録されているすべてのチャンネルIDを抽出

@@ -353,7 +353,7 @@ class KaraokeCog(commands.Cog):
         except VoiceBusy as busy:
             return await r.send(embed=we(str(busy)))
         except Exception as e:
-            return await r.send(embed=we(f"❌ VC接続に失敗しました: `{e}`"))
+            return await r.send(embed=we(f"<:failed:1490986584676368535> VC接続に失敗しました: `{e}`"))
 
         async def send_lyrics_subtitle(display_name: str, avatar_url: str | None, text: str):
             async with aiohttp.ClientSession() as session:
@@ -388,7 +388,7 @@ class KaraokeCog(commands.Cog):
         target = clean_text(session["target_lyrics"])
 
         if not target:
-            return await r.send(embed=we("❌ お題の歌詞が登録されていません。"), ephemeral=True)
+            return await r.send(embed=we("<:failed:1490986584676368535> お題の歌詞が登録されていません。"), ephemeral=True)
 
         embed = discord.Embed(title="🏆 カラオケ採点結果", color=0xFFD700)
 

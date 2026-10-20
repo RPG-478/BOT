@@ -80,9 +80,9 @@ bot.supabase = supabase
 async def sync(ctx):
     try:
         synced = await bot.tree.sync()
-        await ctx.send(f"✅ {len(synced)} 個のスラッシュコマンドを同期しました！")
+        await ctx.send(f"<:success:1490985168100659322> {len(synced)} 個のスラッシュコマンドを同期しました！")
     except Exception as e:
-        await ctx.send(f"❌ 同期失敗: {e}")
+        await ctx.send(f"<:failed:1490986584676368535> 同期失敗: {e}")
 
 log_buffer = LogBuffer(maxlen=100)
 log_buffer.setFormatter(logging.Formatter(

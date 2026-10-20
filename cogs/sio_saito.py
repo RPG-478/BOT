@@ -161,7 +161,7 @@ class SaitoRelay(commands.Cog):
             for guild_id in acquired:
                 self.peers.pop(guild_id, None)
                 await self.voice_sessions.release(guild_id, "match", reason="stop")
-            await r.send("❌ 通話の接続に失敗しました。")
+            await r.send("<:failed:1490986584676368535> 通話の接続に失敗しました。")
 
     async def _stop(self, r: Responder):
         if await self.voice_sessions.release(r.guild.id, "match", reason="stop"):

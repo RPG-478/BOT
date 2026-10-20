@@ -105,7 +105,7 @@ def build_embed(game) -> discord.Embed:
         title = f"第{n}夜" if kind == "night" else f"第{n}日 投票"
         embed.add_field(name=title, value="\n".join(lines)[:1024] or "-", inline=False)
     alive = {p.id for p in getattr(game, "alive_players", [])}
-    roles = [f"{'✅' if p.id in alive else '💀'} {name_of(game, p.id)}: {game.roles.get(p.id, '不明')}"
+    roles = [f"{'<:success:1490985168100659322>' if p.id in alive else '💀'} {name_of(game, p.id)}: {game.roles.get(p.id, '不明')}"
              for p in game.players]
     embed.add_field(name="役職", value="\n".join(roles)[:1024] or "-", inline=False)
     if len(embed) > 6000:

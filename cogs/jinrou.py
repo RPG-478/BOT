@@ -1231,7 +1231,7 @@ class JinrouCog(commands.Cog):
             m = game.game_channel.guild.get_member(p.id)
             name = m.display_name if m else "不明"
             role = game.roles.get(p.id, "不明")
-            status = "✅" if p.id in alive_ids else "💀"
+            status = "<:success:1490985168100659322>" if p.id in alive_ids else "💀"
             lines.append(f"{status} **{name}**: {role}")
         embed = discord.Embed(
             title="最終役職開示",

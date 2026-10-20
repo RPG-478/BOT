@@ -144,9 +144,9 @@ def format_permission_report(results: list[dict]) -> str:
             if r["missing"]:
                 parts.append("足りない権限: " + "、".join(r["missing"]))
             parts.extend(r["notes"])
-            lines.append(f"❌ **{r['label']}**: " + " / ".join(parts))
+            lines.append(f"<:failed:1490986584676368535> **{r['label']}**: " + " / ".join(parts))
         else:
-            lines.append(f"✅ **{r['label']}**: OK")
+            lines.append(f"<:success:1490985168100659322> **{r['label']}**: OK")
     return "\n".join(lines)
 
 
@@ -406,23 +406,23 @@ class SetupWizard(discord.ui.View):
     async def on_finish(self, interaction):
         self.stop()
         embed = self.embed()
-        embed.title = "✅ 初期設定を保存しました"
+        embed.title = "<:success:1490985168100659322> 初期設定を保存しました"
         await interaction.response.edit_message(embed=embed, view=None)
 
     async def on_auth_role(self, interaction, select):
         role = select.values[0] if select.values else None
         await self.set_auth(role_id=role.id if role else None)
-        await self.refresh(interaction, f"✅ 認証で付けるロールを {role.mention if role else '未設定'} にしました。")
+        await self.refresh(interaction, f"<:success:1490985168100659322> 認証で付けるロールを {role.mention if role else '未設定'} にしました。")
 
     async def on_auth_channel(self, interaction, select):
         channel = select.values[0] if select.values else None
         await self.set_auth(intro_channel_id=channel.id if channel else None)
-        await self.refresh(interaction, f"✅ 自己紹介チャンネルを {channel.mention if channel else '未設定'} にしました。")
+        await self.refresh(interaction, f"<:success:1490985168100659322> 自己紹介チャンネルを {channel.mention if channel else '未設定'} にしました。")
 
     async def on_auth_toggle(self, interaction):
         enabled = not self.auth()["enabled"]
         await self.set_auth(enabled=enabled)
-        await self.refresh(interaction, "✅ 認証フォームを有効にしました。" if enabled else "✅ 認証フォームを停止しました。")
+        await self.refresh(interaction, "<:success:1490985168100659322> 認証フォームを有効にしました。" if enabled else "<:success:1490985168100659322> 認証フォームを停止しました。")
 
     async def on_send_panel(self, interaction):
         from cogs.auth import VerifyView
@@ -434,7 +434,7 @@ class SetupWizard(discord.ui.View):
             await self.channel.send(embed=embed, view=VerifyView(None))
         except discord.HTTPException:
             return await self.refresh(interaction, "⚠️ このチャンネルに送れませんでした。Bot の権限を確認してください。")
-        await self.refresh(interaction, "✅ このチャンネルに認証パネルを送りました。")
+        await self.refresh(interaction, "<:success:1490985168100659322> このチャンネルに認証パネルを送りました。")
 
     async def on_category_perms(self, interaction, select):
         """もとの /sync_category_perms。カテゴリを認証ロールの人だけに見せ、中のチャンネルを同期する。"""
@@ -457,8 +457,8 @@ class SetupWizard(discord.ui.View):
         cog = self.cog.globalchat_cog()
         connect = cog is not None and self.channel.id not in cog.active_channels
         self.set_global(connect)
-        await self.refresh(interaction, "✅ このチャンネルをグローバルチャットにつなぎました。" if connect
-                           else "✅ このチャンネルをグローバルチャットから外しました。")
+        await self.refresh(interaction, "<:success:1490985168100659322> このチャンネルをグローバルチャットにつなぎました。" if connect
+                           else "<:success:1490985168100659322> このチャンネルをグローバルチャットから外しました。")
 
     async def on_moderation(self, interaction):
         await interaction.response.send_modal(ModerationModal(self))
@@ -468,29 +468,29 @@ class SetupWizard(discord.ui.View):
         words, users, guilds = mod.parse_words(ng_text), mod.parse_ids(users_text), mod.parse_ids(guilds_text)
         guilds = [g for g in guilds if g != self.guild.id]
         await mod.save(self.guild.id, ng_words=words, blocked_users=users, blocked_guilds=guilds)
-        await self.refresh(interaction, f"✅ 荒らし対策を保存しました（NG ワード {len(words)} 件・"
+        await self.refresh(interaction, f"<:success:1490985168100659322> 荒らし対策を保存しました（NG ワード {len(words)} 件・"
                                         f"ブロックしたユーザー {len(users)} 人・サーバー {len(guilds)} 件）。")
 
     async def on_mute_role(self, interaction, select):
         role = select.values[0] if select.values else None
         await self.set_mute_role(role)
-        await self.refresh(interaction, f"✅ ミュート管理ロールを {role.mention if role else '未設定'} にしました。")
+        await self.refresh(interaction, f"<:success:1490985168100659322> ミュート管理ロールを {role.mention if role else '未設定'} にしました。")
 
     async def on_nation_toggle(self, interaction):
         enabled = not self.nation()["enabled"]
         await self.set_nation(enabled=enabled)
-        await self.refresh(interaction, "✅ 国づくりに参加します。" if enabled else "✅ 国づくりへの参加をやめました。")
+        await self.refresh(interaction, "<:success:1490985168100659322> 国づくりに参加します。" if enabled else "<:success:1490985168100659322> 国づくりへの参加をやめました。")
 
     async def on_nation_channel(self, interaction, select):
         channel = select.values[0] if select.values else None
         await self.set_nation(channel_id=channel.id if channel else None)
-        await self.refresh(interaction, f"✅ 国づくりのお知らせチャンネルを {channel.mention if channel else '未設定'} にしました。")
+        await self.refresh(interaction, f"<:success:1490985168100659322> 国づくりのお知らせチャンネルを {channel.mention if channel else '未設定'} にしました。")
 
     async def on_nation_notify(self, interaction, level):
         if level not in NOTIFY_LEVELS:
             level = NOTIFY_MAJOR
         await self.set_nation(notify=level)
-        await self.refresh(interaction, f"✅ 国づくりの通知を「{NOTIFY_LEVELS[level]}」にしました。")
+        await self.refresh(interaction, f"<:success:1490985168100659322> 国づくりの通知を「{NOTIFY_LEVELS[level]}」にしました。")
 
 
 class ServerSetup(commands.Cog):

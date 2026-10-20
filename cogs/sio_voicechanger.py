@@ -478,7 +478,7 @@ class VoiceChangerCog(commands.Cog):
         except VoiceBusy as busy:
             return await r.send(embed=we(str(busy)), ephemeral=True)
         except Exception as e:
-            return await r.send(embed=we(f"❌ ボイス接続に失敗しました: `{e}`"))
+            return await r.send(embed=we(f"<:failed:1490986584676368535> ボイス接続に失敗しました: `{e}`"))
 
         sink = VoiceChangerSink(bot=self.bot, vc=vc, semitones=pitch)
         if buffer is not None:

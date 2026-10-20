@@ -11,11 +11,11 @@ import os
 logger = logging.getLogger(__name__)
 
 MODEL_MISSING_MESSAGE = (
-    "❌ 音声認識モデルが入っていません。"
+    "<:failed:1490986584676368535> 音声認識モデルが入っていません。"
     "Bot のフォルダに Vosk の日本語モデル（`model` フォルダ）を置いてから、もう一度試してください。"
 )
-VOSK_MISSING_MESSAGE = "❌ 音声認識ライブラリ（vosk）が入っていません。"
-MODEL_LOAD_FAILED_MESSAGE = "❌ 音声認識モデルを読み込めませんでした。`model` フォルダの中身を確認してください。"
+VOSK_MISSING_MESSAGE = "<:failed:1490986584676368535> 音声認識ライブラリ（vosk）が入っていません。"
+MODEL_LOAD_FAILED_MESSAGE = "<:failed:1490986584676368535> 音声認識モデルを読み込めませんでした。`model` フォルダの中身を確認してください。"
 
 
 async def ensure_model(holder, model_cls, model_path: str) -> str | None:

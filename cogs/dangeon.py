@@ -860,7 +860,7 @@ def load_all_assets():
                 _ASSET_CACHE[(biome, tid)] = img
                 print(f"✓ {fname} を読み込みました")
             except Exception as e:
-                print(f"❌ {fname} ロード失敗: {e}")
+                print(f"<:failed:1490986584676368535> {fname} ロード失敗: {e}")
 
 def _draw_tile(draw, img, x, y, cell, biome, is_player=False, is_fog=False):
     """タイルを描画"""
@@ -993,7 +993,7 @@ async def dg_load_all(supabase):
                 dg_starts[floor] = tuple(row["start_pos"])
         print(f"✓ ダンジョンマップ読み込み完了: {len(dg_maps)}フロア")
     except Exception as e:
-        print(f"❌ ダンジョンマップ読み込み失敗: {e}")
+        print(f"<:failed:1490986584676368535> ダンジョンマップ読み込み失敗: {e}")
     
     try:
         res = supabase.table("dungeon_players").select("*").execute()
@@ -1037,7 +1037,7 @@ async def dg_load_all(supabase):
             }
         print(f"✓ ダンジョンプレイヤー読み込み完了: {len(dg_players)}人")
     except Exception as e:
-        print(f"❌ ダンジョンプレイヤー読み込み失敗: {e}")
+        print(f"<:failed:1490986584676368535> ダンジョンプレイヤー読み込み失敗: {e}")
     
     try:
         res = supabase.table("dungeon_bases").select("*").execute()
@@ -1045,7 +1045,7 @@ async def dg_load_all(supabase):
             dg_bases[row["user_id"]] = (row["floor"], row["x"], row["y"])
         print(f"✓ ダンジョン拠点読み込み完了: {len(dg_bases)}個")
     except Exception as e:
-        print(f"❌ ダンジョン拠点読み込み失敗: {e}")
+        print(f"<:failed:1490986584676368535> ダンジョン拠点読み込み失敗: {e}")
 
 async def dg_save_map(floor, supabase):
     """フロアマップをSupabaseに保存"""

@@ -948,11 +948,11 @@ class SearchModal(discord.ui.Modal, title="YouTube 楽曲検索"):
             state['current_ctx'] = interaction
             if not await self.cog.enqueue_track(self.guild_id, (url, filename, None, is_yt)):
                 await interaction.followup.send(
-                    embed=we(f"❌ キューの上限（{MAX_QUEUE_SIZE}件）に達しています。"),
+                    embed=we(f"<:failed:1490986584676368535> キューの上限（{MAX_QUEUE_SIZE}件）に達しています。"),
                     ephemeral=True,
                 )
                 return
-            await interaction.followup.send(embed=we(f"✅ **{filename}** をキューに追加しました！"), ephemeral=True)
+            await interaction.followup.send(embed=we(f"<:success:1490985168100659322> **{filename}** をキューに追加しました！"), ephemeral=True)
 
             # バグ修正: interaction.guild から voice_client を取得するように修正
             vc = interaction.guild.voice_client if interaction.guild else None
@@ -962,7 +962,7 @@ class SearchModal(discord.ui.Modal, title="YouTube 楽曲検索"):
                 await self.cog.update_panel(self.guild_id)
 
         except Exception as e:
-            await interaction.followup.send(embed=we(f"❌ 検索中にエラーが発生しました: {e}"), ephemeral=True)
+            await interaction.followup.send(embed=we(f"<:failed:1490986584676368535> 検索中にエラーが発生しました: {e}"), ephemeral=True)
 
 
 class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルター入力)"):
@@ -991,7 +991,7 @@ class CustomEQModal(discord.ui.Modal, title="カスタムEQ (FFmpegフィルタ�
         else:
             if not is_safe_custom_audio_filter(user_filter):
                 await interaction.response.send_message(
-                    embed=we("❌ 使用できないフィルターです。equalizer、bass、treble、volume、vibrato、tremoloなどの"
+                    embed=we("<:failed:1490986584676368535> 使用できないフィルターです。equalizer、bass、treble、volume、vibrato、tremoloなどの"
                               "音声フィルターだけをカンマ区切りで指定してください。"),
                     ephemeral=True,
                 )
@@ -1118,7 +1118,7 @@ class VoiceControlView(discord.ui.View):
             await interaction.response.send_message(embed=we(f"<:Pause:1561700510447312916> 再生を一時停止しました。(`{int(state['elapsed_offset'])}秒` 時点)"), ephemeral=True)
             await self.cog.update_panel(self.guild_id)
         else:
-            await interaction.response.send_message(embed=we("❌ 現在再生中ではないか、既に一時停止されています。"), ephemeral=True)
+            await interaction.response.send_message(embed=we("<:failed:1490986584676368535> 現在再生中ではないか、既に一時停止されています。"), ephemeral=True)
 
     @discord.ui.button(label="再開", emoji="<:music:1561710964238450809>", style=discord.ButtonStyle.success, row=4)
     async def resume_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1129,7 +1129,7 @@ class VoiceControlView(discord.ui.View):
             await interaction.response.send_message(embed=we("▶️ 再生を再開します。"), ephemeral=True)
             await self.cog.check_queue(self.guild_id)
         else:
-            await interaction.response.send_message(embed=we("❌ 再開できる一時停止中のトラックがありません。"), ephemeral=True)
+            await interaction.response.send_message(embed=we("<:failed:1490986584676368535> 再開できる一時停止中のトラックがありません。"), ephemeral=True)
 
     @discord.ui.button(label="⏭️", style=discord.ButtonStyle.secondary, row=4)
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1142,7 +1142,7 @@ class VoiceControlView(discord.ui.View):
             vc.stop()
             await interaction.response.send_message(embed=we("⏭️ トラックをスキップしました。"), ephemeral=True)
         else:
-            await interaction.response.send_message(embed=we("❌ 現在再生中の楽曲がありません。"), ephemeral=True)
+            await interaction.response.send_message(embed=we("<:failed:1490986584676368535> 現在再生中の楽曲がありません。"), ephemeral=True)
 
     @discord.ui.button(label="🔀", style=discord.ButtonStyle.secondary, row=3)
     async def shuffle_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1192,7 +1192,7 @@ class VoiceControlView(discord.ui.View):
             await interaction.response.send_message(embed=we("⏹️ 再生を完全に停止し、キューをクリアしました。"), ephemeral=True)
             await self.cog.update_panel(self.guild_id)
         else:
-            await interaction.response.send_message(embed=we("❌ ボイスチャンネルに接続していません。"), ephemeral=True)
+            await interaction.response.send_message(embed=we("<:failed:1490986584676368535> ボイスチャンネルに接続していません。"), ephemeral=True)
 
 
 def build_music_panel_layout(cog, guild_id: int, panel_text: str) -> discord.ui.LayoutView:
@@ -1683,7 +1683,7 @@ class VoiceCog(commands.Cog):
         except asyncio.TimeoutError:
             await r.send(embed=we("⏱️ タイムアウト: ボイスチャンネルへの接続応答時間が超過しました。Botの権限やネットワーク状態をご確認ください。"))
         except Exception as e:
-            await r.send(embed=we(f"❌ 接続失敗: {e}"))
+            await r.send(embed=we(f"<:failed:1490986584676368535> 接続失敗: {e}"))
 
     async def _leave_impl(self, r: Responder):
         guild_id = r.guild_id
@@ -1733,12 +1733,12 @@ class VoiceCog(commands.Cog):
                 first_line = stdout.decode('utf-8', errors='ignore').split('\n')[0]
                 await ctx.send(embed=we(title="FFmpeg Version Info", description=f"```\n{first_line}\n```"))
             else:
-                await ctx.send(embed=we("❌ FFmpegのバージョン情報を取得できませんでした。"))
+                await ctx.send(embed=we("<:failed:1490986584676368535> FFmpegのバージョン情報を取得できませんでした。"))
                 
         except FileNotFoundError:
-            await ctx.send(embed=we("❌ システムに `ffmpeg` コマンドが見つかりません。パスが通っているか確認してください。"))
+            await ctx.send(embed=we("<:failed:1490986584676368535> システムに `ffmpeg` コマンドが見つかりません。パスが通っているか確認してください。"))
         except Exception as e:
-            await ctx.send(embed=we(f"❌ エラーが発生しました: {e}"))
+            await ctx.send(embed=we(f"<:failed:1490986584676368535> エラーが発生しました: {e}"))
 
     
     async def update_panel(self, guild_id: int):
@@ -2078,14 +2078,14 @@ class VoiceCog(commands.Cog):
 
         async def select_callback(self, interaction: discord.Interaction):
             owner = Responder(self.ctx).user
-            if interaction.user.id != getattr(owner, 'id', None): return await interaction.response.send_message(embed=we("❌ この検索結果は他のユーザーのものです。"), ephemeral=True)
+            if interaction.user.id != getattr(owner, 'id', None): return await interaction.response.send_message(embed=we("<:failed:1490986584676368535> この検索結果は他のユーザーのものです。"), ephemeral=True)
             idx = int(self.select_menu.values[0])
             selected_track = self.tracks[idx]
             state = self.cog.get_state(self.guild_id)
             state['current_ctx'] = self.ctx
             if not await self.cog.enqueue_track(self.guild_id, (selected_track['url'], selected_track['title'], None, True)):
                 return await interaction.response.send_message(
-                    embed=we(f"❌ キューの上限（{MAX_QUEUE_SIZE}件）に達しています。"),
+                    embed=we(f"<:failed:1490986584676368535> キューの上限（{MAX_QUEUE_SIZE}件）に達しています。"),
                     ephemeral=True,
                 )
 
@@ -2094,7 +2094,7 @@ class VoiceCog(commands.Cog):
                 await self.cog.check_queue(self.guild_id)
                 await interaction.response.send_message(embed=we(f"<:music:1561710964238450809> **{selected_track['title']}** を再生します！"))
             else:
-                await interaction.response.send_message(embed=we(f"✅ キューに追加しました: **{selected_track['title']}**"))
+                await interaction.response.send_message(embed=we(f"<:success:1490985168100659322> キューに追加しました: **{selected_track['title']}**"))
                 await self.cog.update_panel(self.guild_id)
             await self.disable_all_items()
 
@@ -2126,7 +2126,7 @@ class VoiceCog(commands.Cog):
         try:
             with yt_dlp.YoutubeDL(search_options) as ydl:
                 data = await loop.run_in_executor(None, lambda: ydl.extract_info(keyword, download=False))
-                if 'entries' not in data or not data['entries']: return await r.send(embed=we("❌ 検索結果が見つかりませんでした。"))
+                if 'entries' not in data or not data['entries']: return await r.send(embed=we("<:failed:1490986584676368535> 検索結果が見つかりませんでした。"))
                 tracks, description_lines = [], []
                 for idx, entry in enumerate(data['entries'][:10]):
                     title = entry.get('title', '不明なタイトル')
@@ -2141,7 +2141,7 @@ class VoiceCog(commands.Cog):
                 view.message = await r.send(embed=embed, view=view, want_message=True)
         except Exception as e:
             logging.error(f"Search command error: {e}")
-            await r.send(embed=we(f"❌ 検索中にエラーが発生しました: {e}"))
+            await r.send(embed=we(f"<:failed:1490986584676368535> 検索中にエラーが発生しました: {e}"))
 
     async def _panel_impl(self, r: Responder):
         """操作パネルを出す。Bot が VC にいなければ、実行した人の VC に入る。"""
@@ -2211,7 +2211,7 @@ class VoiceCog(commands.Cog):
                 except Exception as e:
                     logging.error(f"YouTube解析失敗: {e}")
                     # 💡 安全なメッセージ送信ハンドラ
-                    await self._send_message(ctx_or_interaction, embed=we(f"❌ 解析失敗: {e}"))
+                    await self._send_message(ctx_or_interaction, embed=we(f"<:failed:1490986584676368535> 解析失敗: {e}"))
                     state['is_processing_queue'] = False
                     return await self.check_queue(guild_id)
             else:
@@ -2342,7 +2342,7 @@ class VoiceCog(commands.Cog):
             async def report_failure_and_continue():
                 await self._send_message(
                     ctx_or_interaction,
-                    embed=we(f"❌ **{failed_title}** の音声デコードに失敗しました。次のキューを確認します。")
+                    embed=we(f"<:failed:1490986584676368535> **{failed_title}** の音声デコードに失敗しました。次のキューを確認します。")
                 )
                 await self.check_queue(guild_id)
 
@@ -2460,7 +2460,7 @@ class VoiceCog(commands.Cog):
 
         # 3. YouTube単曲URLが直接指定された場合
         if input_str and yt_pattern.search(input_str):
-            await interaction.followup.send("⏳ YouTubeを解析中...")
+            await interaction.followup.send("<:crock:1561710960387956757> YouTubeを解析中...")
             try:
                 # ⏱️ タイムアウト付きで解析実行
                 info = await asyncio.wait_for(self.get_yt_info(input_str), timeout=TIMEOUT_SECONDS)
@@ -2469,7 +2469,7 @@ class VoiceCog(commands.Cog):
             except asyncio.TimeoutError:
                 return await interaction.followup.send("⏱️ タイムアウト: YouTube情報の解析に時間がかかりすぎたため中断しました。")
             except Exception as e:
-                return await interaction.followup.send(embed=we(f"❌ 解析失敗: {e}"))
+                return await interaction.followup.send(embed=we(f"<:failed:1490986584676368535> 解析失敗: {e}"))
 
         # 2. ファイルが添付されている場合
         elif file:
@@ -2501,7 +2501,7 @@ class VoiceCog(commands.Cog):
                 except asyncio.TimeoutError:
                     return await interaction.followup.send("⏱️ タイムアウト: YouTube検索応答時間が超過しました。")
                 except Exception as e:
-                    return await interaction.followup.send(embed=we(f"❌ 検索失敗: {e}"))
+                    return await interaction.followup.send(embed=we(f"<:failed:1490986584676368535> 検索失敗: {e}"))
 
         # 4. 検索キーワード指定
         elif input_str:
@@ -2512,7 +2512,7 @@ class VoiceCog(commands.Cog):
             except asyncio.TimeoutError:
                 return await interaction.followup.send("⏱️ タイムアウト: YouTube検索応答時間が超過しました。")
             except Exception as e:
-                return await interaction.followup.send(embed=we(f"❌ 検索失敗: {e}"))
+                return await interaction.followup.send(embed=we(f"<:failed:1490986584676368535> 検索失敗: {e}"))
 
         # 5. 引数が何もない場合
         else:
@@ -2530,7 +2530,7 @@ class VoiceCog(commands.Cog):
             state['elapsed_offset'] = start_at
         if not await self.enqueue_track(interaction.guild_id, (url, filename, final_id, is_yt)):
             return await interaction.followup.send(
-                embed=we(f"❌ キューの上限（{MAX_QUEUE_SIZE}件）に達しています。再生完了または停止後に追加してください。"),
+                embed=we(f"<:failed:1490986584676368535> キューの上限（{MAX_QUEUE_SIZE}件）に達しています。再生完了または停止後に追加してください。"),
                 ephemeral=True,
             )
 
@@ -2546,10 +2546,10 @@ class VoiceCog(commands.Cog):
                 await interaction.followup.send(embed=we(f"▶️ 再生を開始します: **{filename}**"))
                 await self.check_queue(interaction.guild_id)
             else:
-                await interaction.followup.send(embed=we(f"✅ キューに追加: **{filename}**"))
+                await interaction.followup.send(embed=we(f"<:success:1490985168100659322> キューに追加: **{filename}**"))
                 await self.update_panel(interaction.guild_id)
         except Exception as e:
-            await interaction.followup.send(embed=we(f"❌ 再生開始処理でエラーが発生しました: `{e}`"))
+            await interaction.followup.send(embed=we(f"<:failed:1490986584676368535> 再生開始処理でエラーが発生しました: `{e}`"))
             
     async def _stop_impl(self, r: Responder):
         """今流れている音楽をすべて停止しキューをクリアする（VC には残る）。"""
@@ -2742,7 +2742,7 @@ class VoiceCog(commands.Cog):
                     return await r.send(embed=we("保存できる曲がありません（サーバー共有に保存できるのは、アップロードした音声だけです）。"), ephemeral=True)
                 try:
                     db.table("playlists").upsert({"name": self._server_playlist_key(r.guild.id, name), "ids": ids}).execute()
-                    return await r.send(embed=we(f"✅ このサーバー内のキューを `{name}` として保存しました（{len(ids)} 曲・サーバー共有）。"))
+                    return await r.send(embed=we(f"<:success:1490985168100659322> このサーバー内のキューを `{name}` として保存しました（{len(ids)} 曲・サーバー共有）。"))
                 except Exception as exc:
                     logger.exception("Failed to save server playlist")
                     return await r.send(embed=we(f"保存に失敗しました。({type(exc).__name__})"), ephemeral=True)
@@ -2836,7 +2836,7 @@ class VoiceCog(commands.Cog):
         lines = []
         if feedback is not None:
             state['fdn_feedback'] = feedback
-            lines.append(f"⏳ リバーブのフィードバック（長さ）を `{feedback}` に設定しました。")
+            lines.append(f"<:crock:1561710960387956757> リバーブのフィードバック（長さ）を `{feedback}` に設定しました。")
         if wet is not None:
             state['fdn_wet'] = wet
             lines.append(f"💧 残響のミックス（ウェット量）を `{wet}` に設定しました。")

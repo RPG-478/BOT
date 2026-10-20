@@ -456,7 +456,7 @@ class GlobalVCCog(commands.Cog):
     async def gvc_info(self, ctx: commands.Context, room_name: str):
         room = ROOMS.get(room_name)
         if room is None:
-            return await ctx.send(f"❌ ルーム **{room_name}** は存在しません。")
+            return await ctx.send(f"<:failed:1490986584676368535> ルーム **{room_name}** は存在しません。")
 
         clients = GLOBAL_ROOMS.get(room_name, [])
         servers = [vc.guild.name for vc in clients if vc.guild]
@@ -486,7 +486,7 @@ class GlobalVCCog(commands.Cog):
     async def gvc_delete(self, ctx: commands.Context, room_name: str):
         room = ROOMS.get(room_name)
         if room is None:
-            return await ctx.send(f"❌ ルーム **{room_name}** は存在しません。")
+            return await ctx.send(f"<:failed:1490986584676368535> ルーム **{room_name}** は存在しません。")
 
         if not _can_delete_room(room, ctx.author, ctx.guild):
             return await ctx.send(
@@ -526,7 +526,7 @@ class GlobalVCCog(commands.Cog):
         room = ROOMS.get(room_name)
         if room is None:
             return await r.send(
-                f"❌ ルーム **{room_name}** は存在しません。"
+                f"<:failed:1490986584676368535> ルーム **{room_name}** は存在しません。"
                 f"先に `!gvc create {room_name}` で作成してください。"
             )
 
@@ -561,7 +561,7 @@ class GlobalVCCog(commands.Cog):
         except VoiceBusy as busy:
             return await r.send(str(busy))
         except Exception as e:
-            return await r.send(f"❌ ボイス接続に失敗しました: `{e}`")
+            return await r.send(f"<:failed:1490986584676368535> ボイス接続に失敗しました: `{e}`")
 
         # 再生用 AudioSource を登録して再生開始
         source = GlobalAudioSource()
@@ -611,7 +611,7 @@ class GlobalVCCog(commands.Cog):
         room = ROOMS.get(room_name)
         if room is None:
             return await ctx.send(
-                f"❌ ルーム **{room_name}** は存在しません。"
+                f"<:failed:1490986584676368535> ルーム **{room_name}** は存在しません。"
                 f"先に `{ctx.prefix}gvc create {room_name}` で作成してください。"
             )
 
@@ -637,7 +637,7 @@ class GlobalVCCog(commands.Cog):
                 name=f"グロチャ: {room_name}", reason="グローバルチャット連携"
             )
         except Exception as e:
-            return await ctx.send(f"❌ Webhook の作成に失敗しました: `{e}`")
+            return await ctx.send(f"<:failed:1490986584676368535> Webhook の作成に失敗しました: `{e}`")
 
         link = TextLink(guild_id=ctx.guild.id, channel_id=ctx.channel.id, webhook=webhook)
         ROOM_TEXT_LINKS.setdefault(room_name, []).append(link)
