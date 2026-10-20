@@ -387,6 +387,8 @@ class GameDetailView(discord.ui.View):
     @discord.ui.button(label="戻る", emoji="<:Back:1561700549236097034>", style=discord.ButtonStyle.secondary, row=3)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = GameHubView(self.cog)
+        if hasattr(getattr(button, "view", None), "_sync"):
+            return await interaction.response.edit_message(view=as_panel_v2(view))
         await interaction.response.edit_message(embed=view.embed(), view=view)
 
 
