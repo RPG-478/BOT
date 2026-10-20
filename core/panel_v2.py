@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
 
 import discord
 
 __all__ = [
     "embed_text",
+    "build_rows",
     "PanelLayoutView",
     "edit_panel_v2",
     "edit_message_v2",
@@ -28,6 +30,45 @@ def embed_text(embed: discord.Embed | None) -> str:
     if embed.footer and embed.footer.text:
         parts.append(f"-# {embed.footer.text}")
     return "\n\n".join(parts)[:4000] or "(表示内容がありません)"
+
+
+def build_rows(items: list[discord.ui.Item]) -> list[list[discord.ui.Item]]:
+    """V1のchildrenをDiscord規約に沿ったActionRow単位へ分割する。
+
+    - Selectは1つのActionRowに1つだけ
+    - Button等は1つのActionRowに5つまで
+    """
+    explicit: dict[int, list[discord.ui.Item]] = {}
+    auto: list[discord.ui.Item] = []
+    for item in items:
+        row = getattr(item, "row", None)
+        if row is None:
+            auto.append(item)
+        else:
+            explicit.setdefault(row, []).append(item)
+
+    groups = [explicit[r] for r in sorted(explicit)]
+    if auto:
+        groups.append(auto)
+
+    rows: list[list[discord.ui.Item]] = []
+    buffer: list[discord.ui.Item] = []
+    for group in groups:
+        for item in group:
+            if isinstance(item, discord.ui.Select):
+                if buffer:
+                    rows.append(buffer)
+                    buffer = []
+                rows.append([item])
+            else:
+                buffer.append(item)
+                if len(buffer) >= 5:
+                    rows.append(buffer)
+                    buffer = []
+        if buffer:
+            rows.append(buffer)
+            buffer = []
+    return rows
 
 
 class PanelLayoutView(discord.ui.LayoutView):
@@ -59,35 +100,46 @@ class PanelLayoutView(discord.ui.LayoutView):
 
     def _sync(self):
         self.clear_items()
-        rows: dict[int, list[discord.ui.Item]] = {}
-        for item in self.panel.children:
-            row = getattr(item, "row", None)
-            if row is None:
-                row = 0
-            rows.setdefault(row, []).append(item)
+        rows = build_rows(list(self.panel.children))
+        for row in rows:
+            for item in row:
+                # callback内の self.view がラッパーを指すようにする
+                try:
+                    item._view = self
+                except Exception:
+                    pass
         source_embed = self.panel.embed()
-        # embed()がNoneを返す場合のガード（AttributeErrorによるクラッシュ防止）
         if source_embed is None:
             source_embed = discord.Embed()
         container = discord.ui.Container(
             discord.ui.TextDisplay(embed_text(source_embed)),
-            *[discord.ui.ActionRow(*items) for _, items in sorted(rows.items())],
+            *[discord.ui.ActionRow(*items) for items in rows],
             accent_colour=getattr(source_embed, "colour", None),
         )
         self.add_item(container)
 
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        """例外を必ずACKして可視化する（無応答エラーの防止と原因特定用）。"""
+        traceback.print_exc()
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(f"⚠️ 内部エラー: {error}", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"⚠️ 内部エラー: {error}", ephemeral=True)
+        except discord.HTTPException:
+            pass
+
     def refresh(self, interaction: discord.Interaction | None = None):
         """状態を更新する。interactionを渡した場合のみawait可能なオブジェクトを返す。
 
-        - ``view.refresh()``             : 同期呼び出し（旧コード互換）。状態とV2表示のみ更新。
-        - ``await view.refresh(interaction)`` : メッセージ編集まで行ってタイムアウトを防止。
+        - ``view.refresh()``              : 同期呼び出し（旧コード互換）。
+        - ``await view.refresh(interaction)`` : 編集まで行ってタイムアウトを防止。
         """
         self.panel.genre = getattr(self, "genre", getattr(self.panel, "genre", None))
         pending = self.panel.refresh()
 
         if asyncio.iscoroutine(pending):
             if interaction is None:
-                # 同期コンテキストでは待機できないため、破棄して警告を回避する
                 pending.close()
                 self._sync()
                 return None
