@@ -526,7 +526,7 @@ class SupportPanelView(discord.ui.View):
         description = "ジャンルを選ぶと、その中の機能を選択できます。"
         if self.genre:
             description = f"**{SUPPORT_GENRES[self.genre][0]}** の機能を選択してください。"
-        return discord.Embed(title="サポート操作", description=description, color=0x3498DB)
+        return discord.Embed(title="サポート操作", description=description, color=0xFFFFFF)
 
 
 class SupportCog(commands.Cog):

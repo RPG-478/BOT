@@ -81,9 +81,13 @@ class GeneralGenreSelect(discord.ui.Select):
 
     async def callback(self, interaction):
         view: GeneralPanel = self.view
+        wrapper = view if hasattr(view, "panel") else None
         view = getattr(view, "panel", view)
         view.genre = self.values[0]
         view.action = None
+        if wrapper is not None:
+            wrapper.refresh()
+            return await interaction.response.edit_message(view=wrapper)
         view.refresh()
         await interaction.response.edit_message(embed=view.embed(), view=view)
 
@@ -132,7 +136,7 @@ class GeneralPanel(discord.ui.View):
         description = "ジャンルを選ぶと、その中の機能を選択できます。"
         if self.genre:
             description = f"**{GENERAL_GENRES[self.genre][0]}** の機能を選択してください。"
-        return discord.Embed(title="一般機能", description=description, color=0x3498DB)
+        return discord.Embed(title="一般機能", description=description, color=0xFFFFFF)
 
 
 class ShortcutNameModal(discord.ui.Modal, title="ショートカット名"):

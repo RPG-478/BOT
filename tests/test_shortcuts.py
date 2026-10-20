@@ -1,8 +1,10 @@
 import types
 import unittest
+from unittest.mock import AsyncMock
 
-from cogs.general import GENERAL_ACTIONS, GENERAL_GENRES, ShortcutRootPanel
+from cogs.general import GENERAL_ACTIONS, GENERAL_GENRES, GeneralPanel, ShortcutRootPanel
 from core import shortcuts
+from core.panel_v2 import as_panel_v2
 
 
 class MemoryStore:
@@ -23,6 +25,21 @@ class ShortcutTest(unittest.IsolatedAsyncioTestCase):
         view = ShortcutRootPanel()
         self.assertEqual(len(view.children[0].options), 5)
         self.assertEqual(view.children[0].options[0].value, "general")
+
+    async def test_general_custom_genre_keeps_components_v2_wrapper(self):
+        panel = GeneralPanel(None)
+        wrapper = as_panel_v2(panel)
+        select = wrapper.children[0].children[1].children[0]
+        select._values = ["custom"]
+        interaction = types.SimpleNamespace(
+            response=types.SimpleNamespace(edit_message=AsyncMock())
+        )
+
+        await select.callback(interaction)
+
+        self.assertEqual(panel.genre, "custom")
+        self.assertIs(interaction.response.edit_message.call_args.kwargs["view"], wrapper)
+        self.assertNotIn("embed", interaction.response.edit_message.call_args.kwargs)
 
     async def test_limit_duplicate_and_remove(self):
         store = MemoryStore()
