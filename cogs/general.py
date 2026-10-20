@@ -4,7 +4,7 @@ from __future__ import annotations
 import discord
 from discord import app_commands
 from discord.ext import commands
-from core.panel_v2 import as_panel_v2
+from core.panel_v2 import as_panel_v2, edit_panel_v2
 from core import guild_settings, shortcuts
 from core.game_guides import GAME_GUIDES, GAME_ORDER
 
@@ -87,9 +87,9 @@ class GeneralGenreSelect(discord.ui.Select):
         view.action = None
         if wrapper is not None:
             wrapper.refresh()
-            return await interaction.response.edit_message(view=wrapper)
+            return await edit_panel_v2(interaction, wrapper)
         view.refresh()
-        return await interaction.response.edit_message(view=as_panel_v2(view))
+        return await edit_panel_v2(interaction, as_panel_v2(view))
 
 
 class GeneralActionSelect(discord.ui.Select):
@@ -109,8 +109,8 @@ class GeneralActionSelect(discord.ui.Select):
         if panel.shortcut_mode:
             if hasattr(view, "_sync"):
                 view._sync()
-                return await interaction.response.edit_message(view=view)
-            return await interaction.response.edit_message(view=as_panel_v2(panel))
+                return await edit_panel_v2(interaction, view)
+            return await edit_panel_v2(interaction, as_panel_v2(panel))
         await self.cog.dispatch_general(interaction, self.values[0])
 
 
@@ -192,8 +192,8 @@ class ShortcutRootSelect(discord.ui.Select):
         self.parent_view.refresh()
         if hasattr(self.view, "_sync"):
             self.view._sync()
-            return await interaction.response.edit_message(view=self.view)
-        return await interaction.response.edit_message(view=as_panel_v2(self.parent_view))
+            return await edit_panel_v2(interaction, self.view)
+        return await edit_panel_v2(interaction, as_panel_v2(self.parent_view))
 
 
 class ShortcutRootPanel(discord.ui.View):
@@ -211,7 +211,7 @@ class ShortcutRootPanel(discord.ui.View):
                              color=0xFFFFFF)
 
     async def open_existing_panel(self, interaction, root: str):
-        from core.panel_v2 import as_panel_v2
+        from core.panel_v2 import as_panel_v2, edit_panel_v2
         bot = interaction.client
         if root == "general":
             panel = GeneralPanel(bot.get_cog("GeneralCog"), shortcut_mode=True, shortcut_item=self.item)
@@ -230,7 +230,7 @@ class ShortcutRootPanel(discord.ui.View):
             panel = HelpView(help_cog.catalog(), shortcut_mode=True, shortcut_item=self.item)
         if panel is None:
             return await interaction.response.send_message("対象のパネルが読み込まれていません。", ephemeral=True)
-        await interaction.response.edit_message(view=as_panel_v2(panel))
+        await edit_panel_v2(interaction, as_panel_v2(panel))
 
 
 class ShortcutCommitButton(discord.ui.Button):
@@ -270,10 +270,10 @@ class ShortcutManageSelect(discord.ui.Select):
             wrapper = getattr(self.view, "panel", None)
             if wrapper is not None:
                 wrapper._sync()
-                return await interaction.response.edit_message(view=self.view)
-            return await interaction.response.edit_message(view=as_panel_v2(self.parent_view))
+                return await edit_panel_v2(interaction, self.view)
+            return await edit_panel_v2(interaction, as_panel_v2(self.parent_view))
         view = ShortcutRootPanel(item)
-        await interaction.response.edit_message(view=as_panel_v2(view))
+        await edit_panel_v2(interaction, as_panel_v2(view))
 
 
 class ShortcutManagerView(discord.ui.View):
@@ -291,27 +291,27 @@ class ShortcutManagerView(discord.ui.View):
     @discord.ui.button(label="登録", style=discord.ButtonStyle.success, row=0)
     async def register(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = ShortcutRootPanel()
-        await interaction.response.edit_message(view=as_panel_v2(view))
+        await edit_panel_v2(interaction, as_panel_v2(view))
 
     @discord.ui.button(label="編集", style=discord.ButtonStyle.primary, row=0)
     async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = ShortcutManagerView(self.cog, interaction.guild_id, interaction.user.id)
         view.add_item(ShortcutManageSelect(view, "edit"))
-        await interaction.response.edit_message(view=as_panel_v2(view))
+        await edit_panel_v2(interaction, as_panel_v2(view))
 
     @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, row=0)
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = ShortcutManagerView(self.cog, interaction.guild_id, interaction.user.id)
         view.add_item(ShortcutManageSelect(view, "delete"))
-        await interaction.response.edit_message(view=as_panel_v2(view))
+        await edit_panel_v2(interaction, as_panel_v2(view))
 
     @discord.ui.button(label="一覧更新", style=discord.ButtonStyle.secondary, row=0)
     async def refresh_list(self, interaction: discord.Interaction, button: discord.ui.Button):
         wrapper = getattr(self.view, "panel", None)
         if wrapper is not None:
             wrapper._sync()
-            return await interaction.response.edit_message(view=self.view)
-        return await interaction.response.edit_message(view=as_panel_v2(self))
+            return await edit_panel_v2(interaction, self.view)
+        return await edit_panel_v2(interaction, as_panel_v2(self))
 
 
 class GeneralCog(commands.Cog):

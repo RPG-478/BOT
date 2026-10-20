@@ -14,7 +14,7 @@ from discord.ext import commands
 
 from core.legacy import Responder
 from core.voice_session import get_manager, stop_hint
-from core.panel_v2 import as_panel_v2
+from core.panel_v2 import as_panel_v2, edit_panel_v2
 
 CONNECTION_ACTIONS = [
     app_commands.Choice(name="参加", value="join"),
@@ -265,8 +265,8 @@ class VoiceGenreSelect(discord.ui.Select):
         view.refresh()
         if hasattr(container, "_sync"):
             container._sync()
-            return await interaction.response.edit_message(view=container)
-        return await interaction.response.edit_message(view=as_panel_v2(view))
+            return await edit_panel_v2(interaction, container)
+        return await edit_panel_v2(interaction, as_panel_v2(view))
 
 
 class VoiceActionSelect(discord.ui.Select):
@@ -285,8 +285,8 @@ class VoiceActionSelect(discord.ui.Select):
         if getattr(panel, "shortcut_mode", False):
             if hasattr(container, "_sync"):
                 container._sync()
-                return await interaction.response.edit_message(view=container)
-            return await interaction.response.edit_message(view=as_panel_v2(panel))
+                return await edit_panel_v2(interaction, container)
+            return await edit_panel_v2(interaction, as_panel_v2(panel))
         if value == "global_start":
             return await interaction.response.send_modal(GlobalRoomModal(self.hub))
         await self.hub.dispatch_voice_action(interaction, value)
