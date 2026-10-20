@@ -8,8 +8,33 @@ from discord.ext import commands
 
 from cogs.clear import MAX_CLEAR
 from core import guild_settings
-from core.panel_v2 import as_panel_v2, edit_panel_v2
+from core.panel_v2 import as_panel_v2
 logger = logging.getLogger(__name__)
+
+
+async def edit_interaction_message(interaction: discord.Interaction, **kwargs):
+    """未応答なら初回応答で、defer済みなら元の応答を編集する。"""
+    if interaction.response.is_done():
+        return await interaction.edit_original_response(**kwargs)
+    return await interaction.response.edit_message(**kwargs)
+
+
+async def report_callback_error(interaction: discord.Interaction, context: str):
+    """コールバック例外をログに残し、可能ならユーザーにも通知する。"""
+    logger.exception("%s", context)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                "処理中にエラーが発生しました。Botのログを確認してください。",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                "処理中にエラーが発生しました。Botのログを確認してください。",
+                ephemeral=True,
+            )
+    except discord.HTTPException:
+        logger.exception("コールバックのエラー通知にも失敗しました: %s", context)
 
 
 SUPPORT_ACTIONS = [
@@ -135,11 +160,18 @@ class ActivityLogChannelSelect(discord.ui.ChannelSelect):
     async def callback(self, interaction: discord.Interaction):
         if not self.parent_view.can_manage(interaction):
             return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
-        channel = self.values[0]
-        await guild_settings.get_store().update(
-            interaction.guild_id, self.parent_view.section, channel_id=channel.id
-        )
-        await self.parent_view.refresh(interaction, "送信先を設定しました。")
+        await interaction.response.defer()
+        try:
+            channel = self.values[0]
+            await guild_settings.get_store().update(
+                interaction.guild_id, self.parent_view.section, channel_id=channel.id
+            )
+            await self.parent_view.refresh(interaction, "送信先を設定しました。")
+        except Exception:
+            logger.exception("履歴送信先の更新に失敗しました")
+            await interaction.followup.send(
+                "送信先の更新に失敗しました。Botのログを確認してください。", ephemeral=True
+            )
 
 
 class ModerationActionToggle(discord.ui.Button):
@@ -193,23 +225,33 @@ class ActivityLogSettingsView(discord.ui.View):
         for item in self.children:
             if isinstance(item, ModerationActionToggle):
                 item.label = item.button_label()
-        await interaction.response.edit_message(embed=self.embed(notice), view=self)
+        await edit_interaction_message(interaction, embed=self.embed(notice), view=self)
 
     async def set_enabled(self, interaction: discord.Interaction, enabled: bool):
         if not self.can_manage(interaction):
             return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
         if enabled and self.settings.get("channel_id") is None:
             return await interaction.response.send_message("先に履歴を送るテキストチャンネルを選択してください。", ephemeral=True)
-        await guild_settings.get_store().update(interaction.guild_id, self.section, enabled=enabled)
-        await self.refresh(interaction, f"履歴を{'オン' if enabled else 'オフ'}にしました。")
+        await interaction.response.defer()
+        try:
+            await guild_settings.get_store().update(interaction.guild_id, self.section, enabled=enabled)
+            await self.refresh(interaction, f"履歴を{'オン' if enabled else 'オフ'}にしました。")
+        except Exception:
+            logger.exception("履歴設定の更新に失敗しました (section=%s)", self.section)
+            await interaction.followup.send("設定の更新に失敗しました。Botのログを確認してください。", ephemeral=True)
 
     async def toggle_action(self, interaction: discord.Interaction, action: str):
         if not self.can_manage(interaction):
             return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
         key = f"{action}_enabled"
         enabled = not self.settings.get(key, False)
-        await guild_settings.get_store().update(interaction.guild_id, self.section, **{key: enabled})
-        await self.refresh(interaction, f"{action.upper()}履歴を{'オン' if enabled else 'オフ'}にしました。")
+        await interaction.response.defer()
+        try:
+            await guild_settings.get_store().update(interaction.guild_id, self.section, **{key: enabled})
+            await self.refresh(interaction, f"{action.upper()}履歴を{'オン' if enabled else 'オフ'}にしました。")
+        except Exception:
+            logger.exception("個別モデレート履歴設定の更新に失敗しました (action=%s)", action)
+            await interaction.followup.send("設定の更新に失敗しました。Botのログを確認してください。", ephemeral=True)
 
     @discord.ui.button(label="履歴をオンにする", style=discord.ButtonStyle.success, row=1)
     async def turn_on(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -233,9 +275,16 @@ class VCLogChannelSelect(discord.ui.ChannelSelect):
     async def callback(self, interaction: discord.Interaction):
         if not self.parent_view.can_manage(interaction):
             return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
-        channel = self.values[0]
-        await guild_settings.get_store().update(interaction.guild_id, VC_LOG_SECTION, channel_id=channel.id)
-        await self.parent_view.refresh(interaction, "送信先を設定しました。")
+        await interaction.response.defer()
+        try:
+            channel = self.values[0]
+            await guild_settings.get_store().update(interaction.guild_id, VC_LOG_SECTION, channel_id=channel.id)
+            await self.parent_view.refresh(interaction, "送信先を設定しました。")
+        except Exception:
+            logger.exception("VC履歴送信先の更新に失敗しました")
+            await interaction.followup.send(
+                "送信先の更新に失敗しました。Botのログを確認してください。", ephemeral=True
+            )
 
 
 class VCLogSettingsView(discord.ui.View):
@@ -260,15 +309,20 @@ class VCLogSettingsView(discord.ui.View):
 
     async def refresh(self, interaction: discord.Interaction, notice: str | None = None):
         self.settings = get_vc_log_settings(guild_settings.get_store(), interaction.guild_id)
-        await interaction.response.edit_message(embed=self.embed(notice), view=self)
+        await edit_interaction_message(interaction, embed=self.embed(notice), view=self)
 
     async def set_enabled(self, interaction: discord.Interaction, enabled: bool):
         if not self.can_manage(interaction):
             return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
         if enabled and self.settings.get("channel_id") is None:
             return await interaction.response.send_message("先に履歴を送るテキストチャンネルを選択してください。", ephemeral=True)
-        await guild_settings.get_store().update(interaction.guild_id, VC_LOG_SECTION, enabled=enabled)
-        await self.refresh(interaction, f"履歴を{'オン' if enabled else 'オフ'}にしました。")
+        await interaction.response.defer()
+        try:
+            await guild_settings.get_store().update(interaction.guild_id, VC_LOG_SECTION, enabled=enabled)
+            await self.refresh(interaction, f"履歴を{'オン' if enabled else 'オフ'}にしました。")
+        except Exception:
+            logger.exception("VC履歴設定の更新に失敗しました")
+            await interaction.followup.send("設定の更新に失敗しました。Botのログを確認してください。", ephemeral=True)
 
     @discord.ui.button(label="オン", style=discord.ButtonStyle.success, row=1)
     async def turn_on(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -291,27 +345,41 @@ class StickyChannelSelect(discord.ui.ChannelSelect):
 
     async def callback(self, interaction: discord.Interaction):
         if not self.parent_view.can_manage(interaction):
-            return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
-        channel = self.values[0]
-        old_channel_id = self.parent_view.settings.get("channel_id")
-        old_message_id = self.parent_view.settings.get("message_id")
-        if old_channel_id and old_message_id and old_channel_id != channel.id:
-            old_channel = await self.parent_view.cog._sticky_channel(interaction.guild, old_channel_id)
-            if old_channel is not None:
-                try:
-                    await (await old_channel.fetch_message(old_message_id)).delete()
-                except discord.NotFound:
-                    pass
-                except (discord.Forbidden, discord.HTTPException):
-                    logger.warning("旧Stickyパネルを削除できません (guild=%s message=%s)", interaction.guild_id, old_message_id)
-        await guild_settings.get_store().update(
-            interaction.guild_id, STICKY_SECTION, channel_id=channel.id, message_id=None,
-        )
-        self.parent_view.settings["channel_id"] = channel.id
-        self.parent_view.settings["message_id"] = None
-        await self.parent_view.refresh(interaction, "Stickyパネルの設置先を設定しました。")
-        if self.parent_view.settings.get("enabled") and self.parent_view.settings.get("content"):
-            await self.parent_view.cog.send_sticky_panel(interaction.guild, force=True)
+            return await interaction.response.send_message(
+                "この設定にはサーバー管理権限が必要です。", ephemeral=True
+            )
+
+        await interaction.response.defer()
+        try:
+            channel = self.values[0]
+            old_channel_id = self.parent_view.settings.get("channel_id")
+            old_message_id = self.parent_view.settings.get("message_id")
+            if old_channel_id and old_message_id and old_channel_id != channel.id:
+                old_channel = await self.parent_view.cog._sticky_channel(interaction.guild, old_channel_id)
+                if old_channel is not None:
+                    try:
+                        await (await old_channel.fetch_message(old_message_id)).delete()
+                    except discord.NotFound:
+                        pass
+                    except (discord.Forbidden, discord.HTTPException):
+                        logger.warning(
+                            "旧Stickyパネルを削除できません (guild=%s message=%s)",
+                            interaction.guild_id, old_message_id,
+                        )
+            await guild_settings.get_store().update(
+                interaction.guild_id, STICKY_SECTION, channel_id=channel.id, message_id=None,
+            )
+            self.parent_view.settings["channel_id"] = channel.id
+            self.parent_view.settings["message_id"] = None
+            await self.parent_view.refresh(interaction, "Stickyパネルの設置先を設定しました。")
+            if self.parent_view.settings.get("enabled") and self.parent_view.settings.get("content"):
+                await self.parent_view.cog.send_sticky_panel(interaction.guild, force=True)
+        except Exception:
+            logger.exception("Stickyパネル設置先の更新に失敗しました")
+            await interaction.followup.send(
+                "Stickyパネル設置先の更新に失敗しました。Botのログを確認してください。",
+                ephemeral=True,
+            )
 
 
 class StickyTextModal(discord.ui.Modal, title="Stickyパネルの文言"):
@@ -333,13 +401,22 @@ class StickyTextModal(discord.ui.Modal, title="Stickyパネルの文言"):
             return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
         if self.parent_view.settings.get("channel_id") is None:
             return await interaction.response.send_message("先にStickyパネルを置くチャンネルを選択してください。", ephemeral=True)
-        await guild_settings.get_store().update(
-            interaction.guild_id, STICKY_SECTION, content=self.text.value, enabled=True,
-        )
-        self.parent_view.settings["content"] = self.text.value
-        self.parent_view.settings["enabled"] = True
-        await interaction.response.send_message("文言を保存し、Stickyパネルを送信しました。", ephemeral=True)
-        await self.parent_view.cog.send_sticky_panel(interaction.guild, force=True)
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await guild_settings.get_store().update(
+                interaction.guild_id, STICKY_SECTION, content=self.text.value, enabled=True,
+            )
+            self.parent_view.settings["content"] = self.text.value
+            self.parent_view.settings["enabled"] = True
+            await interaction.edit_original_response(content="文言を保存しました。Stickyパネルを送信しています。")
+            await self.parent_view.cog.send_sticky_panel(interaction.guild, force=True)
+        except Exception:
+            logger.exception("Stickyパネル文言の保存・送信に失敗しました")
+            try:
+                await interaction.edit_original_response(content="文言の保存またはパネル送信に失敗しました。Botのログを確認してください。")
+            except discord.HTTPException:
+                logger.exception("Sticky文言保存エラーの通知に失敗しました")
 
 
 class StickySettingsView(discord.ui.View):
@@ -371,20 +448,24 @@ class StickySettingsView(discord.ui.View):
 
     async def refresh(self, interaction: discord.Interaction, notice: str | None = None):
         self.settings = get_sticky_settings(guild_settings.get_store(), interaction.guild_id)
-        await interaction.response.edit_message(embed=self.embed(notice), view=self)
+        await edit_interaction_message(interaction, embed=self.embed(notice), view=self)
 
     async def set_enabled(self, interaction: discord.Interaction, enabled: bool):
         if not self.can_manage(interaction):
             return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
         if enabled and (self.settings.get("channel_id") is None or not self.settings.get("content")):
             return await interaction.response.send_message("先に設置先と文言を設定してください。", ephemeral=True)
-        await guild_settings.get_store().update(interaction.guild_id, STICKY_SECTION, enabled=enabled)
-        self.settings["enabled"] = enabled
-        if enabled:
-            await interaction.response.send_message("Stickyパネルをオンにしました。", ephemeral=True)
-            await self.cog.send_sticky_panel(interaction.guild, force=True)
-        else:
-            await interaction.response.edit_message(embed=self.embed("Stickyパネルをオフにしました。"), view=self)
+        await interaction.response.defer()
+        try:
+            await guild_settings.get_store().update(interaction.guild_id, STICKY_SECTION, enabled=enabled)
+            self.settings["enabled"] = enabled
+            notice = "Stickyパネルをオンにしました。" if enabled else "Stickyパネルをオフにしました。"
+            await interaction.edit_original_response(embed=self.embed(notice), view=self)
+            if enabled:
+                await self.cog.send_sticky_panel(interaction.guild, force=True)
+        except Exception:
+            logger.exception("Stickyパネル有効状態の更新に失敗しました")
+            await interaction.followup.send("Sticky設定の更新に失敗しました。Botのログを確認してください。", ephemeral=True)
 
     @discord.ui.button(label="文言を設定・更新", style=discord.ButtonStyle.primary, row=1)
     async def edit_text(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -423,9 +504,14 @@ class EmojiBinjouView(discord.ui.View):
     async def set_enabled(self, interaction: discord.Interaction, key: str, enabled: bool):
         if not getattr(getattr(interaction.user, "guild_permissions", None), "manage_guild", False):
             return await interaction.response.send_message("この設定にはサーバー管理権限が必要です。", ephemeral=True)
-        await guild_settings.get_store().update(interaction.guild_id, BINJOU_SECTION, **{key: enabled})
-        self.settings[key] = enabled
-        await interaction.response.edit_message(embed=self.cog.binjou_embed(self.settings), view=self)
+        await interaction.response.defer()
+        try:
+            await guild_settings.get_store().update(interaction.guild_id, BINJOU_SECTION, **{key: enabled})
+            self.settings[key] = enabled
+            await interaction.edit_original_response(embed=self.cog.binjou_embed(self.settings), view=self)
+        except Exception:
+            logger.exception("binjou設定の更新に失敗しました (key=%s)", key)
+            await interaction.followup.send("設定の更新に失敗しました。Botのログを確認してください。", ephemeral=True)
 
     @discord.ui.button(label="<:thinking:1561695212814995596> オン", style=discord.ButtonStyle.success, row=0)
     async def thinking_on(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -496,13 +582,6 @@ class RoleBulkView(discord.ui.View):
         selected = self.role.mention if self.role else "未選択"
         return f"対象ロール: {selected}\n対象アカウント: **{self.target_label()}**\n下のボタンから付与・剥奪を選びます。"
 
-    def embed(self) -> discord.Embed:
-        return discord.Embed(
-            title="一括ロール操作",
-            description=self.description(),
-            color=0x3498DB,
-        )
-
     def target_label(self) -> str:
         return {"humans": "人間のみ", "all": "人間＋BOT", "bots": "BOTのみ"}[self.target_mode]
 
@@ -549,7 +628,14 @@ class RoleTargetSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         self.parent_view.target_mode = self.values[0]
-        await edit_panel_v2(interaction, as_panel_v2(self.parent_view))
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="一括ロール操作",
+                description=self.parent_view.description(),
+                color=0x3498DB,
+            ),
+            view=self.parent_view,
+        )
 
 
 class RoleBulkSelect(discord.ui.RoleSelect):
@@ -559,7 +645,14 @@ class RoleBulkSelect(discord.ui.RoleSelect):
 
     async def callback(self, interaction: discord.Interaction):
         self.parent_view.role = self.values[0]
-        await edit_panel_v2(interaction, as_panel_v2(self.parent_view))
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="一括ロール操作",
+                description=self.parent_view.description(),
+                color=0x3498DB,
+            ),
+            view=self.parent_view,
+        )
 
 
 class SupportClearModal(discord.ui.Modal, title="メッセージ削除"):
@@ -611,15 +704,29 @@ class SupportGenreSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         container = self.view
         view: SupportPanelView = getattr(container, "panel", container)
-        view.genre = self.values[0]
-        view.action = None
-        view.refresh()
-        # Components V2では通常のViewを返すとInteractionが失敗するため、
-        # 元のPanelLayoutViewを同期してそのまま返す。
-        if hasattr(container, "_sync"):
-            container._sync()
-            return await edit_panel_v2(interaction, container)
-        return await edit_panel_v2(interaction, as_panel_v2(view))
+
+        # Components V2の再構築より先にACKし、3秒の初回応答制限を避ける。
+        await interaction.response.defer()
+        try:
+            view.genre = self.values[0]
+            view.action = None
+            view.refresh()
+
+            # V2ではLayoutViewを維持して編集する。通常Viewに置き換えない。
+            if hasattr(container, "_sync"):
+                container._sync()
+                await interaction.edit_original_response(view=container)
+            else:
+                await interaction.edit_original_response(embed=view.embed(), view=view)
+        except Exception:
+            logger.exception("サポート操作パネルのジャンル更新に失敗しました")
+            try:
+                await interaction.followup.send(
+                    "ジャンルの更新に失敗しました。Botのログを確認してください。",
+                    ephemeral=True,
+                )
+            except discord.HTTPException:
+                logger.exception("ジャンル更新エラーの通知にも失敗しました")
 
 
 class SupportActionSelect(discord.ui.Select):
@@ -631,14 +738,7 @@ class SupportActionSelect(discord.ui.Select):
         ], row=1)
 
     async def callback(self, interaction: discord.Interaction):
-        container = self.view
-        panel = getattr(container, "panel", container)
-        panel.action = self.values[0]
-        if getattr(panel, "shortcut_mode", False):
-            if hasattr(container, "_sync"):
-                container._sync()
-                return await edit_panel_v2(interaction, container)
-            return await edit_panel_v2(interaction, as_panel_v2(panel))
+        getattr(self.view, "panel", self.view).action = self.values[0]
         await self.cog.dispatch(interaction, self.values[0])
 
 
@@ -1059,7 +1159,12 @@ class SupportCog(commands.Cog):
             )
         view = RoleBulkView(self, interaction.guild, role)
         await interaction.response.send_message(
-            view=as_panel_v2(view),
+            embed=discord.Embed(
+                title="一括ロール操作",
+                description=view.description(),
+                color=0x3498DB,
+            ),
+            view=view,
             ephemeral=True,
         )
 
