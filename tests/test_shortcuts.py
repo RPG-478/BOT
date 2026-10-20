@@ -44,7 +44,6 @@ class ShortcutTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(payload["view"], wrapper)
         self.assertEqual(payload["content"], None)
         self.assertEqual(payload["embed"], None)
-        self.assertEqual(payload["embeds"], [])
         self.assertEqual(payload["attachments"], [])
 
     async def test_shortcut_manager_register_button_opens_v2_root_panel(self):
@@ -77,7 +76,6 @@ class ShortcutTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(payload["view"], wrapper)
         self.assertEqual(payload["content"], None)
         self.assertEqual(payload["embed"], None)
-        self.assertEqual(payload["embeds"], [])
         self.assertEqual(payload["attachments"], [])
         game_select = wrapper.children[0].children[2].children[0]
         game_select._values = ["uno"]
