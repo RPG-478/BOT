@@ -33,7 +33,7 @@ def embed_text(embed: discord.Embed | None) -> str:
 
 
 def build_rows(items: list[discord.ui.Item]) -> list[list[discord.ui.Item]]:
-    """V1のchildrenをDiscord規約に沿ったActionRow単位へ分割する。
+    """V1のchildrenをComponents V2のActionRow規約へ分割する。
 
     - Selectは1つのActionRowに1つだけ
     - Button等は1つのActionRowに5つまで
@@ -132,7 +132,7 @@ class PanelLayoutView(discord.ui.LayoutView):
     def refresh(self, interaction: discord.Interaction | None = None):
         """状態を更新する。interactionを渡した場合のみawait可能なオブジェクトを返す。
 
-        - ``view.refresh()``              : 同期呼び出し（旧コード互換）。
+        - ``view.refresh()``               : 同期呼び出し（旧コード互換）。
         - ``await view.refresh(interaction)`` : 編集まで行ってタイムアウトを防止。
         """
         self.panel.genre = getattr(self, "genre", getattr(self.panel, "genre", None))
