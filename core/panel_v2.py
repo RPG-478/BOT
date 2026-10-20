@@ -30,6 +30,20 @@ class PanelLayoutView(discord.ui.LayoutView):
         self.panel = panel
         self._sync()
 
+    def __setattr__(self, name, value):
+        """Forward callback state updates to the wrapped panel.
+
+        Components V2 callbacks receive this layout wrapper as ``self.view``.
+        Without forwarding assignments, a selection such as ``chess_mode`` is
+        visible in the wrapper but the launcher still reads the old value from
+        the underlying view.
+        """
+        panel = self.__dict__.get("panel")
+        if panel is not None and name != "panel" and hasattr(panel, name):
+            setattr(panel, name, value)
+            return
+        super().__setattr__(name, value)
+
     def __getattr__(self, name):
         if name != "panel":
             panel = self.__dict__.get("panel")
