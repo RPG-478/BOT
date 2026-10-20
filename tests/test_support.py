@@ -18,6 +18,21 @@ class FakeRole:
 
     def __eq__(self, other):
         return isinstance(other, FakeRole) and self.id == other.id
+    def __ge__(self, other):
+        return self.id >= other.id
+    def is_default(self):
+        return self.id == 0
+    managed = False
+
+
+def role_guild(members):
+    return types.SimpleNamespace(
+        members=members,
+        me=types.SimpleNamespace(
+            guild_permissions=types.SimpleNamespace(manage_roles=True),
+            top_role=FakeRole(999),
+        ),
+    )
 
 
 class FakeMember:
@@ -42,7 +57,7 @@ class SupportRoleBulkTest(unittest.IsolatedAsyncioTestCase):
         cog = SupportCog(None)
         role = FakeRole()
         members = [FakeMember(1), FakeMember(2, [role]), FakeMember(3)]
-        guild = types.SimpleNamespace(members=members)
+        guild = role_guild(members)
         affected, skipped, failed = await cog.bulk_role_update(guild, role, True)
         self.assertEqual((affected, skipped, failed), (2, 1, 0))
         self.assertIn(role, members[0].roles)
@@ -53,7 +68,7 @@ class SupportRoleBulkTest(unittest.IsolatedAsyncioTestCase):
         cog = SupportCog(None)
         role = FakeRole()
         members = [FakeMember(1, [role]), FakeMember(2), FakeMember(3, [role])]
-        guild = types.SimpleNamespace(members=members)
+        guild = role_guild(members)
         affected, skipped, failed = await cog.bulk_role_update(guild, role, False)
         self.assertEqual((affected, skipped, failed), (2, 1, 0))
         self.assertNotIn(role, members[0].roles)
@@ -65,7 +80,7 @@ class SupportRoleBulkTest(unittest.IsolatedAsyncioTestCase):
         role = FakeRole()
         human = FakeMember(1)
         bot = FakeMember(2, bot=True)
-        guild = types.SimpleNamespace(members=[human, bot])
+        guild = role_guild([human, bot])
         affected, skipped, failed = await cog.bulk_role_update(guild, role, True)
         self.assertEqual((affected, skipped, failed), (1, 1, 0))
         human.add_roles.assert_awaited_once()
@@ -75,7 +90,7 @@ class SupportRoleBulkTest(unittest.IsolatedAsyncioTestCase):
         cog = SupportCog(None)
         role = FakeRole()
         bot = FakeMember(2, bot=True)
-        guild = types.SimpleNamespace(members=[bot])
+        guild = role_guild([bot])
         affected, skipped, failed = await cog.bulk_role_update(guild, role, True, target_mode="all")
         self.assertEqual((affected, skipped, failed), (1, 0, 0))
         bot.add_roles.assert_awaited_once()
@@ -85,7 +100,7 @@ class SupportRoleBulkTest(unittest.IsolatedAsyncioTestCase):
         role = FakeRole()
         human = FakeMember(1)
         bot = FakeMember(2, bot=True)
-        guild = types.SimpleNamespace(members=[human, bot])
+        guild = role_guild([human, bot])
         affected, skipped, failed = await cog.bulk_role_update(guild, role, True, target_mode="bots")
         self.assertEqual((affected, skipped, failed), (1, 1, 0))
         human.add_roles.assert_not_awaited()
@@ -100,6 +115,13 @@ class SupportRoleBulkTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("人間のみ", view.description())
         target_select = next(item for item in view.children if isinstance(item, RoleTargetSelect))
         self.assertIn("bots", [option.value for option in target_select.options])
+
+    def test_selected_role_is_checked_against_bot_hierarchy(self):
+        role = FakeRole(20)
+        guild = role_guild([])
+        guild.me.top_role = FakeRole(10)
+        view = RoleBulkView(SupportCog(None), guild, role)
+        self.assertIn("上位", view.role_error())
 
 
 class SupportThinkingReactionTest(unittest.IsolatedAsyncioTestCase):
