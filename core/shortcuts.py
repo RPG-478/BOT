@@ -72,5 +72,9 @@ async def remove(store, guild_id: int, user_id: int, item_id: str) -> bool:
     return True
 
 
-def matching(store, guild_id: int, trigger: str) -> list[dict[str, Any]]:
-    return [x for x in _all(store, guild_id) if x.get("trigger") == trigger]
+def matching(store, guild_id: int, trigger: str, user_id: int | None = None) -> list[dict[str, Any]]:
+    """Return shortcuts matching a trigger, optionally restricted to an owner."""
+    rows = [x for x in _all(store, guild_id) if x.get("trigger") == trigger]
+    if user_id is None:
+        return rows
+    return [x for x in rows if int(x.get("user_id", 0)) == int(user_id)]

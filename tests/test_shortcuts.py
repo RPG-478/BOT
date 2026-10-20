@@ -1,9 +1,8 @@
 import types
 import unittest
-from unittest.mock import AsyncMock
-
+from unittest.mock import AsyncMock, patch
 from cogs.general import (GENERAL_ACTIONS, GENERAL_GENRES, GeneralPanel,
-                           ShortcutManagerView, ShortcutRootPanel)
+                           GeneralCog, ShortcutManagerView, ShortcutRootPanel)
 from cogs.game import GameDetailView, GameHubView
 from core import shortcuts
 from core.panel_v2 import as_panel_v2
@@ -18,6 +17,9 @@ class MemoryStore:
 
     async def update(self, guild_id, section, **values):
         self.data[(guild_id, section)] = values
+
+    async def ensure_loaded(self):
+        return None
 
 
 class ShortcutTest(unittest.IsolatedAsyncioTestCase):
@@ -115,6 +117,38 @@ class ShortcutTest(unittest.IsolatedAsyncioTestCase):
         rows = shortcuts.for_user(store, 1, 2)
         self.assertTrue(await shortcuts.remove(store, 1, 2, rows[0]["id"]))
         self.assertEqual(len(shortcuts.for_user(store, 1, 2)), 9)
+
+    async def test_matching_can_be_restricted_to_shortcut_owner(self):
+        store = MemoryStore()
+        await shortcuts.add(store, 1, 10, "hello", {"root": "general", "value": "status"})
+        await shortcuts.add(store, 1, 20, "hello", {"root": "general", "value": "status"})
+
+        self.assertEqual(len(shortcuts.matching(store, 1, "hello")), 2)
+        self.assertEqual([x["user_id"] for x in shortcuts.matching(store, 1, "hello", user_id=10)], [10])
+        self.assertEqual(shortcuts.matching(store, 1, "hello", user_id=99), [])
+
+    async def test_message_shortcut_does_not_trigger_for_another_user(self):
+        store = MemoryStore()
+        await shortcuts.add(store, 1, 10, "hello", {"root": "general", "value": "status"})
+        cog = GeneralCog(None)
+        cog.execute_shortcut = AsyncMock()
+        message = types.SimpleNamespace(
+            author=types.SimpleNamespace(id=20, bot=False),
+            guild=types.SimpleNamespace(id=1),
+            content="hello",
+        )
+
+        with patch("cogs.general.guild_settings.get_store", return_value=store):
+            await cog.on_message(message)
+
+        cog.execute_shortcut.assert_not_awaited()
+
+    async def test_execute_shortcut_rechecks_owner(self):
+        cog = GeneralCog(None)
+        message = types.SimpleNamespace(author=types.SimpleNamespace(id=20))
+        item = {"user_id": 10, "action": {"root": "general", "value": "status"}}
+
+        self.assertFalse(await cog.execute_shortcut(message, item))
 
 
 if __name__ == "__main__":
