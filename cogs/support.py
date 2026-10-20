@@ -496,6 +496,13 @@ class RoleBulkView(discord.ui.View):
         selected = self.role.mention if self.role else "未選択"
         return f"対象ロール: {selected}\n対象アカウント: **{self.target_label()}**\n下のボタンから付与・剥奪を選びます。"
 
+    def embed(self) -> discord.Embed:
+        return discord.Embed(
+            title="一括ロール操作",
+            description=self.description(),
+            color=0x3498DB,
+        )
+
     def target_label(self) -> str:
         return {"humans": "人間のみ", "all": "人間＋BOT", "bots": "BOTのみ"}[self.target_mode]
 
@@ -542,14 +549,7 @@ class RoleTargetSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         self.parent_view.target_mode = self.values[0]
-        await interaction.response.edit_message(
-            embed=discord.Embed(
-                title="一括ロール操作",
-                description=self.parent_view.description(),
-                color=0x3498DB,
-            ),
-            view=self.parent_view,
-        )
+        await interaction.response.edit_message(view=as_panel_v2(self.parent_view))
 
 
 class RoleBulkSelect(discord.ui.RoleSelect):
@@ -559,14 +559,7 @@ class RoleBulkSelect(discord.ui.RoleSelect):
 
     async def callback(self, interaction: discord.Interaction):
         self.parent_view.role = self.values[0]
-        await interaction.response.edit_message(
-            embed=discord.Embed(
-                title="一括ロール操作",
-                description=self.parent_view.description(),
-                color=0x3498DB,
-            ),
-            view=self.parent_view,
-        )
+        await interaction.response.edit_message(view=as_panel_v2(self.parent_view))
 
 
 class SupportClearModal(discord.ui.Modal, title="メッセージ削除"):
@@ -1059,12 +1052,7 @@ class SupportCog(commands.Cog):
             )
         view = RoleBulkView(self, interaction.guild, role)
         await interaction.response.send_message(
-            embed=discord.Embed(
-                title="一括ロール操作",
-                description=view.description(),
-                color=0x3498DB,
-            ),
-            view=view,
+            view=as_panel_v2(view),
             ephemeral=True,
         )
 

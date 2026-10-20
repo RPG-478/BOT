@@ -282,7 +282,9 @@ class JoinView(discord.ui.View):
     @discord.ui.button(label="抜ける", style=discord.ButtonStyle.secondary)
     async def leave(self, interaction, button):
         g = self.game
-        if g.phase != "recruit" or interaction.user.id not in g.players or interaction.user.id == g.host_id:
+        if g.phase != "recruit" or interaction.user.id not in g.players:
+            return await interaction.response.send_message("参加中の募集がありません。", ephemeral=True)
+        if interaction.user.id == g.host_id:
             return await interaction.response.send_message("募集主は抜けられません。", ephemeral=True)
         del g.players[interaction.user.id]
         await interaction.response.send_message("参加を取り消しました。", ephemeral=True)
@@ -344,6 +346,7 @@ class Chess(commands.Cog):
         g = ChessGame(channel.id, interaction.guild_id, interaction.user.id, mode, difficulty)
         if mode == "cpu":
             g.players["white"] = interaction.user
+            self.games[channel.id] = g
             g.phase = "playing"
             await interaction.response.send_message(f"CPU対戦（難易度 {g.difficulty}/10）を開始します。", ephemeral=True)
             try:
