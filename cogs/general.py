@@ -104,7 +104,13 @@ class GeneralActionSelect(discord.ui.Select):
 
     async def callback(self, interaction):
         view: GeneralPanel = self.view
-        getattr(view, "panel", view).action = self.values[0]
+        panel = getattr(view, "panel", view)
+        panel.action = self.values[0]
+        if panel.shortcut_mode:
+            if hasattr(view, "_sync"):
+                view._sync()
+                return await interaction.response.edit_message(view=view)
+            return await interaction.response.edit_message(embed=panel.embed(), view=panel)
         await self.cog.dispatch_general(interaction, self.values[0])
 
 
