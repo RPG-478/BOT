@@ -276,22 +276,28 @@ class HelpView(discord.ui.View):
     def embed(self) -> discord.Embed:
         return self.pages[self.page] if self.category_id else overview_embed(self.catalog)
 
-    async def show(self, interaction: discord.Interaction, category_id: str | None, page: int):
+    async def show(self, interaction: discord.Interaction, category_id: str | None, page: int,
+                   *, v2: bool = False):
         view = HelpView(self.catalog, category_id, page, self.shortcut_mode, self.shortcut_item)
         self.stop()
+        if v2:
+            return await interaction.response.edit_message(view=as_panel_v2(view))
         await interaction.response.edit_message(embed=view.embed(), view=view)
 
     @discord.ui.button(label="前へ", emoji="<:Left:1561698207757500537>", style=discord.ButtonStyle.secondary, row=2)
     async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.show(interaction, self.category_id, self.page - 1)
+        await self.show(interaction, self.category_id, self.page - 1,
+                        v2=hasattr(getattr(button, "view", None), "_sync"))
 
     @discord.ui.button(label="次へ", emoji="<:Right:1561698129655373845>", style=discord.ButtonStyle.secondary, row=2)
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.show(interaction, self.category_id, self.page + 1)
+        await self.show(interaction, self.category_id, self.page + 1,
+                        v2=hasattr(getattr(button, "view", None), "_sync"))
 
     @discord.ui.button(label="カテゴリ一覧", style=discord.ButtonStyle.primary, row=2)
     async def back_to_top(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.show(interaction, None, 0)
+        await self.show(interaction, None, 0,
+                        v2=hasattr(getattr(button, "view", None), "_sync"))
 
 
 class BackView(discord.ui.View):
