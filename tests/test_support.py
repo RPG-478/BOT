@@ -230,9 +230,11 @@ class SupportVCLogTest(unittest.IsolatedAsyncioTestCase):
             await cog.on_voice_state_update(member, types.SimpleNamespace(channel=voice), types.SimpleNamespace(channel=None))
         self.assertEqual(target.send.await_count, 2)
         sent = [call.kwargs["embed"] for call in target.send.await_args_list]
-        self.assertEqual([embed.title for embed in sent], ["VC入室", "VC退出"])
+        self.assertEqual([embed.title for embed in sent], ["VC入室", "VC退室"])
         self.assertIn("<@5>", sent[0].description)
         self.assertIn("ゲームVC", sent[1].description)
+        self.assertIn("ゲームVC** に入室しました", sent[0].description)
+        self.assertIn("ゲームVC** から退室しました", sent[1].description)
 
     async def test_switching_voice_channels_sends_exit_then_join(self):
         cog, store, member, target = self.make_event()
@@ -241,7 +243,7 @@ class SupportVCLogTest(unittest.IsolatedAsyncioTestCase):
         with patch("cogs.support.guild_settings.get_store", return_value=store):
             await cog.on_voice_state_update(member, before, after)
         sent = [call.kwargs["embed"] for call in target.send.await_args_list]
-        self.assertEqual([embed.title for embed in sent], ["VC退出", "VC入室"])
+        self.assertEqual([embed.title for embed in sent], ["VC退室", "VC入室"])
 
     async def test_disabled_vc_log_sends_nothing(self):
         cog, store, member, target = self.make_event(enabled=False)

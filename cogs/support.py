@@ -117,10 +117,13 @@ def get_vc_log_settings(store, guild_id: int) -> dict[str, int | bool | None]:
 
 
 def vc_log_embed(member: discord.Member, channel: discord.VoiceChannel, joined: bool) -> discord.Embed:
-    action = "入りました" if joined else "退出しました"
+    action = "入室しました" if joined else "退室しました"
     embed = discord.Embed(
-        title="VC入室" if joined else "VC退出",
-        description=f"{member.mention} が **{discord.utils.escape_markdown(channel.name)}** が{action}。",
+        title="VC入室" if joined else "VC退室",
+        description=(
+            f"{member.mention} が **{discord.utils.escape_markdown(channel.name)}** "
+            f"{'に' if joined else 'から'}{action}。"
+        ),
         color=0x2ECC71 if joined else 0xE74C3C,
         timestamp=discord.utils.utcnow(),
     )

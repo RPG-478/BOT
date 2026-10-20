@@ -1,7 +1,9 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from cogs.othello import BLACK, WHITE, choose_ai_move as choose_othello_move, legal_moves as othello_moves, new_board
-from cogs.shogi import ShogiRenderer, choose_ai_move as choose_shogi_move
+from cogs.shogi import Shogi, ShogiRenderer, ShogiSession, choose_ai_move as choose_shogi_move
 from core.shogi_engine import Color, Piece, PieceType, ShogiGame
 
 
@@ -74,6 +76,30 @@ class BoardAiTest(unittest.TestCase):
         self.assertTrue(game.is_in_check(Color.SENTE))
         self.assertTrue(game.is_checkmate(Color.SENTE))
 
+
+class ShogiMoveFlowTest(unittest.IsolatedAsyncioTestCase):
+    async def test_select_flow_executes_non_promotion_move(self):
+        cog = Shogi(None)
+        cog._update_board_msg = AsyncMock()
+        session = ShogiSession(1, 1, 1, mode="cpu")
+        session.phase = "playing"
+        source = session.game.get_selectable_pieces()[0]
+        destination = session.game._generate_moves(*source)[0]
+        labels = [("A", source), ("B", destination)]
+
+        class Response:
+            async def defer(self):
+                return None
+
+        channel = SimpleNamespace()
+        interaction = SimpleNamespace(
+            response=Response(), message=SimpleNamespace(channel=channel), channel=channel
+        )
+        await cog.handle_select(interaction, session, dict(labels), "A")
+        await cog.handle_select(interaction, session, dict(labels), "B")
+
+        self.assertTrue(session.acted)
+        self.assertEqual(session.game.turn, Color.GOTE)
 
 if __name__ == "__main__":
     unittest.main()
