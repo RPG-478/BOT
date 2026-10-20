@@ -483,6 +483,13 @@ class Shogi(commands.Cog):
             await channel.send(f"将棋開始！ 先手: {ids[0].mention} / 後手: {ids[1].mention}")
         idle = 0
         while s.phase == "playing":
+            if s.game.is_checkmate(s.game.turn):
+                winner = s.players[Color.GOTE if s.game.turn == Color.SENTE else Color.SENTE]
+                await channel.send(f"詰みです。{winner.mention} さんの勝利です。")
+                break
+            if not s.game.has_legal_move(s.game.turn):
+                await channel.send("合法な指し手がないため、対局を終了します。")
+                break
             if s.mode == "cpu" and s.game.turn == Color.GOTE:
                 move = await asyncio.to_thread(choose_ai_move, s.game, s.difficulty)
                 if move is None:
@@ -498,7 +505,8 @@ class Shogi(commands.Cog):
             selectables = s.game.get_selectable_pieces()
             labels = list(zip(MOVE_LABELS, selectables))
             desc = (f"{turn_user.mention} さんの番（{'先手' if s.game.turn == Color.SENTE else '後手'}）。\n"
-                    "セレクトメニューまたは「座標を入力」から駒を選んでください。")
+                    + ("王手を受けています。\n" if s.game.is_in_check(s.game.turn) else "")
+                    + "セレクトメニューまたは「座標を入力」から駒を選んでください。")
             await self._update_board_msg(s, channel, desc, labels=labels)
             for _ in range(TURN_SECONDS):
                 if s.acted or s.phase != "playing":
