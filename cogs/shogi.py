@@ -1,4 +1,4 @@
-"""/game の将棋（2人対戦、リアクション選択、手駒・二歩対応）。"""
+"""/game の将棋（2人対戦、セレクト・座標入力、手駒・二歩対応）。"""
 import asyncio
 import io
 import random
@@ -149,7 +149,7 @@ class ShogiRenderer:
                 PieceType.GOLD: "金.png", PieceType.BISHOP: "角.png",
                 PieceType.ROOK: "飛.png", PieceType.KING: "王.png",
             }[piece.type]
-        ck = str(path) + ("g" if is_gote else "")
+        ck = str(path) + ("g" if is_gote else "") + ("p" if piece.promoted else "")
         if ck not in self.cache:
             try:
                 im = Image.open(path).convert("RGBA")
@@ -254,7 +254,13 @@ class JoinView(discord.ui.View):
 class ShogiMoveSelect(discord.ui.Select):
     def __init__(self, cog, session, labels):
         self.cog, self.session, self.labels = cog, session, dict(labels)
-        options = [discord.SelectOption(label=f"{label}番", value=label) for label, _ in labels]
+        options = [
+            discord.SelectOption(
+                label=(f"{label}番" if isinstance(pos, tuple) else f"{label}番: {pos.value}"),
+                value=label,
+            )
+            for label, pos in labels[:25]
+        ]
         super().__init__(placeholder="番号を選んでください", options=options)
 
     async def callback(self, interaction):
@@ -264,7 +270,58 @@ class ShogiMoveSelect(discord.ui.Select):
 class ShogiMoveView(discord.ui.View):
     def __init__(self, cog, session, labels):
         super().__init__(timeout=TURN_SECONDS)
-        self.add_item(ShogiMoveSelect(cog, session, labels))
+        state = getattr(session, "state", "select_piece")
+        if labels:
+            self.add_item(ShogiMoveSelect(cog, session, labels))
+        if state == "select_piece":
+            self.add_item(ShogiHandButton(cog, session))
+        elif state in ("select_dest", "select_hand", "select_drop_dest"):
+            self.add_item(ShogiCancelButton(cog, session))
+        if state in ("select_piece", "select_dest", "select_drop_dest"):
+            self.add_item(ShogiCoordinateButton(cog, session))
+
+
+class ShogiHandButton(discord.ui.Button):
+    def __init__(self, cog, session):
+        super().__init__(label="持ち駒を使う", style=discord.ButtonStyle.primary)
+        self.cog, self.session = cog, session
+
+    async def callback(self, interaction):
+        await self.cog.handle_hand(interaction, self.session)
+
+
+class ShogiCancelButton(discord.ui.Button):
+    def __init__(self, cog, session):
+        super().__init__(label="戻る", style=discord.ButtonStyle.secondary)
+        self.cog, self.session = cog, session
+
+    async def callback(self, interaction):
+        await self.cog.handle_cancel(interaction, self.session)
+
+
+class ShogiCoordinateModal(discord.ui.Modal, title="盤面の座標を入力"):
+    coordinate = discord.ui.TextInput(
+        label="行・列（例: 44 / 18）",
+        placeholder="1〜9の数字を2桁で入力",
+        min_length=2,
+        max_length=2,
+    )
+
+    def __init__(self, cog, session):
+        super().__init__()
+        self.cog, self.session = cog, session
+
+    async def on_submit(self, interaction):
+        await self.cog.handle_coordinate_input(interaction, self.session, str(self.coordinate.value))
+
+
+class ShogiCoordinateButton(discord.ui.Button):
+    def __init__(self, cog, session):
+        super().__init__(label="座標を入力", style=discord.ButtonStyle.secondary)
+        self.cog, self.session = cog, session
+
+    async def callback(self, interaction):
+        await interaction.response.send_modal(ShogiCoordinateModal(self.cog, self.session))
 
 
 class Shogi(commands.Cog):
@@ -287,9 +344,11 @@ class Shogi(commands.Cog):
     async def handle_select(self, interaction, s, labels, label):
         await interaction.response.defer()
         pos = labels.get(label)
-        if s.phase != "playing" or s.acted or not isinstance(pos, tuple):
+        if s.phase != "playing" or s.acted:
             return
         if s.state == "select_piece":
+            if not isinstance(pos, tuple):
+                return
             s.selected = pos
             dests = s.game._generate_moves(*pos)
             if not dests:
@@ -300,8 +359,67 @@ class Shogi(commands.Cog):
                                           f"移動先の番号を選んでください（{len(dests)}箇所）。",
                                           labels=dest_labels, selected=pos)
         elif s.state == "select_dest" and s.selected:
+            if not isinstance(pos, tuple):
+                return
             if s.game.make_move(s.selected, pos, promote=True):
                 s.acted = True
+        elif s.state == "select_hand" and isinstance(pos, PieceType):
+            drops = s.game.get_drop_squares(pos)
+            if not drops:
+                await interaction.followup.send("打てる場所がありません。", delete_after=3)
+                return
+            s.selected_drop = pos
+            s.state = "select_drop_dest"
+            await self._update_board_msg(
+                s, interaction.channel, "打ち場所を選択してください。",
+                labels=list(zip(MOVE_LABELS, drops)), extra_emojis=None,
+            )
+        elif s.state == "select_drop_dest" and isinstance(pos, tuple):
+            if s.game.make_move(None, pos, drop_type=s.selected_drop):
+                s.acted = True
+
+    async def handle_coordinate_input(self, interaction, s, text):
+        await interaction.response.defer()
+        if s.phase != "playing" or s.acted or len(text) != 2 or not text.isdigit():
+            return
+        row, col = (int(value) - 1 for value in text)
+        if not (0 <= row < 9 and 0 <= col < 9):
+            return await interaction.followup.send("座標は11〜99の範囲で入力してください。", ephemeral=True)
+        pos = (row, col)
+        if s.state == "select_piece":
+            if not s.game._generate_moves(*pos) or s.game.board[row][col].color != s.game.turn:
+                return await interaction.followup.send("その座標の駒は選択できません。", ephemeral=True)
+            s.selected = pos
+            dests = s.game._generate_moves(*pos)
+            s.state = "select_dest"
+            await self._update_board_msg(s, interaction.channel, f"移動先を選択してください（{len(dests)}箇所）。", labels=list(zip(MOVE_LABELS, dests)), selected=pos)
+        elif s.state == "select_dest" and s.selected:
+            if s.game.make_move(s.selected, pos, promote=True):
+                s.acted = True
+        elif s.state == "select_drop_dest" and s.selected_drop:
+            if s.game.make_move(None, pos, drop_type=s.selected_drop):
+                s.acted = True
+
+    async def handle_hand(self, interaction, s):
+        await interaction.response.defer()
+        if s.phase != "playing" or s.acted:
+            return
+        hand_pieces = s.game.get_hand_pieces()
+        if not hand_pieces:
+            return await interaction.followup.send("持ち駒がありません。", ephemeral=True)
+        s.state = "select_hand"
+        hand_labels = [(str(index), piece_type) for index, piece_type in enumerate(hand_pieces, 1)]
+        await self._update_board_msg(s, interaction.channel, "持ち駒を選択してください。", labels=hand_labels)
+
+    async def handle_cancel(self, interaction, s):
+        await interaction.response.defer()
+        if s.phase != "playing" or s.acted:
+            return
+        s.state = "select_piece"
+        s.selected = None
+        s.selected_drop = None
+        selectables = s.game.get_selectable_pieces()
+        await self._update_board_msg(s, interaction.channel, "駒を選択してください。", labels=list(zip(MOVE_LABELS, selectables)))
 
     async def start_recruit(self, interaction, mode="human", difficulty=5):
         ch = interaction.channel
@@ -337,7 +455,7 @@ class Shogi(commands.Cog):
         file = discord.File(buf, "shogi.png")
         embed = discord.Embed(description=description, color=COLOR)
         embed.set_image(url="attachment://shogi.png")
-        select_view = ShogiMoveView(self, s, labels) if labels and isinstance(labels[0][1], tuple) else None
+        select_view = ShogiMoveView(self, s, labels) if labels else None
         if s.current_msg is None:
             s.current_msg = await game_panels.replace(channel, "party", embed=embed, file=file,
                                                       view=select_view)
@@ -348,14 +466,8 @@ class Shogi(commands.Cog):
                 # Fallback if edit fails
                 s.current_msg = await game_panels.replace(channel, "party", embed=embed, file=file,
                                                           view=select_view)
-        await self._clear_reactions(s.current_msg)
-        emojis = []
-        if labels:
-            emojis.extend(reaction_emoji(lab) for lab, _ in labels[:REACTION_PAGE_SIZE])
-        if extra_emojis:
-            emojis.extend(extra_emojis)
-        await self._add_reactions(s.current_msg, emojis)
-        self.reaction_sessions[s.current_msg.id] = {"session": s, "labels": dict(labels or [])}
+        # 将棋の操作はセレクトメニューと座標入力に統一し、リアクションは追加しない。
+        self.reaction_sessions.pop(s.current_msg.id, None)
 
     async def run_game(self, channel, s: ShogiSession):
         if len(s.players) != 2:
@@ -384,10 +496,10 @@ class Shogi(commands.Cog):
             s.selected = None
             s.selected_drop = None
             selectables = s.game.get_selectable_pieces()
-            labels = list(zip(MOVE_LABELS, selectables))[:REACTION_PAGE_SIZE]
+            labels = list(zip(MOVE_LABELS, selectables))
             desc = (f"{turn_user.mention} さんの番（{'先手' if s.game.turn == Color.SENTE else '後手'}）。\n"
-                    "動ける駒のラベルに対応するリアクションを押すか、✋で手駒を確認してください。")
-            await self._update_board_msg(s, channel, desc, labels=labels, extra_emojis=[HAND_EMOJI])
+                    "セレクトメニューまたは「座標を入力」から駒を選んでください。")
+            await self._update_board_msg(s, channel, desc, labels=labels)
             for _ in range(TURN_SECONDS):
                 if s.acted or s.phase != "playing":
                     break

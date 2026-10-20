@@ -33,6 +33,25 @@ class BoardAiTest(unittest.TestCase):
                     image = renderer._piece_img(Piece(piece_type, color, promoted=True))
                     self.assertIsNotNone(image.getchannel("A").getbbox())
 
+    def test_shogi_promoted_piece_does_not_reuse_unpromoted_image_cache(self):
+        renderer = ShogiRenderer()
+        plain = renderer._piece_img(Piece(PieceType.PAWN, Color.SENTE))
+        promoted = renderer._piece_img(Piece(PieceType.PAWN, Color.SENTE, promoted=True))
+        self.assertIsNot(plain, promoted)
+
+    def test_shogi_promotion_and_hand_drop(self):
+        game = ShogiGame()
+        game.board = [[None for _ in range(9)] for _ in range(9)]
+        game.board[3][3] = Piece(PieceType.PAWN, Color.SENTE)
+        self.assertTrue(game.make_move((3, 3), (2, 3), promote=True))
+        self.assertTrue(game.board[2][3].promoted)
+
+        game.turn = Color.SENTE
+        game.hands[Color.SENTE][PieceType.ROOK] = 1
+        self.assertTrue(game.make_move(None, (4, 4), drop_type=PieceType.ROOK))
+        self.assertEqual(game.board[4][4].type, PieceType.ROOK)
+        self.assertEqual(game.hands[Color.SENTE][PieceType.ROOK], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
