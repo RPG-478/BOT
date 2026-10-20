@@ -89,7 +89,7 @@ class GeneralGenreSelect(discord.ui.Select):
             wrapper.refresh()
             return await interaction.response.edit_message(view=wrapper)
         view.refresh()
-        await interaction.response.edit_message(embed=view.embed(), view=view)
+        return await interaction.response.edit_message(view=as_panel_v2(view))
 
 
 class GeneralActionSelect(discord.ui.Select):
@@ -110,7 +110,7 @@ class GeneralActionSelect(discord.ui.Select):
             if hasattr(view, "_sync"):
                 view._sync()
                 return await interaction.response.edit_message(view=view)
-            return await interaction.response.edit_message(embed=panel.embed(), view=panel)
+            return await interaction.response.edit_message(view=as_panel_v2(panel))
         await self.cog.dispatch_general(interaction, self.values[0])
 
 
@@ -193,7 +193,7 @@ class ShortcutRootSelect(discord.ui.Select):
         if hasattr(self.view, "_sync"):
             self.view._sync()
             return await interaction.response.edit_message(view=self.view)
-        await interaction.response.edit_message(embed=self.parent_view.embed(), view=self.parent_view)
+        return await interaction.response.edit_message(view=as_panel_v2(self.parent_view))
 
 
 class ShortcutRootPanel(discord.ui.View):
@@ -271,7 +271,7 @@ class ShortcutManageSelect(discord.ui.Select):
             if wrapper is not None:
                 wrapper._sync()
                 return await interaction.response.edit_message(view=self.view)
-            return await interaction.response.edit_message(embed=self.parent_view.embed("削除しました。"), view=self.parent_view)
+            return await interaction.response.edit_message(view=as_panel_v2(self.parent_view))
         view = ShortcutRootPanel(item)
         await interaction.response.edit_message(view=as_panel_v2(view))
 
@@ -311,7 +311,7 @@ class ShortcutManagerView(discord.ui.View):
         if wrapper is not None:
             wrapper._sync()
             return await interaction.response.edit_message(view=self.view)
-        await interaction.response.edit_message(embed=self.embed(), view=self)
+        return await interaction.response.edit_message(view=as_panel_v2(self))
 
 
 class GeneralCog(commands.Cog):

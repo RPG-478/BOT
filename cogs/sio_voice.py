@@ -286,7 +286,7 @@ class VoiceActionSelect(discord.ui.Select):
             if hasattr(container, "_sync"):
                 container._sync()
                 return await interaction.response.edit_message(view=container)
-            return await interaction.response.edit_message(embed=panel.embed(), view=panel)
+            return await interaction.response.edit_message(view=as_panel_v2(panel))
         if value == "global_start":
             return await interaction.response.send_modal(GlobalRoomModal(self.hub))
         await self.hub.dispatch_voice_action(interaction, value)

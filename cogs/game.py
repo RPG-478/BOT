@@ -144,7 +144,7 @@ class GameSelect(discord.ui.Select):
         panel = GameDetailView(self.view.cog, game_id, self.view.shortcut_mode, self.view.shortcut_item)
         if hasattr(self.view, "panel"):
             return await interaction.response.edit_message(view=as_panel_v2(panel))
-        await interaction.response.edit_message(embed=detail_embed(game_id), view=panel)
+        return await interaction.response.edit_message(view=as_panel_v2(panel))
 
 
 class GameHubView(discord.ui.View):
