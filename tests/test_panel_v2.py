@@ -32,6 +32,22 @@ class PanelV2StateTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(interaction.response.edit_message.call_args.kwargs["view"], wrapped)
         self.assertNotIn("embed", interaction.response.edit_message.call_args.kwargs)
 
+    async def test_voice_genre_dropdown_wraps_legacy_owner_fallback(self):
+        panel = VoicePanelView(None)
+        wrapped = as_panel_v2(panel)
+        select = wrapped.children[0].children[1].children[0]
+        select._view = panel
+        select._values = ["connection"]
+        interaction = types.SimpleNamespace(
+            response=types.SimpleNamespace(edit_message=AsyncMock())
+        )
+
+        await select.callback(interaction)
+
+        next_view = interaction.response.edit_message.call_args.kwargs["view"]
+        self.assertIsNot(next_view, panel)
+        self.assertIs(next_view.panel, panel)
+
     async def test_voice_action_dropdown_keeps_shortcut_builder_open(self):
         panel = VoicePanelView(None, genre="connection", shortcut_mode=True)
         wrapped = as_panel_v2(panel)
