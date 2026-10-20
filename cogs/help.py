@@ -228,8 +228,8 @@ class GuideSelect(discord.ui.Select):
             embed = guide_embed(f"{value} のガイド", entry["guide"]) if entry and entry["guide"] else \
                 discord.Embed(description="ガイドが見つかりませんでした。", color=COLOR)
         view: HelpView = self.view
-        await interaction.response.edit_message(
-            view=as_panel_v2(BackView(self.catalog, self.category_id, view.page, embed)))
+        await edit_panel_v2(
+            interaction, as_panel_v2(BackView(self.catalog, self.category_id, view.page, embed)))
 
 
 class HelpView(discord.ui.View):
@@ -332,8 +332,7 @@ class CommandView(discord.ui.View):
     @discord.ui.button(label="ガイドを読む", emoji="📖", style=discord.ButtonStyle.success)
     async def read_guide(self, interaction: discord.Interaction, button: discord.ui.Button):
         key = command_key(self.entry["kind"], self.entry["name"])
-        await interaction.response.edit_message(
-            view=as_panel_v2(BackView(
+        await edit_panel_v2(interaction, as_panel_v2(BackView(
                 self.catalog, self.entry["category"], 0,
                 guide_embed(f"{key} のガイド", self.entry["guide"]))))
 

@@ -6,7 +6,7 @@ from discord.interactions import interaction_message_response_params
 from cogs.game import GameDetailView
 from cogs.sio_voice import VoicePanelView
 from cogs.support import SupportPanelView
-from core.panel_v2 import as_panel_v2
+from core.panel_v2 import as_panel_v2, edit_message_v2
 
 
 class PanelV2StateTest(unittest.IsolatedAsyncioTestCase):
@@ -24,6 +24,18 @@ class PanelV2StateTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(params.payload["data"]["content"], None)
         self.assertEqual(params.payload["data"]["embeds"], [])
         self.assertEqual(params.payload["data"]["attachments"], [])
+
+    async def test_normal_message_v2_edit_clears_legacy_payloads(self):
+        message = types.SimpleNamespace(edit=AsyncMock())
+        wrapped = as_panel_v2(VoicePanelView(None))
+
+        await edit_message_v2(message, wrapped)
+
+        payload = message.edit.call_args.kwargs
+        self.assertIsNone(payload["content"])
+        self.assertIsNone(payload["embed"])
+        self.assertEqual(payload["attachments"], [])
+        self.assertIs(payload["view"], wrapped)
 
     async def test_game_selection_writes_through_to_wrapped_panel(self):
         panel = GameDetailView(None, "othello")
