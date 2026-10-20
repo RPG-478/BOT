@@ -1,4 +1,4 @@
-// commands.json（とサンプル）が、サイトが期待する形になっているかを確かめる
+// commands.json（とサンプル）が、サイトが期待する形と公開コマンド構成になっているかを確かめる
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -6,9 +6,10 @@ import path from "node:path";
 
 const dataDir = path.join(import.meta.dirname, "..", "data");
 const files = ["commands.sample.json", "commands.json"].filter((f) => fs.existsSync(path.join(dataDir, f)));
+const publicCommands = ["game", "general", "help", "vc", "support"];
 
 for (const file of files) {
-  test(`${file} の形`, () => {
+  test(`${file} の形と公開コマンド`, () => {
     const data = JSON.parse(fs.readFileSync(path.join(dataDir, file), "utf8"));
     assert.ok(Array.isArray(data.categories) && data.categories.length > 0);
     assert.ok(Array.isArray(data.commands));
@@ -27,5 +28,9 @@ for (const file of files) {
       assert.ok(!seen.has(key), `重複: ${key}`);
       seen.add(key);
     }
+    assert.deepEqual(
+      data.commands.filter((cmd) => cmd.kind === "slash" && !cmd.hidden).map((cmd) => cmd.name),
+      publicCommands,
+    );
   });
 }

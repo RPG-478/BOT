@@ -1,30 +1,35 @@
 import Link from "next/link";
-import { loadCatalog } from "@/lib/catalog";
-import SampleNotice from "./SampleNotice";
+import { COMMAND_GUIDES } from "@/lib/command-guides";
 
 export default function Home() {
-  const catalog = loadCatalog();
   return (
     <>
-      <section className="hero support-hero">
+      <section className="home-hero">
         <img src="/img/nomal.png" alt="AGOBOT" />
         <div>
-          <p className="eyebrow">AGOBOT サポート</p>
-          <h1>分かりやすく、幅広く。</h1>
-          <p className="muted">ゲームも音楽も、Discordで使える機能のコマンドと使い方をまとめています。</p>
-          <Link className="primary-link" href="/commands">コマンド一覧を見る →</Link>
+          <p className="eyebrow">AGOBOT SUPPORT</p>
+          <h1>使いたいことから、すぐ辿れる。</h1>
+          <p className="muted">5つのコマンドを入口に、ジャンルと細かな機能を順に案内します。</p>
+          <Link className="primary-link" href="/commands">コマンド一覧を見る</Link>
         </div>
       </section>
-      <SampleNotice show={catalog.isSample} />
-      <section className="support-links" aria-label="よく使うコマンド">
-        <Link href="/commands#game" className="card">
-          <strong><code>/game</code> ゲームで遊ぶ</strong>
-          <p className="muted">遊ぶゲームを選び、ルールを確認して募集を始めます。</p>
-        </Link>
-        <Link href="/commands#voice" className="card">
-          <strong><code>/music</code> 音楽を楽しむ</strong>
-          <p className="muted">URLや検索語から再生し、キューや音響を操作できます。</p>
-        </Link>
+      <section className="home-section" aria-labelledby="commands-heading">
+        <div className="section-intro">
+          <p className="eyebrow">START HERE</p>
+          <h2 id="commands-heading">5つのコマンド</h2>
+        </div>
+        <div className="home-command-grid">
+          {COMMAND_GUIDES.map((guide) => (
+            <Link key={guide.slug} href={`/commands/${guide.slug}`} className="home-command-link">
+              <code>{guide.command}</code>
+              <span>{guide.title}</span>
+            </Link>
+          ))}
+        </div>
+      </section>
+      <section className="home-section simple-callout">
+        <h2>まずは <code>/help</code> から</h2>
+        <p className="muted">Discord上でカテゴリから探したいときは、<code>/help</code> を開いてください。</p>
       </section>
     </>
   );

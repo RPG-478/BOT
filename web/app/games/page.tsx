@@ -1,29 +1,5 @@
-import Link from "next/link";
-import { commandId, displayName, games, loadCatalog } from "@/lib/catalog";
-import { gameArt } from "@/lib/art";
-import SampleNotice from "../SampleNotice";
-
-export const metadata = { title: "ゲームのルール | AGOBOT" };
+import { redirect } from "next/navigation";
 
 export default function GamesPage() {
-  const catalog = loadCatalog();
-  const list = games(catalog);
-  return (
-    <>
-      <h1>ゲーム</h1>
-      <SampleNotice show={catalog.isSample} />
-      {list.length === 0 && <p className="muted">ルールはまだ登録されていません。</p>}
-      <div className="grid">
-        {list.map((g) => (
-          <Link key={commandId(g)} href={`/games/${commandId(g)}`} className="card game-card">
-            <img src={gameArt(g.name)} alt="" />
-            <div>
-              <strong>{displayName(g)}</strong>
-              <div className="muted">{g.summary}</div>
-            </div>
-          </Link>
-        ))}
-      </div>
-    </>
-  );
+  redirect("/commands/game");
 }

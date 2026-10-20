@@ -1,102 +1,17 @@
 {
-  "generated_at": "2026-10-12T12:00:00+09:00",
+  "generated_at": "2026-10-21T00:01:14+09:00",
   "categories": [
-    {
-      "id": "support",
-      "label": "サポート",
-      "description": "使い方の案内やサーバーの設定",
-      "guide": ""
-    },
-    {
-      "id": "economy",
-      "label": "ウォレット",
-      "description": "コインの確認・送金・履歴",
-      "guide": ""
-    },
-    {
-      "id": "game",
-      "label": "パーティーゲーム",
-      "description": "みんなで遊べるゲーム",
-      "guide": ""
-    },
-    {
-      "id": "voice",
-      "label": "ボイス",
-      "description": "VC で使える機能",
-      "guide": ""
-    },
-    {
-      "id": "fun",
-      "label": "おたのしみ",
-      "description": "ひまつぶし向けの小さな機能",
-      "guide": ""
-    },
-    {
-      "id": "admin",
-      "label": "管理",
-      "description": "サーバー管理者向けの機能",
-      "guide": ""
-    }
+    { "id": "game", "label": "ゲーム", "description": "ゲームを選び、ルール確認と募集を始めます。", "guide": null },
+    { "id": "general", "label": "一般機能", "description": "コイン・ランキング、生存確認、ショートカットを操作します。", "guide": null },
+    { "id": "help", "label": "ヘルプ", "description": "コマンドの使い方をカテゴリまたは名前から探します。", "guide": null },
+    { "id": "vc", "label": "VC・音楽", "description": "ボイスチャンネルと音楽の機能を操作します。", "guide": null },
+    { "id": "support", "label": "サポート", "description": "サーバー運用、通知、イベントに関する機能です。", "guide": null }
   ],
   "commands": [
-    {
-      "name": "help",
-      "kind": "slash",
-      "category": "support",
-      "summary": "AGOBOT の使い方を表示します（サンプル）",
-      "usage": "/help",
-      "options": [],
-      "permissions": [],
-      "guild_only": false,
-      "aliases": [],
-      "hidden": false,
-      "guide": ""
-    },
-    {
-      "name": "user_status",
-      "kind": "slash",
-      "category": "economy",
-      "summary": "プレイヤーのコイン・生存ステータスを表示します（サンプル）",
-      "usage": "/user_status",
-      "options": [],
-      "permissions": [],
-      "guild_only": false,
-      "aliases": [],
-      "hidden": false,
-      "guide": ""
-    },
-    {
-      "name": "game",
-      "kind": "slash",
-      "category": "game",
-      "summary": "パーティーゲームのルール確認と募集（サンプル）",
-      "usage": "/game",
-      "options": [],
-      "permissions": [],
-      "guild_only": true,
-      "aliases": [],
-      "hidden": false,
-      "guide": "## 遊び方\n\n1. `/uno` で募集を始めます。\n2. 参加ボタンを押した人で対戦します。\n\n（これはサンプルの説明です）"
-    },
-    {
-      "name": "support",
-      "kind": "slash",
-      "category": "support",
-      "summary": "Muted・匿名つぶやき・メッセージ削除・bump/up設定をまとめて操作します",
-      "usage": "/support action:<操作> [target|minutes|amount|member]",
-      "options": [
-        {
-          "name": "action",
-          "type": "string",
-          "required": true,
-          "description": "実行するサポート操作"
-        }
-      ],
-      "permissions": [],
-      "guild_only": true,
-      "aliases": [],
-      "hidden": false,
-      "guide": ""
-    }
+    { "name": "game", "kind": "slash", "category": "game", "summary": "パーティーゲームとダンジョンのルール確認と開始", "usage": "/game", "options": [], "permissions": [], "guild_only": false, "aliases": [], "hidden": false, "guide": null },
+    { "name": "general", "kind": "slash", "category": "general", "summary": "一般機能の操作パネルを表示します", "usage": "/general", "options": [], "permissions": [], "guild_only": false, "aliases": [], "hidden": false, "guide": null },
+    { "name": "help", "kind": "slash", "category": "help", "summary": "コマンドの一覧と使い方を表示します", "usage": "/help [command:<文字>]", "options": [{ "name": "command", "type": "string", "required": false, "description": "使い方を見たいコマンド（入力すると候補が出ます）" }], "permissions": [], "guild_only": false, "aliases": [], "hidden": false, "guide": null },
+    { "name": "vc", "kind": "slash", "category": "vc", "summary": "音楽・ボイス機能の操作パネルを表示します", "usage": "/vc", "options": [], "permissions": [], "guild_only": false, "aliases": [], "hidden": false, "guide": null },
+    { "name": "support", "kind": "slash", "category": "support", "summary": "サポート機能の操作パネルを表示します", "usage": "/support", "options": [], "permissions": [], "guild_only": true, "aliases": [], "hidden": false, "guide": null }
   ]
 }

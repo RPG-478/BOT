@@ -61,12 +61,10 @@ function replaceText(root: Node, locale: Locale) {
   while ((node = walker.nextNode())) textNodes.push(node as Text);
   for (const textNode of textNodes) {
     if (!textNode.data.trim()) continue;
-    let value = textNode.data;
-    for (const [ja, en, zh] of TRANSLATIONS) {
-      const translated = locale === "en" ? en : locale === "zh" ? zh : ja;
-      if (locale !== "ja") value = value.split(ja).join(translated);
-    }
-    textNode.data = value;
+    const translation = TRANSLATIONS.find(([ja]) => ja === textNode.data.trim());
+    if (!translation || locale === "ja") continue;
+    const [, en, zh] = translation;
+    textNode.data = locale === "en" ? en : zh;
   }
 }
 
@@ -76,9 +74,10 @@ function replaceAttributes(root: ParentNode, locale: Locale) {
     for (const attribute of ["aria-label", "placeholder", "title"]) {
       const value = element.getAttribute(attribute);
       if (!value) continue;
-      for (const [ja, en, zh] of TRANSLATIONS) {
-        element.setAttribute(attribute, value.split(ja).join(locale === "en" ? en : zh));
-      }
+      const translation = TRANSLATIONS.find(([ja]) => ja === value);
+      if (!translation) continue;
+      const [, en, zh] = translation;
+      element.setAttribute(attribute, locale === "en" ? en : zh);
     }
   }
 }

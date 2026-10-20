@@ -1,80 +1,17 @@
 {
-  "generated_at": "2026-10-19T00:04:00+09:00",
+  "generated_at": "2026-10-21T00:01:14+09:00",
   "categories": [
-    {
-      "id": "game",
-      "label": "ゲーム",
-      "description": "ゲームの開始・ルール確認"
-    },
-    {
-      "id": "voice",
-      "label": "ボイス・音楽",
-      "description": "ボイスチャンネルで使う音楽機能"
-    },
-    {
-      "id": "support",
-      "label": "サポート",
-      "description": "サーバー運用・サポート機能"
-    }
+    { "id": "game", "label": "ゲーム", "description": "ゲームを選び、ルール確認と募集を始めます。", "guide": null },
+    { "id": "general", "label": "一般機能", "description": "コイン・ランキング、生存確認、ショートカットを操作します。", "guide": null },
+    { "id": "help", "label": "ヘルプ", "description": "コマンドの使い方をカテゴリまたは名前から探します。", "guide": null },
+    { "id": "vc", "label": "VC・音楽", "description": "ボイスチャンネルと音楽の機能を操作します。", "guide": null },
+    { "id": "support", "label": "サポート", "description": "サーバー運用、通知、イベントに関する機能です。", "guide": null }
   ],
   "commands": [
-    {
-      "name": "game",
-      "kind": "slash",
-      "category": "game",
-      "summary": "パーティーゲームを選び、ルール確認や参加者募集をします。",
-      "usage": "/game",
-      "options": [],
-      "permissions": [],
-      "guild_only": true,
-      "aliases": [],
-      "hidden": false,
-      "guide": "## 使い方\n`/game` はパーティーゲームを選ぶ入口です。実行すると自分だけに表示されるパネルが開き、ゲームを選ぶと概要・人数・所要時間を確認できます。「募集する」で募集を投稿し、参加者はそのメッセージのボタンから参加します。ゲームによって開始人数や募集時間が異なります。\n\n## 遊べるゲーム\n人狼、ワードウルフ、UNO、ダウト、NGワード、お題しりとり、じゃんけん、Wordle、神経衰弱、ババ抜き、数字当て、フラッシュ暗算、大富豪、オセロ、ポーカー、将棋、チェス。\n\n## ゲーム中の操作\nゲームを選ぶとルールを確認できます。ゲーム画面のボタンやセレクトメニューで参加・手番操作を行います。人狼やUNOなど一部のゲームは、進行中の画面から終了できます。"
-    },
-    {
-      "name": "music",
-      "kind": "slash",
-      "category": "voice",
-      "summary": "音楽操作パネルを表示します。",
-      "usage": "/music",
-      "options": [],
-      "permissions": [],
-      "guild_only": true,
-      "aliases": [],
-      "hidden": false
-    },
-    {
-      "name": "voice",
-      "kind": "slash",
-      "category": "voice",
-      "summary": "ボイス機能の操作パネルを表示します。",
-      "usage": "/voice",
-      "options": [],
-      "permissions": [],
-      "guild_only": true,
-      "aliases": [],
-      "hidden": false,
-      "guide": ""
-    },
-    {
-      "name": "support",
-      "kind": "slash",
-      "category": "support",
-      "summary": "Muted・匿名つぶやき・メッセージ削除・bump/up設定をまとめて操作します",
-      "usage": "/support action:<操作> [target|minutes|amount|member]",
-      "options": [
-        {
-          "name": "action",
-          "type": "string",
-          "required": true,
-          "description": "実行するサポート操作"
-        }
-      ],
-      "permissions": [],
-      "guild_only": true,
-      "aliases": [],
-      "hidden": false,
-      "guide": ""
-    }
+    { "name": "game", "kind": "slash", "category": "game", "summary": "パーティーゲームとダンジョンのルール確認と開始", "usage": "/game", "options": [], "permissions": [], "guild_only": false, "aliases": [], "hidden": false, "guide": null },
+    { "name": "general", "kind": "slash", "category": "general", "summary": "一般機能の操作パネルを表示します", "usage": "/general", "options": [], "permissions": [], "guild_only": false, "aliases": [], "hidden": false, "guide": null },
+    { "name": "help", "kind": "slash", "category": "help", "summary": "コマンドの一覧と使い方を表示します", "usage": "/help [command:<文字>]", "options": [{ "name": "command", "type": "string", "required": false, "description": "使い方を見たいコマンド（入力すると候補が出ます）" }], "permissions": [], "guild_only": false, "aliases": [], "hidden": false, "guide": null },
+    { "name": "vc", "kind": "slash", "category": "vc", "summary": "音楽・ボイス機能の操作パネルを表示します", "usage": "/vc", "options": [], "permissions": [], "guild_only": false, "aliases": [], "hidden": false, "guide": null },
+    { "name": "support", "kind": "slash", "category": "support", "summary": "サポート機能の操作パネルを表示します", "usage": "/support", "options": [], "permissions": [], "guild_only": true, "aliases": [], "hidden": false, "guide": null }
   ]
 }
