@@ -88,7 +88,6 @@ async def edit_panel_v2(interaction: discord.Interaction, view: discord.ui.Layou
     return await interaction.response.edit_message(
         content=None,
         embed=None,
-        embeds=[],
         attachments=[],
         view=view,
     )

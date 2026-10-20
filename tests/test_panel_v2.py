@@ -2,6 +2,7 @@ import types
 import unittest
 from unittest.mock import AsyncMock
 
+from discord.interactions import interaction_message_response_params
 from cogs.game import GameDetailView
 from cogs.sio_voice import VoicePanelView
 from cogs.support import SupportPanelView
@@ -9,6 +10,21 @@ from core.panel_v2 import as_panel_v2
 
 
 class PanelV2StateTest(unittest.IsolatedAsyncioTestCase):
+    async def test_v2_edit_payload_is_accepted_by_discord_py_serializer(self):
+        wrapped = as_panel_v2(VoicePanelView(None))
+
+        params = interaction_message_response_params(
+            type=7,
+            content=None,
+            embed=None,
+            attachments=[],
+            view=wrapped,
+        )
+
+        self.assertEqual(params.payload["data"]["content"], None)
+        self.assertEqual(params.payload["data"]["embeds"], [])
+        self.assertEqual(params.payload["data"]["attachments"], [])
+
     async def test_game_selection_writes_through_to_wrapped_panel(self):
         panel = GameDetailView(None, "othello")
         wrapped = as_panel_v2(panel)
@@ -33,7 +49,6 @@ class PanelV2StateTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(payload["view"], wrapped)
         self.assertEqual(payload["content"], None)
         self.assertEqual(payload["embed"], None)
-        self.assertEqual(payload["embeds"], [])
         self.assertEqual(payload["attachments"], [])
 
     async def test_voice_genre_dropdown_wraps_legacy_owner_fallback(self):
