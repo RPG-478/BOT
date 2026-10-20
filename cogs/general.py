@@ -199,7 +199,7 @@ class ShortcutRootPanel(discord.ui.View):
     def embed(self):
         return discord.Embed(title="ショートカット登録",
                              description="大区分を選ぶと、そのコマンドの通常パネルで機能・オプションを選択できます。",
-                             color=0x3498DB)
+                             color=0xFFFFFF)
 
     async def open_existing_panel(self, interaction, root: str):
         from core.panel_v2 import as_panel_v2
@@ -258,9 +258,13 @@ class ShortcutManageSelect(discord.ui.Select):
             return await interaction.response.send_message("ショートカットが見つかりません。", ephemeral=True)
         if self.mode == "delete":
             await shortcuts.remove(guild_settings.get_store(), interaction.guild_id, interaction.user.id, item["id"])
+            wrapper = getattr(self.view, "panel", None)
+            if wrapper is not None:
+                wrapper._sync()
+                return await interaction.response.edit_message(view=self.view)
             return await interaction.response.edit_message(embed=self.parent_view.embed("削除しました。"), view=self.parent_view)
         view = ShortcutRootPanel(item)
-        await interaction.response.edit_message(embed=view.embed(), view=view)
+        await interaction.response.edit_message(view=as_panel_v2(view))
 
 
 class ShortcutManagerView(discord.ui.View):
@@ -273,27 +277,31 @@ class ShortcutManagerView(discord.ui.View):
         lines = [f"`{x['trigger']}` → {x.get('action', {}).get('root')}/{x.get('action', {}).get('value')}" for x in rows]
         description = (notice + "\n\n" if notice else "") + ("\n".join(lines) or "登録はありません。")
         description += f"\n\n登録数: {len(rows)}/{shortcuts.MAX_SHORTCUTS}"
-        return discord.Embed(title="ショートカット管理", description=description, color=0x3498DB)
+        return discord.Embed(title="ショートカット管理", description=description, color=0xFFFFFF)
 
     @discord.ui.button(label="登録", style=discord.ButtonStyle.success, row=0)
     async def register(self, interaction: discord.Interaction, button: discord.ui.Button):
-        view = ShortcutBuilderView(self.cog)
-        await interaction.response.edit_message(embed=view.embed(), view=view)
+        view = ShortcutRootPanel()
+        await interaction.response.edit_message(view=as_panel_v2(view))
 
     @discord.ui.button(label="編集", style=discord.ButtonStyle.primary, row=0)
     async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = ShortcutManagerView(self.cog, interaction.guild_id, interaction.user.id)
         view.add_item(ShortcutManageSelect(view, "edit"))
-        await interaction.response.edit_message(embed=view.embed("編集する項目を選択してください。"), view=view)
+        await interaction.response.edit_message(view=as_panel_v2(view))
 
     @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, row=0)
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = ShortcutManagerView(self.cog, interaction.guild_id, interaction.user.id)
         view.add_item(ShortcutManageSelect(view, "delete"))
-        await interaction.response.edit_message(embed=view.embed("削除する項目を選択してください。"), view=view)
+        await interaction.response.edit_message(view=as_panel_v2(view))
 
     @discord.ui.button(label="一覧更新", style=discord.ButtonStyle.secondary, row=0)
     async def refresh_list(self, interaction: discord.Interaction, button: discord.ui.Button):
+        wrapper = getattr(self.view, "panel", None)
+        if wrapper is not None:
+            wrapper._sync()
+            return await interaction.response.edit_message(view=self.view)
         await interaction.response.edit_message(embed=self.embed(), view=self)
 
 
@@ -309,7 +317,7 @@ class GeneralCog(commands.Cog):
     async def dispatch_general(self, interaction: discord.Interaction, value: str):
         if value == "shortcut_manage":
             view = ShortcutManagerView(self, interaction.guild_id, interaction.user.id)
-            return await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+            return await interaction.response.send_message(view=as_panel_v2(view), ephemeral=True)
         wallet = self.bot.get_cog("WalletCog")
         fujo = self.bot.get_cog("FujoSurvival")
         if value == "pay":
