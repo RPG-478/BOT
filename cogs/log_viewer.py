@@ -1,19 +1,15 @@
-# cogs/log_viewer.py
-
 import io
 from datetime import datetime
-
 import discord
 from discord.ext import commands
 
-
-# ここにコマンドを使えるユーザーIDを指定する
-# 例: 自分と管理者だけ許可するなど
 ALLOWED_USER_IDS = {
     1320705325686587408,  # ← ここを実際のユーザーIDに置き換える
     1000302102473613373,
 }
 
+# 有効なログレベルの定義（優先度順）
+VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
 async def is_log_allowed(ctx: commands.Context) -> bool:
     """
@@ -26,18 +22,18 @@ class LogViewer(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @commands.command(name="logs", usage="[行数]")
+    @commands.command(name="logs", usage="[行数] [重要度]")
     @commands.check(is_log_allowed)
-    async def logs(self, ctx: commands.Context, line_count: int = 30):
+    async def logs(self, ctx: commands.Context, line_count: int = 30, level: str = None):
         """
-        !logs 50
+        !logs 50 ERROR
         のように使って、最新から指定行数分のログを表示する。
-        同時に、現在保持している全ログをファイルで添付する。
+        第2引数に重要度(DEBUG, INFO, WARNING, ERROR, CRITICAL)を指定すると、
+        その重要度のログのみをフィルタリングして出力する。
+        同時に、現在保持している全ログ（またはフィルタ済み全ログ）をファイルで添付する。
         """
-
         # main.py で設定している bot.log_buffer を取得
         buffer = getattr(self.bot, "log_buffer", None)
-
         if buffer is None:
             await ctx.send(
                 "❌ `bot.log_buffer` が見つかりません。\n"
@@ -47,7 +43,6 @@ class LogViewer(commands.Cog):
 
         # deque からリスト化
         all_lines = list(buffer.logs)
-
         if not all_lines:
             await ctx.send("📭 現在、取得できるログはありません。")
             return
@@ -56,26 +51,52 @@ class LogViewer(commands.Cog):
             await ctx.send("❌ 行数は 1 以上で指定してください。")
             return
 
+        # --- 重要度フィルタリング処理 ---
+        filter_level = None
+        if level:
+            filter_level = level.upper()
+            if filter_level not in VALID_LEVELS:
+                await ctx.send(
+                    f"❌ 無効な重要度です: `{level}`\n"
+                    f"使用可能な重要度: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`"
+                )
+                return
+            
+            # ログ行に "[LEVEL]" が含まれているかでフィルタリング
+            search_tag = f"[{filter_level}]"
+            filtered_lines = [line for line in all_lines if search_tag in line]
+        else:
+            # フィルタなしの場合は全ログを対象にする
+            filtered_lines = all_lines
+
+        if not filtered_lines:
+            await ctx.send(f"📭 重要度 `{filter_level}` のログは見つかりませんでした。")
+            return
+
         # 最新側から指定行数分取得
-        requested_lines = all_lines[-line_count:]
+        requested_lines = filtered_lines[-line_count:]
         requested_text = "\n".join(requested_lines)
 
-        # 全ログ
-        all_text = "\n".join(all_lines)
-
+        # 対象となる全ログ
+        all_text = "\n".join(filtered_lines)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # ファイル名のプレフィックス（フィルタ適用時はレベル名を含める）
+        prefix = f"{filter_level}_" if filter_level else ""
 
         # 全ログファイル
         all_file = discord.File(
             io.BytesIO(all_text.encode("utf-8")),
-            filename=f"all_logs_{timestamp}.txt"
+            filename=f"{prefix}all_logs_{timestamp}.txt"
         )
 
         # コードブロックを壊しにくいように一応エスケープ
         safe_requested_text = requested_text.replace("```", "｀｀｀")
-
+        
+        # レベル指定がある場合はメッセージに含める
+        level_info = f" (重要度: {filter_level})" if filter_level else ""
         content = (
-            f"📜 ログ（最新 {len(requested_lines)} 件 / 保持 {len(all_lines)} 件）\n"
+            f"📜 ログ{level_info}（最新 {len(requested_lines)} 件 / 保持 {len(filtered_lines)} 件）\n"
             f"```log\n"
             f"{safe_requested_text}\n"
             f"```"
@@ -88,18 +109,17 @@ class LogViewer(commands.Cog):
             # 長すぎて本文に入りきらない場合はファイルで送る
             if requested_text == all_text:
                 await ctx.send(
-                    f"📜 ログが長いため、全ログファイルを添付します。（保持 {len(all_lines)} 件）",
+                    f"📜 ログが長いため、全ログファイルを添付します。{level_info}（保持 {len(filtered_lines)} 件）",
                     file=all_file
                 )
             else:
                 requested_file = discord.File(
                     io.BytesIO(requested_text.encode("utf-8")),
-                    filename=f"requested_logs_{timestamp}.txt"
+                    filename=f"{prefix}requested_logs_{timestamp}.txt"
                 )
-
                 await ctx.send(
                     f"📜 ログが長いため、指定分と全ログをファイルで添付します。\n"
-                    f"（指定 {len(requested_lines)} 件 / 保持 {len(all_lines)} 件）",
+                    f"{level_info}（指定 {len(requested_lines)} 件 / 保持 {len(filtered_lines)} 件）",
                     files=[all_file, requested_file]
                 )
 
@@ -108,7 +128,6 @@ class LogViewer(commands.Cog):
         """
         logs コマンド専用エラーハンドラ
         """
-
         # 許可されていないユーザーが使用した場合
         if isinstance(error, commands.CheckFailure):
             try:
@@ -120,7 +139,7 @@ class LogViewer(commands.Cog):
         # 引数の数字が不正な場合
         if isinstance(error, commands.BadArgument):
             try:
-                await ctx.send("❌ 行数は数字で指定してください。例: `!logs 50`")
+                await ctx.send("❌ 行数は数字で指定してください。例: `!logs 50 ERROR`")
             except Exception:
                 pass
             return
@@ -130,7 +149,6 @@ class LogViewer(commands.Cog):
             await ctx.send("❌ ログ取得中にエラーが発生しました。")
         except Exception:
             pass
-
         print(f"[LogViewer] logs command error: {error}")
 
 
