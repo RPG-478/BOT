@@ -279,7 +279,14 @@ class VoiceActionSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         value = self.values[0]
-        getattr(self.view, "panel", self.view).action = value
+        container = self.view
+        panel = getattr(container, "panel", container)
+        panel.action = value
+        if getattr(panel, "shortcut_mode", False):
+            if hasattr(container, "_sync"):
+                container._sync()
+                return await interaction.response.edit_message(view=container)
+            return await interaction.response.edit_message(embed=panel.embed(), view=panel)
         if value == "global_start":
             return await interaction.response.send_modal(GlobalRoomModal(self.hub))
         await self.hub.dispatch_voice_action(interaction, value)
