@@ -11,7 +11,7 @@ from discord.ext import commands
 
 from core import party_ranking
 from core.game_guides import GAME_GUIDES, GAME_ORDER, guide_for_discord
-from core.panel_v2 import as_panel_v2, edit_panel_v2
+from core.panel_v2 import as_embed_v2, as_panel_v2, edit_panel_v2
 
 HUB_COLOR = 0xFFFFFF
 
@@ -114,10 +114,7 @@ class GameGenreSelect(discord.ui.Select):
         view = getattr(container, "panel", container)
         if selected in GAME_GENRE_BY_GAME:
             panel = GameDetailView(view.cog, selected, view.shortcut_mode, view.shortcut_item)
-            if hasattr(container, "panel"):
-                return await edit_panel_v2(interaction, as_panel_v2(panel))
-            await interaction.response.edit_message(embed=detail_embed(selected), view=panel)
-            return
+            return await edit_panel_v2(interaction, as_panel_v2(panel))
         view.genre = selected
         view.refresh()
         if hasattr(container, "_sync"):
@@ -352,7 +349,7 @@ class GameDetailView(discord.ui.View):
 
     @discord.ui.button(label="ルール", style=discord.ButtonStyle.secondary, row=3)
     async def rules(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(embed=rules_embed(self.game_id), ephemeral=True)
+        await interaction.response.send_message(view=as_embed_v2(rules_embed(self.game_id)), ephemeral=True)
 
     @discord.ui.button(label="募集する", style=discord.ButtonStyle.success, row=3)
     async def recruit(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -364,16 +361,18 @@ class GameDetailView(discord.ui.View):
 
     @discord.ui.button(label="ランキング", style=discord.ButtonStyle.primary, row=3)
     async def ranking(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(embed=await ranking_embed(interaction.guild_id, self.game_id),
-                                                ephemeral=True)
+        await interaction.response.send_message(
+            view=as_embed_v2(await ranking_embed(interaction.guild_id, self.game_id)), ephemeral=True)
 
     @discord.ui.button(label="レート", style=discord.ButtonStyle.primary, row=4)
     async def rating(self, interaction: discord.Interaction, button: discord.ui.Button):
         cog = self.cog.bot.get_cog(GAME_COGS["jinrou"])
         if cog is None:
             return await interaction.response.send_message(
-                embed=discord.Embed(description="人狼 は現在利用できません。", color=HUB_COLOR), ephemeral=True)
-        await interaction.response.send_message(embed=await cog.rating_embed(interaction.user), ephemeral=True)
+                view=as_embed_v2(discord.Embed(description="人狼 は現在利用できません。", color=HUB_COLOR)),
+                ephemeral=True)
+        await interaction.response.send_message(
+            view=as_embed_v2(await cog.rating_embed(interaction.user)), ephemeral=True)
 
     @discord.ui.button(label="ゲームを終了", style=discord.ButtonStyle.danger, row=4)
     async def end_game(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -381,15 +380,14 @@ class GameDetailView(discord.ui.View):
         if cog is None or not hasattr(cog, "force_end"):
             name = GAME_GUIDES[self.game_id]["name"]
             return await interaction.response.send_message(
-                embed=discord.Embed(description=f"{name} は現在利用できません。", color=HUB_COLOR), ephemeral=True)
+                view=as_embed_v2(discord.Embed(description=f"{name} は現在利用できません。", color=HUB_COLOR)),
+                ephemeral=True)
         await cog.force_end(interaction)
 
     @discord.ui.button(label="戻る", emoji="<:Back:1561700549236097034>", style=discord.ButtonStyle.secondary, row=3)
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = GameHubView(self.cog)
-        if hasattr(getattr(button, "view", None), "_sync"):
-            return await edit_panel_v2(interaction, as_panel_v2(view))
-        await interaction.response.edit_message(embed=view.embed(), view=view)
+        return await edit_panel_v2(interaction, as_panel_v2(view))
 
 
 class GameHub(commands.Cog):
@@ -406,7 +404,8 @@ class GameHub(commands.Cog):
         if cog is None or not hasattr(cog, "start_recruit"):
             name = GAME_GUIDES[game_id]["name"]
             return await interaction.response.send_message(
-                embed=discord.Embed(description=f"{name} は現在利用できません。", color=HUB_COLOR), ephemeral=True)
+                view=as_embed_v2(discord.Embed(description=f"{name} は現在利用できません。", color=HUB_COLOR)),
+                ephemeral=True)
         if game_id == "ngword":
             return await cog.start_recruit(interaction, minutes=options.get("ng_minutes") or 3,
                                            mode=options.get("ng_mode") or "word")

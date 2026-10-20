@@ -6,7 +6,7 @@ from discord.interactions import interaction_message_response_params
 from cogs.game import GameDetailView
 from cogs.sio_voice import VoicePanelView
 from cogs.support import SupportPanelView
-from core.panel_v2 import as_panel_v2, edit_message_v2
+from core.panel_v2 import as_embed_v2, as_panel_v2, edit_message_v2
 
 
 class PanelV2StateTest(unittest.IsolatedAsyncioTestCase):
@@ -36,6 +36,21 @@ class PanelV2StateTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(payload["embed"])
         self.assertEqual(payload["attachments"], [])
         self.assertIs(payload["view"], wrapped)
+
+    async def test_embed_only_panel_serializes_without_embed_payload(self):
+        import discord
+
+        panel = as_embed_v2(discord.Embed(title="テスト", description="本文"))
+        params = interaction_message_response_params(
+            type=4,
+            content=None,
+            embed=None,
+            attachments=[],
+            view=panel,
+        )
+
+        self.assertEqual(params.payload["data"]["embeds"], [])
+        self.assertEqual(len(params.payload["data"]["components"]), 1)
 
     async def test_game_selection_writes_through_to_wrapped_panel(self):
         panel = GameDetailView(None, "othello")
