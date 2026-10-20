@@ -68,6 +68,7 @@ class ShortcutTest(unittest.IsolatedAsyncioTestCase):
 
         await genre_select.callback(genre_interaction)
 
+        self.assertEqual(panel.genre, "party")
         self.assertIs(genre_interaction.response.edit_message.call_args.kwargs["view"], wrapper)
         self.assertNotIn("embed", genre_interaction.response.edit_message.call_args.kwargs)
         game_select = wrapper.children[0].children[2].children[0]
