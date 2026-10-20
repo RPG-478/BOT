@@ -1,11 +1,15 @@
 """Components V2で既存のセレクト系パネルを表示する補助。"""
 from __future__ import annotations
 
+import asyncio
+
 import discord
 
 
-def embed_text(embed: discord.Embed) -> str:
+def embed_text(embed: discord.Embed | None) -> str:
     """Embed相当の内容をComponents V2のTextDisplay用Markdownへ変換する。"""
+    if embed is None:
+        return "(表示内容がありません)"
     parts: list[str] = []
     if embed.title:
         parts.append(f"## {embed.title}")
@@ -54,6 +58,9 @@ class PanelLayoutView(discord.ui.LayoutView):
                 row = 0
             rows.setdefault(row, []).append(item)
         source_embed = self.panel.embed()
+        # embed()がNoneを返す場合のガード（AttributeErrorによるクラッシュ防止）
+        if source_embed is None:
+            source_embed = discord.Embed()
         container = discord.ui.Container(
             discord.ui.TextDisplay(embed_text(source_embed)),
             *[discord.ui.ActionRow(*items) for _, items in sorted(rows.items())],
@@ -61,10 +68,17 @@ class PanelLayoutView(discord.ui.LayoutView):
         )
         self.add_item(container)
 
-    def refresh(self):
+    async def refresh(self, interaction: discord.Interaction | None = None):
+        """状態を更新し、interactionが渡された場合はV2メッセージへ反映する。"""
         self.panel.genre = getattr(self, "genre", getattr(self.panel, "genre", None))
-        self.panel.refresh()
+        # panel側のrefreshがasync defだった場合にも正しく待機する
+        result = self.panel.refresh()
+        if asyncio.iscoroutine(result):
+            await result
         self._sync()
+        # レスポンスを確実に返し、タイムアウトエラーを防ぐ
+        if interaction is not None:
+            await edit_panel_v2(interaction, self)
 
     def embed(self):
         # V2メッセージはEmbedを持てないため、callback互換の空値を返す。
@@ -75,9 +89,7 @@ class PanelLayoutView(discord.ui.LayoutView):
         if self.panel.__class__.__name__ != "HelpView":
             return await self.panel.show(interaction, category_id, page)
         next_panel = self.panel.__class__(
-            self.panel.catalog,
-            category_id,
-            page,
+            self.panel.catalog, category_id, page,
             getattr(self.panel, "shortcut_mode", False),
             getattr(self.panel, "shortcut_item", None),
         )
@@ -93,6 +105,13 @@ async def edit_panel_v2(interaction: discord.Interaction, view: discord.ui.Layou
     Omitting them makes the component interaction fail and appear to users as
     the bot not responding.
     """
+    if interaction.response.is_done():
+        return await interaction.edit_original_response(
+            content=None,
+            embed=None,
+            attachments=[],
+            view=view,
+        )
     return await interaction.response.edit_message(
         content=None,
         embed=None,
