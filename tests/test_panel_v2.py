@@ -29,8 +29,12 @@ class PanelV2StateTest(unittest.IsolatedAsyncioTestCase):
         await select.callback(interaction)
 
         self.assertEqual(panel.genre, "connection")
-        self.assertIs(interaction.response.edit_message.call_args.kwargs["view"], wrapped)
-        self.assertNotIn("embed", interaction.response.edit_message.call_args.kwargs)
+        payload = interaction.response.edit_message.call_args.kwargs
+        self.assertIs(payload["view"], wrapped)
+        self.assertEqual(payload["content"], None)
+        self.assertEqual(payload["embed"], None)
+        self.assertEqual(payload["embeds"], [])
+        self.assertEqual(payload["attachments"], [])
 
     async def test_voice_genre_dropdown_wraps_legacy_owner_fallback(self):
         panel = VoicePanelView(None)

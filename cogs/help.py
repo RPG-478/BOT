@@ -14,7 +14,7 @@ from discord.ext import commands
 
 from core.command_catalog import (build_catalog, command_key, find_command, permission_label, registered_commands,
                                   visible_commands)
-from core.panel_v2 import as_panel_v2
+from core.panel_v2 import as_panel_v2, edit_panel_v2
 
 # Discord の上限
 EMBED_TOTAL = 6000
@@ -197,7 +197,7 @@ class FunctionSelect(discord.ui.Select):
         view: HelpView = self.view
         if entry is None:
             return await interaction.response.send_message("コマンドが見つかりませんでした。", ephemeral=True)
-        await interaction.response.edit_message(view=as_panel_v2(CommandView(self.catalog, entry)))
+        await edit_panel_v2(interaction, as_panel_v2(CommandView(self.catalog, entry)))
 
 
 CATEGORY_GUIDE = "__category__"
@@ -281,7 +281,7 @@ class HelpView(discord.ui.View):
         view = HelpView(self.catalog, category_id, page, self.shortcut_mode, self.shortcut_item)
         self.stop()
         if v2:
-            return await interaction.response.edit_message(view=as_panel_v2(view))
+            return await edit_panel_v2(interaction, as_panel_v2(view))
         await interaction.response.edit_message(embed=view.embed(), view=view)
 
     @discord.ui.button(label="前へ", emoji="<:Left:1561698207757500537>", style=discord.ButtonStyle.secondary, row=2)
@@ -314,7 +314,7 @@ class BackView(discord.ui.View):
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = HelpView(self.catalog, self.category_id, self.page)
         self.stop()
-        await interaction.response.edit_message(view=as_panel_v2(view))
+        await edit_panel_v2(interaction, as_panel_v2(view))
 
 
 class CommandView(discord.ui.View):
@@ -341,7 +341,7 @@ class CommandView(discord.ui.View):
     async def open_category(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = HelpView(self.catalog, self.entry["category"])
         self.stop()
-        await interaction.response.edit_message(view=as_panel_v2(view))
+        await edit_panel_v2(interaction, as_panel_v2(view))
 
 
 # ---------------------------------------------------------------- !help

@@ -8,7 +8,7 @@ from discord.ext import commands
 
 from cogs.clear import MAX_CLEAR
 from core import guild_settings
-from core.panel_v2 import as_panel_v2
+from core.panel_v2 import as_panel_v2, edit_panel_v2
 logger = logging.getLogger(__name__)
 
 
@@ -549,7 +549,7 @@ class RoleTargetSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         self.parent_view.target_mode = self.values[0]
-        await interaction.response.edit_message(view=as_panel_v2(self.parent_view))
+        await edit_panel_v2(interaction, as_panel_v2(self.parent_view))
 
 
 class RoleBulkSelect(discord.ui.RoleSelect):
@@ -559,7 +559,7 @@ class RoleBulkSelect(discord.ui.RoleSelect):
 
     async def callback(self, interaction: discord.Interaction):
         self.parent_view.role = self.values[0]
-        await interaction.response.edit_message(view=as_panel_v2(self.parent_view))
+        await edit_panel_v2(interaction, as_panel_v2(self.parent_view))
 
 
 class SupportClearModal(discord.ui.Modal, title="メッセージ削除"):
@@ -618,8 +618,8 @@ class SupportGenreSelect(discord.ui.Select):
         # 元のPanelLayoutViewを同期してそのまま返す。
         if hasattr(container, "_sync"):
             container._sync()
-            return await interaction.response.edit_message(view=container)
-        return await interaction.response.edit_message(view=as_panel_v2(view))
+            return await edit_panel_v2(interaction, container)
+        return await edit_panel_v2(interaction, as_panel_v2(view))
 
 
 class SupportActionSelect(discord.ui.Select):
@@ -637,8 +637,8 @@ class SupportActionSelect(discord.ui.Select):
         if getattr(panel, "shortcut_mode", False):
             if hasattr(container, "_sync"):
                 container._sync()
-                return await interaction.response.edit_message(view=container)
-            return await interaction.response.edit_message(view=as_panel_v2(panel))
+                return await edit_panel_v2(interaction, container)
+            return await edit_panel_v2(interaction, as_panel_v2(panel))
         await self.cog.dispatch(interaction, self.values[0])
 
 

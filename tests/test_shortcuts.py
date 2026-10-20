@@ -40,8 +40,12 @@ class ShortcutTest(unittest.IsolatedAsyncioTestCase):
         await select.callback(interaction)
 
         self.assertEqual(panel.genre, "custom")
-        self.assertIs(interaction.response.edit_message.call_args.kwargs["view"], wrapper)
-        self.assertNotIn("embed", interaction.response.edit_message.call_args.kwargs)
+        payload = interaction.response.edit_message.call_args.kwargs
+        self.assertIs(payload["view"], wrapper)
+        self.assertEqual(payload["content"], None)
+        self.assertEqual(payload["embed"], None)
+        self.assertEqual(payload["embeds"], [])
+        self.assertEqual(payload["attachments"], [])
 
     async def test_shortcut_manager_register_button_opens_v2_root_panel(self):
         manager = ShortcutManagerView(None, 1, 2)
@@ -69,8 +73,12 @@ class ShortcutTest(unittest.IsolatedAsyncioTestCase):
         await genre_select.callback(genre_interaction)
 
         self.assertEqual(panel.genre, "party")
-        self.assertIs(genre_interaction.response.edit_message.call_args.kwargs["view"], wrapper)
-        self.assertNotIn("embed", genre_interaction.response.edit_message.call_args.kwargs)
+        payload = genre_interaction.response.edit_message.call_args.kwargs
+        self.assertIs(payload["view"], wrapper)
+        self.assertEqual(payload["content"], None)
+        self.assertEqual(payload["embed"], None)
+        self.assertEqual(payload["embeds"], [])
+        self.assertEqual(payload["attachments"], [])
         game_select = wrapper.children[0].children[2].children[0]
         game_select._values = ["uno"]
         game_interaction = types.SimpleNamespace(

@@ -19,11 +19,7 @@ def embed_text(embed: discord.Embed) -> str:
 
 
 class PanelLayoutView(discord.ui.LayoutView):
-    """既存のdiscord.ui.Viewを1つのContainerへ包むV2ビュー。
-
-    既存Selectのcallbackから見える ``genre`` や ``refresh`` はこのクラスが
-    プロキシし、状態変更時も同じV2メッセージを再構築する。
-    """
+    """既存のdiscord.ui.Viewを1つのContainerへ包むV2ビュー。"""
 
     def __init__(self, panel: discord.ui.View):
         super().__init__(timeout=panel.timeout)
@@ -31,13 +27,7 @@ class PanelLayoutView(discord.ui.LayoutView):
         self._sync()
 
     def __setattr__(self, name, value):
-        """Forward callback state updates to the wrapped panel.
-
-        Components V2 callbacks receive this layout wrapper as ``self.view``.
-        Without forwarding assignments, a selection such as ``chess_mode`` is
-        visible in the wrapper but the launcher still reads the old value from
-        the underlying view.
-        """
+        """Forward callback state updates to the wrapped panel."""
         panel = self.__dict__.get("panel")
         if panel is not None and name != "panel" and hasattr(panel, name):
             setattr(panel, name, value)
@@ -73,11 +63,9 @@ class PanelLayoutView(discord.ui.LayoutView):
         self._sync()
 
     def embed(self):
-        # V2メッセージはEmbedを持てないため、callback互換の空値を返す。
         return None
 
     async def show(self, interaction, category_id, page):
-        """/help のページ遷移をV2ビューのまま行う。"""
         if self.panel.__class__.__name__ != "HelpView":
             return await self.panel.show(interaction, category_id, page)
         next_panel = self.panel.__class__(
@@ -86,7 +74,24 @@ class PanelLayoutView(discord.ui.LayoutView):
             getattr(self.panel, "shortcut_item", None),
         )
         self.stop()
-        await interaction.response.edit_message(view=PanelLayoutView(next_panel))
+        return await edit_panel_v2(interaction, PanelLayoutView(next_panel))
+
+
+async def edit_panel_v2(interaction: discord.Interaction, view: discord.ui.LayoutView):
+    """Edit a message with a V2 view, clearing legacy message payloads.
+
+    Discord rejects a message update that adds/replaces a LayoutView unless
+    content, embeds, and attachments are explicitly supplied as cleared values.
+    Omitting them makes the component interaction fail and appear to users as
+    the bot not responding.
+    """
+    return await interaction.response.edit_message(
+        content=None,
+        embed=None,
+        embeds=[],
+        attachments=[],
+        view=view,
+    )
 
 
 def as_panel_v2(panel: discord.ui.View) -> PanelLayoutView:

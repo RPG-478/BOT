@@ -11,7 +11,7 @@ from discord.ext import commands
 
 from core import party_ranking
 from core.game_guides import GAME_GUIDES, GAME_ORDER, guide_for_discord
-from core.panel_v2 import as_panel_v2
+from core.panel_v2 import as_panel_v2, edit_panel_v2
 
 HUB_COLOR = 0xFFFFFF
 
@@ -115,15 +115,15 @@ class GameGenreSelect(discord.ui.Select):
         if selected in GAME_GENRE_BY_GAME:
             panel = GameDetailView(view.cog, selected, view.shortcut_mode, view.shortcut_item)
             if hasattr(container, "panel"):
-                return await interaction.response.edit_message(view=as_panel_v2(panel))
+                return await edit_panel_v2(interaction, as_panel_v2(panel))
             await interaction.response.edit_message(embed=detail_embed(selected), view=panel)
             return
         view.genre = selected
         view.refresh()
         if hasattr(container, "_sync"):
             container._sync()
-            return await interaction.response.edit_message(view=container)
-        return await interaction.response.edit_message(view=as_panel_v2(view))
+            return await edit_panel_v2(interaction, container)
+        return await edit_panel_v2(interaction, as_panel_v2(view))
 
 
 class GameSelect(discord.ui.Select):
@@ -143,8 +143,8 @@ class GameSelect(discord.ui.Select):
         game_id = self.values[0]
         panel = GameDetailView(self.view.cog, game_id, self.view.shortcut_mode, self.view.shortcut_item)
         if hasattr(self.view, "panel"):
-            return await interaction.response.edit_message(view=as_panel_v2(panel))
-        return await interaction.response.edit_message(view=as_panel_v2(panel))
+            return await edit_panel_v2(interaction, as_panel_v2(panel))
+        return await edit_panel_v2(interaction, as_panel_v2(panel))
 
 
 class GameHubView(discord.ui.View):
@@ -184,7 +184,7 @@ class WordlistSelect(discord.ui.Select):
         self.view.wordlist = self.values[0]
         for option in self.options:
             option.default = option.value == self.view.wordlist
-        await interaction.response.edit_message(view=self.view)
+        await edit_panel_v2(interaction, self.view)
 
 
 NG_TIME_CHOICES = (3, 5, 10)
@@ -201,7 +201,7 @@ class NGTimeSelect(discord.ui.Select):
         self.view.ng_minutes = int(self.values[0])
         for option in self.options:
             option.default = option.value == self.values[0]
-        await interaction.response.edit_message(view=self.view)
+        await edit_panel_v2(interaction, self.view)
 
 
 class NGModeSelect(discord.ui.Select):
@@ -214,7 +214,7 @@ class NGModeSelect(discord.ui.Select):
         self.view.ng_mode = self.values[0]
         for option in self.options:
             option.default = option.value == self.values[0]
-        await interaction.response.edit_message(view=self.view)
+        await edit_panel_v2(interaction, self.view)
 
 
 WORDLE_MODES = (("shared", "みんなで（チャンネルの全員で推理）"), ("solo", "ひとりで（始めた人だけ）"))
@@ -230,7 +230,7 @@ class WordleModeSelect(discord.ui.Select):
         self.view.wordle_mode = self.values[0]
         for option in self.options:
             option.default = option.value == self.values[0]
-        await interaction.response.edit_message(view=self.view)
+        await edit_panel_v2(interaction, self.view)
 
 
 JINROU_MODES = (("local", "ローカルモード（このサーバーだけ）"), ("global", "グローバルモード（他サーバーと合流）"))
@@ -247,7 +247,7 @@ class JinrouModeSelect(discord.ui.Select):
         self.view.jinrou_mode = self.values[0]
         for option in self.options:
             option.default = option.value == self.values[0]
-        await interaction.response.edit_message(view=self.view)
+        await edit_panel_v2(interaction, self.view)
 
 
 class ChessModeSelect(discord.ui.Select):
@@ -262,7 +262,7 @@ class ChessModeSelect(discord.ui.Select):
         self.view.chess_mode = self.values[0]
         for option in self.options:
             option.default = option.value == self.view.chess_mode
-        await interaction.response.edit_message(view=self.view)
+        await edit_panel_v2(interaction, self.view)
 
 
 class BoardGameModeSelect(ChessModeSelect):
@@ -281,7 +281,7 @@ class ChessDifficultySelect(discord.ui.Select):
         self.view.chess_difficulty = int(self.values[0])
         for option in self.options:
             option.default = option.value == self.values[0]
-        await interaction.response.edit_message(view=self.view)
+        await edit_panel_v2(interaction, self.view)
 
 
 JANKEN_WAGER_CHOICES = (0, 10, 50, 100, 500)
@@ -297,7 +297,7 @@ class JankenWagerSelect(discord.ui.Select):
         self.view.wager = int(self.values[0])
         for option in self.options:
             option.default = option.value == self.values[0]
-        await interaction.response.edit_message(view=self.view)
+        await edit_panel_v2(interaction, self.view)
 
 
 class GameDetailView(discord.ui.View):
@@ -388,7 +388,7 @@ class GameDetailView(discord.ui.View):
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
         view = GameHubView(self.cog)
         if hasattr(getattr(button, "view", None), "_sync"):
-            return await interaction.response.edit_message(view=as_panel_v2(view))
+            return await edit_panel_v2(interaction, as_panel_v2(view))
         await interaction.response.edit_message(embed=view.embed(), view=view)
 
 
