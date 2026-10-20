@@ -123,7 +123,7 @@ class GameGenreSelect(discord.ui.Select):
         if hasattr(container, "_sync"):
             container._sync()
             return await interaction.response.edit_message(view=container)
-        await interaction.response.edit_message(embed=view.embed(), view=view)
+        return await interaction.response.edit_message(view=as_panel_v2(view))
 
 
 class GameSelect(discord.ui.Select):
