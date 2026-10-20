@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import traceback
 
 import discord
@@ -71,6 +72,14 @@ def build_rows(items: list[discord.ui.Item]) -> list[list[discord.ui.Item]]:
     return rows
 
 
+class _Completed:
+    """``await`` しても何も起きない完了済みawaitable（未awaitでも警告が出ない）。"""
+
+    def __await__(self):
+        return
+        yield  # pragma: no cover
+
+
 class PanelLayoutView(discord.ui.LayoutView):
     """既存のdiscord.ui.Viewを1つのContainerへ包むV2ビュー。
 
@@ -83,31 +92,40 @@ class PanelLayoutView(discord.ui.LayoutView):
         self.panel = panel
         self._sync()
 
+    # ------------------------------------------------------------------
+    # 属性プロキシ
+    # ------------------------------------------------------------------
+    # 重要: discord.py内部の状態（_BaseView__timeout_expiry / __stopped /
+    # __timeout_task / _children など）をpanelへ転送してはいけない。
+    # 転送するとラッパー自身のタイムアウト管理が壊れ、登録直後に
+    # 「終了済みView」扱いになってボタン/セレクトが一切応答しなくなる。
+    # そのため「公開名（_で始まらない）かつ LayoutView 自体の属性ではない」
+    # ものだけをpanelへ転送する。
+    _OWN_NAMES = frozenset(dir(discord.ui.LayoutView)) | {"panel"}
+
     def __setattr__(self, name, value):
-        """Forward callback state updates to the wrapped panel."""
         panel = self.__dict__.get("panel")
-        if panel is not None and name != "panel" and hasattr(panel, name):
+        if (
+            panel is not None
+            and not name.startswith("_")
+            and name not in PanelLayoutView._OWN_NAMES
+            and hasattr(panel, name)
+        ):
             setattr(panel, name, value)
             return
         super().__setattr__(name, value)
 
     def __getattr__(self, name):
-        if name != "panel":
+        if name != "panel" and not name.startswith("__"):
             panel = self.__dict__.get("panel")
             if panel is not None and hasattr(panel, name):
                 return getattr(panel, name)
         raise AttributeError(name)
 
+    # ------------------------------------------------------------------
     def _sync(self):
         self.clear_items()
         rows = build_rows(list(self.panel.children))
-        for row in rows:
-            for item in row:
-                # callback内の self.view がラッパーを指すようにする
-                try:
-                    item._view = self
-                except Exception:
-                    pass
         source_embed = self.panel.embed()
         if source_embed is None:
             source_embed = discord.Embed()
@@ -116,11 +134,15 @@ class PanelLayoutView(discord.ui.LayoutView):
             *[discord.ui.ActionRow(*items) for items in rows],
             accent_colour=getattr(source_embed, "colour", None),
         )
-        self.add_item(container)
+        self.add_item(container)  # このときitem.viewがこのラッパーになる
 
-    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # 元パネルに実行者制限などがあればそれを引き継ぐ
+        return await self.panel.interaction_check(interaction)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item=None) -> None:
         """例外を必ずACKして可視化する（無応答エラーの防止と原因特定用）。"""
-        traceback.print_exc()
+        traceback.print_exception(type(error), error, error.__traceback__)
         try:
             if interaction.response.is_done():
                 await interaction.followup.send(f"⚠️ 内部エラー: {error}", ephemeral=True)
@@ -130,30 +152,29 @@ class PanelLayoutView(discord.ui.LayoutView):
             pass
 
     def refresh(self, interaction: discord.Interaction | None = None):
-        """状態を更新する。interactionを渡した場合のみawait可能なオブジェクトを返す。
+        """状態を更新する。戻り値は常に await 可能。
 
-        - ``view.refresh()``               : 同期呼び出し（旧コード互換）。
-        - ``await view.refresh(interaction)`` : 編集まで行ってタイムアウトを防止。
+        - ``view.refresh()``                  : 画面部品だけ再構築（await有無どちらでも可）。
+        - ``await view.refresh(interaction)`` : 再構築 + メッセージ編集まで行う。
         """
         self.panel.genre = getattr(self, "genre", getattr(self.panel, "genre", None))
         pending = self.panel.refresh()
 
-        if asyncio.iscoroutine(pending):
-            if interaction is None:
-                pending.close()
-                self._sync()
-                return None
-
-            async def _apply_pending():
+        if inspect.isawaitable(pending):
+            async def _run():
                 await pending
                 self._sync()
-                return await edit_panel_v2(interaction, self)
+                if interaction is not None:
+                    await edit_panel_v2(interaction, self)
 
-            return _apply_pending()
+            if interaction is None:
+                # 呼び出し側がawaitしなくても必ず実行されるようにする
+                return asyncio.ensure_future(_run())
+            return _run()
 
         self._sync()
         if interaction is None:
-            return None
+            return _Completed()
         return edit_panel_v2(interaction, self)
 
     def embed(self):
@@ -176,34 +197,22 @@ class PanelLayoutView(discord.ui.LayoutView):
 async def edit_panel_v2(interaction: discord.Interaction, view: discord.ui.LayoutView):
     """Edit a message with a V2 view, clearing legacy message payloads.
 
-    Discord rejects a message update that adds/replaces a LayoutView unless
-    content, embeds, and attachments are explicitly supplied as cleared values.
-    Omitting them makes the component interaction fail and appear to users as
-    the bot not responding.
+    V1メッセージ(content/embed付き)をV2へ置き換える編集では、
+    content / embeds / attachments を明示的にクリアしないとDiscordに拒否され、
+    ユーザーには「応答しませんでした」と見える。
     """
     if interaction.response.is_done():
         return await interaction.edit_original_response(
-            content=None,
-            embed=None,
-            attachments=[],
-            view=view,
+            content=None, embed=None, attachments=[], view=view,
         )
     return await interaction.response.edit_message(
-        content=None,
-        embed=None,
-        attachments=[],
-        view=view,
+        content=None, embed=None, attachments=[], view=view,
     )
 
 
 async def edit_message_v2(message: discord.Message, view: discord.ui.LayoutView):
     """Replace a normal message with a Components V2 view safely."""
-    return await message.edit(
-        content=None,
-        embed=None,
-        attachments=[],
-        view=view,
-    )
+    return await message.edit(content=None, embed=None, attachments=[], view=view)
 
 
 def as_panel_v2(panel: discord.ui.View) -> PanelLayoutView:
