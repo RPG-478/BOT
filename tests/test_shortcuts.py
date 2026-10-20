@@ -2,7 +2,8 @@ import types
 import unittest
 from unittest.mock import AsyncMock
 
-from cogs.general import GENERAL_ACTIONS, GENERAL_GENRES, GeneralPanel, ShortcutRootPanel
+from cogs.general import (GENERAL_ACTIONS, GENERAL_GENRES, GeneralPanel,
+                           ShortcutManagerView, ShortcutRootPanel)
 from core import shortcuts
 from core.panel_v2 import as_panel_v2
 
@@ -40,6 +41,20 @@ class ShortcutTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(panel.genre, "custom")
         self.assertIs(interaction.response.edit_message.call_args.kwargs["view"], wrapper)
         self.assertNotIn("embed", interaction.response.edit_message.call_args.kwargs)
+
+    async def test_shortcut_manager_register_button_opens_v2_root_panel(self):
+        manager = ShortcutManagerView(None, 1, 2)
+        wrapper = as_panel_v2(manager)
+        register = wrapper.children[0].children[1].children[0]
+        interaction = types.SimpleNamespace(
+            response=types.SimpleNamespace(edit_message=AsyncMock())
+        )
+
+        self.assertEqual(manager.embed().color.value, 0xFFFFFF)
+        await register.callback(interaction)
+
+        next_view = interaction.response.edit_message.call_args.kwargs["view"]
+        self.assertIsInstance(next_view.panel, ShortcutRootPanel)
 
     async def test_limit_duplicate_and_remove(self):
         store = MemoryStore()
