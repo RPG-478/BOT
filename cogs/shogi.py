@@ -561,7 +561,7 @@ class Shogi(commands.Cog):
                     if not dests:
                         return
                     s.state = "select_dest"
-                    dest_labels = list(zip(MOVE_LABELS, dests))[:REACTION_PAGE_SIZE]
+                    dest_labels = list(zip(MOVE_LABELS, dests))
                     desc = f"移動先を選択してください（{len(dests)}箇所）。<:Back:1561700549236097034>でキャンセル。"
                     await self._update_board_msg(s, reaction.message.channel, desc, labels=dest_labels, selected=pos, extra_emojis=[CANCEL_EMOJI])
                 elif s.state == "select_dest":
