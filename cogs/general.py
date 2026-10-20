@@ -190,6 +190,9 @@ class ShortcutRootSelect(discord.ui.Select):
         self.parent_view.root = self.values[0]
         self.parent_view.selected = None
         self.parent_view.refresh()
+        if hasattr(self.view, "_sync"):
+            self.view._sync()
+            return await interaction.response.edit_message(view=self.view)
         await interaction.response.edit_message(embed=self.parent_view.embed(), view=self.parent_view)
 
 
