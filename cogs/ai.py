@@ -1,6 +1,7 @@
 """!ai で Logfare のチャットモデルを呼び出す機能。"""
 from __future__ import annotations
 
+import io
 import logging
 
 import discord
@@ -53,6 +54,34 @@ class AICog(commands.Cog):
         if isinstance(error, commands.CommandOnCooldown):
             return await ctx.reply(f"少し待ってから再試行してください（{error.retry_after:.1f}秒）。", mention_author=False)
         logger.exception("!ai command error", exc_info=error)
+
+    @commands.command(name="generate", help="Logfareで画像を生成します。例: !generate 星空の下の猫")
+    @commands.cooldown(1, 15.0, commands.BucketType.user)
+    async def generate(self, ctx: commands.Context, *, prompt: str = ""):
+        prompt = prompt.strip()
+        if not prompt:
+            return await ctx.reply("使い方: `!generate 画像のプロンプト`", mention_author=False)
+        if not logfare.api_key():
+            return await ctx.reply("Logfareが未設定です。`.env` に `LOGFARE_API_KEY` を設定してください。", mention_author=False)
+
+        preferred = ai_preferences.get_image_model(ctx.author.id)
+        try:
+            model, exact = await logfare.resolve_image_model(preferred)
+            async with ctx.typing():
+                image = await logfare.generate_image(model, prompt)
+        except Exception:
+            logger.exception("!generate request failed: user=%s model=%s", ctx.author.id, preferred)
+            return await ctx.reply("画像生成に失敗しました。モデルの利用条件やプロンプトを確認してください。", mention_author=False)
+
+        notice = "" if exact else f"（指定モデルが見つからないため `{model}` を使用）"
+        file = discord.File(io.BytesIO(image), filename="logfare-generated.png")
+        await ctx.reply(f"**画像生成（{model}）**{notice}", file=file, mention_author=False)
+
+    @generate.error
+    async def generate_error(self, ctx: commands.Context, error: commands.CommandError):
+        if isinstance(error, commands.CommandOnCooldown):
+            return await ctx.reply(f"少し待ってから再試行してください（{error.retry_after:.1f}秒）。", mention_author=False)
+        logger.exception("!generate command error", exc_info=error)
 
 
 async def setup(bot: commands.Bot):

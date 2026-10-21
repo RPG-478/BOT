@@ -13,6 +13,7 @@ GENERAL_GENRES = {
     "economy": ("コイン・ランキング", "所持状況、送金、コインや bump/up のランキング"),
     "survival": ("生存確認", "追跡、アクティブ頻度、フリーズ、失踪警報"),
     "ai": ("AI設定", "あなたが !ai で使うデフォルトAIを設定"),
+    "image": ("画像生成", "あなたが !generate で使う画像生成AIを設定"),
     "custom": ("custom", "メッセージで実行するショートカットの登録・編集・削除"),
 }
 GENERAL_ACTIONS = {
@@ -31,6 +32,7 @@ GENERAL_ACTIONS = {
         ("失踪警報解除", "fujo_panic_disable"),
     ],
     "ai": [("デフォルトAIを設定", "ai_default")],
+    "image": [("画像生成AIを設定", "image_default")],
     "custom": [("ショートカットを管理", "shortcut_manage")],
 }
 
@@ -318,9 +320,14 @@ class ShortcutManagerView(discord.ui.View):
 
 
 class AIDefaultSelect(discord.ui.Select):
-    def __init__(self, user_id: int, models: list[dict]):
-        self.user_id = user_id
-        current = ai_preferences.get_model(user_id) or logfare.configured_default_model()
+    def __init__(self, user_id: int, models: list[dict], kind: str = "chat"):
+        self.user_id, self.kind = user_id, kind
+        current = (
+            ai_preferences.get_model(user_id) or logfare.configured_default_model()
+            if kind == "chat"
+            else ai_preferences.get_image_model(user_id)
+            or logfare.DEFAULT_IMAGE_MODEL
+        )
         options = [
             discord.SelectOption(
                 label=(
@@ -337,7 +344,10 @@ class AIDefaultSelect(discord.ui.Select):
         super().__init__(placeholder="デフォルトAIを選択", options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction):
-        await ai_preferences.set_model(self.user_id, self.values[0])
+        if self.kind == "chat":
+            await ai_preferences.set_model(self.user_id, self.values[0])
+        else:
+            await ai_preferences.set_image_model(self.user_id, self.values[0])
         await interaction.response.send_message(
             f"デフォルトAIを `{self.values[0]}` に設定しました。`!ai 質問内容` で使えます。",
             ephemeral=True,
@@ -345,26 +355,37 @@ class AIDefaultSelect(discord.ui.Select):
 
 
 class AIDefaultView(discord.ui.View):
-    def __init__(self, user_id: int, models: list[dict]):
+    def __init__(self, user_id: int, models: list[dict], kind: str = "chat"):
         super().__init__(timeout=300)
-        self.add_item(AIDefaultSelect(user_id, models))
+        self.kind = kind
+        self.add_item(AIDefaultSelect(user_id, models, kind))
 
     @classmethod
-    async def create(cls, user_id: int):
+    async def create(cls, user_id: int, kind: str = "chat"):
         await ai_preferences.ensure_loaded()
         try:
-            models = await logfare.fetch_free_chat_models()
+            models = (
+                await logfare.fetch_free_chat_models()
+                if kind == "chat" else await logfare.fetch_image_models()
+            )
         except Exception:
             models = []
-        return cls(user_id, models)
+        return cls(user_id, models, kind)
 
     def embed(self):
-        current = ai_preferences.get_model(self.children[0].user_id) or logfare.configured_default_model()
+        current = (
+            ai_preferences.get_model(self.children[0].user_id) or logfare.configured_default_model()
+            if self.kind == "chat"
+            else ai_preferences.get_image_model(self.children[0].user_id)
+            or logfare.DEFAULT_IMAGE_MODEL
+        )
+        title = "AI設定" if self.kind == "chat" else "画像生成AI設定"
         return discord.Embed(
-            title="AI設定",
+            title=title,
             description=(
-                f"`!ai` で使うデフォルトAIを選択してください。\n現在: `{current}`\n\n"
-                "Logfareのチャットモデルを選べます。Premium表示のモデルは無料ですが、"
+                f"`{'!ai' if self.kind == 'chat' else '!generate'}` で使うデフォルトAIを選択してください。\n"
+                f"現在: `{current}`\n\n"
+                f"Logfareの{'チャット' if self.kind == 'chat' else '画像生成'}モデルを選べます。Premium表示のモデルは無料ですが、"
                 "Logfareの同意ページでトレーニング利用への同意が必要です。"
             ),
             color=0xFFFFFF,
@@ -381,12 +402,13 @@ class GeneralCog(commands.Cog):
         await interaction.response.send_message(view=as_panel_v2(view), ephemeral=True)
 
     async def dispatch_general(self, interaction: discord.Interaction, value: str):
-        if value == "ai_default":
+        if value in {"ai_default", "image_default"}:
             await interaction.response.defer(ephemeral=True)
-            view = await AIDefaultView.create(interaction.user.id)
+            kind = "chat" if value == "ai_default" else "image"
+            view = await AIDefaultView.create(interaction.user.id, kind)
             if not view.children[0].options or view.children[0].options[0].value == "logfare/auto":
                 return await interaction.followup.send(
-                    "Logfareのfreeモデル一覧を取得できませんでした。`.env` とAPI接続を確認してください。",
+                    "Logfareのモデル一覧を取得できませんでした。`.env` とAPI接続を確認してください。",
                     ephemeral=True,
                 )
             return await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
