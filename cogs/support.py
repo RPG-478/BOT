@@ -178,6 +178,7 @@ SUPPORT_ACTIONS = [
     app_commands.Choice(name="VC入退室履歴", value="vc_log"),
     app_commands.Choice(name="メッセージ編集履歴", value="message_log"),
     app_commands.Choice(name="モデレート履歴（TO/KICK/BAN）", value="moderation_log"),
+    app_commands.Choice(name="認証パネル作成", value="auth_panel"),
 ]
 
 SUPPORT_GENRES = {
