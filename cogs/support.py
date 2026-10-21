@@ -188,8 +188,26 @@ SUPPORT_GENRES = {
     "event": ("イベント", "抽選の作成"),
 }
 SUPPORT_ACTIONS_BY_GENRE = {
-    "moderation": [(c.name, c.value) for c in (SUPPORT_ACTIONS[0], SUPPORT_ACTIONS[1], SUPPORT_ACTIONS[2], SUPPORT_ACTIONS[3], SUPPORT_ACTIONS[12])],
-    "server": [(c.name, c.value) for c in (SUPPORT_ACTIONS[4], SUPPORT_ACTIONS[8], SUPPORT_ACTIONS[10], SUPPORT_ACTIONS[11])],
+    "moderation": [
+        (c.name, c.value)
+        for c in (
+            SUPPORT_ACTIONS[0],
+            SUPPORT_ACTIONS[1],
+            SUPPORT_ACTIONS[2],
+            SUPPORT_ACTIONS[3],
+            SUPPORT_ACTIONS[12],
+        )
+    ],
+    "server": [
+        (c.name, c.value)
+        for c in (
+            SUPPORT_ACTIONS[4],
+            SUPPORT_ACTIONS[8],
+            SUPPORT_ACTIONS[10],
+            SUPPORT_ACTIONS[11],
+            SUPPORT_ACTIONS[13],
+        )
+    ],
     "bumprta": [(c.name, c.value) for c in SUPPORT_ACTIONS[5:8]],
     "event": [(SUPPORT_ACTIONS[9].name, SUPPORT_ACTIONS[9].value)],
 }
