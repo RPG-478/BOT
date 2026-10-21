@@ -1648,6 +1648,8 @@ class HoneypotSettingsView(discord.ui.View):
         return bool(getattr(permissions, "manage_guild", False) or getattr(permissions, "administrator", False))
 
     def embed(self, notice: str | None = None) -> discord.Embed:
+        if notice is None:
+            notice = getattr(self, "notice", None)
         channel_id = self.settings.get("channel_id")
         description = (
             f"状態: **{'オン' if self.settings.get('enabled') else 'オフ'}**\n"
@@ -1663,7 +1665,8 @@ class HoneypotSettingsView(discord.ui.View):
         store = guild_settings.get_store()
         await store.ensure_loaded()
         self.settings = get_honeypot_settings(store, interaction.guild_id)
-        await edit_interaction_message(interaction, embed=self.embed(notice), view=self)
+        self.notice = notice
+        await edit_panel_v2(interaction, as_panel_v2(self))
 
 
 def get_binjou_settings(store, guild_id: int) -> dict[str, bool]:
