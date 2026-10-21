@@ -1,0 +1,28 @@
+"""ユーザーごとのAIモデル設定。"""
+from __future__ import annotations
+
+from core.storage import KVStore
+
+_store = KVStore("ai_preferences")
+
+
+async def ensure_loaded() -> None:
+    await _store.load_all()
+
+
+def get_model(user_id: int) -> str | None:
+    value = _store.load_local().get(str(user_id))
+    return value if isinstance(value, str) and value.strip() else None
+
+
+async def set_model(user_id: int, model: str) -> None:
+    await _store.set(str(user_id), model)
+
+
+async def clear_model(user_id: int) -> None:
+    await _store.delete(str(user_id))
+
+
+def set_store_for_tests(store) -> None:
+    global _store
+    _store = store

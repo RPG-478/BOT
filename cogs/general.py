@@ -5,13 +5,14 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from core.panel_v2 import as_panel_v2, edit_panel_v2
-from core import guild_settings, shortcuts
+from core import ai_preferences, guild_settings, logfare, shortcuts
 from core.game_guides import GAME_GUIDES, GAME_ORDER
 
 
 GENERAL_GENRES = {
     "economy": ("コイン・ランキング", "所持状況、送金、コインや bump/up のランキング"),
     "survival": ("生存確認", "追跡、アクティブ頻度、フリーズ、失踪警報"),
+    "ai": ("AI設定", "あなたが !ai で使うデフォルトAIを設定"),
     "custom": ("custom", "メッセージで実行するショートカットの登録・編集・削除"),
 }
 GENERAL_ACTIONS = {
@@ -29,6 +30,7 @@ GENERAL_ACTIONS = {
         ("フリーズ", "fujo_freeze"),
         ("失踪警報解除", "fujo_panic_disable"),
     ],
+    "ai": [("デフォルトAIを設定", "ai_default")],
     "custom": [("ショートカットを管理", "shortcut_manage")],
 }
 
@@ -315,6 +317,56 @@ class ShortcutManagerView(discord.ui.View):
         return await edit_panel_v2(interaction, as_panel_v2(self))
 
 
+class AIDefaultSelect(discord.ui.Select):
+    def __init__(self, user_id: int, models: list[dict]):
+        self.user_id = user_id
+        current = ai_preferences.get_model(user_id) or logfare.configured_default_model()
+        options = [
+            discord.SelectOption(
+                label=str(model["id"])[:100],
+                value=model["id"],
+                default=model["id"] == current,
+            )
+            for model in models[:25]
+        ]
+        if not options:
+            options = [discord.SelectOption(label="logfare/auto", value="logfare/auto")]
+        super().__init__(placeholder="デフォルトAIを選択", options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        await ai_preferences.set_model(self.user_id, self.values[0])
+        await interaction.response.send_message(
+            f"デフォルトAIを `{self.values[0]}` に設定しました。`!ai 質問内容` で使えます。",
+            ephemeral=True,
+        )
+
+
+class AIDefaultView(discord.ui.View):
+    def __init__(self, user_id: int, models: list[dict]):
+        super().__init__(timeout=300)
+        self.add_item(AIDefaultSelect(user_id, models))
+
+    @classmethod
+    async def create(cls, user_id: int):
+        await ai_preferences.ensure_loaded()
+        try:
+            models = await logfare.fetch_free_chat_models()
+        except Exception:
+            models = []
+        return cls(user_id, models)
+
+    def embed(self):
+        current = ai_preferences.get_model(self.children[0].user_id) or logfare.configured_default_model()
+        return discord.Embed(
+            title="AI設定",
+            description=(
+                f"`!ai` で使うデフォルトAIを選択してください。\n現在: `{current}`\n\n"
+                "対象はLogfareのfreeチャットモデルです。"
+            ),
+            color=0xFFFFFF,
+        )
+
+
 class GeneralCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -325,6 +377,15 @@ class GeneralCog(commands.Cog):
         await interaction.response.send_message(view=as_panel_v2(view), ephemeral=True)
 
     async def dispatch_general(self, interaction: discord.Interaction, value: str):
+        if value == "ai_default":
+            await interaction.response.defer(ephemeral=True)
+            view = await AIDefaultView.create(interaction.user.id)
+            if not view.children[0].options or view.children[0].options[0].value == "logfare/auto":
+                return await interaction.followup.send(
+                    "Logfareのfreeモデル一覧を取得できませんでした。`.env` とAPI接続を確認してください。",
+                    ephemeral=True,
+                )
+            return await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
         if value == "shortcut_manage":
             view = ShortcutManagerView(self, interaction.guild_id, interaction.user.id)
             return await interaction.response.send_message(view=as_panel_v2(view), ephemeral=True)
