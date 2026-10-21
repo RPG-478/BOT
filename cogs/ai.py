@@ -46,8 +46,13 @@ class AICog(commands.Cog):
         if not answer:
             return await ctx.reply("AIから空の回答が返りました。", mention_author=False)
         notice = "" if exact else f"（指定モデルがfree一覧にないため `{model}` を使用）"
-        text = f"**AI（{model}）**{notice}\n{answer}"
-        await ctx.reply(text[:2000], mention_author=False)
+        embed = discord.Embed(
+            title="AI回答",
+            description=answer[:4096],
+            color=0x5865F2,
+        )
+        embed.set_footer(text=f"モデル: {model}{notice}")
+        await ctx.reply(embed=embed, mention_author=False)
 
     @ai.error
     async def ai_error(self, ctx: commands.Context, error: commands.CommandError):
@@ -75,7 +80,10 @@ class AICog(commands.Cog):
 
         notice = "" if exact else f"（指定モデルが見つからないため `{model}` を使用）"
         file = discord.File(io.BytesIO(image), filename="logfare-generated.png")
-        await ctx.reply(f"**画像生成（{model}）**{notice}", file=file, mention_author=False)
+        embed = discord.Embed(title="画像生成", description=notice or None, color=0xE67E22)
+        embed.set_image(url="attachment://logfare-generated.png")
+        embed.set_footer(text=f"モデル: {model}")
+        await ctx.reply(embed=embed, file=file, mention_author=False)
 
     @generate.error
     async def generate_error(self, ctx: commands.Context, error: commands.CommandError):
