@@ -1282,6 +1282,356 @@ class AuthFormModal(discord.ui.Modal, title="認証フォーム"):
             answers,
         )
 
+# --- 認証パネル: 作成設定画面 ---
+class AuthModeSelect(discord.ui.Select):
+    def __init__(self, parent: "AuthPanelSettingsView"):
+        self.parent_view = parent
+
+        options = [
+            discord.SelectOption(
+                label="クリックだけ（シンプル）",
+                value=AUTH_MODE_SIMPLE,
+                description="ボタンを押すとロールが付与されます",
+                default=parent.settings["mode"] == AUTH_MODE_SIMPLE,
+            ),
+            discord.SelectOption(
+                label="自己紹介フォーム（質問あり）",
+                value=AUTH_MODE_FORM,
+                description="フォーム提出後にロールが付与されます",
+                default=parent.settings["mode"] == AUTH_MODE_FORM,
+            ),
+        ]
+
+        super().__init__(
+            placeholder="認証モードを選択",
+            options=options,
+            row=0,
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message(
+                "この設定はサーバーオーナーのみ利用できます。",
+                ephemeral=True,
+            )
+
+        mode = self.values[0]
+        await interaction.response.defer()
+
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        await store.update(interaction.guild_id, AUTH_SECTION, mode=mode)
+
+        await self.parent_view.refresh(interaction, "認証モードを更新しました。")
+
+
+class AuthRoleSelect(discord.ui.RoleSelect):
+    def __init__(self, parent: "AuthPanelSettingsView"):
+        self.parent_view = parent
+        super().__init__(
+            placeholder="認証で付与するロールを選択",
+            row=1,
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message(
+                "この設定はサーバーオーナーのみ利用できます。",
+                ephemeral=True,
+            )
+
+        role = self.values[0]
+        if error := auth_role_error(interaction.guild, role):
+            return await interaction.response.send_message(error, ephemeral=True)
+
+        await interaction.response.defer()
+
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        await store.update(interaction.guild_id, AUTH_SECTION, role_id=role.id)
+
+        await self.parent_view.refresh(interaction, "認証ロールを設定しました。")
+
+
+class AuthIntroChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, parent: "AuthPanelSettingsView"):
+        self.parent_view = parent
+        super().__init__(
+            placeholder="自己紹介の出力先チャンネル",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            row=2,
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message(
+                "この設定はサーバーオーナーのみ利用できます。",
+                ephemeral=True,
+            )
+
+        channel = self.values[0]
+        await interaction.response.defer()
+
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        await store.update(interaction.guild_id, AUTH_SECTION, intro_channel_id=channel.id)
+
+        await self.parent_view.refresh(interaction, "自己紹介の出力先を設定しました。")
+
+
+class AuthPanelChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, parent: "AuthPanelSettingsView"):
+        self.parent_view = parent
+        super().__init__(
+            placeholder="認証パネルを送信するチャンネル",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            row=3,
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message(
+                "この設定はサーバーオーナーのみ利用できます。",
+                ephemeral=True,
+            )
+
+        channel = self.values[0]
+        await interaction.response.defer()
+
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        await store.update(interaction.guild_id, AUTH_SECTION, panel_channel_id=channel.id)
+
+        self.parent_view.panel_channel_id = channel.id
+        await self.parent_view.refresh(interaction, "パネル送信先を設定しました。")
+
+
+class AuthQuestionSettingsButton(discord.ui.Button):
+    def __init__(self, parent: "AuthPanelSettingsView"):
+        self.parent_view = parent
+        super().__init__(
+            label="質問設定",
+            style=discord.ButtonStyle.primary,
+            row=4,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message(
+                "この設定はサーバーオーナーのみ利用できます。",
+                ephemeral=True,
+            )
+
+        if self.parent_view.settings["mode"] != AUTH_MODE_FORM:
+            return await interaction.response.send_message(
+                "質問設定は自己紹介フォーム方式のときのみ使えます。",
+                ephemeral=True,
+            )
+
+        await edit_panel_v2(
+            interaction,
+            as_panel_v2(AuthQuestionSettingsView(self.parent_view.cog, self.parent_view.settings)),
+        )
+
+
+class AuthSendPanelButton(discord.ui.Button):
+    def __init__(self, parent: "AuthPanelSettingsView"):
+        self.parent_view = parent
+        super().__init__(
+            label="パネル送信",
+            style=discord.ButtonStyle.success,
+            row=4,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message(
+                "この設定はサーバーオーナーのみ利用できます。",
+                ephemeral=True,
+            )
+
+        settings = self.parent_view.settings
+        panel_channel_id = self.parent_view.panel_channel_id or settings.get("panel_channel_id")
+
+        if panel_channel_id is None:
+            return await interaction.response.send_message(
+                "先に認証パネルを送信するチャンネルを選択してください。",
+                ephemeral=True,
+            )
+
+        channel = interaction.guild.get_channel(panel_channel_id)
+        if channel is None:
+            return await interaction.response.send_message(
+                "パネル送信先チャンネルが見つかりません。",
+                ephemeral=True,
+            )
+
+        role = interaction.guild.get_role(settings["role_id"]) if settings["role_id"] else None
+        if error := auth_role_error(interaction.guild, role):
+            return await interaction.response.send_message(error, ephemeral=True)
+
+        if settings["mode"] == AUTH_MODE_FORM:
+            if not settings["intro_channel_id"]:
+                return await interaction.response.send_message(
+                    "自己紹介方式の場合は、自己紹介の出力先チャンネルを設定してください。",
+                    ephemeral=True,
+                )
+            if not settings["questions"]:
+                return await interaction.response.send_message(
+                    "自己紹介方式の場合は、質問を1つ以上設定してください。",
+                    ephemeral=True,
+                )
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            await channel.send(view=AuthPanelStartView())
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception("認証パネルの送信に失敗しました")
+            await interaction.followup.send(
+                "認証パネルを送信できませんでした。Botの権限を確認してください。",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.followup.send(
+            f"{channel.mention} に認証パネルを送信しました。",
+            ephemeral=True,
+        )
+
+
+class AuthToggleEnabledButton(discord.ui.Button):
+    def __init__(self, parent: "AuthPanelSettingsView"):
+        self.parent_view = parent
+
+        enabled = parent.settings["enabled"]
+        super().__init__(
+            label="認証を無効にする" if enabled else "認証を有効にする",
+            style=discord.ButtonStyle.danger if enabled else discord.ButtonStyle.success,
+            row=4,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message(
+                "この設定はサーバーオーナーのみ利用できます。",
+                ephemeral=True,
+            )
+
+        await interaction.response.defer()
+
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+
+        enabled = not self.parent_view.settings["enabled"]
+        await store.update(interaction.guild_id, AUTH_SECTION, enabled=enabled)
+
+        await self.parent_view.refresh(
+            interaction,
+            "認証を有効にしました。" if enabled else "認証を無効にしました。",
+        )
+
+
+class AuthPanelSettingsView(discord.ui.View):
+    def __init__(
+        self,
+        cog: "SupportCog",
+        settings: dict,
+        panel_channel_id: int | None = None,
+        notice: str | None = None,
+    ):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.settings = settings
+        self.panel_channel_id = panel_channel_id or settings.get("panel_channel_id")
+        self.notice = notice
+        self._add_items()
+
+    @staticmethod
+    def can_manage(interaction: discord.Interaction) -> bool:
+        return (
+            interaction.guild is not None
+            and interaction.user.id == getattr(interaction.guild, "owner_id", None)
+        )
+
+    def _add_items(self):
+        self.clear_items()
+        self.add_item(AuthModeSelect(self))
+        self.add_item(AuthRoleSelect(self))
+        self.add_item(AuthIntroChannelSelect(self))
+        self.add_item(AuthPanelChannelSelect(self))
+        self.add_item(AuthQuestionSettingsButton(self))
+        self.add_item(AuthSendPanelButton(self))
+        self.add_item(AuthToggleEnabledButton(self))
+
+    def embed(self) -> discord.Embed:
+        lines: list[str] = []
+
+        if self.notice:
+            lines.append(self.notice)
+            lines.append("")
+
+        mode_label = (
+            "クリックだけ（シンプル）"
+            if self.settings["mode"] == AUTH_MODE_SIMPLE
+            else "自己紹介フォーム（質問あり）"
+        )
+
+        role_label = (
+            f"<@&{self.settings['role_id']}>" if self.settings["role_id"] else "未設定"
+        )
+        intro_label = (
+            f"<#{self.settings['intro_channel_id']}>"
+            if self.settings["intro_channel_id"]
+            else "未設定"
+        )
+
+        panel_channel_id = self.panel_channel_id or self.settings.get("panel_channel_id")
+        panel_label = f"<#{panel_channel_id}>" if panel_channel_id else "未選択"
+
+        lines.append(f"状態: **{'オン' if self.settings['enabled'] else 'オフ'}**")
+        lines.append(f"認証モード: **{mode_label}**")
+        lines.append(f"付与ロール: {role_label}")
+        lines.append(f"自己紹介出力先: {intro_label}")
+        lines.append(f"パネル送信先: {panel_label}")
+
+        if self.settings["mode"] == AUTH_MODE_FORM:
+            lines.append(
+                f"質問数: **{len(self.settings['questions'])} / {AUTH_MAX_QUESTIONS}**"
+            )
+
+        lines.append("")
+        lines.append("※ この設定はサーバーオーナーのみ変更できます。")
+        lines.append("※ 認証パネルはコンポーネントV2で送信されます。")
+
+        return discord.Embed(
+            title="認証パネル作成",
+            description="\n".join(lines)[:4000],
+            color=0x3498DB,
+        )
+
+    async def refresh(self, interaction: discord.Interaction, notice: str | None = None):
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+
+        current_panel_channel_id = self.panel_channel_id
+        self.settings = get_auth_settings(store, interaction.guild_id)
+        self.panel_channel_id = (
+            self.settings.get("panel_channel_id") or current_panel_channel_id
+        )
+        self.notice = notice
+
+        self._add_items()
+        await edit_panel_v2(interaction, as_panel_v2(self))
+
 class SupportCog(commands.Cog):
     SUPPORT_REQUIRED_PERMISSIONS = {
         "muted": "manage_roles",
