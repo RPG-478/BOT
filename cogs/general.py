@@ -46,7 +46,8 @@ SHORTCUT_ROOTS = {
                               ("一括ロール操作", "role_bulk"), ("bump/up状態", "bumprta_status"),
                               ("bump/upオン", "bumprta_on"), ("bump/upオフ", "bumprta_off"),
                               ("絵文字便乗設定", "binjou"), ("VC入退室履歴", "vc_log"),
-                              ("メッセージ編集履歴", "message_log"), ("モデレート履歴", "moderation_log")]),
+                              ("メッセージ編集履歴", "message_log"), ("モデレート履歴", "moderation_log"),
+                              ("ハニーポット", "honeypot")]),
     "help": ("/help", [("ヘルプを表示", "overview")]),
 }
 
