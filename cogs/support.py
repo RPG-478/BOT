@@ -113,30 +113,9 @@ BINJOU_DEFAULTS = {"thinking": True, "thumbsup": True}
 
 AUTH_DEFAULT_QUESTIONS = [
     {
-        "label": "あだ名はなんですか？(5文字以内)",
-        "placeholder": "5文字以内で入力",
-        "max_length": 5,
-        "style": "short",
-        "required": True,
-    },
-    {
-        "label": "一番のウリはなんですか？",
-        "placeholder": "",
-        "max_length": 500,
-        "style": "paragraph",
-        "required": True,
-    },
-    {
-        "label": "堅実型ですか、発想型ですか？",
-        "placeholder": "堅実型 または 発想型",
+        "label": "あだ名はなんですか？(20文字以内)",
+        "placeholder": "20文字以内で入力",
         "max_length": 20,
-        "style": "short",
-        "required": True,
-    },
-    {
-        "label": "あなたは自分に寛容になれますか(Y/N)",
-        "placeholder": "Y または N",
-        "max_length": 2,
         "style": "short",
         "required": True,
     },
