@@ -11,6 +11,8 @@ __all__ = [
     "embed_text",
     "build_rows",
     "PanelLayoutView",
+    "EmbedLayoutView",
+    "as_embed_v2",
     "edit_panel_v2",
     "edit_message_v2",
     "as_panel_v2",
@@ -192,6 +194,27 @@ class PanelLayoutView(discord.ui.LayoutView):
         )
         self.stop()
         return await edit_panel_v2(interaction, PanelLayoutView(next_panel))
+
+
+class EmbedLayoutView(discord.ui.LayoutView):
+    """Embedを1つのContainerに包んだ、操作部品なしの表示専用V2ビュー。
+
+    ロール一括操作の完了/キャンセル表示など、ボタンやセレクトを持たない
+    メッセージ用。``followup.send(view=...)`` / ``edit_panel_v2`` の両方で使える。
+    """
+
+    def __init__(self, embed: discord.Embed | None):
+        super().__init__(timeout=None)
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(embed_text(embed)),
+                accent_colour=getattr(embed, "colour", None),
+            )
+        )
+
+
+def as_embed_v2(embed: discord.Embed | None) -> EmbedLayoutView:
+    return EmbedLayoutView(embed)
 
 
 async def edit_panel_v2(interaction: discord.Interaction, view: discord.ui.LayoutView):
