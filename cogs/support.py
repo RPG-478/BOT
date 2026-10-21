@@ -1645,6 +1645,7 @@ class SupportCog(commands.Cog):
         "vc_log": "manage_guild",
         "message_log": "manage_guild",
         "moderation_log": "manage_guild",
+        "auth_panel": "manage_guild",
     }
 
     def __init__(self, bot: commands.Bot):
