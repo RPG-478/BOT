@@ -1107,7 +1107,7 @@ class VoiceControlView(discord.ui.View):
         modal = CustomEQModal(self.cog, self.guild_id)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="<:Pause:1561700510447312916>", style=discord.ButtonStyle.primary, row=3)
+    @discord.ui.button(label="", emoji="<:Pause:1561700510447312916>", style=discord.ButtonStyle.primary, row=3)
     async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
         state = self.cog.get_state(self.guild_id)
