@@ -1226,6 +1226,62 @@ class AuthPanelStartView(discord.ui.LayoutView):
             )
         )
 
+# --- 認証パネル: 自己紹介フォーム Modal ---
+class AuthFormModal(discord.ui.Modal, title="認証フォーム"):
+    def __init__(
+        self,
+        cog: "SupportCog",
+        role_id: int,
+        intro_channel_id: int | None,
+        questions: list[dict],
+    ):
+        super().__init__(custom_id="auth_panel:form")
+        self.cog = cog
+        self.role_id = role_id
+        self.intro_channel_id = intro_channel_id
+        self.inputs: list[tuple[dict, discord.ui.TextInput]] = []
+
+        for i, q in enumerate(questions[:AUTH_MAX_QUESTIONS]):
+            style = (
+                discord.TextStyle.paragraph
+                if q.get("style") == "paragraph"
+                else discord.TextStyle.short
+            )
+
+            kwargs = {}
+            if q.get("placeholder"):
+                kwargs["placeholder"] = q["placeholder"][:100]
+
+            item = discord.ui.TextInput(
+                label=str(q.get("label") or f"質問{i + 1}")[:45],
+                style=style,
+                max_length=int(q.get("max_length") or 200),
+                required=bool(q.get("required", True)),
+                **kwargs,
+            )
+
+            self.add_item(item)
+            self.inputs.append((q, item))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        cog = self.cog or interaction.client.get_cog("SupportCog")
+        if cog is None:
+            await interaction.followup.send(
+                "認証機能を読み込めません。",
+                ephemeral=True,
+            )
+            return
+
+        answers = [(q, item.value) for q, item in self.inputs]
+        await cog.finish_auth_form(
+            interaction,
+            self.role_id,
+            self.intro_channel_id,
+            answers,
+        )
+
 class SupportCog(commands.Cog):
     SUPPORT_REQUIRED_PERMISSIONS = {
         "muted": "manage_roles",
