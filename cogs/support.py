@@ -1189,6 +1189,43 @@ class AuthQuestionSettingsView(discord.ui.View):
             color=0x3498DB,
         )
 
+# --- 認証パネル: 実パネル（ユーザー側） ---
+class AuthStartButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="認証を開始する",
+            style=discord.ButtonStyle.green,
+            custom_id="auth_panel:start",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.response.is_done():
+            return
+
+        cog = interaction.client.get_cog("SupportCog")
+        if cog is None:
+            await interaction.response.send_message(
+                "認証機能を読み込めません。",
+                ephemeral=True,
+            )
+            return
+
+        await cog.handle_auth_start(interaction)
+
+
+class AuthPanelStartView(discord.ui.LayoutView):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    "## 認証パネル\n下のボタンを押して認証を開始してください。"
+                ),
+                discord.ui.ActionRow(AuthStartButton()),
+                accent_colour=0x2ECC71,
+            )
+        )
+
 class SupportCog(commands.Cog):
     SUPPORT_REQUIRED_PERMISSIONS = {
         "muted": "manage_roles",
