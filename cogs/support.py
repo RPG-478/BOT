@@ -56,13 +56,14 @@ SUPPORT_ACTIONS = [
     app_commands.Choice(name="メッセージ編集履歴", value="message_log"),
     app_commands.Choice(name="モデレート履歴（TO/KICK/BAN）", value="moderation_log"),
     app_commands.Choice(name="ハニーポット", value="honeypot"),
+    app_commands.Choice(name="チケットツール", value="ticket"),
     app_commands.Choice(name="認証パネル作成", value="auth_panel"),
 ]
 
 SUPPORT_GENRES = {
     "moderation": (
         "モデレーション",
-        "Muted、匿名つぶやき、Stickyパネル、メッセージ削除、モデレート履歴、ハニーポット",
+        "Muted、匿名つぶやき、Stickyパネル、メッセージ削除、モデレート履歴、ハニーポット、チケット",
     ),
     "server": (
         "サーバー管理",
@@ -82,6 +83,7 @@ SUPPORT_ACTIONS_BY_GENRE = {
             SUPPORT_ACTIONS[3],
             SUPPORT_ACTIONS[12],
             SUPPORT_ACTIONS[13],
+            SUPPORT_ACTIONS[14],
         )
     ],
     "server": [
@@ -91,7 +93,7 @@ SUPPORT_ACTIONS_BY_GENRE = {
             SUPPORT_ACTIONS[8],
             SUPPORT_ACTIONS[10],
             SUPPORT_ACTIONS[11],
-            SUPPORT_ACTIONS[14],
+            SUPPORT_ACTIONS[15],
         )
     ],
     "bumprta": [(c.name, c.value) for c in SUPPORT_ACTIONS[5:8]],
@@ -2138,6 +2140,7 @@ class SupportCog(commands.Cog):
         "message_log": "manage_guild",
         "moderation_log": "manage_guild",
         "honeypot": "manage_guild",
+        "ticket": "manage_guild",
         "auth_panel": "administrator",
     }
 
@@ -2996,6 +2999,12 @@ class SupportCog(commands.Cog):
 
         if selected == "honeypot":
             return await self.show_honeypot_settings(interaction)
+
+        if selected == "ticket":
+            cog = self.bot.get_cog("TicketCog")
+            if cog is None:
+                return await self._missing(interaction, "チケット")
+            return await cog.show_settings(interaction)
 
         if selected == "giveaway":
             return await interaction.response.send_modal(GiveawayModal(self))
