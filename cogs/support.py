@@ -922,7 +922,272 @@ class SupportPanelView(discord.ui.View):
         if self.genre:
             description = f"**{SUPPORT_GENRES[self.genre][0]}** の機能を選択してください。"
         return discord.Embed(title="サポート操作", description=description, color=0xFFFFFF)
+# --- 認証パネル: 質問設定 UI ---
+class AuthQuestionAddModal(discord.ui.Modal, title="質問を追加"):
+    def __init__(self, view: "AuthQuestionSettingsView"):
+        super().__init__()
+        self.parent_view = view
 
+        self.q_label = discord.ui.TextInput(
+            label="質問文（45文字以内）",
+            placeholder="例: あだ名はなんですか？",
+            max_length=45,
+            required=True,
+        )
+        self.q_placeholder = discord.ui.TextInput(
+            label="プレースホルダー",
+            placeholder="例: 5文字以内で入力",
+            required=False,
+            max_length=100,
+        )
+        self.q_max = discord.ui.TextInput(
+            label="最大文字数（1〜1000）",
+            default="200",
+            required=False,
+            max_length=4,
+        )
+        self.q_style = discord.ui.TextInput(
+            label="入力形式（short / long）",
+            default="short",
+            required=False,
+            max_length=10,
+        )
+
+        self.add_item(self.q_label)
+        self.add_item(self.q_placeholder)
+        self.add_item(self.q_max)
+        self.add_item(self.q_style)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message(
+                "この設定はサーバーオーナーのみ利用できます。",
+                ephemeral=True,
+            )
+
+        if len(self.parent_view.settings["questions"]) >= AUTH_MAX_QUESTIONS:
+            return await interaction.response.send_message(
+                f"質問は最大{AUTH_MAX_QUESTIONS}個までです。",
+                ephemeral=True,
+            )
+
+        try:
+            max_length = int((self.q_max.value or "200").strip() or 200)
+        except ValueError:
+            return await interaction.response.send_message(
+                "最大文字数は数値で入力してください。",
+                ephemeral=True,
+            )
+
+        max_length = max(1, min(1000, max_length))
+        style_raw = (self.q_style.value or "short").strip().lower()
+        style = "paragraph" if style_raw in {"long", "paragraph", "長い"} else "short"
+
+        questions = list(self.parent_view.settings["questions"])
+        questions.append(
+            {
+                "label": self.q_label.value.strip()[:45],
+                "placeholder": (self.q_placeholder.value or "").strip()[:100],
+                "max_length": max_length,
+                "style": style,
+                "required": True,
+            }
+        )
+
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        await store.update(interaction.guild_id, AUTH_SECTION, questions=questions)
+
+        self.parent_view.settings = get_auth_settings(store, interaction.guild_id)
+        self.parent_view.selected = None
+        self.parent_view._add_items()
+
+        await edit_auth_panel_message(interaction, self.parent_view)
+
+
+class AuthQuestionSelect(discord.ui.Select):
+    def __init__(self, parent: "AuthQuestionSettingsView"):
+        self.parent_view = parent
+
+        options = []
+        for i, q in enumerate(parent.settings["questions"]):
+            options.append(
+                discord.SelectOption(
+                    label=f"Q{i + 1}",
+                    value=str(i),
+                    description=str(q.get("label", ""))[:90],
+                    default=(i == parent.selected),
+                )
+            )
+
+        super().__init__(
+            placeholder="削除する質問を選択",
+            options=options,
+            row=0,
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message(
+                "この設定はサーバーオーナーのみ利用できます。",
+                ephemeral=True,
+            )
+
+        try:
+            self.parent_view.selected = int(self.values[0])
+        except (ValueError, IndexError):
+            self.parent_view.selected = None
+
+        await interaction.response.defer()
+        self.parent_view._add_items()
+        await edit_panel_v2(interaction, as_panel_v2(self.parent_view))
+
+
+class AuthAddQuestionButton(discord.ui.Button):
+    def __init__(self, parent: "AuthQuestionSettingsView"):
+        self.parent_view = parent
+        super().__init__(
+            label="質問を追加",
+            style=discord.ButtonStyle.primary,
+            row=1,
+        )
+        self.disabled = len(parent.settings["questions"]) >= AUTH_MAX_QUESTIONS
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message(
+                "この設定はサーバーオーナーのみ利用できます。",
+                ephemeral=True,
+            )
+
+        if len(self.parent_view.settings["questions"]) >= AUTH_MAX_QUESTIONS:
+            return await interaction.response.send_message(
+                f"質問は最大{AUTH_MAX_QUESTIONS}個までです。",
+                ephemeral=True,
+            )
+
+        await interaction.response.send_modal(AuthQuestionAddModal(self.parent_view))
+
+
+class AuthDeleteQuestionButton(discord.ui.Button):
+    def __init__(self, parent: "AuthQuestionSettingsView"):
+        self.parent_view = parent
+        super().__init__(
+            label="質問を削除",
+            style=discord.ButtonStyle.danger,
+            row=1,
+        )
+        self.disabled = parent.selected is None or not parent.settings["questions"]
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message(
+                "この設定はサーバーオーナーのみ利用できます。",
+                ephemeral=True,
+            )
+
+        selected = self.parent_view.selected
+        questions = list(self.parent_view.settings["questions"])
+
+        if selected is None or not (0 <= selected < len(questions)):
+            return await interaction.response.send_message(
+                "削除する質問を選択してください。",
+                ephemeral=True,
+            )
+
+        await interaction.response.defer()
+
+        del questions[selected]
+
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        await store.update(interaction.guild_id, AUTH_SECTION, questions=questions)
+
+        self.parent_view.settings = get_auth_settings(store, interaction.guild_id)
+        self.parent_view.selected = None
+        self.parent_view._add_items()
+
+        await edit_panel_v2(interaction, as_panel_v2(self.parent_view))
+
+
+class AuthBackToSettingsButton(discord.ui.Button):
+    def __init__(self, parent: "AuthQuestionSettingsView"):
+        self.parent_view = parent
+        super().__init__(
+            label="戻る",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message(
+                "この設定はサーバーオーナーのみ利用できます。",
+                ephemeral=True,
+            )
+
+        await edit_panel_v2(
+            interaction,
+            as_panel_v2(AuthPanelSettingsView(self.parent_view.cog, self.parent_view.settings)),
+        )
+
+
+class AuthQuestionSettingsView(discord.ui.View):
+    def __init__(self, cog: "SupportCog", settings: dict, selected: int | None = None):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.settings = settings
+        self.selected = selected
+        self._add_items()
+
+    @staticmethod
+    def can_manage(interaction: discord.Interaction) -> bool:
+        return (
+            interaction.guild is not None
+            and interaction.user.id == getattr(interaction.guild, "owner_id", None)
+        )
+
+    def _add_items(self):
+        self.clear_items()
+
+        if self.settings["questions"]:
+            self.add_item(AuthQuestionSelect(self))
+
+        self.add_item(AuthAddQuestionButton(self))
+        self.add_item(AuthDeleteQuestionButton(self))
+        self.add_item(AuthBackToSettingsButton(self))
+
+    def embed(self) -> discord.Embed:
+        lines: list[str] = []
+        questions = self.settings["questions"]
+
+        if not questions:
+            lines.append("質問がまだありません。「質問を追加」から追加してください。")
+        else:
+            for i, q in enumerate(questions):
+                style = "長い文章" if q.get("style") == "paragraph" else "短文"
+                lines.append(f"**Q{i + 1}. {q.get('label', '質問')}**")
+                lines.append(
+                    f"- 形式: {style} / 最大: {q.get('max_length', 200)}文字 / "
+                    f"必須: {'はい' if q.get('required', True) else 'いいえ'}"
+                )
+                if q.get("placeholder"):
+                    lines.append(f"- 例: {q['placeholder']}")
+                lines.append("")
+
+        if self.selected is not None and 0 <= self.selected < len(questions):
+            lines.append(f"選択中: Q{self.selected + 1}")
+            lines.append("")
+
+        lines.append(f"※ DiscordのModal制限により、質問は最大{AUTH_MAX_QUESTIONS}個です。")
+
+        return discord.Embed(
+            title="自己紹介フォームの質問設定",
+            description="\n".join(lines)[:4000],
+            color=0x3498DB,
+        )
 
 class SupportCog(commands.Cog):
     SUPPORT_REQUIRED_PERMISSIONS = {
