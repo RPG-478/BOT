@@ -2234,6 +2234,8 @@ class SupportCog(commands.Cog):
     async def dispatch(self, interaction: discord.Interaction, selected: str):
         if not await self.check_support_permission(interaction, selected):
             return
+        if selected == "auth_panel":
+            return await self.show_auth_settings(interaction)
         if selected == "sticky":
             return await self.show_sticky_settings(interaction)
         if selected == "giveaway":
