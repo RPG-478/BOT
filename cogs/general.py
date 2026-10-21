@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import discord
+import logging
 from discord import app_commands
 from discord.ext import commands
 from core.panel_v2 import as_panel_v2, edit_panel_v2
 from core import ai_preferences, guild_settings, logfare, shortcuts
 from core.game_guides import GAME_GUIDES, GAME_ORDER
+
+logger = logging.getLogger(__name__)
 
 
 GENERAL_GENRES = {
@@ -322,6 +325,7 @@ class ShortcutManagerView(discord.ui.View):
 class AIDefaultSelect(discord.ui.Select):
     def __init__(self, user_id: int, models: list[dict], kind: str = "chat"):
         self.user_id, self.kind = user_id, kind
+        self.model_ids = {str(model.get("id")) for model in models if model.get("id")}
         current = (
             ai_preferences.get_model(user_id) or logfare.configured_default_model()
             if kind == "chat"
@@ -344,32 +348,50 @@ class AIDefaultSelect(discord.ui.Select):
         super().__init__(placeholder="デフォルトAIを選択", options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction):
-        if self.kind == "chat":
-            await ai_preferences.set_model(self.user_id, self.values[0])
-        else:
-            await ai_preferences.set_image_model(self.user_id, self.values[0])
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message(
+                "この設定画面を開いたユーザーだけ変更できます。", ephemeral=True
+            )
+        selected = self.values[0] if self.values else ""
+        if selected not in self.model_ids:
+            return await interaction.response.send_message(
+                "選択したモデルは現在のLogfare一覧にありません。設定画面を開き直してください。",
+                ephemeral=True,
+            )
+        try:
+            if self.kind == "chat":
+                await ai_preferences.set_model(self.user_id, selected)
+            else:
+                await ai_preferences.set_image_model(self.user_id, selected)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("AI model preference save failed: user=%s", self.user_id)
+            return await interaction.response.send_message(
+                "AI設定の保存に失敗しました。しばらくしてから再試行してください。", ephemeral=True
+            )
+        command = "!ai" if self.kind == "chat" else "!generate"
         await interaction.response.send_message(
-            f"デフォルトAIを `{self.values[0]}` に設定しました。`!ai 質問内容` で使えます。",
+            f"デフォルトAIを `{selected}` に設定しました。`{command} プロンプト` で使えます。",
             ephemeral=True,
         )
 
 
 class AIDefaultView(discord.ui.View):
-    def __init__(self, user_id: int, models: list[dict], kind: str = "chat"):
+    def __init__(self, user_id: int, models: list[dict], kind: str = "chat", load_error: Exception | None = None):
         super().__init__(timeout=300)
-        self.kind = kind
+        self.kind, self.models, self.load_error = kind, models, load_error
         self.add_item(AIDefaultSelect(user_id, models, kind))
 
     @classmethod
     async def create(cls, user_id: int, kind: str = "chat"):
-        await ai_preferences.ensure_loaded()
         try:
+            await ai_preferences.ensure_loaded()
             models = (
                 await logfare.fetch_free_chat_models()
                 if kind == "chat" else await logfare.fetch_image_models()
             )
-        except Exception:
-            models = []
+        except Exception as exc:
+            return cls(user_id, [], kind, exc)
         return cls(user_id, models, kind)
 
     def embed(self):
@@ -406,9 +428,16 @@ class GeneralCog(commands.Cog):
             await interaction.response.defer(ephemeral=True)
             kind = "chat" if value == "ai_default" else "image"
             view = await AIDefaultView.create(interaction.user.id, kind)
-            if not view.children[0].options or view.children[0].options[0].value == "logfare/auto":
+            if view.load_error or not view.models:
+                logger.error(
+                    "Logfare model catalog unavailable: kind=%s user=%s",
+                    kind, interaction.user.id, exc_info=view.load_error,
+                )
+                status = getattr(view.load_error, "status", None)
+                detail = f"（HTTP {status}）" if status else ""
                 return await interaction.followup.send(
-                    "Logfareのモデル一覧を取得できませんでした。`.env` とAPI接続を確認してください。",
+                    f"Logfareのモデル一覧を取得できませんでした{detail}。"
+                    "時間をおいて再試行し、`.env` とAPI接続を確認してください。",
                     ephemeral=True,
                 )
             return await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
