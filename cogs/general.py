@@ -323,7 +323,10 @@ class AIDefaultSelect(discord.ui.Select):
         current = ai_preferences.get_model(user_id) or logfare.configured_default_model()
         options = [
             discord.SelectOption(
-                label=str(model["id"])[:100],
+                label=(
+                    f"{model['id']}（同意が必要）"
+                    if model.get("requires_training_optin") else str(model["id"])
+                )[:100],
                 value=model["id"],
                 default=model["id"] == current,
             )
@@ -361,7 +364,8 @@ class AIDefaultView(discord.ui.View):
             title="AI設定",
             description=(
                 f"`!ai` で使うデフォルトAIを選択してください。\n現在: `{current}`\n\n"
-                "対象はLogfareのfreeチャットモデルです。"
+                "Logfareのチャットモデルを選べます。Premium表示のモデルは無料ですが、"
+                "Logfareの同意ページでトレーニング利用への同意が必要です。"
             ),
             color=0xFFFFFF,
         )

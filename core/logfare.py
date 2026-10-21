@@ -8,6 +8,7 @@ from typing import Any
 import aiohttp
 
 BASE_URL = os.getenv("LOGFARE_BASE_URL", "https://logfare.ai/v1").rstrip("/")
+DEFAULT_MODEL = "claude-haiku-5-5"
 AUTO_MODEL = "logfare/auto"
 DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=45)
 
@@ -17,26 +18,29 @@ def api_key() -> str | None:
 
 
 def configured_default_model() -> str:
-    return os.getenv("LOGFARE_DEFAULT_MODEL", AUTO_MODEL).strip() or AUTO_MODEL
+    return os.getenv("LOGFARE_DEFAULT_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
 
 
-def _is_free_chat_model(model: dict[str, Any]) -> bool:
+def _is_chat_model(model: dict[str, Any]) -> bool:
     endpoints = model.get("endpoints") or []
     return (
         "chat/completions" in endpoints
-        and model.get("requires_training_optin") is not True
         and isinstance(model.get("id"), str)
         and bool(model["id"].strip())
     )
 
 
 async def fetch_free_chat_models() -> list[dict[str, Any]]:
-    """Logfare の公開カタログから、free のチャットモデルだけを返す。"""
+    """Logfare の公開カタログから、free利用枠のチャットモデルを返す。
+
+    Premium表示のモデルも料金は無料だが、``requires_training_optin`` が
+    true の場合はLogfare側でトレーニング利用への同意が必要になる。
+    """
     async with aiohttp.ClientSession(timeout=DEFAULT_TIMEOUT) as session:
         async with session.get(f"{BASE_URL}/models") as response:
             response.raise_for_status()
             payload = await response.json()
-    models = [model for model in payload.get("data", []) if _is_free_chat_model(model)]
+    models = [model for model in payload.get("data", []) if _is_chat_model(model)]
     return sorted(models, key=lambda model: (model["id"] != AUTO_MODEL, model["id"]))
 
 
