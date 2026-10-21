@@ -55,13 +55,14 @@ SUPPORT_ACTIONS = [
     app_commands.Choice(name="VC入退室履歴", value="vc_log"),
     app_commands.Choice(name="メッセージ編集履歴", value="message_log"),
     app_commands.Choice(name="モデレート履歴（TO/KICK/BAN）", value="moderation_log"),
+    app_commands.Choice(name="ハニーポット", value="honeypot"),
     app_commands.Choice(name="認証パネル作成", value="auth_panel"),
 ]
 
 SUPPORT_GENRES = {
     "moderation": (
         "モデレーション",
-        "Muted、匿名つぶやき、Stickyパネル、メッセージ削除、モデレート履歴",
+        "Muted、匿名つぶやき、Stickyパネル、メッセージ削除、モデレート履歴、ハニーポット",
     ),
     "server": (
         "サーバー管理",
@@ -80,6 +81,7 @@ SUPPORT_ACTIONS_BY_GENRE = {
             SUPPORT_ACTIONS[2],
             SUPPORT_ACTIONS[3],
             SUPPORT_ACTIONS[12],
+            SUPPORT_ACTIONS[13],
         )
     ],
     "server": [
@@ -89,7 +91,7 @@ SUPPORT_ACTIONS_BY_GENRE = {
             SUPPORT_ACTIONS[8],
             SUPPORT_ACTIONS[10],
             SUPPORT_ACTIONS[11],
-            SUPPORT_ACTIONS[13],
+            SUPPORT_ACTIONS[14],
         )
     ],
     "bumprta": [(c.name, c.value) for c in SUPPORT_ACTIONS[5:8]],
@@ -1557,6 +1559,113 @@ class StickySettingsView(discord.ui.View):
         await self.set_enabled(interaction, False)
 
 
+HONEYPOT_SECTION = "honeypot"
+
+
+def get_honeypot_settings(store, guild_id: int) -> dict[str, int | bool | None]:
+    """Return the configured honeypot channel and its warning-panel message."""
+    raw = store.get(guild_id, HONEYPOT_SECTION)
+    if not isinstance(raw, dict):
+        raw = {}
+    channel_id = raw.get("channel_id")
+    if not isinstance(channel_id, int) or isinstance(channel_id, bool):
+        channel_id = None
+    message_id = raw.get("message_id")
+    if not isinstance(message_id, int) or isinstance(message_id, bool):
+        message_id = None
+    enabled = raw.get("enabled") if isinstance(raw.get("enabled"), bool) else bool(channel_id)
+    return {"enabled": enabled, "channel_id": channel_id, "message_id": message_id}
+
+
+class HoneypotPanelView(discord.ui.LayoutView):
+    """The intentionally visible warning shown in the honeypot channel."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(discord.ui.Container(
+            discord.ui.TextDisplay(
+                "## ⚠️ 警告\n"
+                "このチャンネルはハニーポットです。\n"
+                "ここにメッセージを送信すると、自動的にサーバーからキックされ、"
+                "メッセージも削除されます。"
+            ),
+            accent_colour=0xFFFFFF,
+        ))
+
+
+class HoneypotChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, parent: "HoneypotSettingsView"):
+        self.parent_view = parent
+        super().__init__(
+            placeholder="ハニーポットにするテキストチャンネルを選択",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.parent_view.can_manage(interaction):
+            return await interaction.response.send_message(
+                "この設定にはサーバー管理権限が必要です。", ephemeral=True
+            )
+        await interaction.response.defer()
+        try:
+            channel = self.values[0]
+            old = self.parent_view.settings
+            if old.get("channel_id") and old.get("message_id") and old["channel_id"] != channel.id:
+                old_channel = self.parent_view.cog.bot.get_channel(old["channel_id"])
+                if old_channel is not None:
+                    try:
+                        await (await old_channel.fetch_message(old["message_id"])).delete()
+                    except discord.NotFound:
+                        pass
+                    except (discord.Forbidden, discord.HTTPException):
+                        logger.warning("旧ハニーポット警告パネルを削除できません (guild=%s)", interaction.guild_id)
+            await guild_settings.get_store().update(
+                interaction.guild_id, HONEYPOT_SECTION,
+                channel_id=channel.id, message_id=None, enabled=True,
+            )
+            self.parent_view.settings.update({"channel_id": channel.id, "message_id": None, "enabled": True})
+            await self.parent_view.cog.send_honeypot_panel(interaction.guild, force=True)
+            await self.parent_view.refresh(interaction, "ハニーポットを有効にし、警告パネルを設置しました。")
+        except Exception:
+            logger.exception("ハニーポットの設置に失敗しました")
+            await interaction.followup.send(
+                "ハニーポットの設置に失敗しました。Botのログを確認してください。", ephemeral=True
+            )
+
+
+class HoneypotSettingsView(discord.ui.View):
+    def __init__(self, cog: "SupportCog", settings: dict):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.settings = settings
+        self.add_item(HoneypotChannelSelect(self))
+
+    @staticmethod
+    def can_manage(interaction: discord.Interaction) -> bool:
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        return bool(getattr(permissions, "manage_guild", False) or getattr(permissions, "administrator", False))
+
+    def embed(self, notice: str | None = None) -> discord.Embed:
+        channel_id = self.settings.get("channel_id")
+        description = (
+            f"状態: **{'オン' if self.settings.get('enabled') else 'オフ'}**\n"
+            f"設置先: {f'<#{channel_id}>' if channel_id else '未設定'}\n\n"
+            "選択したチャンネルに警告パネルを設置します。ユーザーが投稿すると、"
+            "その投稿を削除して対象ユーザーをソフトバン（7日分のメッセージ削除後に解除）します。"
+        )
+        if notice:
+            description = f"{notice}\n\n{description}"
+        return discord.Embed(title="ハニーポットの設定", description=description, color=0xFFFFFF)
+
+    async def refresh(self, interaction: discord.Interaction, notice: str | None = None):
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        self.settings = get_honeypot_settings(store, interaction.guild_id)
+        await edit_interaction_message(interaction, embed=self.embed(notice), view=self)
+
+
 def get_binjou_settings(store, guild_id: int) -> dict[str, bool]:
     """binjou設定を既定値と旧thinking設定で補完する。"""
     raw = store.get(guild_id, BINJOU_SECTION)
@@ -2025,6 +2134,7 @@ class SupportCog(commands.Cog):
         "vc_log": "manage_guild",
         "message_log": "manage_guild",
         "moderation_log": "manage_guild",
+        "honeypot": "manage_guild",
         "auth_panel": "administrator",
     }
 
@@ -2491,6 +2601,81 @@ class SupportCog(commands.Cog):
         view = StickySettingsView(self, settings)
         await interaction.response.send_message(view=as_panel_v2(view), ephemeral=True)
 
+    async def show_honeypot_settings(self, interaction: discord.Interaction):
+        if interaction.guild_id is None:
+            return await interaction.response.send_message("この設定はサーバー内で利用できます。", ephemeral=True)
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        settings = get_honeypot_settings(store, interaction.guild_id)
+        await interaction.response.send_message(
+            view=as_panel_v2(HoneypotSettingsView(self, settings)), ephemeral=True
+        )
+
+    async def _honeypot_channel(self, guild: discord.Guild, channel_id: int):
+        target = self.bot.get_channel(channel_id)
+        if target is None:
+            try:
+                target = await self.bot.fetch_channel(channel_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                logger.warning("ハニーポットチャンネルを取得できません (guild=%s channel=%s)", guild.id, channel_id)
+                return None
+        if getattr(getattr(target, "guild", None), "id", guild.id) != guild.id:
+            logger.warning("ハニーポットチャンネルが別サーバーです (guild=%s channel=%s)", guild.id, channel_id)
+            return None
+        return target
+
+    async def send_honeypot_panel(self, guild: discord.Guild, *, force: bool = False):
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        settings = get_honeypot_settings(store, guild.id)
+        if not settings["enabled"] or settings["channel_id"] is None:
+            return None
+        target = await self._honeypot_channel(guild, settings["channel_id"])
+        if target is None:
+            return None
+        old_id = settings.get("message_id")
+        if old_id:
+            try:
+                await (await target.fetch_message(old_id)).delete()
+            except discord.NotFound:
+                pass
+            except (discord.Forbidden, discord.HTTPException):
+                logger.warning("ハニーポット警告パネルを削除できません (guild=%s message=%s)", guild.id, old_id)
+        try:
+            panel = await target.send(view=HoneypotPanelView())
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception("ハニーポット警告パネルを送信できません (guild=%s channel=%s)", guild.id, target.id)
+            return None
+        await store.update(guild.id, HONEYPOT_SECTION, message_id=panel.id)
+        return panel
+
+    async def _handle_honeypot_message(self, message: discord.Message) -> bool:
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        settings = get_honeypot_settings(store, message.guild.id)
+        if not settings["enabled"] or settings["channel_id"] != message.channel.id:
+            return False
+        author = message.author
+        if getattr(author, "bot", False):
+            return False
+        permissions = getattr(author, "guild_permissions", None)
+        if any(getattr(permissions, name, False) for name in ("administrator", "manage_guild", "ban_members")):
+            return False
+        try:
+            await message.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            logger.warning("ハニーポット投稿を削除できません (guild=%s message=%s)", message.guild.id, message.id)
+        try:
+            await message.guild.ban(
+                author,
+                delete_message_days=7,
+                reason="ハニーポットチャンネルへの投稿",
+            )
+            await message.guild.unban(author, reason="ハニーポットによる一時BAN解除")
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception("ハニーポット対象者のソフトバンに失敗しました (guild=%s user=%s)", message.guild.id, author.id)
+        return True
+
     async def _sticky_channel(self, guild: discord.Guild, channel_id: int):
         target = self.bot.get_channel(channel_id)
         if target is None:
@@ -2565,6 +2750,9 @@ class SupportCog(commands.Cog):
     async def on_message(self, message: discord.Message):
         # Botの再送メッセージを無視しないと、Sticky自身が無限に再送される。
         if message.guild is None or getattr(message.author, "bot", False):
+            return
+
+        if await self._handle_honeypot_message(message):
             return
 
         store = guild_settings.get_store()
@@ -2802,6 +2990,9 @@ class SupportCog(commands.Cog):
 
         if selected == "sticky":
             return await self.show_sticky_settings(interaction)
+
+        if selected == "honeypot":
+            return await self.show_honeypot_settings(interaction)
 
         if selected == "giveaway":
             return await interaction.response.send_modal(GiveawayModal(self))
