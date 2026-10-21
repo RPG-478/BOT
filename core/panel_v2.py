@@ -11,11 +11,9 @@ __all__ = [
     "embed_text",
     "build_rows",
     "PanelLayoutView",
-    "StaticPanelLayoutView",
     "edit_panel_v2",
     "edit_message_v2",
     "as_panel_v2",
-    "as_embed_v2",
 ]
 
 
@@ -196,25 +194,6 @@ class PanelLayoutView(discord.ui.LayoutView):
         return await edit_panel_v2(interaction, PanelLayoutView(next_panel))
 
 
-class StaticPanelLayoutView(discord.ui.LayoutView):
-    """操作部品を持たない Embed 相当の Components V2 表示。"""
-
-    def __init__(self, embed: discord.Embed | None, *, timeout: float = 300):
-        super().__init__(timeout=timeout)
-        self.embed_source = embed
-        self.add_item(
-            discord.ui.Container(
-                discord.ui.TextDisplay(embed_text(embed)),
-                accent_colour=getattr(embed, "colour", None),
-            )
-        )
-
-
-def as_embed_v2(embed: discord.Embed | None, *, timeout: float = 300) -> StaticPanelLayoutView:
-    """Convert an Embed-only response to a Components V2 LayoutView."""
-    return StaticPanelLayoutView(embed, timeout=timeout)
-
-
 async def edit_panel_v2(interaction: discord.Interaction, view: discord.ui.LayoutView):
     """Edit a message with a V2 view, clearing legacy message payloads.
 
@@ -222,8 +201,7 @@ async def edit_panel_v2(interaction: discord.Interaction, view: discord.ui.Layou
     content / embeds / attachments を明示的にクリアしないとDiscordに拒否され、
     ユーザーには「応答しませんでした」と見える。
     """
-    is_done = getattr(interaction.response, "is_done", lambda: False)
-    if is_done():
+    if interaction.response.is_done():
         return await interaction.edit_original_response(
             content=None, embed=None, attachments=[], view=view,
         )

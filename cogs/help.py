@@ -280,7 +280,9 @@ class HelpView(discord.ui.View):
                    *, v2: bool = False):
         view = HelpView(self.catalog, category_id, page, self.shortcut_mode, self.shortcut_item)
         self.stop()
-        return await edit_panel_v2(interaction, as_panel_v2(view))
+        if v2:
+            return await edit_panel_v2(interaction, as_panel_v2(view))
+        await interaction.response.edit_message(embed=view.embed(), view=view)
 
     @discord.ui.button(label="前へ", emoji="<:Left:1561698207757500537>", style=discord.ButtonStyle.secondary, row=2)
     async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -420,8 +422,8 @@ class HelpCog(commands.Cog):
                     f"「{clip(command, 50)}」というコマンドは見つかりませんでした。`/help` で一覧を確認してください。",
                     ephemeral=True)
                 return
-            await interaction.response.send_message(
-                view=as_panel_v2(CommandView(catalog, entry)), ephemeral=True)
+            await interaction.response.send_message(embed=command_embed(entry, catalog),
+                                                    view=CommandView(catalog, entry), ephemeral=True)
             return
         view = HelpView(catalog)
         await interaction.response.send_message(view=as_panel_v2(view), ephemeral=True)
