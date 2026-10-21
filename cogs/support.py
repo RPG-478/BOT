@@ -1649,6 +1649,7 @@ class SupportCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._sticky_locks: dict[int, asyncio.Lock] = {}
+        self._auth_pending: set[int] = set()
 
     @staticmethod
     def has_support_permission(interaction: discord.Interaction, permission: str) -> bool:
