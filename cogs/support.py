@@ -2035,6 +2035,191 @@ class SupportCog(commands.Cog):
             ephemeral=True,
         )
 
+    # --- 認証パネル作成機能を /support に追加 ---
+    async def show_auth_settings(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            return await interaction.response.send_message(
+                "この機能はサーバー内で利用できます。",
+                ephemeral=True,
+            )
+
+        if interaction.user.id != getattr(interaction.guild, "owner_id", None):
+            return await interaction.response.send_message(
+                "この機能はサーバーオーナーのみ利用できます。",
+                ephemeral=True,
+            )
+
+        store = guild_settings.get_store()
+        await store.ensure_loaded()
+        settings = get_auth_settings(store, interaction.guild.id)
+
+        view = AuthPanelSettingsView(self, settings)
+        await interaction.response.send_message(
+            view=as_panel_v2(view),
+            ephemeral=True,
+        )
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        if interaction.type != discord.InteractionType.component:
+            return
+
+        custom_id = interaction.data.get("custom_id", "")
+        if custom_id == "auth_panel:start":
+            await self.handle_auth_start(interaction)
+
+    async def handle_auth_start(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            return
+
+        if interaction.response.is_done():
+            return
+
+        pending = getattr(self, "_auth_pending", None)
+        if pending is None:
+            self._auth_pending = set()
+            pending = self._auth_pending
+
+        if interaction.id in pending:
+            return
+
+        pending.add(interaction.id)
+        try:
+            store = guild_settings.get_store()
+            await store.ensure_loaded()
+            settings = get_auth_settings(store, interaction.guild.id)
+
+            if not settings["enabled"]:
+                return await interaction.response.send_message(
+                    "現在、このサーバーでは認証を停止しています。",
+                    ephemeral=True,
+                )
+
+            role = (
+                interaction.guild.get_role(settings["role_id"])
+                if settings["role_id"]
+                else None
+            )
+            if role is None:
+                return await interaction.response.send_message(
+                    "認証ロールが見つかりません。サーバー管理者に連絡してください。",
+                    ephemeral=True,
+                )
+
+            if role in getattr(interaction.user, "roles", []):
+                return await interaction.response.send_message(
+                    "あなたはすでに認証済みです。",
+                    ephemeral=True,
+                )
+
+            if settings["mode"] == AUTH_MODE_SIMPLE:
+                await interaction.response.defer(ephemeral=True, thinking=True)
+
+                if await self._add_auth_role(interaction, role):
+                    await interaction.followup.send(
+                        "認証が完了しました。ロールを付与しました。",
+                        ephemeral=True,
+                    )
+                return
+
+            questions = settings["questions"][:AUTH_MAX_QUESTIONS]
+            if not questions:
+                return await interaction.response.send_message(
+                    "認証フォームの質問が設定されていません。",
+                    ephemeral=True,
+                )
+
+            modal = AuthFormModal(
+                self,
+                role.id,
+                settings["intro_channel_id"],
+                questions,
+            )
+            await interaction.response.send_modal(modal)
+
+        finally:
+            pending.discard(interaction.id)
+
+    async def _add_auth_role(self, interaction: discord.Interaction, role: discord.Role) -> bool:
+        try:
+            await interaction.user.add_roles(role, reason="認証パネル")
+            return True
+        except discord.Forbidden:
+            await interaction.followup.send(
+                f"ロールを付けられませんでした。\n理由: {role_failure_reason(interaction.guild, role)}",
+                ephemeral=True,
+            )
+            return False
+        except discord.HTTPException:
+            logger.exception("認証ロールの付与に失敗しました")
+            await interaction.followup.send(
+                "Discordとの通信に失敗しました。少し待ってからもう一度試してください。",
+                ephemeral=True,
+            )
+            return False
+
+    async def finish_auth_form(
+        self,
+        interaction: discord.Interaction,
+        role_id: int | None,
+        intro_channel_id: int | None,
+        answers: list[tuple[dict, str]],
+    ):
+        if interaction.guild is None:
+            return
+
+        role = interaction.guild.get_role(role_id) if role_id else None
+        if role is None:
+            return await interaction.followup.send(
+                "認証ロールが見つかりません。サーバー管理者に連絡してください。",
+                ephemeral=True,
+            )
+
+        if role in getattr(interaction.user, "roles", []):
+            return await interaction.followup.send(
+                "あなたはすでに認証済みです。",
+                ephemeral=True,
+            )
+
+        if error := auth_role_error(interaction.guild, role):
+            return await interaction.followup.send(error, ephemeral=True)
+
+        if not await self._add_auth_role(interaction, role):
+            return
+
+        intro_channel = (
+            interaction.guild.get_channel(intro_channel_id)
+            if intro_channel_id
+            else None
+        )
+
+        if intro_channel is not None:
+            content_parts: list[str] = []
+            for q, value in answers:
+                content_parts.append(
+                    f"【{q.get('label', '質問')}】\n{value or '(未入力)'}"
+                )
+
+            content = "\n\n".join(content_parts)
+
+            try:
+                webhook = await get_intro_webhook(intro_channel, interaction.client.user.id)
+                await webhook.send(
+                    content=content,
+                    username=sanitize_webhook_name(interaction.user.display_name),
+                    avatar_url=interaction.user.display_avatar.url,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.HTTPException:
+                logger.exception("自己紹介の投稿に失敗しました（ロール付与は完了）")
+
+        await interaction.followup.send(
+            "認証が完了しました。ロールを付与しました。",
+            ephemeral=True,
+        )
+
+
+
     @app_commands.command(name="support", description="サポート機能の操作パネルを表示します")
     @app_commands.guild_only()
     async def support(self, interaction: discord.Interaction):
