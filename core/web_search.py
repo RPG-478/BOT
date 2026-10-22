@@ -1,0 +1,158 @@
+"""DuckDuckGo検索とHTML本文抽出を行う読み取り専用Web検索。"""
+from __future__ import annotations
+
+import asyncio
+import ipaddress
+import re
+import socket
+from typing import Any
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
+
+import aiohttp
+from bs4 import BeautifulSoup
+
+USER_AGENT = "AGOBOT/1.0 (+https://logfare.ai/docs; web-search)"
+TIMEOUT = aiohttp.ClientTimeout(total=15)
+MAX_QUERY_LENGTH = 300
+MAX_PAGE_CHARS = 7000
+
+
+class WebSearchError(RuntimeError):
+    pass
+
+
+def _is_public_url(url: str) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    hostname = parsed.hostname.lower().rstrip(".")
+    if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local"):
+        return False
+    try:
+        addresses = {item[4][0] for item in socket.getaddrinfo(hostname, None)}
+    except socket.gaierror:
+        return False
+    return bool(addresses) and all(
+        not (ipaddress.ip_address(address).is_private
+             or ipaddress.ip_address(address).is_loopback
+             or ipaddress.ip_address(address).is_link_local
+             or ipaddress.ip_address(address).is_reserved)
+        for address in addresses
+    )
+
+
+def _unwrap_result_url(href: str, base_url: str) -> str:
+    absolute = urljoin(base_url, href)
+    query = parse_qs(urlparse(absolute).query)
+    if query.get("uddg"):
+        return unquote(query["uddg"][0])
+    return absolute
+
+
+async def _fetch_html(session: aiohttp.ClientSession, url: str) -> tuple[str, str]:
+    if not _is_public_url(url):
+        raise WebSearchError("公開HTTP(S) URL以外は取得できません。")
+    async with session.get(url, headers={"User-Agent": USER_AGENT}, allow_redirects=True) as response:
+        if response.status >= 400:
+            raise WebSearchError(f"ページ取得に失敗しました（HTTP {response.status}）。")
+        final_url = str(response.url)
+        if not _is_public_url(final_url):
+            raise WebSearchError("安全でないリダイレクト先を拒否しました。")
+        content_type = response.headers.get("Content-Type", "")
+        if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
+            return final_url, ""
+        return final_url, await response.text(errors="ignore")
+
+
+async def search(query: str, *, max_results: int = 5) -> list[dict[str, str]]:
+    query = re.sub(r"\s+", " ", query or "").strip()[:MAX_QUERY_LENGTH]
+    if not query:
+        raise WebSearchError("検索語が空です。")
+    max_results = max(1, min(max_results, 5))
+    url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+        _, html = await _fetch_html(session, url)
+    soup = BeautifulSoup(html, "html.parser")
+    results: list[dict[str, str]] = []
+    for result in soup.select(".result"):
+        link = result.select_one("a.result__a")
+        if not link or not link.get("href"):
+            continue
+        result_url = _unwrap_result_url(str(link["href"]), url)
+        if not _is_public_url(result_url):
+            continue
+        snippet = result.select_one(".result__snippet")
+        results.append({
+            "title": link.get_text(" ", strip=True)[:300],
+            "url": result_url,
+            "snippet": snippet.get_text(" ", strip=True)[:700] if snippet else "",
+        })
+        if len(results) >= max_results:
+            break
+    if results:
+        return results
+
+    # DuckDuckGo may return a consent/anti-bot page from some networks.
+    bing_url = f"https://www.bing.com/search?q={quote_plus(query)}"
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+        _, html = await _fetch_html(session, bing_url)
+    soup = BeautifulSoup(html, "html.parser")
+    for result in soup.select("li.b_algo"):
+        link = result.select_one("h2 a")
+        if not link or not link.get("href"):
+            continue
+        result_url = str(link["href"])
+        if not _is_public_url(result_url):
+            continue
+        snippet = result.select_one(".b_caption p") or result.select_one("p")
+        results.append({
+            "title": link.get_text(" ", strip=True)[:300],
+            "url": result_url,
+            "snippet": snippet.get_text(" ", strip=True)[:700] if snippet else "",
+        })
+        if len(results) >= max_results:
+            break
+    return results
+
+
+def _extract_text(html: str) -> tuple[str, str]:
+    soup = BeautifulSoup(html, "html.parser")
+    title = soup.title.get_text(" ", strip=True) if soup.title else ""
+    for tag in soup(["script", "style", "noscript", "nav", "footer", "header", "aside", "form"]):
+        tag.decompose()
+    main = soup.find("main") or soup.find("article") or soup.body or soup
+    text = re.sub(r"\s+", " ", main.get_text(" ", strip=True))
+    return title[:300], text[:MAX_PAGE_CHARS]
+
+
+async def retrieve(query: str, *, max_results: int = 3) -> list[dict[str, str]]:
+    """検索結果と公開ページ本文を取得し、RAG用の資料として返す。"""
+    results = await search(query, max_results=max_results)
+    documents: list[dict[str, str]] = []
+    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+        for result in results:
+            try:
+                final_url, html = await _fetch_html(session, result["url"])
+                title, text = _extract_text(html)
+                if text:
+                    documents.append({
+                        "title": title or result["title"],
+                        "url": final_url,
+                        "snippet": result["snippet"],
+                        "content": text,
+                    })
+            except (aiohttp.ClientError, asyncio.TimeoutError, WebSearchError):
+                documents.append(result | {"content": "（本文を取得できませんでした）"})
+    return documents
+
+
+def compact_documents(documents: list[dict[str, str]]) -> str:
+    """検索資料をモデルへ渡すためのサイズ制限付きコンテキストにする。"""
+    blocks = []
+    for index, document in enumerate(documents, 1):
+        blocks.append(
+            f"[Source {index}] {document.get('title', '')}\n"
+            f"URL: {document.get('url', '')}\n"
+            f"本文: {document.get('content') or document.get('snippet', '')}"
+        )
+    return "\n\n".join(blocks)[:18000]

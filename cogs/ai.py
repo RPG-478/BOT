@@ -7,7 +7,7 @@ import logging
 import discord
 from discord.ext import commands
 
-from core import ai_preferences, logfare
+from core import ai_preferences, ai_tools, logfare
 
 logger = logging.getLogger(__name__)
 
@@ -26,31 +26,40 @@ class AICog(commands.Cog):
             return await ctx.reply("Logfareが未設定です。`.env` に `LOGFARE_API_KEY` を設定してください。", mention_author=False)
 
         preferred = ai_preferences.get_model(ctx.author.id) or logfare.configured_default_model()
+        sources = []
         try:
             model, exact = await logfare.resolve_model(preferred)
             reasoning_effort = ai_preferences.get_reasoning_effort(ctx.author.id)
+            try:
+                model_info = next(
+                    (item for item in await logfare.fetch_free_chat_models() if item.get("id") == model),
+                    None,
+                )
+            except Exception:
+                model_info = None
             if reasoning_effort:
-                try:
-                    model_info = next(
-                        (item for item in await logfare.fetch_free_chat_models() if item.get("id") == model),
-                        None,
-                    )
-                except Exception:
-                    model_info = None
                 if not model_info or reasoning_effort not in logfare.reasoning_efforts(model_info):
                     reasoning_effort = None
+            can_use_web_search = bool(
+                model_info and (model_info.get("chat_capabilities") or {}).get("tools") is True
+            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "あなたはDiscord上の親切なアシスタントです。日本語で簡潔かつ正確に回答してください。"
+                        + ("必要に応じてweb_searchを使い、回答に参照URLを含めてください。" if can_use_web_search else "")
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ]
             async with ctx.typing():
-                answer = await logfare.chat(
-                    model,
-                    [
-                        {
-                            "role": "system",
-                            "content": "あなたはDiscord上の親切なアシスタントです。日本語で簡潔かつ正確に回答してください。",
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    reasoning_effort=reasoning_effort,
-                )
+                if can_use_web_search:
+                    answer, sources = await ai_tools.answer_with_web_search(
+                        model, messages, reasoning_effort=reasoning_effort
+                    )
+                else:
+                    answer = await logfare.chat(model, messages, reasoning_effort=reasoning_effort)
         except Exception:
             logger.exception("!ai request failed: user=%s model=%s", ctx.author.id, preferred)
             return await ctx.reply("AIへの問い合わせに失敗しました。しばらくしてから再試行してください。", mention_author=False)
@@ -64,6 +73,13 @@ class AICog(commands.Cog):
             color=0x5865F2,
         )
         embed.set_footer(text=f"モデル: {model}{notice}")
+        unique_sources = {source.get("url"): source for source in sources if source.get("url")}
+        if unique_sources:
+            links = "\n".join(
+                f"[{source.get('title', '参照')[:80]}]({url})"
+                for url, source in list(unique_sources.items())[:5]
+            )
+            embed.add_field(name="参照ソース", value=links[:1024], inline=False)
         await ctx.reply(embed=embed, mention_author=False)
 
     @ai.error
