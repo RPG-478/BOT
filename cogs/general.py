@@ -322,16 +322,22 @@ class ShortcutManagerView(discord.ui.View):
         return await edit_panel_v2(interaction, as_panel_v2(self))
 
 
+MODEL_PAGE_SIZE = 25
+
+
 class AIDefaultSelect(discord.ui.Select):
-    def __init__(self, user_id: int, models: list[dict], kind: str = "chat"):
+    def __init__(self, user_id: int, models: list[dict], kind: str = "chat", page: int = 0):
         self.user_id, self.kind = user_id, kind
         self.model_ids = {str(model.get("id")) for model in models if model.get("id")}
+        self.page = page
         current = (
             ai_preferences.get_model(user_id) or logfare.configured_default_model()
             if kind == "chat"
             else ai_preferences.get_image_model(user_id)
             or logfare.DEFAULT_IMAGE_MODEL
         )
+        start = page * MODEL_PAGE_SIZE
+        page_models = models[start:start + MODEL_PAGE_SIZE]
         options = [
             discord.SelectOption(
                 label=(
@@ -341,7 +347,7 @@ class AIDefaultSelect(discord.ui.Select):
                 value=model["id"],
                 default=model["id"] == current,
             )
-            for model in models[:25]
+            for model in page_models
         ]
         if not options:
             options = [discord.SelectOption(label="logfare/auto", value="logfare/auto")]
@@ -376,11 +382,46 @@ class AIDefaultSelect(discord.ui.Select):
         )
 
 
+class AIDefaultPageButton(discord.ui.Button):
+    def __init__(self, owner: "AIDefaultView", direction: int):
+        self.owner_view, self.direction = owner, direction
+        label = "前のページ" if direction < 0 else "次のページ"
+        super().__init__(label=label, style=discord.ButtonStyle.secondary, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_view.user_id:
+            return await interaction.response.send_message(
+                "この設定画面を開いたユーザーだけ操作できます。", ephemeral=True
+            )
+        next_page = self.owner_view.page + self.direction
+        if next_page < 0 or next_page >= self.owner_view.page_count:
+            return await interaction.response.send_message(
+                "そのページは存在しません。設定画面を開き直してください。", ephemeral=True
+            )
+        self.owner_view.page = next_page
+        self.owner_view.refresh_select()
+        await interaction.response.edit_message(
+            embed=self.owner_view.embed(), view=self.owner_view
+        )
+
+
 class AIDefaultView(discord.ui.View):
     def __init__(self, user_id: int, models: list[dict], kind: str = "chat", load_error: Exception | None = None):
         super().__init__(timeout=300)
+        self.user_id = user_id
         self.kind, self.models, self.load_error = kind, models, load_error
-        self.add_item(AIDefaultSelect(user_id, models, kind))
+        self.page = 0
+        self.page_count = max(1, (len(models) + MODEL_PAGE_SIZE - 1) // MODEL_PAGE_SIZE)
+        self.select = AIDefaultSelect(user_id, models, kind, self.page)
+        self.add_item(self.select)
+        if self.page_count > 1:
+            self.add_item(AIDefaultPageButton(self, -1))
+            self.add_item(AIDefaultPageButton(self, 1))
+
+    def refresh_select(self):
+        self.remove_item(self.select)
+        self.select = AIDefaultSelect(self.user_id, self.models, self.kind, self.page)
+        self.add_item(self.select)
 
     @classmethod
     async def create(cls, user_id: int, kind: str = "chat"):
@@ -396,9 +437,9 @@ class AIDefaultView(discord.ui.View):
 
     def embed(self):
         current = (
-            ai_preferences.get_model(self.children[0].user_id) or logfare.configured_default_model()
+            ai_preferences.get_model(self.user_id) or logfare.configured_default_model()
             if self.kind == "chat"
-            else ai_preferences.get_image_model(self.children[0].user_id)
+            else ai_preferences.get_image_model(self.user_id)
             or logfare.DEFAULT_IMAGE_MODEL
         )
         title = "AI設定" if self.kind == "chat" else "画像生成AI設定"
@@ -408,7 +449,8 @@ class AIDefaultView(discord.ui.View):
                 f"`{'!ai' if self.kind == 'chat' else '!generate'}` で使うデフォルトAIを選択してください。\n"
                 f"現在: `{current}`\n\n"
                 f"Logfareの{'チャット' if self.kind == 'chat' else '画像生成'}モデルを選べます。Premium表示のモデルは無料ですが、"
-                "Logfareの同意ページでトレーニング利用への同意が必要です。"
+                f"Logfareの同意ページでトレーニング利用への同意が必要です。\n"
+                f"モデル一覧 {self.page + 1}/{self.page_count}ページ（全{len(self.models)}件）"
             ),
             color=0xFFFFFF,
         )
