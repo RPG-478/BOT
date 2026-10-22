@@ -143,6 +143,8 @@ class PerfectMimicAI(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
             return
+        if os.environ.get("BLOCKRUN_MENTION_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
+            return
 
         # 1. 受け取った全メッセージをローカル長期記憶に完全無料保存
         clean_content = message.clean_content.replace(f"@{self.bot.user.name}", "").strip()
