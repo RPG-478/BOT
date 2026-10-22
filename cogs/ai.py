@@ -28,6 +28,17 @@ class AICog(commands.Cog):
         preferred = ai_preferences.get_model(ctx.author.id) or logfare.configured_default_model()
         try:
             model, exact = await logfare.resolve_model(preferred)
+            reasoning_effort = ai_preferences.get_reasoning_effort(ctx.author.id)
+            if reasoning_effort:
+                try:
+                    model_info = next(
+                        (item for item in await logfare.fetch_free_chat_models() if item.get("id") == model),
+                        None,
+                    )
+                except Exception:
+                    model_info = None
+                if not model_info or reasoning_effort not in logfare.reasoning_efforts(model_info):
+                    reasoning_effort = None
             async with ctx.typing():
                 answer = await logfare.chat(
                     model,
@@ -38,6 +49,7 @@ class AICog(commands.Cog):
                         },
                         {"role": "user", "content": prompt},
                     ],
+                    reasoning_effort=reasoning_effort,
                 )
         except Exception:
             logger.exception("!ai request failed: user=%s model=%s", ctx.author.id, preferred)

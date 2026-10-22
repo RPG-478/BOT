@@ -32,6 +32,15 @@ def _is_chat_model(model: dict[str, Any]) -> bool:
     )
 
 
+def reasoning_efforts(model: dict[str, Any]) -> list[str]:
+    """モデルが明示的に公開している思考強度だけを返す。"""
+    reasoning = (model.get("chat_capabilities") or {}).get("reasoning")
+    efforts = reasoning.get("supported_efforts") if isinstance(reasoning, dict) else None
+    if not isinstance(efforts, list):
+        return []
+    return [effort for effort in efforts if isinstance(effort, str) and effort.strip()]
+
+
 async def fetch_free_chat_models() -> list[dict[str, Any]]:
     """Logfare の公開カタログから、free利用枠のチャットモデルを返す。
 
@@ -86,7 +95,13 @@ async def resolve_model(preferred: str | None = None) -> tuple[str, bool]:
     return AUTO_MODEL, False
 
 
-async def chat(model: str, messages: list[dict[str, str]], *, max_tokens: int = 1200) -> str:
+async def chat(
+    model: str,
+    messages: list[dict[str, str]],
+    *,
+    max_tokens: int = 1200,
+    reasoning_effort: str | None = None,
+) -> str:
     """Chat Completions を実行し、回答本文だけを返す。"""
     key = api_key()
     if not key:
@@ -96,6 +111,8 @@ async def chat(model: str, messages: list[dict[str, str]], *, max_tokens: int = 
         "messages": messages,
         "max_tokens": max_tokens,
     }
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
