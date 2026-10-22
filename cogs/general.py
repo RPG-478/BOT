@@ -6,7 +6,7 @@ import logging
 from discord import app_commands
 from discord.ext import commands
 from core.panel_v2 import as_panel_v2, edit_panel_v2
-from core import ai_preferences, guild_settings, logfare, shortcuts
+from core import ai_preferences, dsh_gateway, guild_settings, logfare, shortcuts
 from core.game_guides import GAME_GUIDES, GAME_ORDER
 
 logger = logging.getLogger(__name__)
@@ -332,25 +332,22 @@ class AIDefaultSelect(discord.ui.Select):
         self.user_id, self.kind = user_id, kind
         self.model_ids = {str(model.get("id")) for model in models if model.get("id")}
         self.page = page
-        current = (
-            ai_preferences.get_model(user_id) or logfare.configured_default_model()
-            if kind == "chat"
-            else ai_preferences.get_image_model(user_id)
-            or logfare.DEFAULT_IMAGE_MODEL
-        )
+        if kind == "chat":
+            current = (ai_preferences.get_model(user_id) or dsh_gateway.default_model()
+                       or logfare.configured_default_model())
+        else:
+            current = ai_preferences.get_image_model(user_id) or logfare.DEFAULT_IMAGE_MODEL
         start = page * MODEL_PAGE_SIZE
         page_models = models[start:start + MODEL_PAGE_SIZE]
-        options = [
-            discord.SelectOption(
-                label=(
-                    f"{model['id']}（同意が必要）"
-                    if model.get("requires_training_optin") else str(model["id"])
-                )[:100],
-                value=model["id"],
-                default=model["id"] == current,
-            )
-            for model in page_models
-        ]
+        options = []
+        for model in page_models:
+            model_id = str(model["id"])
+            label = f"DSH: {model_id}" if dsh_gateway.is_combo(model_id) else model_id
+            if model.get("requires_training_optin"):
+                label = f"{label}（同意が必要）"
+            options.append(discord.SelectOption(
+                label=label[:100], value=model_id, default=model_id == current,
+            ))
         if not options:
             options = [discord.SelectOption(label="logfare/auto", value="logfare/auto")]
         super().__init__(placeholder="デフォルトAIを選択", options=options, row=0)
@@ -429,29 +426,44 @@ class AIDefaultView(discord.ui.View):
     async def create(cls, user_id: int, kind: str = "chat"):
         try:
             await ai_preferences.ensure_loaded()
-            models = (
-                await logfare.fetch_free_chat_models()
-                if kind == "chat" else await logfare.fetch_image_models()
-            )
+            if kind == "image":
+                models = await logfare.fetch_image_models()
+            else:
+                models = []
+                errors = []
+                try:
+                    models.extend(await logfare.fetch_free_chat_models())
+                except Exception as exc:
+                    errors.append(exc)
+                try:
+                    models.extend(await dsh_gateway.fetch_combo_models())
+                except Exception as exc:
+                    errors.append(exc)
+                if not models and errors:
+                    raise errors[0]
         except Exception as exc:
             return cls(user_id, [], kind, exc)
         return cls(user_id, models, kind)
 
     def embed(self):
-        current = (
-            ai_preferences.get_model(self.user_id) or logfare.configured_default_model()
-            if self.kind == "chat"
-            else ai_preferences.get_image_model(self.user_id)
-            or logfare.DEFAULT_IMAGE_MODEL
-        )
+        if self.kind == "chat":
+            current = (ai_preferences.get_model(self.user_id) or dsh_gateway.default_model()
+                       or logfare.configured_default_model())
+        else:
+            current = (ai_preferences.get_image_model(self.user_id)
+                       or logfare.DEFAULT_IMAGE_MODEL)
         title = "AI設定" if self.kind == "chat" else "画像生成AI設定"
+        model_help = (
+            "LogfareのチャットモデルとDSHの切替チェーンを選べます。"
+            "Logfareの一部モデルはトレーニング利用への同意が必要です。\n"
+            if self.kind == "chat" else "Logfareの画像生成モデルを選べます。\n"
+        )
         return discord.Embed(
             title=title,
             description=(
                 f"`{'!ai' if self.kind == 'chat' else '!generate'}` で使うデフォルトAIを選択してください。\n"
                 f"現在: `{current}`\n\n"
-                f"Logfareの{'チャット' if self.kind == 'chat' else '画像生成'}モデルを選べます。Premium表示のモデルは無料ですが、"
-                f"Logfareの同意ページでトレーニング利用への同意が必要です。\n"
+                f"{model_help}"
                 f"モデル一覧 {self.page + 1}/{self.page_count}ページ（全{len(self.models)}件）"
             ),
             color=0xFFFFFF,
@@ -510,8 +522,11 @@ class ReasoningView(discord.ui.View):
     @classmethod
     async def create(cls, user_id: int):
         await ai_preferences.ensure_loaded()
+        model_id = (ai_preferences.get_model(user_id) or dsh_gateway.default_model()
+                    or logfare.configured_default_model())
+        if dsh_gateway.is_combo(model_id):
+            return None, "DSHの切替チェーンでは、この思考強度設定を使えません。"
         models = await logfare.fetch_free_chat_models()
-        model_id = ai_preferences.get_model(user_id) or logfare.configured_default_model()
         model = next((item for item in models if item.get("id") == model_id), None)
         if model is None:
             return None, f"現在のモデル `{model_id}` の情報を取得できませんでした。先にデフォルトAIを設定してください。"

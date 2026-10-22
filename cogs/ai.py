@@ -1,4 +1,4 @@
-"""!ai で Logfare のチャットモデルを呼び出す機能。"""
+"""!ai で Logfare または DSH のチャットモデルを呼び出す機能。"""
 from __future__ import annotations
 
 import io
@@ -7,7 +7,7 @@ import logging
 import discord
 from discord.ext import commands
 
-from core import ai_preferences, ai_tools, logfare
+from core import ai_preferences, ai_tools, dsh_gateway, logfare
 
 logger = logging.getLogger(__name__)
 
@@ -16,30 +16,42 @@ class AICog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @commands.command(name="ai", help="LogfareのAIに質問します。例: !ai 今日の天気を教えて")
+    @commands.command(name="ai", help="AIに質問します。例: !ai 今日の天気を教えて")
     @commands.cooldown(1, 5.0, commands.BucketType.user)
     async def ai(self, ctx: commands.Context, *, prompt: str = ""):
         prompt = prompt.strip()
         if not prompt:
             return await ctx.reply("使い方: `!ai 質問内容`", mention_author=False)
-        if not logfare.api_key():
+        preferred = (
+            ai_preferences.get_model(ctx.author.id)
+            or dsh_gateway.default_model()
+            or logfare.configured_default_model()
+        )
+        if dsh_gateway.is_combo(preferred):
+            if not dsh_gateway.configured():
+                return await ctx.reply("DSHゲートウェイが未設定です。", mention_author=False)
+        elif not logfare.api_key():
             return await ctx.reply("Logfareが未設定です。`.env` に `LOGFARE_API_KEY` を設定してください。", mention_author=False)
 
-        preferred = ai_preferences.get_model(ctx.author.id) or logfare.configured_default_model()
         sources = []
         try:
-            model, exact = await logfare.resolve_model(preferred)
-            reasoning_effort = ai_preferences.get_reasoning_effort(ctx.author.id)
-            try:
-                model_info = next(
-                    (item for item in await logfare.fetch_free_chat_models() if item.get("id") == model),
-                    None,
-                )
-            except Exception:
+            if dsh_gateway.is_combo(preferred):
+                model, exact = preferred, True
+                reasoning_effort = None
                 model_info = None
-            if reasoning_effort:
-                if not model_info or reasoning_effort not in logfare.reasoning_efforts(model_info):
-                    reasoning_effort = None
+            else:
+                model, exact = await logfare.resolve_model(preferred)
+                reasoning_effort = ai_preferences.get_reasoning_effort(ctx.author.id)
+                try:
+                    model_info = next(
+                        (item for item in await logfare.fetch_free_chat_models() if item.get("id") == model),
+                        None,
+                    )
+                except Exception:
+                    model_info = None
+                if reasoning_effort:
+                    if not model_info or reasoning_effort not in logfare.reasoning_efforts(model_info):
+                        reasoning_effort = None
             can_use_web_search = bool(
                 model_info and (model_info.get("chat_capabilities") or {}).get("tools") is True
             )
@@ -54,7 +66,9 @@ class AICog(commands.Cog):
                 {"role": "user", "content": prompt},
             ]
             async with ctx.typing():
-                if can_use_web_search:
+                if dsh_gateway.is_combo(model):
+                    answer = await dsh_gateway.chat(model, messages)
+                elif can_use_web_search:
                     answer, sources = await ai_tools.answer_with_web_search(
                         model, messages, reasoning_effort=reasoning_effort
                     )
