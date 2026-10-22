@@ -34,7 +34,10 @@ GENERAL_ACTIONS = {
         ("フリーズ", "fujo_freeze"),
         ("失踪警報解除", "fujo_panic_disable"),
     ],
-    "ai": [("デフォルトAIを設定", "ai_default")],
+    "ai": [
+        ("デフォルトAIを設定", "ai_default"),
+        ("思考強度を設定", "reasoning_default"),
+    ],
     "image": [("画像生成AIを設定", "image_default")],
     "custom": [("ショートカットを管理", "shortcut_manage")],
 }
@@ -322,16 +325,22 @@ class ShortcutManagerView(discord.ui.View):
         return await edit_panel_v2(interaction, as_panel_v2(self))
 
 
+MODEL_PAGE_SIZE = 25
+
+
 class AIDefaultSelect(discord.ui.Select):
-    def __init__(self, user_id: int, models: list[dict], kind: str = "chat"):
+    def __init__(self, user_id: int, models: list[dict], kind: str = "chat", page: int = 0):
         self.user_id, self.kind = user_id, kind
         self.model_ids = {str(model.get("id")) for model in models if model.get("id")}
+        self.page = page
         current = (
             ai_preferences.get_model(user_id) or logfare.configured_default_model()
             if kind == "chat"
             else ai_preferences.get_image_model(user_id)
             or logfare.DEFAULT_IMAGE_MODEL
         )
+        start = page * MODEL_PAGE_SIZE
+        page_models = models[start:start + MODEL_PAGE_SIZE]
         options = [
             discord.SelectOption(
                 label=(
@@ -341,7 +350,7 @@ class AIDefaultSelect(discord.ui.Select):
                 value=model["id"],
                 default=model["id"] == current,
             )
-            for model in models[:25]
+            for model in page_models
         ]
         if not options:
             options = [discord.SelectOption(label="logfare/auto", value="logfare/auto")]
@@ -376,11 +385,46 @@ class AIDefaultSelect(discord.ui.Select):
         )
 
 
+class AIDefaultPageButton(discord.ui.Button):
+    def __init__(self, owner: "AIDefaultView", direction: int):
+        self.owner_view, self.direction = owner, direction
+        label = "前のページ" if direction < 0 else "次のページ"
+        super().__init__(label=label, style=discord.ButtonStyle.secondary, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_view.user_id:
+            return await interaction.response.send_message(
+                "この設定画面を開いたユーザーだけ操作できます。", ephemeral=True
+            )
+        next_page = self.owner_view.page + self.direction
+        if next_page < 0 or next_page >= self.owner_view.page_count:
+            return await interaction.response.send_message(
+                "そのページは存在しません。設定画面を開き直してください。", ephemeral=True
+            )
+        self.owner_view.page = next_page
+        self.owner_view.refresh_select()
+        await interaction.response.edit_message(
+            embed=self.owner_view.embed(), view=self.owner_view
+        )
+
+
 class AIDefaultView(discord.ui.View):
     def __init__(self, user_id: int, models: list[dict], kind: str = "chat", load_error: Exception | None = None):
         super().__init__(timeout=300)
+        self.user_id = user_id
         self.kind, self.models, self.load_error = kind, models, load_error
-        self.add_item(AIDefaultSelect(user_id, models, kind))
+        self.page = 0
+        self.page_count = max(1, (len(models) + MODEL_PAGE_SIZE - 1) // MODEL_PAGE_SIZE)
+        self.select = AIDefaultSelect(user_id, models, kind, self.page)
+        self.add_item(self.select)
+        if self.page_count > 1:
+            self.add_item(AIDefaultPageButton(self, -1))
+            self.add_item(AIDefaultPageButton(self, 1))
+
+    def refresh_select(self):
+        self.remove_item(self.select)
+        self.select = AIDefaultSelect(self.user_id, self.models, self.kind, self.page)
+        self.add_item(self.select)
 
     @classmethod
     async def create(cls, user_id: int, kind: str = "chat"):
@@ -396,9 +440,9 @@ class AIDefaultView(discord.ui.View):
 
     def embed(self):
         current = (
-            ai_preferences.get_model(self.children[0].user_id) or logfare.configured_default_model()
+            ai_preferences.get_model(self.user_id) or logfare.configured_default_model()
             if self.kind == "chat"
-            else ai_preferences.get_image_model(self.children[0].user_id)
+            else ai_preferences.get_image_model(self.user_id)
             or logfare.DEFAULT_IMAGE_MODEL
         )
         title = "AI設定" if self.kind == "chat" else "画像生成AI設定"
@@ -408,7 +452,82 @@ class AIDefaultView(discord.ui.View):
                 f"`{'!ai' if self.kind == 'chat' else '!generate'}` で使うデフォルトAIを選択してください。\n"
                 f"現在: `{current}`\n\n"
                 f"Logfareの{'チャット' if self.kind == 'chat' else '画像生成'}モデルを選べます。Premium表示のモデルは無料ですが、"
-                "Logfareの同意ページでトレーニング利用への同意が必要です。"
+                f"Logfareの同意ページでトレーニング利用への同意が必要です。\n"
+                f"モデル一覧 {self.page + 1}/{self.page_count}ページ（全{len(self.models)}件）"
+            ),
+            color=0xFFFFFF,
+        )
+
+
+class ReasoningSelect(discord.ui.Select):
+    def __init__(self, user_id: int, model_id: str, efforts: list[str], current: str | None):
+        self.user_id, self.model_id = user_id, model_id
+        self.efforts = set(efforts)
+        options = [discord.SelectOption(
+            label="モデルの既定値", value="__default__", default=current is None,
+        )]
+        options.extend(
+            discord.SelectOption(label=effort, value=effort, default=effort == current)
+            for effort in efforts
+        )
+        super().__init__(placeholder="思考強度を選択", options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message(
+                "この設定画面を開いたユーザーだけ変更できます。", ephemeral=True
+            )
+        selected = self.values[0] if self.values else ""
+        if selected != "__default__" and selected not in self.efforts:
+            return await interaction.response.send_message(
+                "選択した思考強度は現在のモデルに対応していません。設定画面を開き直してください。",
+                ephemeral=True,
+            )
+        try:
+            if selected == "__default__":
+                await ai_preferences.clear_reasoning_effort(self.user_id)
+                label = "モデルの既定値"
+            else:
+                await ai_preferences.set_reasoning_effort(self.user_id, selected)
+                label = selected
+        except Exception:
+            logger.exception("reasoning preference save failed: user=%s", self.user_id)
+            return await interaction.response.send_message(
+                "思考強度の保存に失敗しました。しばらくしてから再試行してください。", ephemeral=True
+            )
+        await interaction.response.send_message(
+            f"思考強度を `{label}` に設定しました。", ephemeral=True
+        )
+
+
+class ReasoningView(discord.ui.View):
+    def __init__(self, user_id: int, model_id: str, efforts: list[str]):
+        super().__init__(timeout=300)
+        self.user_id, self.model_id, self.efforts = user_id, model_id, efforts
+        self.add_item(ReasoningSelect(
+            user_id, model_id, efforts, ai_preferences.get_reasoning_effort(user_id)
+        ))
+
+    @classmethod
+    async def create(cls, user_id: int):
+        await ai_preferences.ensure_loaded()
+        models = await logfare.fetch_free_chat_models()
+        model_id = ai_preferences.get_model(user_id) or logfare.configured_default_model()
+        model = next((item for item in models if item.get("id") == model_id), None)
+        if model is None:
+            return None, f"現在のモデル `{model_id}` の情報を取得できませんでした。先にデフォルトAIを設定してください。"
+        efforts = logfare.reasoning_efforts(model)
+        if not efforts:
+            return None, f"現在のモデル `{model_id}` は思考強度の設定に対応していません。"
+        return cls(user_id, model_id, efforts), None
+
+    def embed(self):
+        current = ai_preferences.get_reasoning_effort(self.user_id) or "モデルの既定値"
+        return discord.Embed(
+            title="思考強度設定",
+            description=(
+                f"モデル `{self.model_id}` の思考強度を選択してください。\n"
+                f"現在: `{current}`\n対応値: {', '.join(self.efforts)}"
             ),
             color=0xFFFFFF,
         )
@@ -424,6 +543,23 @@ class GeneralCog(commands.Cog):
         await interaction.response.send_message(view=as_panel_v2(view), ephemeral=True)
 
     async def dispatch_general(self, interaction: discord.Interaction, value: str):
+        if value == "reasoning_default":
+            await interaction.response.defer(ephemeral=True)
+            try:
+                view, error = await ReasoningView.create(interaction.user.id)
+            except Exception as exc:
+                logger.exception("reasoning model metadata unavailable: user=%s", interaction.user.id)
+                status = getattr(exc, "status", None)
+                detail = f"（HTTP {status}）" if status else ""
+                return await interaction.followup.send(
+                    f"思考強度の対応状況を取得できませんでした{detail}。時間をおいて再試行してください。",
+                    ephemeral=True,
+                )
+            if error:
+                return await interaction.followup.send(error, ephemeral=True)
+            return await interaction.followup.send(
+                embed=view.embed(), view=view, ephemeral=True
+            )
         if value in {"ai_default", "image_default"}:
             await interaction.response.defer(ephemeral=True)
             kind = "chat" if value == "ai_default" else "image"
