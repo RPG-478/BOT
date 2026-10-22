@@ -45,6 +45,24 @@ async def answer_with_web_search(
     """モデルのweb_search呼び出しを最大2回実行し、RAG結果で最終回答を生成する。"""
     working_messages = list(messages)
     sources: list[dict[str, str]] = []
+
+    async def final_answer() -> str:
+        fallback_messages = working_messages + [{
+            "role": "system",
+            "content": (
+                "検索処理は完了しています。検索結果を根拠として、必ず回答本文を日本語で生成してください。"
+                "ツール呼び出しは追加せず、参照URLも含めてください。"
+            ),
+        }]
+        final = await logfare.chat_completion(
+            model,
+            fallback_messages,
+            max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
+        )
+        message = final.get("choices", [{}])[0].get("message", {})
+        return str(message.get("content") or "").strip()
+
     for _ in range(2):
         data = await logfare.chat_completion(
             model,
@@ -58,7 +76,11 @@ async def answer_with_web_search(
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
             content = str(message.get("content") or "").strip()
-            return content, sources
+            if content:
+                return content, sources
+            if sources:
+                return await final_answer(), sources
+            return "", sources
 
         working_messages.append(message)
         for call in tool_calls:
@@ -91,16 +113,8 @@ async def answer_with_web_search(
             working_messages.append({
                 "role": "tool",
                 "tool_call_id": call.get("id", "web_search"),
-                "name": "web_search",
                 "content": json.dumps(result, ensure_ascii=False),
             })
 
     # ツールを繰り返し呼び続けるモデルには、最後に通常回答を要求する。
-    final = await logfare.chat_completion(
-        model,
-        working_messages,
-        max_tokens=max_tokens,
-        reasoning_effort=reasoning_effort,
-    )
-    message = final.get("choices", [{}])[0].get("message", {})
-    return str(message.get("content") or "").strip(), sources
+    return await final_answer(), sources
