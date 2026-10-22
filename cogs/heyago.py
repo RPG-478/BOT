@@ -19,8 +19,6 @@ class AdaptiveAI(commands.Cog):
     async def on_message(self, message):
         if message.author.bot:
             return
-        if os.environ.get("BLOCKRUN_MENTION_ENABLED", "false").lower() in {"1", "true", "yes", "on"}:
-            return
 
         if message.flags.forwarded:
             return

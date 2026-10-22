@@ -1,11 +1,10 @@
-"""BlockRunメンションエージェントのユーザー別設定。"""
+"""ローカルD1による機能アクション代理実行のユーザー別設定。"""
 from __future__ import annotations
 
 from core.storage import KVStore
 
-_store = KVStore("blockrun_preferences")
-ALLOWED_TOOLS = {"web_search"}
-DEFAULT_CONFIG = {"enabled": False, "tools": ["web_search"], "instruction": ""}
+_store = KVStore("d1_command_preferences")
+DEFAULT_CONFIG = {"enabled": False, "actions": [], "instruction": ""}
 
 
 async def ensure_loaded() -> None:
@@ -16,19 +15,20 @@ def get_config(user_id: int) -> dict:
     value = _store.load_local().get(str(user_id))
     if not isinstance(value, dict):
         return dict(DEFAULT_CONFIG)
-    tools = [tool for tool in value.get("tools", []) if tool in ALLOWED_TOOLS]
+    actions = [str(item).strip().lower() for item in value.get("actions", []) if str(item).strip()]
     return {
         "enabled": bool(value.get("enabled", False)),
-        "tools": tools,
+        "actions": list(dict.fromkeys(actions))[:50],
         "instruction": str(value.get("instruction", ""))[:1000],
     }
 
 
 async def set_config(user_id: int, config: dict) -> None:
-    tools = [tool for tool in config.get("tools", []) if tool in ALLOWED_TOOLS]
     await _store.set(str(user_id), {
         "enabled": bool(config.get("enabled", False)),
-        "tools": tools,
+        "actions": list(dict.fromkeys(
+            str(item).strip().lower() for item in config.get("actions", []) if str(item).strip()
+        ))[:50],
         "instruction": str(config.get("instruction", ""))[:1000],
     })
 
