@@ -103,6 +103,29 @@ async def chat(
     reasoning_effort: str | None = None,
 ) -> str:
     """Chat Completions を実行し、回答本文だけを返す。"""
+    data = await chat_completion(
+        model,
+        messages,
+        max_tokens=max_tokens,
+        reasoning_effort=reasoning_effort,
+    )
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError("Logfare API の応答に回答本文がありませんでした。") from exc
+    return str(content or "").strip()
+
+
+async def chat_completion(
+    model: str,
+    messages: list[dict[str, Any]],
+    *,
+    max_tokens: int = 1200,
+    reasoning_effort: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Chat CompletionsのJSON全体を返す（ツール呼び出し用）。"""
     key = api_key()
     if not key:
         raise RuntimeError("LOGFARE_API_KEY が設定されていません。")
@@ -113,6 +136,9 @@ async def chat(
     }
     if reasoning_effort:
         payload["reasoning_effort"] = reasoning_effort
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = tool_choice or "auto"
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
@@ -126,11 +152,9 @@ async def chat(
                 data = await response.json()
             except ValueError as exc:
                 raise RuntimeError("Logfare API の応答をJSONとして解釈できませんでした。") from exc
-    try:
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError("Logfare API の応答に回答本文がありませんでした。") from exc
-    return str(content or "").strip()
+    if not isinstance(data, dict):
+        raise RuntimeError("Logfare APIの応答形式が不正です。")
+    return data
 
 
 async def generate_image(model: str, prompt: str, *, size: str = "1024x1024") -> bytes:
