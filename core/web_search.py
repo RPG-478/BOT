@@ -15,6 +15,10 @@ USER_AGENT = "AGOBOT/1.0 (+https://logfare.ai/docs; web-search)"
 TIMEOUT = aiohttp.ClientTimeout(total=15)
 MAX_QUERY_LENGTH = 300
 MAX_PAGE_CHARS = 7000
+MAX_REDIRECTS = 5
+MAX_BODY_BYTES = 2_000_000
+BODY_CHUNK_SIZE = 64 * 1024
+ALLOWED_PORTS = {None, 80, 443}
 
 
 class WebSearchError(RuntimeError):
@@ -25,12 +29,20 @@ def _is_public_url(url: str) -> bool:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         return False
+    if parsed.username or parsed.password:
+        return False
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    if port not in ALLOWED_PORTS:
+        return False
     hostname = parsed.hostname.lower().rstrip(".")
     if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local"):
         return False
     try:
         addresses = {item[4][0] for item in socket.getaddrinfo(hostname, None)}
-    except socket.gaierror:
+    except (socket.gaierror, UnicodeError):
         return False
     return bool(addresses) and all(
         not (ipaddress.ip_address(address).is_private
@@ -50,18 +62,49 @@ def _unwrap_result_url(href: str, base_url: str) -> str:
 
 
 async def _fetch_html(session: aiohttp.ClientSession, url: str) -> tuple[str, str]:
-    if not _is_public_url(url):
-        raise WebSearchError("公開HTTP(S) URL以外は取得できません。")
-    async with session.get(url, headers={"User-Agent": USER_AGENT}, allow_redirects=True) as response:
-        if response.status >= 400:
-            raise WebSearchError(f"ページ取得に失敗しました（HTTP {response.status}）。")
-        final_url = str(response.url)
-        if not _is_public_url(final_url):
-            raise WebSearchError("安全でないリダイレクト先を拒否しました。")
-        content_type = response.headers.get("Content-Type", "")
-        if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
-            return final_url, ""
-        return final_url, await response.text(errors="ignore")
+    current_url = url
+    for _ in range(MAX_REDIRECTS + 1):
+        if not _is_public_url(current_url):
+            raise WebSearchError("公開HTTP(S) URL以外は取得できません。")
+        async with session.get(
+            current_url,
+            headers={"User-Agent": USER_AGENT},
+            allow_redirects=False,
+        ) as response:
+            if response.status in {301, 302, 303, 307, 308}:
+                location = response.headers.get("Location")
+                if not location:
+                    raise WebSearchError("リダイレクト先がありません。")
+                current_url = urljoin(current_url, location)
+                continue
+            if response.status >= 400:
+                raise WebSearchError(f"ページ取得に失敗しました（HTTP {response.status}）。")
+            final_url = str(response.url)
+            if not _is_public_url(final_url):
+                raise WebSearchError("安全でないリダイレクト先を拒否しました。")
+            content_type = response.headers.get("Content-Type", "")
+            if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
+                return final_url, ""
+            length = getattr(response, "content_length", None)
+            if length is not None and length > MAX_BODY_BYTES:
+                raise WebSearchError("ページが大きすぎます。")
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = await response.content.read(BODY_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_BODY_BYTES:
+                    raise WebSearchError("ページが大きすぎます。")
+                chunks.append(chunk)
+            body = b"".join(chunks)
+            try:
+                encoding = response.get_encoding() or "utf-8"
+            except LookupError:
+                encoding = "utf-8"
+            return final_url, body.decode(encoding, errors="ignore")
+    raise WebSearchError("リダイレクトが多すぎます。")
 
 
 async def search(query: str, *, max_results: int = 5) -> list[dict[str, str]]:
